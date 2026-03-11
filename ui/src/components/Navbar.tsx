@@ -430,8 +430,6 @@ export default function Navbar() {
                       />
                     </>
                   )}
-
-                  {isAdmin && <IconNavLink to="/admin" end icon={<Shield size={18} />} label="Admin" />}
                   {isAdmin && (
                     <IconNavLink
                       to="/admin/offer-changes"
@@ -440,6 +438,8 @@ export default function Navbar() {
                       label="Offer approvals"
                     />
                   )}
+                  {isAdmin && <IconNavLink to="/admin" end icon={<Shield size={18} />} label="Admin" />}
+
                 </>
               )}
             </nav>
@@ -799,14 +799,6 @@ export default function Navbar() {
                       {isAdmin && (
                         <>
                           <MobileMenuButton
-                            icon={<Shield size={18} />}
-                            label="Admin"
-                            onClick={() => {
-                              setMobileMoreOpen(false);
-                              nav("/admin");
-                            }}
-                          />
-                          <MobileMenuButton
                             icon={<ClipboardList size={18} />}
                             label="Offer approvals"
                             onClick={() => {
@@ -814,6 +806,16 @@ export default function Navbar() {
                               nav("/admin/offer-changes");
                             }}
                           />
+
+                          <MobileMenuButton
+                            icon={<Shield size={18} />}
+                            label="Admin"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/admin");
+                            }}
+                          />
+
                         </>
                       )}
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -20,7 +20,6 @@ import { useModal } from "../components/ModalProvider";
 const SILVER_BORDER = "border border-zinc-200/80";
 const SILVER_SHADOW_SM = "shadow-[0_8px_20px_rgba(148,163,184,0.18)]";
 const SILVER_SHADOW_MD = "shadow-[0_12px_30px_rgba(148,163,184,0.22)]";
-const SILVER_SHADOW_LG = "shadow-[0_18px_60px_rgba(148,163,184,0.30)]";
 
 const CARD_2XL = `rounded-2xl ${SILVER_BORDER} bg-white ${SILVER_SHADOW_MD}`;
 const CARD_XL = `rounded-xl ${SILVER_BORDER} bg-white ${SILVER_SHADOW_SM}`;
@@ -84,6 +83,11 @@ type CustomerRow = {
   name?: string | null;
 };
 
+type CustomerOption = CustomerRow & {
+  label: string;
+  _search: string;
+};
+
 /* ---------------- Refund normalization ---------------- */
 function normalizeRefund(r: any): RefundRow {
   const evidenceUrls =
@@ -144,7 +148,7 @@ function normalizeRefunds(payload: any): RefundRow[] {
   return list.map(normalizeRefund);
 }
 
-/* ---------------- Customers normalization (for admin view-as) ---------------- */
+/* ---------------- Customers normalization ---------------- */
 function normalizeCustomers(payload: any): CustomerRow[] {
   const list =
     (payload && Array.isArray(payload.data) && payload.data) ||
@@ -159,16 +163,12 @@ function normalizeCustomers(payload: any): CustomerRow[] {
     let name: string | null = null;
 
     if (u?.name && typeof u.name === "string" && u.name.trim()) {
-      // direct `name` field if present
       name = u.name.trim();
     } else {
-      // fallback to firstName + lastName
       const parts: string[] = [];
       if (u?.firstName) parts.push(String(u.firstName));
       if (u?.lastName) parts.push(String(u.lastName));
-      if (parts.length) {
-        name = parts.join(" ");
-      }
+      if (parts.length) name = parts.join(" ");
     }
 
     return { id, email, name };
@@ -211,6 +211,17 @@ const todayYMD = () => {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
 };
+
+function useDebouncedValue<T>(value: T, delay = 300) {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(id);
+  }, [value, delay]);
+
+  return debounced;
+}
 
 /* ---------------- Pagination UI ---------------- */
 const PAGE_SIZE = 10;
@@ -329,290 +340,132 @@ function SkeletonRow({
   );
 }
 
-/* ---------------- Page ---------------- */
-export default function ReturnsRefundsPage() {
-  const nav = useNavigate();
-  const location = useLocation();
-  const { openModal } = useModal();
+const RefundFilters = React.memo(function RefundFilters({
+  isAdmin,
+  customersLoading,
+  customers,
+  customerKeyInput,
+  setCustomerKeyInput,
+  activeCustomerKey,
+  setActiveCustomerKey,
+  setExpandedId,
+  setPage,
+  q,
+  setQ,
+  searchParams,
+  setSearchParams,
+  statusFilter,
+  setStatusFilter,
+  statusOptions,
+  reasonFilter,
+  setReasonFilter,
+  reasonOptions,
+  from,
+  setFrom,
+  to,
+  setTo,
+  isTodayActive,
+  toggleToday,
+  clearFilters,
+  refundsRefetch,
+  queriesEnabled,
+  filteredCount,
+  loading,
+  pageStart,
+  pageEnd,
+}: {
+  isAdmin: boolean;
+  customersLoading: boolean;
+  customers: CustomerRow[];
+  customerKeyInput: string;
+  setCustomerKeyInput: React.Dispatch<React.SetStateAction<string>>;
+  activeCustomerKey: string | null;
+  setActiveCustomerKey: React.Dispatch<React.SetStateAction<string | null>>;
+  setExpandedId: React.Dispatch<React.SetStateAction<string | null>>;
+  setPage: React.Dispatch<React.SetStateAction<number>>;
+  q: string;
+  setQ: React.Dispatch<React.SetStateAction<string>>;
+  searchParams: URLSearchParams;
+  setSearchParams: (
+    nextInit: URLSearchParams | ((prev: URLSearchParams) => URLSearchParams),
+    navigateOpts?: { replace?: boolean }
+  ) => void;
+  statusFilter: string;
+  setStatusFilter: React.Dispatch<React.SetStateAction<string>>;
+  statusOptions: string[];
+  reasonFilter: string;
+  setReasonFilter: React.Dispatch<React.SetStateAction<string>>;
+  reasonOptions: string[];
+  from: string;
+  setFrom: React.Dispatch<React.SetStateAction<string>>;
+  to: string;
+  setTo: React.Dispatch<React.SetStateAction<string>>;
+  isTodayActive: boolean;
+  toggleToday: () => void;
+  clearFilters: () => void;
+  refundsRefetch: () => void;
+  queriesEnabled: boolean;
+  filteredCount: number;
+  loading: boolean;
+  pageStart: number;
+  pageEnd: number;
+}) {
+  const [localCustomerInput, setLocalCustomerInput] = useState(customerKeyInput);
+  const [localQ, setLocalQ] = useState(q);
+  const debouncedQ = useDebouncedValue(localQ, 350);
 
-  const storeUser = useAuthStore((s) => s.user);
-  const storeRole = (storeUser?.role || "") as Role;
+  useEffect(() => {
+    setLocalCustomerInput(customerKeyInput);
+  }, [customerKeyInput]);
 
-  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    setLocalQ(q);
+  }, [q]);
 
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
+  useEffect(() => {
+    if (debouncedQ === q) return;
+    setQ(debouncedQ);
+  }, [debouncedQ, q, setQ]);
 
-  const [q, setQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("ALL");
-  const [reasonFilter, setReasonFilter] = useState<string>("ALL");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const customerSearchBase = useMemo<CustomerOption[]>(() => {
+    if (!isAdmin || !customers.length) return [];
 
-  /* ----- Admin “view as customer” state ----- */
-  const [customerKeyInput, setCustomerKeyInput] = useState("");
-  const [activeCustomerKey, setActiveCustomerKey] = useState<string | null>(null);
-
-  /* ----- Auth / Role (cookie session) ----- */
-  const meQ = useQuery({
-    queryKey: ["me-min"],
-    queryFn: async () =>
-      (await api.get("/api/profile/me", AXIOS_COOKIE_CFG)).data as { role: Role; id?: string },
-    staleTime: 60_000,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-  const authReady = meQ.isSuccess || meQ.isError;
-  const role: Role = (storeRole || meQ.data?.role || "SHOPPER") as Role;
-
-  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
-  const isSupplier = String(role || "").toUpperCase() === "SUPPLIER";
-
-  const mustLogin = authReady && (meQ.isError ? isAuthError(meQ.error) : false);
-  const mustGoSupplier = authReady && !mustLogin && isSupplier;
-
-  const queriesEnabled = authReady && !mustLogin && !mustGoSupplier;
-
-  /* ----- Admin: fetch customers once for view-as dropdown ----- */
-  const customersQ = useQuery({
-    queryKey: ["refunds-customers"],
-    enabled: queriesEnabled && isAdmin,
-    queryFn: async () => {
-      const urls = [
-        "/api/admin/customers",
-        "/api/admin/users?role=SHOPPER",
-        "/api/admin/customers/all",
-      ];
-      let lastErr: any = null;
-      for (const url of urls) {
-        try {
-          const { data } = await api.get(url, AXIOS_COOKIE_CFG);
-          return normalizeCustomers(data);
-        } catch (e: any) {
-          lastErr = e;
-          if (isAuthError(e)) throw e;
-        }
-      }
-      console.warn("Customer list fetch failed", lastErr);
-      return [] as CustomerRow[];
-    },
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
-
-  const customers = (customersQ.data || []) as CustomerRow[];
-
-  const filteredCustomers = useMemo(() => {
-    if (!isAdmin) return [];
-    if (!customers.length) return [];
-    const q = customerKeyInput.trim().toLowerCase();
-
-    const base = customers.map((c) => {
+    return customers.map((c) => {
       const name = (c.name || "").trim();
       const email = (c.email || "").trim();
       const labelParts = [name || null, email || null, c.id].filter(Boolean);
       const label = labelParts.join(" • ");
+
       return {
         ...c,
         label,
         _search: [name, email, c.id].join(" ").toLowerCase(),
       };
     });
+  }, [customers, isAdmin]);
 
-    if (!q) {
-      return base.slice(0, 20);
-    }
+  const filteredCustomers = useMemo(() => {
+    if (!customerSearchBase.length) return [];
+    const needle = localCustomerInput.trim().toLowerCase();
 
-    return base.filter((c) => c._search.includes(q)).slice(0, 20);
-  }, [customers, customerKeyInput, isAdmin]);
+    if (!needle) return customerSearchBase.slice(0, 20);
+    return customerSearchBase.filter((c) => c._search.includes(needle)).slice(0, 20);
+  }, [customerSearchBase, localCustomerInput]);
 
-  /* ----- Refunds ----- */
-  const refundsQ = useQuery({
-    queryKey: ["refunds", isAdmin ? "admin" : "mine", isAdmin ? activeCustomerKey || "all" : "self"],
-    enabled: queriesEnabled,
-    queryFn: async () => {
-      const urls = isAdmin
-        ? ["/api/admin/refunds", "/api/refunds", "/api/refunds/all"]
-        : ["/api/refunds/mine", "/api/orders/refunds/mine"];
-
-      let lastErr: any = null;
-
-      const params: Record<string, any> = {};
-      if (isAdmin && activeCustomerKey) {
-        // adjust param name to your backend field (e.g. shopperId, userId, email, etc.)
-        params.customer = activeCustomerKey;
-      }
-
-      for (const url of urls) {
-        try {
-          const { data } = await api.get(url, {
-            ...AXIOS_COOKIE_CFG,
-            params,
-          });
-          return normalizeRefunds(data);
-        } catch (e: any) {
-          lastErr = e;
-          if (isAuthError(e)) throw e;
-        }
-      }
-
-      console.warn("Refund list fetch failed", lastErr);
-      return [] as RefundRow[];
-    },
-    staleTime: 15_000,
-    retry: false,
-  });
-
-  const refunds = refundsQ.data || [];
-  const loading = !authReady || refundsQ.isLoading;
-
-  const mustLoginFromData = refundsQ.isError && isAuthError(refundsQ.error);
-
-  /* ----- URL -> state for q ----- */
-  useEffect(() => {
-    const qpQ = (searchParams.get("q") || "").trim();
-    if (qpQ && qpQ !== q) {
-      setQ(qpQ);
-      setPage(1);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
-
-  /* ----- Derived status / reason options ----- */
-  const statusOptions = useMemo(() => {
-    const set = new Set<string>();
-    refunds.forEach((r) => {
-      if (r.status) set.add(String(r.status));
-    });
-    return Array.from(set).sort();
-  }, [refunds]);
-
-  const reasonOptions = useMemo(() => {
-    const set = new Set<string>();
-    refunds.forEach((r) => {
-      if (r.reason) set.add(String(r.reason));
-    });
-    return Array.from(set).sort();
-  }, [refunds]);
-
-  /* ----- Filters & derived list ----- */
-  const tdy = todayYMD();
-  const isTodayActive = from === tdy && to === tdy;
-  const toggleToday = () => {
-    if (isTodayActive) {
-      setFrom("");
-      setTo("");
-    } else {
-      setFrom(tdy);
-      setTo(tdy);
-    }
-  };
-
-  const filtered = useMemo(() => {
-    const qnorm = q.trim().toLowerCase();
-    const dateFrom = from ? new Date(from).getTime() : null;
-    const dateTo = to ? new Date(to + "T23:59:59.999Z").getTime() : null;
-
-    return refunds.filter((r) => {
-      if (qnorm) {
-        const pool: string[] = [];
-        pool.push(r.id || "");
-        if (r.orderId) pool.push(r.orderId);
-        if (r.supplier?.name) pool.push(r.supplier.name);
-        if (r.reason) pool.push(r.reason);
-        if (r.message) pool.push(r.message);
-        const hit = pool.some((s) => s.toLowerCase().includes(qnorm));
-        if (!hit) return false;
-      }
-
-      if (statusFilter !== "ALL") {
-        if (String(r.status || "") !== statusFilter) return false;
-      }
-
-      if (reasonFilter !== "ALL") {
-        if (String(r.reason || "") !== reasonFilter) return false;
-      }
-
-      if (from || to) {
-        const ts = r.createdAt ? new Date(r.createdAt).getTime() : 0;
-        if (dateFrom != null && ts < dateFrom) return false;
-        if (dateTo != null && ts > dateTo) return false;
-      }
-
-      return true;
-    });
-  }, [refunds, q, statusFilter, reasonFilter, from, to]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [filtered.length, q, statusFilter, reasonFilter, from, to]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const currentPage = Math.min(page, totalPages);
-
-  const pageStart = filtered.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
-  const pageEnd =
-    filtered.length === 0 ? 0 : Math.min(filtered.length, (currentPage - 1) * PAGE_SIZE + PAGE_SIZE);
-
-  const paginated = useMemo(() => {
-    const start = (currentPage - 1) * PAGE_SIZE;
-    return filtered.slice(start, start + PAGE_SIZE);
-  }, [filtered, currentPage]);
-
-  /* ----- Summary cards ----- */
-  const summary = useMemo(() => {
-    let open = 0;
-    let resolved = 0;
-    let refundedTotal = 0;
-
-    refunds.forEach((r) => {
-      const st = String(r.status || "").toUpperCase();
-      const amt = fmtN(r.amount);
-
-      if (["PENDING", "REQUESTED", "OPEN", "IN_REVIEW"].includes(st)) {
-        open += 1;
-      } else {
-        resolved += 1;
-      }
-
-      if (["REFUNDED", "COMPLETED", "PAID_OUT"].includes(st) && amt > 0) {
-        refundedTotal += amt;
-      }
-    });
-
-    return { total: refunds.length, open, resolved, refundedTotal };
-  }, [refunds]);
-
-  /* ----- Filters helpers ----- */
-  const clearFilters = () => {
-    setQ("");
-    setStatusFilter("ALL");
-    setReasonFilter("ALL");
-    setFrom("");
-    setTo("");
-
-    const sp = new URLSearchParams(searchParams);
-    sp.delete("q");
-    setSearchParams(sp, { replace: true });
-  };
-
-  const FilterContent = (
+  return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-        {/* Admin-only: view as customer (impersonation filter + dropdown) */}
         {isAdmin && (
           <div className="md:col-span-4">
             <label className={T_LABEL}>View as customer (ID or email)</label>
             <input
-              value={customerKeyInput}
-              onChange={(e) => setCustomerKeyInput(e.target.value)}
+              value={localCustomerInput}
+              onChange={(e) => setLocalCustomerInput(e.target.value)}
               placeholder={
-                customersQ.isLoading
-                  ? "Loading customers…"
-                  : "Type name, email or ID to search"
+                customersLoading ? "Loading customers…" : "Type name, email or ID to search"
               }
+              autoComplete="off"
+              spellCheck={false}
               className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
             />
 
@@ -621,51 +474,53 @@ export default function ReturnsRefundsPage() {
                 type="button"
                 className={`rounded-lg ${SILVER_BORDER} bg-white px-3 py-1.5 ${BTN_XS} hover:bg-black/5`}
                 onClick={() => {
-                  const v = customerKeyInput.trim();
+                  const v = localCustomerInput.trim();
+                  setCustomerKeyInput(v);
                   setActiveCustomerKey(v || null);
                   setExpandedId(null);
                   setPage(1);
                 }}
-                disabled={!customerKeyInput.trim()}
+                disabled={!localCustomerInput.trim()}
               >
                 Apply
               </button>
+
               <button
                 type="button"
                 className={`rounded-lg ${SILVER_BORDER} bg-white px-3 py-1.5 ${BTN_XS} hover:bg-black/5`}
                 onClick={() => {
+                  setLocalCustomerInput("");
                   setCustomerKeyInput("");
                   setActiveCustomerKey(null);
                   setExpandedId(null);
                   setPage(1);
                 }}
-                disabled={!activeCustomerKey}
+                disabled={!activeCustomerKey && !localCustomerInput}
               >
                 Clear view-as
               </button>
+
               {activeCustomerKey && (
                 <span className={`${T_XS} text-ink-soft`}>
-                  Viewing refunds for{" "}
-                  <span className="font-mono text-ink">{activeCustomerKey}</span>
+                  Viewing refunds for <span className="font-mono text-ink">{activeCustomerKey}</span>
                 </span>
               )}
             </div>
 
-            {/* Suggestions list */}
             <div className="mt-2">
-              {customersQ.isLoading && (
+              {customersLoading && (
                 <div className={`${T_XS} text-ink-soft`}>Loading customers…</div>
               )}
 
-              {!customersQ.isLoading && customers.length === 0 && (
+              {!customersLoading && customers.length === 0 && (
                 <div className={`${T_XS} text-ink-soft`}>No customers found.</div>
               )}
 
-              {!customersQ.isLoading && customers.length > 0 && (
+              {!customersLoading && customers.length > 0 && (
                 <div className="mt-1 max-h-52 overflow-auto rounded-xl border border-zinc-200 bg-white">
                   {filteredCustomers.length === 0 ? (
                     <div className={`${T_XS} px-3 py-2 text-ink-soft`}>
-                      No customers match “{customerKeyInput.trim()}”.
+                      No customers match “{localCustomerInput.trim()}”.
                     </div>
                   ) : (
                     filteredCustomers.map((c) => (
@@ -675,15 +530,14 @@ export default function ReturnsRefundsPage() {
                         className="w-full text-left px-3 py-1.5 hover:bg-black/5 flex flex-col gap-0.5"
                         onClick={() => {
                           const display = c.email || c.id;
+                          setLocalCustomerInput(display);
                           setCustomerKeyInput(display);
-                          setActiveCustomerKey(c.id); // send ID to backend as impersonation key
+                          setActiveCustomerKey(c.id);
                           setExpandedId(null);
                           setPage(1);
                         }}
                       >
-                        <span className={`${T_XS} text-ink`}>
-                          {c.label}
-                        </span>
+                        <span className={`${T_XS} text-ink`}>{c.label}</span>
                       </button>
                     ))
                   )}
@@ -696,17 +550,25 @@ export default function ReturnsRefundsPage() {
         <div className={isAdmin ? "md:col-span-3" : "md:col-span-4"}>
           <label className={T_LABEL}>Search</label>
           <input
-            value={q}
-            onChange={(e) => {
-              const v = e.target.value;
-              setQ(v);
-
+            value={localQ}
+            onChange={(e) => setLocalQ(e.target.value)}
+            onBlur={() => {
               const sp = new URLSearchParams(searchParams);
-              if (v.trim()) sp.set("q", v.trim());
+              if (localQ.trim()) sp.set("q", localQ.trim());
               else sp.delete("q");
               setSearchParams(sp, { replace: true });
             }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const sp = new URLSearchParams(searchParams);
+                if (localQ.trim()) sp.set("q", localQ.trim());
+                else sp.delete("q");
+                setSearchParams(sp, { replace: true });
+              }
+            }}
             placeholder="Refund ID, order ID, supplier, reason…"
+            autoComplete="off"
+            spellCheck={false}
             className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
           />
         </div>
@@ -767,7 +629,7 @@ export default function ReturnsRefundsPage() {
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           className={`rounded-lg ${SILVER_BORDER} bg-white px-3 py-2 ${BTN} hover:bg-black/5 inline-flex items-center gap-1.5`}
-          onClick={() => refundsQ.refetch()}
+          onClick={refundsRefetch}
           disabled={!queriesEnabled}
         >
           <RefreshCcw className="h-4 w-4" />
@@ -795,22 +657,259 @@ export default function ReturnsRefundsPage() {
         </button>
 
         <div className={`ml-auto ${T_SM} text-ink-soft`}>
-          {filtered.length > 0 ? (
+          {filteredCount > 0 ? (
             <>
-              Showing {pageStart}-{pageEnd} of {filtered.length}
+              Showing {pageStart}-{pageEnd} of {filteredCount}
             </>
           ) : loading ? (
             "Loading refunds…"
           ) : (
             "No matching refunds"
           )}
-          {isTodayActive && filtered.length > 0 && <span className="ml-2">(today)</span>}
+          {isTodayActive && filteredCount > 0 && <span className="ml-2">(today)</span>}
         </div>
       </div>
     </>
   );
+});
 
-  /* ----- Redirects (AFTER hooks) ----- */
+/* ---------------- Page ---------------- */
+export default function ReturnsRefundsPage() {
+  const nav = useNavigate();
+  const location = useLocation();
+  const { openModal } = useModal();
+
+  const storeUser = useAuthStore((s) => s.user);
+  const storeRole = (storeUser?.role || "") as Role;
+
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+
+  const [q, setQ] = useState("");
+  const deferredQ = useDeferredValue(q);
+
+  const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [reasonFilter, setReasonFilter] = useState<string>("ALL");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const [customerKeyInput, setCustomerKeyInput] = useState("");
+  const [activeCustomerKey, setActiveCustomerKey] = useState<string | null>(null);
+
+  const meQ = useQuery({
+    queryKey: ["me-min"],
+    queryFn: async () =>
+      (await api.get("/api/profile/me", AXIOS_COOKIE_CFG)).data as { role: Role; id?: string },
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const authReady = meQ.isSuccess || meQ.isError;
+  const role: Role = (storeRole || meQ.data?.role || "SHOPPER") as Role;
+
+  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+  const isSupplier = String(role || "").toUpperCase() === "SUPPLIER";
+
+  const mustLogin = authReady && (meQ.isError ? isAuthError(meQ.error) : false);
+  const mustGoSupplier = authReady && !mustLogin && isSupplier;
+
+  const queriesEnabled = authReady && !mustLogin && !mustGoSupplier;
+
+  const customersQ = useQuery({
+    queryKey: ["refunds-customers"],
+    enabled: queriesEnabled && isAdmin,
+    queryFn: async () => {
+      const urls = [
+        "/api/admin/customers",
+        "/api/admin/users?role=SHOPPER",
+        "/api/admin/customers/all",
+      ];
+      let lastErr: any = null;
+      for (const url of urls) {
+        try {
+          const { data } = await api.get(url, AXIOS_COOKIE_CFG);
+          return normalizeCustomers(data);
+        } catch (e: any) {
+          lastErr = e;
+          if (isAuthError(e)) throw e;
+        }
+      }
+      console.warn("Customer list fetch failed", lastErr);
+      return [] as CustomerRow[];
+    },
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+
+  const customers = (customersQ.data || []) as CustomerRow[];
+
+  const refundsQ = useQuery({
+    queryKey: ["refunds", isAdmin ? "admin" : "mine", isAdmin ? activeCustomerKey || "all" : "self"],
+    enabled: queriesEnabled,
+    queryFn: async () => {
+      const urls = isAdmin
+        ? ["/api/admin/refunds", "/api/refunds", "/api/refunds/all"]
+        : ["/api/refunds/mine", "/api/orders/refunds/mine"];
+
+      let lastErr: any = null;
+
+      const params: Record<string, any> = {};
+      if (isAdmin && activeCustomerKey) {
+        params.customer = activeCustomerKey;
+      }
+
+      for (const url of urls) {
+        try {
+          const { data } = await api.get(url, {
+            ...AXIOS_COOKIE_CFG,
+            params,
+          });
+          return normalizeRefunds(data);
+        } catch (e: any) {
+          lastErr = e;
+          if (isAuthError(e)) throw e;
+        }
+      }
+
+      console.warn("Refund list fetch failed", lastErr);
+      return [] as RefundRow[];
+    },
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  const refunds = refundsQ.data || [];
+  const loading = !authReady || refundsQ.isLoading;
+
+  const mustLoginFromData = refundsQ.isError && isAuthError(refundsQ.error);
+
+  useEffect(() => {
+    const qpQ = (searchParams.get("q") || "").trim();
+    if (qpQ !== q) {
+      setQ(qpQ);
+      setPage(1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const statusOptions = useMemo(() => {
+    const set = new Set<string>();
+    refunds.forEach((r) => {
+      if (r.status) set.add(String(r.status));
+    });
+    return Array.from(set).sort();
+  }, [refunds]);
+
+  const reasonOptions = useMemo(() => {
+    const set = new Set<string>();
+    refunds.forEach((r) => {
+      if (r.reason) set.add(String(r.reason));
+    });
+    return Array.from(set).sort();
+  }, [refunds]);
+
+  const tdy = todayYMD();
+  const isTodayActive = from === tdy && to === tdy;
+  const toggleToday = () => {
+    if (isTodayActive) {
+      setFrom("");
+      setTo("");
+    } else {
+      setFrom(tdy);
+      setTo(tdy);
+    }
+  };
+
+  const filtered = useMemo(() => {
+    const qnorm = deferredQ.trim().toLowerCase();
+    const dateFrom = from ? new Date(from).getTime() : null;
+    const dateTo = to ? new Date(to + "T23:59:59.999Z").getTime() : null;
+
+    return refunds.filter((r) => {
+      if (qnorm) {
+        const pool: string[] = [];
+        pool.push(r.id || "");
+        if (r.orderId) pool.push(r.orderId);
+        if (r.supplier?.name) pool.push(r.supplier.name);
+        if (r.reason) pool.push(r.reason);
+        if (r.message) pool.push(r.message);
+        const hit = pool.some((s) => s.toLowerCase().includes(qnorm));
+        if (!hit) return false;
+      }
+
+      if (statusFilter !== "ALL") {
+        if (String(r.status || "") !== statusFilter) return false;
+      }
+
+      if (reasonFilter !== "ALL") {
+        if (String(r.reason || "") !== reasonFilter) return false;
+      }
+
+      if (from || to) {
+        const ts = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+        if (dateFrom != null && ts < dateFrom) return false;
+        if (dateTo != null && ts > dateTo) return false;
+      }
+
+      return true;
+    });
+  }, [refunds, deferredQ, statusFilter, reasonFilter, from, to]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filtered.length, deferredQ, statusFilter, reasonFilter, from, to]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+
+  const pageStart = filtered.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const pageEnd =
+    filtered.length === 0 ? 0 : Math.min(filtered.length, (currentPage - 1) * PAGE_SIZE + PAGE_SIZE);
+
+  const paginated = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, currentPage]);
+
+  const summary = useMemo(() => {
+    let open = 0;
+    let resolved = 0;
+    let refundedTotal = 0;
+
+    refunds.forEach((r) => {
+      const st = String(r.status || "").toUpperCase();
+      const amt = fmtN(r.amount);
+
+      if (["PENDING", "REQUESTED", "OPEN", "IN_REVIEW"].includes(st)) {
+        open += 1;
+      } else {
+        resolved += 1;
+      }
+
+      if (["REFUNDED", "COMPLETED", "PAID_OUT"].includes(st) && amt > 0) {
+        refundedTotal += amt;
+      }
+    });
+
+    return { total: refunds.length, open, resolved, refundedTotal };
+  }, [refunds]);
+
+  const clearFilters = () => {
+    setQ("");
+    setStatusFilter("ALL");
+    setReasonFilter("ALL");
+    setFrom("");
+    setTo("");
+
+    const sp = new URLSearchParams(searchParams);
+    sp.delete("q");
+    setSearchParams(sp, { replace: true });
+  };
+
   if (mustLogin || mustLoginFromData) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
@@ -818,18 +917,16 @@ export default function ReturnsRefundsPage() {
     return <Navigate to="/supplier/orders" replace />;
   }
 
-  /* ----- Render ----- */
   return (
     <SiteLayout>
       <div className={`max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 md:py-6 ${T_BASE}`}>
-        {/* Header */}
         <div className="mb-3 flex items-start justify-between gap-2">
           <div className="min-w-0">
             <h1 className="text-xl sm:text-2xl font-semibold text-ink">Returns & refunds</h1>
             <p className={`mt-1 ${T_SM} text-ink-soft`}>
               {isAdmin
                 ? activeCustomerKey
-                  ? `You are viewing refunds for a specific customer. Clear view-as to see all customers.`
+                  ? "You are viewing refunds for a specific customer. Clear view-as to see all customers."
                   : "Track and manage refund requests across all customers."
                 : "See the status of your return and refund requests."}
             </p>
@@ -852,7 +949,6 @@ export default function ReturnsRefundsPage() {
           </div>
         </div>
 
-        {/* Info strip */}
         <div className={`mb-4 p-3 sm:p-4 ${CARD_XL} flex flex-col sm:flex-row gap-3 sm:items-center`}>
           <div className="flex items-start gap-2">
             <div className="mt-0.5 rounded-full bg-indigo-50 text-indigo-700 p-1.5">
@@ -862,8 +958,7 @@ export default function ReturnsRefundsPage() {
               <div className={`${T_SM} font-medium text-ink`}>How returns work</div>
               <p className={`${T_XS} text-ink-soft`}>
                 We review each request individually. You’ll receive updates by email and in this
-                dashboard as your return moves from{" "}
-                <span className="font-medium">requested</span> to{" "}
+                dashboard as your return moves from <span className="font-medium">requested</span> to{" "}
                 <span className="font-medium">approved, refunded, or closed</span>.
               </p>
             </div>
@@ -899,7 +994,6 @@ export default function ReturnsRefundsPage() {
           )}
         </div>
 
-        {/* Metrics summary */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
           <div className={`${CARD_XL} p-3`}>
             <div className={`${T_SM} text-ink-soft`}>Total requests</div>
@@ -922,10 +1016,43 @@ export default function ReturnsRefundsPage() {
           </div>
         </div>
 
-        {/* Desktop filter card */}
-        <div className={`mb-4 p-4 hidden min-[768px]:block ${CARD_2XL}`}>{FilterContent}</div>
+        <div className={`mb-4 p-4 hidden min-[768px]:block ${CARD_2XL}`}>
+          <RefundFilters
+            isAdmin={isAdmin}
+            customersLoading={customersQ.isLoading}
+            customers={customers}
+            customerKeyInput={customerKeyInput}
+            setCustomerKeyInput={setCustomerKeyInput}
+            activeCustomerKey={activeCustomerKey}
+            setActiveCustomerKey={setActiveCustomerKey}
+            setExpandedId={setExpandedId}
+            setPage={setPage}
+            q={q}
+            setQ={setQ}
+            searchParams={searchParams}
+            setSearchParams={setSearchParams}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            statusOptions={statusOptions}
+            reasonFilter={reasonFilter}
+            setReasonFilter={setReasonFilter}
+            reasonOptions={reasonOptions}
+            from={from}
+            setFrom={setFrom}
+            to={to}
+            setTo={setTo}
+            isTodayActive={isTodayActive}
+            toggleToday={toggleToday}
+            clearFilters={clearFilters}
+            refundsRefetch={() => void refundsQ.refetch()}
+            queriesEnabled={queriesEnabled}
+            filteredCount={filtered.length}
+            loading={loading}
+            pageStart={pageStart}
+            pageEnd={pageEnd}
+          />
+        </div>
 
-        {/* Mobile filter drawer */}
         {filtersOpen && (
           <div className="fixed inset-0 z-40 min-[768px]:hidden">
             <div className="absolute inset-0 bg-black/40" onClick={() => setFiltersOpen(false)} />
@@ -939,12 +1066,46 @@ export default function ReturnsRefundsPage() {
                   Close
                 </button>
               </div>
-              <div className="space-y-3">{FilterContent}</div>
+              <div className="space-y-3">
+                <RefundFilters
+                  isAdmin={isAdmin}
+                  customersLoading={customersQ.isLoading}
+                  customers={customers}
+                  customerKeyInput={customerKeyInput}
+                  setCustomerKeyInput={setCustomerKeyInput}
+                  activeCustomerKey={activeCustomerKey}
+                  setActiveCustomerKey={setActiveCustomerKey}
+                  setExpandedId={setExpandedId}
+                  setPage={setPage}
+                  q={q}
+                  setQ={setQ}
+                  searchParams={searchParams}
+                  setSearchParams={setSearchParams}
+                  statusFilter={statusFilter}
+                  setStatusFilter={setStatusFilter}
+                  statusOptions={statusOptions}
+                  reasonFilter={reasonFilter}
+                  setReasonFilter={setReasonFilter}
+                  reasonOptions={reasonOptions}
+                  from={from}
+                  setFrom={setFrom}
+                  to={to}
+                  setTo={setTo}
+                  isTodayActive={isTodayActive}
+                  toggleToday={toggleToday}
+                  clearFilters={clearFilters}
+                  refundsRefetch={() => void refundsQ.refetch()}
+                  queriesEnabled={queriesEnabled}
+                  filteredCount={filtered.length}
+                  loading={loading}
+                  pageStart={pageStart}
+                  pageEnd={pageEnd}
+                />
+              </div>
             </div>
           </div>
         )}
 
-        {/* Desktop table */}
         <div className={`overflow-hidden mt-4 hidden md:block ${CARD_2XL}`}>
           <div className="px-4 md:px-5 py-3 border-b border-zinc-200/70 flex items-center justify-between">
             <div className="text-sm text-ink-soft">
@@ -989,10 +1150,7 @@ export default function ReturnsRefundsPage() {
 
                 {!loading && paginated.length === 0 && (
                   <tr>
-                    <td
-                      colSpan={isAdmin ? 8 : 7}
-                      className="px-3 py-6 text-center text-zinc-500"
-                    >
+                    <td colSpan={isAdmin ? 8 : 7} className="px-3 py-6 text-center text-zinc-500">
                       No refunds match your filters.
                     </td>
                   </tr>
@@ -1010,12 +1168,8 @@ export default function ReturnsRefundsPage() {
                     return (
                       <React.Fragment key={r.id}>
                         <tr
-                          className={`hover:bg-black/5 cursor-pointer ${
-                            isOpen ? "bg-amber-50/40" : ""
-                          }`}
-                          onClick={() =>
-                            setExpandedId((curr) => (curr === r.id ? null : r.id))
-                          }
+                          className={`hover:bg-black/5 cursor-pointer ${isOpen ? "bg-amber-50/40" : ""}`}
+                          onClick={() => setExpandedId((curr) => (curr === r.id ? null : r.id))}
                           aria-expanded={isOpen}
                         >
                           <td className="px-3 py-3 font-mono">{r.id}</td>
@@ -1039,9 +1193,7 @@ export default function ReturnsRefundsPage() {
                             <td className="px-3 py-3">
                               {r.supplier?.name || "—"}
                               {r.purchaseOrder?.id && (
-                                <div className={T_XS + " text-ink-soft"}>
-                                  PO {r.purchaseOrder.id}
-                                </div>
+                                <div className={T_XS + " text-ink-soft"}>PO {r.purchaseOrder.id}</div>
                               )}
                             </td>
                           )}
@@ -1090,19 +1242,13 @@ export default function ReturnsRefundsPage() {
 
                         {isOpen && (
                           <tr>
-                            <td
-                              colSpan={isAdmin ? 8 : 7}
-                              className="p-0"
-                            >
+                            <td colSpan={isAdmin ? 8 : 7} className="p-0">
                               <div className="px-4 md:px-6 py-4 bg-white border-t border-zinc-200/70">
                                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-4">
-                                  {/* Left: timeline & meta (communications) */}
                                   <div className="space-y-3">
                                     <div className={`${CARD_XL} p-3`}>
                                       <div className="flex items-center justify-between gap-2 mb-1.5">
-                                        <div className={`${T_SM} font-semibold text-ink`}>
-                                          Timeline
-                                        </div>
+                                        <div className={`${T_SM} font-semibold text-ink`}>Timeline</div>
                                         {firstEvent?.createdAt && (
                                           <div className={`${T_XS} text-ink-soft`}>
                                             Started {fmtDate(firstEvent.createdAt)}
@@ -1112,10 +1258,7 @@ export default function ReturnsRefundsPage() {
                                       {r.events && r.events.length > 0 ? (
                                         <ol className="space-y-2">
                                           {r.events.map((ev) => (
-                                            <li
-                                              key={ev.id}
-                                              className="flex items-start gap-2"
-                                            >
+                                            <li key={ev.id} className="flex items-start gap-2">
                                               <div className="mt-0.5 h-2 w-2 rounded-full bg-emerald-500" />
                                               <div className="min-w-0">
                                                 <div className={`${T_SM} text-ink`}>
@@ -1141,13 +1284,10 @@ export default function ReturnsRefundsPage() {
                                     </div>
 
                                     <div className={`${CARD_XL} p-3`}>
-                                      <div className={`${T_SM} font-semibold text-ink`}>
-                                        Notes
-                                      </div>
+                                      <div className={`${T_SM} font-semibold text-ink`}>Notes</div>
                                       <div className={`${T_XS} text-ink-soft mt-1.5 space-y-1.5`}>
                                         <p>
-                                          <span className="font-medium">Reason:</span>{" "}
-                                          {r.reason || "—"}
+                                          <span className="font-medium">Reason:</span> {r.reason || "—"}
                                         </p>
                                         {r.message && (
                                           <p>
@@ -1166,7 +1306,6 @@ export default function ReturnsRefundsPage() {
                                     </div>
                                   </div>
 
-                                  {/* Right: items & evidence (images) */}
                                   <div className="space-y-3">
                                     <div className={`${CARD_XL} p-3`}>
                                       <div className="flex items-center gap-2 mb-2">
@@ -1187,16 +1326,10 @@ export default function ReturnsRefundsPage() {
                                               >
                                                 <span className="min-w-0 truncate">
                                                   {(oi.title || "—").toString()}
-                                                  {oi.quantity && (
-                                                    <span>
-                                                      {" "}
-                                                      • {String(oi.quantity)} pcs
-                                                    </span>
-                                                  )}
+                                                  {oi.quantity && <span> • {String(oi.quantity)} pcs</span>}
                                                 </span>
                                                 <span className="shrink-0">
-                                                  {oi.unitPrice != null &&
-                                                  fmtN(oi.unitPrice) > 0
+                                                  {oi.unitPrice != null && fmtN(oi.unitPrice) > 0
                                                     ? ngn.format(fmtN(oi.unitPrice))
                                                     : "—"}
                                                 </span>
@@ -1227,18 +1360,10 @@ export default function ReturnsRefundsPage() {
                                               className="relative aspect-[4/3] overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50"
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                window.open(
-                                                  url,
-                                                  "_blank",
-                                                  "noopener,noreferrer"
-                                                );
+                                                window.open(url, "_blank", "noopener,noreferrer");
                                               }}
                                             >
-                                              {/* eslint-disable-next-line jsx-a11y/alt-text */}
-                                              <img
-                                                src={url}
-                                                className="h-full w-full object-cover"
-                                              />
+                                              <img src={url} className="h-full w-full object-cover" alt="" />
                                             </button>
                                           ))}
                                           {r.evidenceUrls.length > 6 && (
@@ -1280,7 +1405,6 @@ export default function ReturnsRefundsPage() {
           </div>
         </div>
 
-        {/* Mobile list */}
         <div className="mt-4 space-y-2.5 md:hidden">
           {loading && (
             <>
@@ -1396,9 +1520,7 @@ export default function ReturnsRefundsPage() {
                                 key={it.id}
                                 className={`flex justify-between gap-2 ${T_XS} text-ink-soft`}
                               >
-                                <span className="min-w-0 truncate">
-                                  {(oi.title || "—").toString()}
-                                </span>
+                                <span className="min-w-0 truncate">{(oi.title || "—").toString()}</span>
                                 <span className="shrink-0">
                                   {oi.quantity && <>× {String(oi.quantity)}</>}
                                 </span>
