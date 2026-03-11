@@ -58,7 +58,6 @@ import supplierDashboardRouter from "./routes/supplierDashboard.js";
 import adminCatalogRequests from "./routes/adminCatalogRequests.js";
 import adminCatalogMeta from "./routes/adminCatalogMeta.js";
 
-import dojahRouter from "./routes/dojahProxy.js";
 import deliveryOtpRouter from "./routes/deliveryOtp.js";
 
 import supplierPayoutsAction from "./routes/supplierPayoutsAction.js";
@@ -402,8 +401,6 @@ app.use("/api/orders", ordersRouter);
 app.use("/api/favorites", favoritesRouter);
 app.use("/api/catalog", catalogRoutes);
 app.use("/api/categories", categoriesRouter);
-
-app.use("/api/integrations/dojah", dojahRouter);
 
 app.use("/api/refunds", refundsRouter);
 app.use("/api/disputes", disputesRouter);
