@@ -1,9 +1,6 @@
 // api/prisma/seedCategories.ts
 import { PrismaClient } from "@prisma/client";
 
-/** -----------------------------
- * Helpers
- * ------------------------------*/
 function slugify(input: string) {
   return input
     .trim()
@@ -175,8 +172,8 @@ async function upsertCategoryNode(
     return created;
   }
 
-  let needUpdate = false;
   const patch: Record<string, unknown> = {};
+  let needUpdate = false;
 
   if (!existing.slug) {
     patch.slug = await ensureUniqueCategorySlug(prisma, existing.name);
@@ -193,7 +190,7 @@ async function upsertCategoryNode(
     needUpdate = true;
   }
 
-  const updated = needUpdate
+  const saved = needUpdate
     ? await prisma.category.update({
         where: { id: existing.id },
         data: patch,
@@ -202,11 +199,11 @@ async function upsertCategoryNode(
 
   if (node.children?.length) {
     for (let i = 0; i < node.children.length; i++) {
-      await upsertCategoryNode(prisma, node.children[i], updated.id, i);
+      await upsertCategoryNode(prisma, node.children[i], saved.id, i);
     }
   }
 
-  return updated;
+  return saved;
 }
 
 export async function seedCategoriesTree(prisma: PrismaClient) {

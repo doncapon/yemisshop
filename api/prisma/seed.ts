@@ -2,7 +2,6 @@
 import bcrypt from "bcryptjs";
 import { PrismaClient, Prisma } from "@prisma/client";
 import { CATEGORY_TREE, seedCategoriesTree, type CatNode } from "./seedCategories.js";
-
 const prisma = new PrismaClient();
 
 /* ----------------------------------------------------------------------------
