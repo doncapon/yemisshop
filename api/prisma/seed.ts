@@ -1,6 +1,7 @@
+// api/prisma/seed.ts
 import bcrypt from "bcryptjs";
 import { PrismaClient, Prisma } from "@prisma/client";
-
+import { CATEGORY_TREE, seedCategoriesTree, type CatNode } from "./seedCategories.js";
 const prisma = new PrismaClient();
 
 /* ----------------------------------------------------------------------------
@@ -18,8 +19,8 @@ const SUPPLIER_FIRST = process.env.SEED_SUPPLIER_FIRSTNAME || "Seed";
 const SUPPLIER_LAST = process.env.SEED_SUPPLIER_LASTNAME || "Supplier";
 
 /** requirements */
-const LIVE_PRODUCTS_TOTAL = 30;
-const PENDING_PRODUCTS_TOTAL = 3;
+const LIVE_PRODUCTS_TOTAL = 80;
+const PENDING_PRODUCTS_TOTAL = 10;
 
 // Variant mix
 const LIVE_VARIANT_FRACTION = 0.35;
@@ -293,23 +294,18 @@ async function ensureSupplierUserAndSuppliers() {
       status: "ACTIVE",
       contactEmail: SUPPLIER_EMAIL,
       whatsappPhone: "+2348100000002",
-
       registeredAddressId: mainAddrs.reg.id,
       pickupAddressId: mainAddrs.pickup.id,
-
       pickupContactName: "Main Dispatch",
       pickupContactPhone: "+2348100000002",
       pickupInstructions: "Pickup between 9am and 5pm",
-
       shippingEnabled: true,
       shipsNationwide: true,
       defaultLeadDays: 2,
       sameDayCutoffHour: 14,
       handlingFee: toDec2(80),
-
       supportsDoorDelivery: true,
       supportsPickupPoint: chance(0.4),
-
       bankVerificationStatus: "VERIFIED",
       isPayoutEnabled: true,
     },
@@ -320,23 +316,18 @@ async function ensureSupplierUserAndSuppliers() {
       status: "ACTIVE",
       contactEmail: SUPPLIER_EMAIL,
       whatsappPhone: "+2348100000002",
-
       registeredAddressId: mainAddrs.reg.id,
       pickupAddressId: mainAddrs.pickup.id,
-
       pickupContactName: "Main Dispatch",
       pickupContactPhone: "+2348100000002",
       pickupInstructions: "Pickup between 9am and 5pm",
-
       shippingEnabled: true,
       shipsNationwide: true,
       defaultLeadDays: 2,
       sameDayCutoffHour: 14,
       handlingFee: toDec2(80),
-
       supportsDoorDelivery: true,
       supportsPickupPoint: chance(0.4),
-
       bankVerificationStatus: "VERIFIED",
       isPayoutEnabled: true,
     },
@@ -386,20 +377,16 @@ async function ensureSupplierUserAndSuppliers() {
         status: "ACTIVE",
         contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
         whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-
         registeredAddressId: addrs.reg.id,
         pickupAddressId: addrs.pickup.id,
-
         pickupContactName: `${def.name} Dispatch`,
         pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
         pickupInstructions: "Pickup weekdays 9am–4pm",
-
         shippingEnabled: true,
         shipsNationwide: true,
         defaultLeadDays: randInt(1, 4),
         sameDayCutoffHour: 13,
         handlingFee: toDec2(randInt(0, 150)),
-
         supportsDoorDelivery: true,
         supportsPickupPoint: chance(0.35),
       },
@@ -409,20 +396,16 @@ async function ensureSupplierUserAndSuppliers() {
         status: "ACTIVE",
         contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
         whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-
         registeredAddressId: addrs.reg.id,
         pickupAddressId: addrs.pickup.id,
-
         pickupContactName: `${def.name} Dispatch`,
         pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
         pickupInstructions: "Pickup weekdays 9am–4pm",
-
         shippingEnabled: true,
         shipsNationwide: true,
         defaultLeadDays: randInt(1, 4),
         sameDayCutoffHour: 13,
         handlingFee: toDec2(randInt(0, 150)),
-
         supportsDoorDelivery: true,
         supportsPickupPoint: chance(0.35),
       },
@@ -443,36 +426,42 @@ async function ensureSupplierUserAndSuppliers() {
 /* ----------------------------------------------------------------------------
   Categories + brands
 ---------------------------------------------------------------------------- */
-async function ensureCategories() {
-  const defs = [
-    { name: "Kitchen & Dining", slug: "kitchen-dining", position: 1 },
-    { name: "Home & Living", slug: "home-living", position: 2 },
-    { name: "Electronics", slug: "electronics", position: 3 },
-    { name: "Appliances", slug: "appliances", position: 4 },
-  ];
+function flattenLeafCategoryNames(nodes: CatNode[]): string[] {
+  const out: string[] = [];
 
-  const out: { id: string }[] = [];
+  const walk = (items: CatNode[]) => {
+    for (const node of items) {
+      if (node.children?.length) {
+        walk(node.children);
+      } else {
+        out.push(node.name);
+      }
+    }
+  };
 
-  for (const def of defs) {
-    const cat = await prisma.category.upsert({
-      where: { name: def.name },
-      update: {
-        slug: def.slug,
-        isActive: true,
-        position: def.position,
-      },
-      create: {
-        name: def.name,
-        slug: def.slug,
-        isActive: true,
-        position: def.position,
-      },
-      select: { id: true },
-    });
-    out.push(cat);
+  walk(nodes);
+  return [...new Set(out)];
+}
+
+async function ensureCategoriesFromTree() {
+  await seedCategoriesTree(prisma);
+
+  const leafNames = flattenLeafCategoryNames(CATEGORY_TREE);
+
+  const categories = await prisma.category.findMany({
+    where: {
+      name: { in: leafNames },
+      isActive: true,
+    },
+    select: { id: true, name: true },
+  });
+
+  if (!categories.length) {
+    throw new Error("No categories found after seeding category tree.");
   }
 
-  return out;
+  log(`Categories ensured from tree: ${categories.length} leaf categories`);
+  return categories;
 }
 
 async function ensureBrands() {
@@ -810,7 +799,6 @@ async function createVariantsForProduct(args: {
         productId,
         sku: vSku,
         retailPrice: toDec(variantRetail),
-
         weightGrams: override.weightGrams,
         lengthCm: override.lengthCm,
         widthCm: override.widthCm,
@@ -818,7 +806,6 @@ async function createVariantsForProduct(args: {
         isFragileOverride: override.isFragileOverride,
         isBulkyOverride: override.isBulkyOverride,
         shippingClassOverride: override.shippingClassOverride,
-
         inStock: true,
         imagesJson: pics(vSku),
         isActive: true,
@@ -983,93 +970,93 @@ async function recomputeProductAvailability(productId: string) {
 async function ensureShippingSetup() {
   log("Ensuring shipping zones + rate cards...");
 
-const zones: Array<{
-  code: string;
-  name: string;
-  statesJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
-  lgasJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
-  priority: number;
-}> = [
-  {
-    code: "LAGOS_LOCAL",
-    name: "Lagos Local",
-    statesJson: ["Lagos"],
-    lgasJson: [
-      "Ikeja",
-      "Eti-Osa",
-      "Surulere",
-      "Kosofe",
-      "Alimosho",
-      "Mushin",
-      "Lagos Island",
-      "Lagos Mainland",
-    ],
-    priority: 10,
-  },
-  {
-    code: "SW_NEAR",
-    name: "South West (Near)",
-    statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
-    lgasJson: Prisma.JsonNull,
-    priority: 20,
-  },
-  {
-    code: "SOUTH_REGIONAL",
-    name: "South (Regional)",
-    statesJson: [
-      "Abia",
-      "Anambra",
-      "Akwa Ibom",
-      "Bayelsa",
-      "Cross River",
-      "Delta",
-      "Edo",
-      "Ebonyi",
-      "Enugu",
-      "Imo",
-      "Rivers",
-    ],
-    lgasJson: Prisma.JsonNull,
-    priority: 30,
-  },
-  {
-    code: "NORTH_REGIONAL",
-    name: "North (Regional)",
-    statesJson: [
-      "FCT",
-      "Abuja",
-      "Federal Capital Territory",
-      "Kaduna",
-      "Kano",
-      "Plateau",
-      "Nasarawa",
-      "Benue",
-      "Niger",
-      "Kwara",
-      "Borno",
-      "Bauchi",
-      "Adamawa",
-      "Sokoto",
-      "Kebbi",
-      "Zamfara",
-      "Katsina",
-      "Jigawa",
-      "Yobe",
-      "Taraba",
-      "Gombe",
-      "Kogi",
-    ],
-    lgasJson: Prisma.JsonNull,
-    priority: 40,
-  },
-  {
-    code: "NIGERIA_FALLBACK",
-    name: "Nigeria Fallback",
-    statesJson: Prisma.JsonNull,
-    lgasJson: Prisma.JsonNull,
-    priority: 999,
-  },
-];
+  const zones: Array<{
+    code: string;
+    name: string;
+    statesJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
+    lgasJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
+    priority: number;
+  }> = [
+    {
+      code: "LAGOS_LOCAL",
+      name: "Lagos Local",
+      statesJson: ["Lagos"],
+      lgasJson: [
+        "Ikeja",
+        "Eti-Osa",
+        "Surulere",
+        "Kosofe",
+        "Alimosho",
+        "Mushin",
+        "Lagos Island",
+        "Lagos Mainland",
+      ],
+      priority: 10,
+    },
+    {
+      code: "SW_NEAR",
+      name: "South West (Near)",
+      statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
+      lgasJson: Prisma.JsonNull,
+      priority: 20,
+    },
+    {
+      code: "SOUTH_REGIONAL",
+      name: "South (Regional)",
+      statesJson: [
+        "Abia",
+        "Anambra",
+        "Akwa Ibom",
+        "Bayelsa",
+        "Cross River",
+        "Delta",
+        "Edo",
+        "Ebonyi",
+        "Enugu",
+        "Imo",
+        "Rivers",
+      ],
+      lgasJson: Prisma.JsonNull,
+      priority: 30,
+    },
+    {
+      code: "NORTH_REGIONAL",
+      name: "North (Regional)",
+      statesJson: [
+        "FCT",
+        "Abuja",
+        "Federal Capital Territory",
+        "Kaduna",
+        "Kano",
+        "Plateau",
+        "Nasarawa",
+        "Benue",
+        "Niger",
+        "Kwara",
+        "Borno",
+        "Bauchi",
+        "Adamawa",
+        "Sokoto",
+        "Kebbi",
+        "Zamfara",
+        "Katsina",
+        "Jigawa",
+        "Yobe",
+        "Taraba",
+        "Gombe",
+        "Kogi",
+      ],
+      lgasJson: Prisma.JsonNull,
+      priority: 40,
+    },
+    {
+      code: "NIGERIA_FALLBACK",
+      name: "Nigeria Fallback",
+      statesJson: Prisma.JsonNull,
+      lgasJson: Prisma.JsonNull,
+      priority: 999,
+    },
+  ];
 
   const zoneByCode = new Map<string, string>();
 
@@ -1263,12 +1250,42 @@ function baseTitlesPool() {
     "Wi-Fi Router",
     "Extension Cable",
     "Ceramic Coffee Mug",
+    "Pressure Cooker",
+    "Air Fryer",
+    "Microwave Oven",
+    "Water Bottle",
+    "Flask Set",
+    "Dinner Plate Set",
+    "Serving Bowl",
+    "Storage Container Set",
+    "Lunch Box",
+    "Dish Rack",
+    "Spice Rack",
+    "Drawer Organizer",
+    "Mop Bucket Set",
+    "Floor Cleaner",
+    "Bathroom Cleaner",
+    "Kitchen Cleaner",
+    "Trash Bin",
+    "Air Freshener",
+    "Steam Iron",
+    "Water Dispenser",
+    "Refrigerator Organizer",
+    "Laundry Basket",
+    "Drying Rack",
+    "Ironing Board",
+    "Wardrobe Organizer",
+    "Stackable Bin",
+    "LED Lamp",
+    "Power Strip",
+    "Lantern Light",
+    "Garden Hose",
   ];
 }
 
 async function seedProducts(args: {
   superAdminId: string;
-  categories: { id: string }[];
+  categories: { id: string; name?: string }[];
   brands: { id: string; name: string; slug: string }[];
   suppliers: { id: string }[];
   attrs: Awaited<ReturnType<typeof ensureAttributes>>;
@@ -1279,6 +1296,7 @@ async function seedProducts(args: {
   const pendingTargets = PENDING_PRODUCTS_TOTAL;
 
   log(`Seeding ${liveTargets} LIVE products, ${pendingTargets} PENDING products…`);
+
   if (brands.length < 4) {
     throw new Error("Need at least 4 brands to satisfy 2–4 brands per base product.");
   }
@@ -1312,6 +1330,12 @@ async function seedProducts(args: {
       liveCount++;
       globalIndex++;
     }
+  }
+
+  if (liveCount < liveTargets) {
+    throw new Error(
+      `Unable to build ${liveTargets} LIVE products from current title/brand pool. Built only ${liveCount}.`
+    );
   }
 
   for (let i = 1; i <= pendingTargets; i++) {
@@ -1362,7 +1386,6 @@ async function seedProducts(args: {
             isDeleted: false,
             availableQty: 0,
             inStock: true,
-
             shippingCost: toDec2(0),
             weightGrams: parcel.weightGrams,
             lengthCm: toDec2(parcel.lengthCm),
@@ -1372,11 +1395,9 @@ async function seedProducts(args: {
             isBulky: parcel.isBulky,
             shippingClass: parcel.shippingClass,
             freeShipping: false,
-
             supplier: { connect: { id: supplierId } },
             category: { connect: { id: categoryId } },
             brand: { connect: { id: item.brandId } },
-
             owner: { connect: { id: superAdminId } },
             createdBy: { connect: { id: superAdminId } },
             updatedBy: { connect: { id: superAdminId } },
@@ -1397,7 +1418,6 @@ async function seedProducts(args: {
             isDeleted: false,
             availableQty: 0,
             inStock: true,
-
             shippingCost: toDec2(0),
             weightGrams: parcel.weightGrams,
             lengthCm: toDec2(parcel.lengthCm),
@@ -1407,11 +1427,9 @@ async function seedProducts(args: {
             isBulky: parcel.isBulky,
             shippingClass: parcel.shippingClass,
             freeShipping: false,
-
             supplier: { connect: { id: supplierId } },
             category: { connect: { id: categoryId } },
             brand: { connect: { id: item.brandId } },
-
             owner: { connect: { id: superAdminId } },
             createdBy: { connect: { id: superAdminId } },
             updatedBy: { connect: { id: superAdminId } },
@@ -1563,7 +1581,7 @@ async function main() {
 
   const superId = await ensureSuperAdmin();
   const { suppliers } = await ensureSupplierUserAndSuppliers();
-  const categories = await ensureCategories();
+  const categories = await ensureCategoriesFromTree();
   const brands = await ensureBrands();
   const attrs = await ensureAttributes();
 

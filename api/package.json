@@ -10,7 +10,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
-    "seeds": "node dist/prisma/seed.js",
+    "seeds": "tsx prisma/seed.ts",
     "seed": "prisma db seed",
     "seed:shipping": "tsx prisma/seed-shipping.ts",
     "seed:catalog": "tsx prisma/seedCategories.ts",
