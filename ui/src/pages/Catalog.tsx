@@ -100,6 +100,7 @@ type ProductView = Product & {
   _availableNow: boolean;
   _sellable: boolean;
   _primaryImg?: string;
+  _secondaryImg?: string;
   _brandName: string;
   _categoryLabel: string;
   _searchTitle: string;
@@ -168,8 +169,8 @@ function readCatalogState(): CatalogPersistedState | null {
 
     const sortKey: SortKey =
       parsed?.sortKey === "price-asc" ||
-      parsed?.sortKey === "price-desc" ||
-      parsed?.sortKey === "relevance"
+        parsed?.sortKey === "price-desc" ||
+        parsed?.sortKey === "relevance"
         ? parsed.sortKey
         : "relevance";
 
@@ -183,8 +184,8 @@ function readCatalogState(): CatalogPersistedState | null {
         : [],
       selectedBucketIdxs: Array.isArray(parsed?.selectedBucketIdxs)
         ? parsed.selectedBucketIdxs
-            .map((n: any) => Number(n))
-            .filter((n: number) => Number.isFinite(n) && n >= 0)
+          .map((n: any) => Number(n))
+          .filter((n: number) => Number.isFinite(n) && n >= 0)
         : [],
       selectedBrands: Array.isArray(parsed?.selectedBrands)
         ? parsed.selectedBrands.map(String)
@@ -194,8 +195,8 @@ function readCatalogState(): CatalogPersistedState | null {
       inStockOnly: parsed?.inStockOnly !== false,
       expandedCats:
         parsed?.expandedCats &&
-        typeof parsed.expandedCats === "object" &&
-        !Array.isArray(parsed.expandedCats)
+          typeof parsed.expandedCats === "object" &&
+          !Array.isArray(parsed.expandedCats)
           ? parsed.expandedCats
           : {},
       page: Number.isFinite(Number(parsed?.page)) ? Math.max(1, Number(parsed.page)) : 1,
@@ -472,10 +473,10 @@ function getDisplayRetailPrice(p: Product, marginPercent: number): number {
     Number(p.retailPrice) > 0
       ? Number(p.retailPrice)
       : Number(p.autoPrice) > 0
-      ? Number(p.autoPrice)
-      : Number(p.displayBasePrice) > 0
-      ? Number(p.displayBasePrice)
-      : 0;
+        ? Number(p.autoPrice)
+        : Number(p.displayBasePrice) > 0
+          ? Number(p.displayBasePrice)
+          : 0;
 
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
@@ -602,8 +603,8 @@ function usePurchasedCounts(enabledOverride = true) {
         const orders: any[] = Array.isArray((data as any)?.data)
           ? (data as any).data
           : Array.isArray(data)
-          ? (data as any)
-          : [];
+            ? (data as any)
+            : [];
 
         const map: Record<string, number> = {};
         for (const o of orders) {
@@ -720,8 +721,8 @@ function flattenCategoryTree(input: any): CategoryFlat[] {
     const kids: any[] = Array.isArray(n.children)
       ? n.children
       : Array.isArray(n.items)
-      ? n.items
-      : [];
+        ? n.items
+        : [];
     for (const c of kids) walk(c, id);
   };
 
@@ -1002,9 +1003,8 @@ const SuggestionItem = memo(function SuggestionItem({
     <li className="mb-2 last:mb-0">
       <button
         type="button"
-        className={`w-full rounded-xl px-2.5 py-2.5 text-left hover:bg-black/5 ${
-          active ? "bg-black/5" : ""
-        }`}
+        className={`w-full rounded-xl px-2.5 py-2.5 text-left hover:bg-black/5 ${active ? "bg-black/5" : ""
+          }`}
         onClick={() => onClick(p.title)}
       >
         <div className="flex items-center gap-3">
@@ -1092,21 +1092,31 @@ const ProductCard = memo(function ProductCard({
         setTouchStartX(null);
       }}
       onDragStart={(e) => e.preventDefault()}
-      className="block cursor-pointer overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:border-zinc-300 active:scale-[0.99]"
-    >
+      className="group block cursor-pointer overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:border-zinc-300 active:scale-[0.99]"    >
       <div className="relative h-28 w-full overflow-hidden bg-zinc-100 sm:h-36 md:h-40">
         <SafeImg
           src={p._primaryImg}
           alt={p.title}
           loading="lazy"
           draggable={false}
-          className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+          className={`pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${p._secondaryImg ? "opacity-100 group-hover:opacity-0" : "opacity-100"
+            }`}
           fallback={
             <div className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-zinc-400">
               No image
             </div>
           }
         />
+
+        {p._secondaryImg && (
+          <SafeImg
+            src={p._secondaryImg}
+            alt={p.title}
+            loading="lazy"
+            draggable={false}
+            className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+          />
+        )}
 
         {inStock && (
           <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-purple-800 px-2.5 py-1 text-[10px] font-semibold text-white shadow-sm md:text-[11px]">
@@ -1132,11 +1142,10 @@ const ProductCard = memo(function ProductCard({
 
               onToggleFav(p.id);
             }}
-            className={`absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border shadow-sm transition ${
-              fav
-                ? "border-rose-200 bg-rose-50 text-rose-600"
-                : "border-zinc-200 bg-white/95 text-zinc-400 hover:border-rose-200 hover:text-rose-600"
-            }`}
+            className={`absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border shadow-sm transition ${fav
+              ? "border-rose-200 bg-rose-50 text-rose-600"
+              : "border-zinc-200 bg-white/95 text-zinc-400 hover:border-rose-200 hover:text-rose-600"
+              }`}
             aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
             title={fav ? "Remove from wishlist" : "Add to wishlist"}
           >
@@ -1214,11 +1223,10 @@ const ProductCard = memo(function ProductCard({
                   type="button"
                   data-stop-card-nav="true"
                   disabled={!inStock}
-                  className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium shadow-sm transition md:text-xs ${
-                    inStock
-                      ? "bg-black text-white hover:bg-black/90"
-                      : "cursor-not-allowed bg-zinc-200 text-zinc-500"
-                  }`}
+                  className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium shadow-sm transition md:text-xs ${inStock
+                    ? "bg-black text-white hover:bg-black/90"
+                    : "cursor-not-allowed bg-zinc-200 text-zinc-500"
+                    }`}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1236,16 +1244,16 @@ const ProductCard = memo(function ProductCard({
     </Link>
   );
 },
-(prev, next) =>
-  prev.p.id === next.p.id &&
-  prev.fav === next.fav &&
-  prev.bestPrice === next.bestPrice &&
-  prev.inStock === next.inStock &&
-  prev.hasVariants === next.hasVariants &&
-  prev.baseQtyInCart === next.baseQtyInCart &&
-  prev.isSupplier === next.isSupplier &&
-  prev.isAuthed === next.isAuthed &&
-  prev.locationStateFrom === next.locationStateFrom
+  (prev, next) =>
+    prev.p.id === next.p.id &&
+    prev.fav === next.fav &&
+    prev.bestPrice === next.bestPrice &&
+    prev.inStock === next.inStock &&
+    prev.hasVariants === next.hasVariants &&
+    prev.baseQtyInCart === next.baseQtyInCart &&
+    prev.isSupplier === next.isSupplier &&
+    prev.isAuthed === next.isAuthed &&
+    prev.locationStateFrom === next.locationStateFrom
 );
 
 /* =========================================================
@@ -1559,54 +1567,59 @@ export default function Catalog() {
     refetchOnMount: false,
     queryFn: async () => {
       const { data } = await api.get("/api/products", {
-        params: { include: includeStr, status: "LIVE" },
+        params: {
+          include: includeStr,
+          status: "LIVE",
+          take: 200,
+          page: 1,
+        },
       });
 
       const raw: any[] = Array.isArray(data)
         ? data
         : Array.isArray((data as any)?.data)
-        ? (data as any).data
-        : [];
+          ? (data as any).data
+          : [];
 
       return (raw || [])
         .filter((x) => x && x.id != null)
         .map((x) => {
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => ({
-                id: String(v.id),
-                sku: v.sku ?? null,
-                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
-                inStock: v.inStock === true,
-                imagesJson: normalizeImages(v.imagesJson),
-                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
-                offers: Array.isArray(v.offers)
-                  ? v.offers.map((o: any) => ({
-                      id: String(o.id),
-                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty))
-                        ? Number(o.availableQty)
+              id: String(v.id),
+              sku: v.sku ?? null,
+              retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
+              inStock: v.inStock === true,
+              imagesJson: normalizeImages(v.imagesJson),
+              availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+              offers: Array.isArray(v.offers)
+                ? v.offers.map((o: any) => ({
+                  id: String(o.id),
+                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number.isFinite(Number(o.availableQty))
+                    ? Number(o.availableQty)
+                    : null,
+                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                  currency: o.currency ?? "NGN",
+                  leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
+                  supplierRatingAvg:
+                    o.supplierRatingAvg != null
+                      ? decToNumber(o.supplierRatingAvg)
+                      : o.supplier?.ratingAvg != null
+                        ? decToNumber(o.supplier.ratingAvg)
                         : null,
-                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                      currency: o.currency ?? "NGN",
-                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
-                      supplierRatingAvg:
-                        o.supplierRatingAvg != null
-                          ? decToNumber(o.supplierRatingAvg)
-                          : o.supplier?.ratingAvg != null
-                          ? decToNumber(o.supplier.ratingAvg)
-                          : null,
-                      supplierRatingCount:
-                        o.supplierRatingCount != null
-                          ? Number(o.supplierRatingCount)
-                          : o.supplier?.ratingCount != null
-                          ? Number(o.supplier.ratingCount)
-                          : null,
-                    }))
-                  : [],
-              }))
+                  supplierRatingCount:
+                    o.supplierRatingCount != null
+                      ? Number(o.supplierRatingCount)
+                      : o.supplier?.ratingCount != null
+                        ? Number(o.supplier.ratingCount)
+                        : null,
+                }))
+                : [],
+            }))
             : [];
 
           const baseSource =
@@ -1628,14 +1641,14 @@ export default function Catalog() {
               o.supplierRatingAvg != null
                 ? decToNumber(o.supplierRatingAvg)
                 : o.supplier?.ratingAvg != null
-                ? decToNumber(o.supplier.ratingAvg)
-                : null,
+                  ? decToNumber(o.supplier.ratingAvg)
+                  : null,
             supplierRatingCount:
               o.supplierRatingCount != null
                 ? Number(o.supplierRatingCount)
                 : o.supplier?.ratingCount != null
-                ? Number(o.supplier.ratingCount)
-                : null,
+                  ? Number(o.supplier.ratingCount)
+                  : null,
           }));
 
           const catNameRaw = cleanText(x.categoryName ?? x.category?.name ?? "");
@@ -1661,15 +1674,15 @@ export default function Catalog() {
               x.categoryId != null
                 ? String(x.categoryId)
                 : x.category?.id != null
-                ? String(x.category.id)
-                : null,
+                  ? String(x.category.id)
+                  : null,
             categoryName: catNameRaw || null,
             brand:
               x.brand && (x.brand.id != null || x.brand.name != null)
                 ? {
-                    id: String(x.brand.id ?? ""),
-                    name: cleanText(x.brand.name),
-                  }
+                  id: String(x.brand.id ?? ""),
+                  name: cleanText(x.brand.name),
+                }
                 : null,
             variants,
             supplierProductOffers: baseOffers,
@@ -1686,12 +1699,12 @@ export default function Catalog() {
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
 
+
   const productViews = useMemo<ProductView[]>(() => {
     return products.map((p) => {
-      const primaryImgRaw =
-        p.imagesJson?.[0] ||
-        p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
-        null;
+      const imageCandidates = getProductImageCandidates(p);
+      const primaryImg = imageCandidates[0];
+      const secondaryImg = imageCandidates[1];
 
       const displayPrice = priceForFiltering(p, marginPercent);
       const available = availableNow(p);
@@ -1702,7 +1715,8 @@ export default function Catalog() {
         _displayPrice: displayPrice,
         _availableNow: available,
         _sellable: sellable,
-        _primaryImg: resolveImageUrl(primaryImgRaw),
+        _primaryImg: primaryImg,
+        _secondaryImg: secondaryImg,
         _brandName: cleanText(p.brand?.name),
         _categoryLabel: cleanText(p.categoryName) || "Uncategorized",
         _searchTitle: norm(cleanText(p.title)),
@@ -2294,6 +2308,26 @@ export default function Catalog() {
   const shouldShowSuggest = searchFocused && hasTypedQuery;
   const hasSuggestionResults = suggestions.length > 0;
 
+  function getProductImageCandidates(p: Product): string[] {
+    const out: string[] = [];
+
+    const push = (val: any) => {
+      const imgs = normalizeImages(val);
+      for (const img of imgs) {
+        const resolved = resolveImageUrl(img);
+        if (resolved && !out.includes(resolved)) out.push(resolved);
+      }
+    };
+
+    push(p.imagesJson);
+
+    if (Array.isArray(p.variants)) {
+      for (const v of p.variants) push(v.imagesJson);
+    }
+
+    return out;
+  }
+
   const toggleExpand = useCallback(
     (id: string) =>
       startTransition(() => {
@@ -2408,8 +2442,8 @@ export default function Catalog() {
                   {sortKey === "price-asc"
                     ? "Low → High"
                     : sortKey === "price-desc"
-                    ? "High → Low"
-                    : "Relevance"}
+                      ? "High → Low"
+                      : "Relevance"}
                 </span>
               </span>
             )}
@@ -2670,22 +2704,20 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
-                              checked
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
-                                  checked
-                                    ? "text-white/90 hover:bg-white/10"
-                                    : "text-zinc-600 hover:bg-black/5"
-                                }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
+                                  ? "text-white/90 hover:bg-white/10"
+                                  : "text-zinc-600 hover:bg-black/5"
+                                  }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -2720,11 +2752,10 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -2761,11 +2792,10 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -2803,11 +2833,10 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                          }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -3083,11 +3112,10 @@ export default function Catalog() {
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
-                                  className={`rounded-xl px-3 py-1.5 text-xs ${
-                                    n === currentPage
-                                      ? "border border-zinc-900 bg-zinc-900 text-white"
-                                      : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
-                                  }`}
+                                  className={`rounded-xl px-3 py-1.5 text-xs ${n === currentPage
+                                    ? "border border-zinc-900 bg-zinc-900 text-white"
+                                    : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
+                                    }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -3203,22 +3231,20 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${checked
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
-                                  checked
-                                    ? "text-white/90 hover:bg-white/10"
-                                    : "text-zinc-600 hover:bg-black/5"
-                                }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
+                                  ? "text-white/90 hover:bg-white/10"
+                                  : "text-zinc-600 hover:bg-black/5"
+                                  }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -3253,11 +3279,10 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -3295,11 +3320,10 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -3337,11 +3361,10 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                          }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
