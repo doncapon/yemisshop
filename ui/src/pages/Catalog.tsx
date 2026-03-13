@@ -7,7 +7,6 @@ import React, {
   useMemo,
   useRef,
   useState,
-  useTransition,
 } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client.js";
@@ -169,8 +168,8 @@ function readCatalogState(): CatalogPersistedState | null {
 
     const sortKey: SortKey =
       parsed?.sortKey === "price-asc" ||
-        parsed?.sortKey === "price-desc" ||
-        parsed?.sortKey === "relevance"
+      parsed?.sortKey === "price-desc" ||
+      parsed?.sortKey === "relevance"
         ? parsed.sortKey
         : "relevance";
 
@@ -184,8 +183,8 @@ function readCatalogState(): CatalogPersistedState | null {
         : [],
       selectedBucketIdxs: Array.isArray(parsed?.selectedBucketIdxs)
         ? parsed.selectedBucketIdxs
-          .map((n: any) => Number(n))
-          .filter((n: number) => Number.isFinite(n) && n >= 0)
+            .map((n: any) => Number(n))
+            .filter((n: number) => Number.isFinite(n) && n >= 0)
         : [],
       selectedBrands: Array.isArray(parsed?.selectedBrands)
         ? parsed.selectedBrands.map(String)
@@ -195,8 +194,8 @@ function readCatalogState(): CatalogPersistedState | null {
       inStockOnly: parsed?.inStockOnly !== false,
       expandedCats:
         parsed?.expandedCats &&
-          typeof parsed.expandedCats === "object" &&
-          !Array.isArray(parsed.expandedCats)
+        typeof parsed.expandedCats === "object" &&
+        !Array.isArray(parsed.expandedCats)
           ? parsed.expandedCats
           : {},
       page: Number.isFinite(Number(parsed?.page)) ? Math.max(1, Number(parsed.page)) : 1,
@@ -323,7 +322,10 @@ const isLive = (x?: { status?: string | null }) =>
   String(x?.status ?? "").trim().toUpperCase() === "LIVE";
 
 const norm = (s: string) =>
-  String(s ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  String(s ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 
 const cleanText = (v: any) => String(v ?? "").replace(/\s+/g, " ").trim();
 
@@ -827,7 +829,14 @@ function MotionCircleLoader({ label = "Loading…" }: { label?: string }) {
     <div className="flex flex-col items-center gap-3" role="status" aria-label={label}>
       <div className="relative h-24 w-24 sm:h-28 sm:w-28 md:h-32 md:w-32">
         <svg className="absolute inset-0" viewBox="0 0 100 100">
-          <circle cx="50" cy="50" r="44" fill="none" stroke="rgba(226,232,240,0.9)" strokeWidth="8" />
+          <circle
+            cx="50"
+            cy="50"
+            r="44"
+            fill="none"
+            stroke="rgba(226,232,240,0.9)"
+            strokeWidth="8"
+          />
         </svg>
 
         <motion.svg
@@ -1003,8 +1012,9 @@ const SuggestionItem = memo(function SuggestionItem({
     <li className="mb-2 last:mb-0">
       <button
         type="button"
-        className={`w-full rounded-xl px-2.5 py-2.5 text-left hover:bg-black/5 ${active ? "bg-black/5" : ""
-          }`}
+        className={`w-full rounded-xl px-2.5 py-2.5 text-left hover:bg-black/5 ${
+          active ? "bg-black/5" : ""
+        }`}
         onClick={() => onClick(p.title)}
       >
         <div className="flex items-center gap-3">
@@ -1055,195 +1065,200 @@ type ProductCardProps = {
   onSetCartQty: (p: ProductView, nextQty: number) => void | Promise<void>;
 };
 
-const ProductCard = memo(function ProductCard({
-  p,
-  fav,
-  bestPrice,
-  inStock,
-  hasVariants,
-  baseQtyInCart,
-  isSupplier,
-  isAuthed,
-  locationStateFrom,
-  isFromCardAction,
-  persistSnapshot,
-  setRefineOpen,
-  setSearchFocused,
-  setTouchStartX,
-  openModal,
-  onToggleFav,
-  onGoToProduct,
-  onSetCartQty,
-}: ProductCardProps) {
-  return (
-    <Link
-      to={`/products/${p.id}`}
-      state={{ from: locationStateFrom }}
-      onClick={(e) => {
-        if (isFromCardAction(e.target)) {
-          e.preventDefault();
-          return;
-        }
-
-        persistSnapshot();
-        setCatalogReturning(true);
-        setRefineOpen(false);
-        setSearchFocused(false);
-        setTouchStartX(null);
-      }}
-      onDragStart={(e) => e.preventDefault()}
-      className="group block cursor-pointer overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:border-zinc-300 active:scale-[0.99]"    >
-      <div className="relative h-28 w-full overflow-hidden bg-zinc-100 sm:h-36 md:h-40">
-        <SafeImg
-          src={p._primaryImg}
-          alt={p.title}
-          loading="lazy"
-          draggable={false}
-          className={`pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${p._secondaryImg ? "opacity-100 group-hover:opacity-0" : "opacity-100"
-            }`}
-          fallback={
-            <div className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-zinc-400">
-              No image
-            </div>
+const ProductCard = memo(
+  function ProductCard({
+    p,
+    fav,
+    bestPrice,
+    inStock,
+    hasVariants,
+    baseQtyInCart,
+    isSupplier,
+    isAuthed,
+    locationStateFrom,
+    isFromCardAction,
+    persistSnapshot,
+    setRefineOpen,
+    setSearchFocused,
+    setTouchStartX,
+    openModal,
+    onToggleFav,
+    onGoToProduct,
+    onSetCartQty,
+  }: ProductCardProps) {
+    return (
+      <Link
+        to={`/products/${p.id}`}
+        state={{ from: locationStateFrom }}
+        onClick={(e) => {
+          if (isFromCardAction(e.target)) {
+            e.preventDefault();
+            return;
           }
-        />
 
-        {p._secondaryImg && (
+          persistSnapshot();
+          setCatalogReturning(true);
+          setRefineOpen(false);
+          setSearchFocused(false);
+          setTouchStartX(null);
+        }}
+        onDragStart={(e) => e.preventDefault()}
+        className="group block cursor-pointer overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:border-zinc-300 active:scale-[0.99]"
+      >
+        <div className="relative h-28 w-full overflow-hidden bg-zinc-100 sm:h-36 md:h-40">
           <SafeImg
-            src={p._secondaryImg}
+            src={p._primaryImg}
             alt={p.title}
             loading="lazy"
             draggable={false}
-            className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+            className={`pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${
+              p._secondaryImg ? "opacity-100 group-hover:opacity-0" : "opacity-100"
+            }`}
+            fallback={
+              <div className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-zinc-400">
+                No image
+              </div>
+            }
           />
-        )}
 
-        {inStock && (
-          <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-purple-800 px-2.5 py-1 text-[10px] font-semibold text-white shadow-sm md:text-[11px]">
-            In stock
-          </span>
-        )}
+          {p._secondaryImg && (
+            <SafeImg
+              src={p._secondaryImg}
+              alt={p.title}
+              loading="lazy"
+              draggable={false}
+              className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+            />
+          )}
 
-        {!isSupplier && (
-          <button
-            type="button"
-            data-stop-card-nav="true"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
+          {inStock && (
+            <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-purple-500 px-2.5 py-1 text-[10px] font-semibold text-white shadow-sm md:text-[11px]">
+              In stock
+            </span>
+          )}
 
-              if (!isAuthed) {
-                openModal({
-                  title: "Sign in required",
-                  message: "Please sign in to save items to your wishlist.",
-                });
-                return;
-              }
-
-              onToggleFav(p.id);
-            }}
-            className={`absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border shadow-sm transition ${fav
-              ? "border-rose-200 bg-rose-50 text-rose-600"
-              : "border-zinc-200 bg-white/95 text-zinc-400 hover:border-rose-200 hover:text-rose-600"
-              }`}
-            aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
-            title={fav ? "Remove from wishlist" : "Add to wishlist"}
-          >
-            <Heart size={16} className={fav ? "fill-current" : ""} />
-          </button>
-        )}
-      </div>
-
-      <div className="p-2.5 md:p-4">
-        <TruncatedTitle
-          text={p.title}
-          className="line-clamp-1 text-[12px] font-semibold text-zinc-900 md:text-sm"
-        />
-        <div className="line-clamp-1 text-[10px] text-zinc-500 md:text-xs">
-          {p._brandName ? `${p._brandName} • ` : ""}
-          {p._categoryLabel}
-        </div>
-
-        <div className="mt-1">
-          <p className="text-sm font-semibold md:text-base">{ngn.format(bestPrice || 0)}</p>
-        </div>
-
-        <div className="mt-2">
-          {hasVariants ? (
+          {!isSupplier && (
             <button
               type="button"
               data-stop-card-nav="true"
-              className="inline-flex items-center rounded-full bg-black/40 px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-black/55 md:text-xs"
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                onGoToProduct(p.id);
+
+                if (!isAuthed) {
+                  openModal({
+                    title: "Sign in required",
+                    message: "Please sign in to save items to your wishlist.",
+                  });
+                  return;
+                }
+
+                onToggleFav(p.id);
               }}
+              className={`absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border shadow-sm transition ${
+                fav
+                  ? "border-rose-200 bg-rose-50 text-rose-600"
+                  : "border-zinc-200 bg-white/95 text-zinc-400 hover:border-rose-200 hover:text-rose-600"
+              }`}
+              aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
+              title={fav ? "Remove from wishlist" : "Add to wishlist"}
             >
-              Choose options
+              <Heart size={16} className={fav ? "fill-current" : ""} />
             </button>
-          ) : (
-            <div data-stop-card-nav="true">
-              {baseQtyInCart > 0 ? (
-                <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
-                  <button
-                    type="button"
-                    data-stop-card-nav="true"
-                    aria-label="Decrease quantity"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      void onSetCartQty(p, baseQtyInCart - 1);
-                    }}
-                  >
-                    −
-                  </button>
-
-                  <span className="min-w-[18px] text-center text-[11px] font-semibold md:text-xs">
-                    {baseQtyInCart}
-                  </span>
-
-                  <button
-                    type="button"
-                    data-stop-card-nav="true"
-                    aria-label="Increase quantity"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      void onSetCartQty(p, baseQtyInCart + 1);
-                    }}
-                  >
-                    +
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  data-stop-card-nav="true"
-                  disabled={!inStock}
-                  className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium shadow-sm transition md:text-xs ${inStock
-                    ? "bg-black text-white hover:bg-black/90"
-                    : "cursor-not-allowed bg-zinc-200 text-zinc-500"
-                    }`}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (!inStock) return;
-                    void onSetCartQty(p, 1);
-                  }}
-                >
-                  Add to cart
-                </button>
-              )}
-            </div>
           )}
         </div>
-      </div>
-    </Link>
-  );
-},
+
+        <div className="p-2.5 md:p-4">
+          <TruncatedTitle
+            text={p.title}
+            className="line-clamp-1 text-[12px] font-semibold text-zinc-900 md:text-sm"
+          />
+          <div className="line-clamp-1 text-[10px] text-zinc-500 md:text-xs">
+            {p._brandName ? `${p._brandName} • ` : ""}
+            {p._categoryLabel}
+          </div>
+
+          <div className="mt-1">
+            <p className="text-sm font-semibold md:text-base">{ngn.format(bestPrice || 0)}</p>
+          </div>
+
+          <div className="mt-2">
+            {hasVariants ? (
+              <button
+                type="button"
+                data-stop-card-nav="true"
+                className="inline-flex items-center rounded-full bg-black/40 px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-black/55 md:text-xs"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onGoToProduct(p.id);
+                }}
+              >
+                Choose options
+              </button>
+            ) : (
+              <div data-stop-card-nav="true">
+                {baseQtyInCart > 0 ? (
+                  <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                    <button
+                      type="button"
+                      data-stop-card-nav="true"
+                      aria-label="Decrease quantity"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void onSetCartQty(p, baseQtyInCart - 1);
+                      }}
+                    >
+                      −
+                    </button>
+
+                    <span className="min-w-[18px] text-center text-[11px] font-semibold md:text-xs">
+                      {baseQtyInCart}
+                    </span>
+
+                    <button
+                      type="button"
+                      data-stop-card-nav="true"
+                      aria-label="Increase quantity"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void onSetCartQty(p, baseQtyInCart + 1);
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-stop-card-nav="true"
+                    disabled={!inStock}
+                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium shadow-sm transition md:text-xs ${
+                      inStock
+                        ? "bg-black text-white hover:bg-black/90"
+                        : "cursor-not-allowed bg-zinc-200 text-zinc-500"
+                    }`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!inStock) return;
+                      void onSetCartQty(p, 1);
+                    }}
+                  >
+                    Add to cart
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </Link>
+    );
+  },
   (prev, next) =>
     prev.p.id === next.p.id &&
     prev.fav === next.fav &&
@@ -1257,12 +1272,35 @@ const ProductCard = memo(function ProductCard({
 );
 
 /* =========================================================
+   Derived helpers
+========================================================= */
+
+function getProductImageCandidates(p: Product): string[] {
+  const out: string[] = [];
+
+  const push = (val: any) => {
+    const imgs = normalizeImages(val);
+    for (const img of imgs) {
+      const resolved = resolveImageUrl(img);
+      if (resolved && !out.includes(resolved)) out.push(resolved);
+    }
+  };
+
+  push(p.imagesJson);
+
+  if (Array.isArray(p.variants)) {
+    for (const v of p.variants) push(v.imagesJson);
+  }
+
+  return out;
+}
+
+/* =========================================================
    Component
 ========================================================= */
 
 export default function Catalog() {
   const initialPersisted = useMemo(() => readCatalogState(), []);
-  const [isPending, startTransition] = useTransition();
 
   const user = useAuthStore((s) => s.user);
   const role = String(user?.role ?? "");
@@ -1279,6 +1317,8 @@ export default function Catalog() {
 
   const resultsTopRef = useRef<HTMLDivElement | null>(null);
   const scrollRafRef = useRef<number | null>(null);
+  const scrollRafInnerRef = useRef<number | null>(null);
+  const persistTimerRef = useRef<number | null>(null);
   const didHydrateRef = useRef(false);
   const didRestoreScrollRef = useRef(false);
   const shouldRestoreScrollRef = useRef(isCatalogReturning());
@@ -1288,6 +1328,10 @@ export default function Catalog() {
     if (scrollRafRef.current != null) {
       window.cancelAnimationFrame(scrollRafRef.current);
       scrollRafRef.current = null;
+    }
+    if (scrollRafInnerRef.current != null) {
+      window.cancelAnimationFrame(scrollRafInnerRef.current);
+      scrollRafInnerRef.current = null;
     }
 
     scrollRafRef.current = window.requestAnimationFrame(() => {
@@ -1304,6 +1348,15 @@ export default function Catalog() {
     return () => {
       if (scrollRafRef.current != null) {
         window.cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+      if (scrollRafInnerRef.current != null) {
+        window.cancelAnimationFrame(scrollRafInnerRef.current);
+        scrollRafInnerRef.current = null;
+      }
+      if (persistTimerRef.current != null) {
+        window.clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
       }
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
@@ -1479,17 +1532,32 @@ export default function Catalog() {
   }, []);
 
   useEffect(() => {
-    writeCatalogState({
-      selectedCategories,
-      selectedBucketIdxs,
-      selectedBrands,
-      sortKey,
-      query,
-      inStockOnly,
-      expandedCats,
-      page,
-      pageSize,
-    });
+    if (persistTimerRef.current != null) {
+      window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+
+    persistTimerRef.current = window.setTimeout(() => {
+      writeCatalogState({
+        selectedCategories,
+        selectedBucketIdxs,
+        selectedBrands,
+        sortKey,
+        query,
+        inStockOnly,
+        expandedCats,
+        page,
+        pageSize,
+      });
+      persistTimerRef.current = null;
+    }, 120);
+
+    return () => {
+      if (persistTimerRef.current != null) {
+        window.clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+      }
+    };
   }, [
     selectedCategories,
     selectedBucketIdxs,
@@ -1586,40 +1654,40 @@ export default function Catalog() {
         .map((x) => {
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => ({
-              id: String(v.id),
-              sku: v.sku ?? null,
-              retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
-              inStock: v.inStock === true,
-              imagesJson: normalizeImages(v.imagesJson),
-              availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
-              offers: Array.isArray(v.offers)
-                ? v.offers.map((o: any) => ({
-                  id: String(o.id),
-                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number.isFinite(Number(o.availableQty))
-                    ? Number(o.availableQty)
-                    : null,
-                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                  currency: o.currency ?? "NGN",
-                  leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
-                  supplierRatingAvg:
-                    o.supplierRatingAvg != null
-                      ? decToNumber(o.supplierRatingAvg)
-                      : o.supplier?.ratingAvg != null
-                        ? decToNumber(o.supplier.ratingAvg)
+                id: String(v.id),
+                sku: v.sku ?? null,
+                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
+                inStock: v.inStock === true,
+                imagesJson: normalizeImages(v.imagesJson),
+                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+                offers: Array.isArray(v.offers)
+                  ? v.offers.map((o: any) => ({
+                      id: String(o.id),
+                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                      isActive: o.isActive === true,
+                      inStock: o.inStock === true,
+                      availableQty: Number.isFinite(Number(o.availableQty))
+                        ? Number(o.availableQty)
                         : null,
-                  supplierRatingCount:
-                    o.supplierRatingCount != null
-                      ? Number(o.supplierRatingCount)
-                      : o.supplier?.ratingCount != null
-                        ? Number(o.supplier.ratingCount)
-                        : null,
-                }))
-                : [],
-            }))
+                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                      currency: o.currency ?? "NGN",
+                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
+                      supplierRatingAvg:
+                        o.supplierRatingAvg != null
+                          ? decToNumber(o.supplierRatingAvg)
+                          : o.supplier?.ratingAvg != null
+                            ? decToNumber(o.supplier.ratingAvg)
+                            : null,
+                      supplierRatingCount:
+                        o.supplierRatingCount != null
+                          ? Number(o.supplierRatingCount)
+                          : o.supplier?.ratingCount != null
+                            ? Number(o.supplier.ratingCount)
+                            : null,
+                    }))
+                  : [],
+              }))
             : [];
 
           const baseSource =
@@ -1680,9 +1748,9 @@ export default function Catalog() {
             brand:
               x.brand && (x.brand.id != null || x.brand.name != null)
                 ? {
-                  id: String(x.brand.id ?? ""),
-                  name: cleanText(x.brand.name),
-                }
+                    id: String(x.brand.id ?? ""),
+                    name: cleanText(x.brand.name),
+                  }
                 : null,
             variants,
             supplierProductOffers: baseOffers,
@@ -1699,32 +1767,35 @@ export default function Catalog() {
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
 
-
   const productViews = useMemo<ProductView[]>(() => {
-    return products.map((p) => {
-      const imageCandidates = getProductImageCandidates(p);
-      const primaryImg = imageCandidates[0];
-      const secondaryImg = imageCandidates[1];
+    const out: ProductView[] = new Array(products.length);
 
+    for (let i = 0; i < products.length; i++) {
+      const p = products[i];
+      const imageCandidates = getProductImageCandidates(p);
+
+      const brandName = cleanText(p.brand?.name);
+      const categoryLabel = cleanText(p.categoryName) || "Uncategorized";
       const displayPrice = priceForFiltering(p, marginPercent);
       const available = availableNow(p);
-      const sellable = productSellable(p, marginPercent);
 
-      return {
+      out[i] = {
         ...p,
         _displayPrice: displayPrice,
         _availableNow: available,
-        _sellable: sellable,
-        _primaryImg: primaryImg,
-        _secondaryImg: secondaryImg,
-        _brandName: cleanText(p.brand?.name),
-        _categoryLabel: cleanText(p.categoryName) || "Uncategorized",
+        _sellable: available && Number.isFinite(displayPrice) && displayPrice > 0,
+        _primaryImg: imageCandidates[0],
+        _secondaryImg: imageCandidates[1],
+        _brandName: brandName,
+        _categoryLabel: categoryLabel,
         _searchTitle: norm(cleanText(p.title)),
         _searchDesc: norm(cleanText(p.description)),
-        _searchCat: norm(cleanText(p.categoryName)),
-        _searchBrand: norm(cleanText(p.brand?.name)),
+        _searchCat: norm(categoryLabel),
+        _searchBrand: norm(brandName),
       };
-    });
+    }
+
+    return out;
   }, [products, marginPercent]);
 
   /* ---------------- Categories ---------------- */
@@ -1841,7 +1912,10 @@ export default function Catalog() {
     return prices.length ? Math.max(...prices) : 0;
   }, [productViews]);
 
-  const PRICE_BUCKETS = useMemo(() => generateDynamicPriceBuckets(maxPriceSeen, 1_000), [maxPriceSeen]);
+  const PRICE_BUCKETS = useMemo(
+    () => generateDynamicPriceBuckets(maxPriceSeen, 1_000),
+    [maxPriceSeen]
+  );
 
   useEffect(() => {
     setSelectedBucketIdxs((curr) => {
@@ -1857,19 +1931,16 @@ export default function Catalog() {
     const q = normalizedQuery;
     if (!q || q.length < 2) return [];
 
-    const limited = productViews.slice(0, 150);
-
-    const scored = limited.map((p) => {
-      let score = 0;
-      if (p._searchTitle.startsWith(q)) score += 4;
-      else if (p._searchTitle.includes(q)) score += 3;
-      if (p._searchDesc.includes(q)) score += 1;
-      if (p._searchCat.includes(q)) score += 2;
-      if (p._searchBrand.includes(q)) score += 2;
-      return { p, score };
-    });
-
-    return scored
+    return productViews
+      .map((p) => {
+        let score = 0;
+        if (p._searchTitle.startsWith(q)) score += 4;
+        else if (p._searchTitle.includes(q)) score += 3;
+        if (p._searchDesc.includes(q)) score += 1;
+        if (p._searchCat.includes(q)) score += 2;
+        if (p._searchBrand.includes(q)) score += 2;
+        return { p, score };
+      })
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 8)
@@ -1949,9 +2020,7 @@ export default function Catalog() {
           : selectedCategoryEffective.has(productCategoryKey);
 
       const brandMatch =
-        activeBrandSet.size === 0
-          ? true
-          : activeBrandSet.has(productBrandKey);
+        activeBrandSet.size === 0 ? true : activeBrandSet.has(productBrandKey);
 
       const priceMatch =
         activeBuckets.length === 0
@@ -2045,7 +2114,8 @@ export default function Catalog() {
 
     const aggregated = aggregateCountsToParents(categoryForest, directCounts);
 
-    const rows: Array<{ node: CategoryNode; count: number; depth: number; hasChildren: boolean }> = [];
+    const rows: Array<{ node: CategoryNode; count: number; depth: number; hasChildren: boolean }> =
+      [];
 
     const walk = (n: CategoryNode, depth: number) => {
       const count = aggregated.get(n.id) || 0;
@@ -2149,11 +2219,16 @@ export default function Catalog() {
       window.cancelAnimationFrame(scrollRafRef.current);
       scrollRafRef.current = null;
     }
+    if (scrollRafInnerRef.current != null) {
+      window.cancelAnimationFrame(scrollRafInnerRef.current);
+      scrollRafInnerRef.current = null;
+    }
 
     scrollRafRef.current = window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
+      scrollRafInnerRef.current = window.requestAnimationFrame(() => {
         window.scrollTo(0, y);
         scrollRafRef.current = null;
+        scrollRafInnerRef.current = null;
       });
     });
   }, [productsQ.isLoading]);
@@ -2255,16 +2330,14 @@ export default function Catalog() {
 
   const applySuggestionToFilter = useCallback(
     (title: string) => {
-      startTransition(() => {
-        setQuery(title);
-        setSearchFocused(false);
-        setActiveIdx(0);
-        setPage(1);
-      });
+      setQuery(title);
+      setSearchFocused(false);
+      setActiveIdx(0);
+      setPage(1);
       writeCatalogScroll(0);
       scrollResultsToTop();
     },
-    [scrollResultsToTop, startTransition]
+    [scrollResultsToTop]
   );
 
   const toggleCategory = useCallback((id: string) => {
@@ -2286,16 +2359,14 @@ export default function Catalog() {
   }, []);
 
   const clearFilters = useCallback(() => {
-    startTransition(() => {
-      setSelectedCategories([]);
-      setSelectedBucketIdxs([]);
-      setSelectedBrands([]);
-      setInStockOnly(true);
-      setExpandedCats({});
-      setPage(1);
-    });
+    setSelectedCategories([]);
+    setSelectedBucketIdxs([]);
+    setSelectedBrands([]);
+    setInStockOnly(true);
+    setExpandedCats({});
+    setPage(1);
     writeCatalogScroll(0);
-  }, [startTransition]);
+  }, []);
 
   const anyActiveFilter =
     selectedCategories.length > 0 ||
@@ -2308,33 +2379,9 @@ export default function Catalog() {
   const shouldShowSuggest = searchFocused && hasTypedQuery;
   const hasSuggestionResults = suggestions.length > 0;
 
-  function getProductImageCandidates(p: Product): string[] {
-    const out: string[] = [];
-
-    const push = (val: any) => {
-      const imgs = normalizeImages(val);
-      for (const img of imgs) {
-        const resolved = resolveImageUrl(img);
-        if (resolved && !out.includes(resolved)) out.push(resolved);
-      }
-    };
-
-    push(p.imagesJson);
-
-    if (Array.isArray(p.variants)) {
-      for (const v of p.variants) push(v.imagesJson);
-    }
-
-    return out;
-  }
-
-  const toggleExpand = useCallback(
-    (id: string) =>
-      startTransition(() => {
-        setExpandedCats((m) => ({ ...m, [id]: !m[id] }));
-      }),
-    [startTransition]
-  );
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedCats((m) => ({ ...m, [id]: !m[id] }));
+  }, []);
 
   /* ---------------- Render guards ---------------- */
 
@@ -2476,12 +2523,9 @@ export default function Catalog() {
               ref={mobileInputRef}
               value={query}
               onChange={(e) => {
-                const value = e.target.value;
-                startTransition(() => {
-                  setQuery(value);
-                  setSearchFocused(true);
-                  setActiveIdx(0);
-                });
+                setQuery(e.target.value);
+                setSearchFocused(true);
+                setActiveIdx(0);
               }}
               onFocus={() => setSearchFocused(true)}
               onKeyDown={(e) => {
@@ -2548,11 +2592,9 @@ export default function Catalog() {
               <label className="mb-1 block text-[11px] font-medium text-zinc-700">Sort</label>
               <select
                 value={sortKey}
-                onChange={(e) =>
-                  startTransition(() => {
-                    setSortKey(e.target.value as SortKey);
-                  })
-                }
+                onChange={(e) => {
+                  setSortKey(e.target.value as SortKey);
+                }}
                 className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[12px]"
               >
                 <option value="relevance">Relevance</option>
@@ -2565,11 +2607,9 @@ export default function Catalog() {
               <label className="mb-1 block text-[11px] font-medium text-zinc-700">Per page</label>
               <select
                 value={pageSize}
-                onChange={(e) =>
-                  startTransition(() => {
-                    setPageSize(Number(e.target.value) as 8 | 12 | 16);
-                  })
-                }
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value) as 8 | 12 | 16);
+                }}
                 className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[12px]"
               >
                 <option value={8}>8</option>
@@ -2584,11 +2624,9 @@ export default function Catalog() {
               <input
                 type="checkbox"
                 checked={inStockOnly}
-                onChange={(e) =>
-                  startTransition(() => {
-                    setInStockOnly(e.target.checked);
-                  })
-                }
+                onChange={(e) => {
+                  setInStockOnly(e.target.checked);
+                }}
                 className="h-4 w-4 rounded border-zinc-300"
               />
               In stock
@@ -2615,11 +2653,9 @@ export default function Catalog() {
                     type="button"
                     className="text-xs font-medium text-fuchsia-700 hover:underline"
                     onClick={() => {
-                      startTransition(() => {
-                        setQuery("");
-                        setSearchFocused(false);
-                        setActiveIdx(0);
-                      });
+                      setQuery("");
+                      setSearchFocused(false);
+                      setActiveIdx(0);
                       clearFilters();
                     }}
                   >
@@ -2632,11 +2668,9 @@ export default function Catalog() {
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Sort</label>
                 <select
                   value={sortKey}
-                  onChange={(e) =>
-                    startTransition(() => {
-                      setSortKey(e.target.value as SortKey);
-                    })
-                  }
+                  onChange={(e) => {
+                    setSortKey(e.target.value as SortKey);
+                  }}
                   className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2"
                 >
                   <option value="relevance">Relevance</option>
@@ -2649,11 +2683,9 @@ export default function Catalog() {
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Per page</label>
                 <select
                   value={pageSize}
-                  onChange={(e) =>
-                    startTransition(() => {
-                      setPageSize(Number(e.target.value) as 8 | 12 | 16);
-                    })
-                  }
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value) as 8 | 12 | 16);
+                  }}
                   className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2"
                 >
                   <option value={8}>8</option>
@@ -2667,11 +2699,9 @@ export default function Catalog() {
                   <input
                     type="checkbox"
                     checked={inStockOnly}
-                    onChange={(e) =>
-                      startTransition(() => {
-                        setInStockOnly(e.target.checked);
-                      })
-                    }
+                    onChange={(e) => {
+                      setInStockOnly(e.target.checked);
+                    }}
                     className="h-4 w-4 rounded border-zinc-300"
                   />
                   In stock
@@ -2683,11 +2713,9 @@ export default function Catalog() {
                   <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() =>
-                      startTransition(() => {
-                        setSelectedCategories([]);
-                      })
-                    }
+                    onClick={() => {
+                      setSelectedCategories([]);
+                    }}
                     disabled={selectedCategories.length === 0}
                   >
                     Reset
@@ -2704,20 +2732,22 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
+                              checked
+                                ? "border-zinc-900 bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
-                                  ? "text-white/90 hover:bg-white/10"
-                                  : "text-zinc-600 hover:bg-black/5"
-                                  }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
+                                  checked
+                                    ? "text-white/90 hover:bg-white/10"
+                                    : "text-zinc-600 hover:bg-black/5"
+                                }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -2735,7 +2765,11 @@ export default function Catalog() {
                               <span className="truncate">{node.name}</span>
                             </button>
 
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            <span
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
+                            >
                               ({count})
                             </span>
                           </div>
@@ -2752,13 +2786,18 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                           >
                             <span className="truncate">{c.name}</span>
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            <span
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
+                            >
                               ({c.count})
                             </span>
                           </button>
@@ -2775,11 +2814,9 @@ export default function Catalog() {
                     <h4 className="text-xs font-semibold text-zinc-800">Brands</h4>
                     <button
                       className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                      onClick={() =>
-                        startTransition(() => {
-                          setSelectedBrands([]);
-                        })
-                      }
+                      onClick={() => {
+                        setSelectedBrands([]);
+                      }}
                       disabled={selectedBrands.length === 0}
                     >
                       Reset
@@ -2792,13 +2829,18 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                           >
                             <span className="truncate">{b.name}</span>
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            <span
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
+                            >
                               ({b.count})
                             </span>
                           </button>
@@ -2814,11 +2856,9 @@ export default function Catalog() {
                   <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() =>
-                      startTransition(() => {
-                        setSelectedBucketIdxs([]);
-                      })
-                    }
+                    onClick={() => {
+                      setSelectedBucketIdxs([]);
+                    }}
                     disabled={selectedBucketIdxs.length === 0}
                   >
                     Reset
@@ -2833,13 +2873,18 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                            checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                          }`}
                         >
                           <span>{bucket.label}</span>
-                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                          <span
+                            className={`ml-2 text-[11px] ${
+                              checked ? "text-white/90" : "text-zinc-600"
+                            }`}
+                          >
                             ({count})
                           </span>
                         </button>
@@ -2887,12 +2932,9 @@ export default function Catalog() {
                   ref={desktopInputRef}
                   value={query}
                   onChange={(e) => {
-                    const value = e.target.value;
-                    startTransition(() => {
-                      setQuery(value);
-                      setSearchFocused(true);
-                      setActiveIdx(0);
-                    });
+                    setQuery(e.target.value);
+                    setSearchFocused(true);
+                    setActiveIdx(0);
                   }}
                   onFocus={() => setSearchFocused(true)}
                   onKeyDown={(e) => {
@@ -2932,10 +2974,6 @@ export default function Catalog() {
                 </button>
               </form>
             </div>
-
-            {isPending && (
-              <div className="mb-3 text-xs text-zinc-500">Updating results…</div>
-            )}
 
             {sorted.length === 0 ? (
               <p className="text-sm text-zinc-600">No products match your filters.</p>
@@ -2980,7 +3018,8 @@ export default function Catalog() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
-                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
+                          {sorted.length}
                         </div>
                         <div className="text-[11px] text-zinc-500">
                           Page {currentPage} / {totalPages}
@@ -3054,7 +3093,8 @@ export default function Catalog() {
 
                   <div className="hidden flex-col gap-3 sm:flex-row sm:items-center sm:justify-between md:flex">
                     <div className="text-sm text-zinc-600">
-                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
+                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
+                      {sorted.length} products
                     </div>
 
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -3112,10 +3152,11 @@ export default function Catalog() {
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
-                                  className={`rounded-xl px-3 py-1.5 text-xs ${n === currentPage
-                                    ? "border border-zinc-900 bg-zinc-900 text-white"
-                                    : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
-                                    }`}
+                                  className={`rounded-xl px-3 py-1.5 text-xs ${
+                                    n === currentPage
+                                      ? "border border-zinc-900 bg-zinc-900 text-white"
+                                      : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
+                                  }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -3173,7 +3214,9 @@ export default function Catalog() {
               <div className="flex items-center justify-between">
                 <div className="min-w-0">
                   <h3 className="text-base font-semibold text-zinc-900">Filter categories & brands</h3>
-                  <p className="text-[11px] text-zinc-600">Choose categories, brands, and price ranges.</p>
+                  <p className="text-[11px] text-zinc-600">
+                    Choose categories, brands, and price ranges.
+                  </p>
                 </div>
 
                 <button
@@ -3192,11 +3235,9 @@ export default function Catalog() {
                     type="button"
                     className="text-[12px] font-medium text-fuchsia-700 hover:underline"
                     onClick={() => {
-                      startTransition(() => {
-                        setQuery("");
-                        setSearchFocused(false);
-                        setActiveIdx(0);
-                      });
+                      setQuery("");
+                      setSearchFocused(false);
+                      setActiveIdx(0);
                       clearFilters();
                     }}
                   >
@@ -3210,11 +3251,9 @@ export default function Catalog() {
                   <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() =>
-                      startTransition(() => {
-                        setSelectedCategories([]);
-                      })
-                    }
+                    onClick={() => {
+                      setSelectedCategories([]);
+                    }}
                     disabled={selectedCategories.length === 0}
                   >
                     Reset
@@ -3231,20 +3270,22 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${checked
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${
+                              checked
+                                ? "border-zinc-900 bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
-                                  ? "text-white/90 hover:bg-white/10"
-                                  : "text-zinc-600 hover:bg-black/5"
-                                  }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
+                                  checked
+                                    ? "text-white/90 hover:bg-white/10"
+                                    : "text-zinc-600 hover:bg-black/5"
+                                }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -3262,7 +3303,11 @@ export default function Catalog() {
                               <span className="truncate">{node.name}</span>
                             </button>
 
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            <span
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
+                            >
                               ({count})
                             </span>
                           </div>
@@ -3279,13 +3324,18 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                           >
                             <span className="truncate">{c.name}</span>
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            <span
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
+                            >
                               ({c.count})
                             </span>
                           </button>
@@ -3302,11 +3352,9 @@ export default function Catalog() {
                     <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
                     <button
                       className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                      onClick={() =>
-                        startTransition(() => {
-                          setSelectedBrands([]);
-                        })
-                      }
+                      onClick={() => {
+                        setSelectedBrands([]);
+                      }}
                       disabled={selectedBrands.length === 0}
                     >
                       Reset
@@ -3320,13 +3368,18 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                           >
                             <span className="truncate">{b.name}</span>
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            <span
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
+                            >
                               ({b.count})
                             </span>
                           </button>
@@ -3342,11 +3395,9 @@ export default function Catalog() {
                   <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() =>
-                      startTransition(() => {
-                        setSelectedBucketIdxs([]);
-                      })
-                    }
+                    onClick={() => {
+                      setSelectedBucketIdxs([]);
+                    }}
                     disabled={selectedBucketIdxs.length === 0}
                   >
                     Reset
@@ -3361,13 +3412,18 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                            checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                          }`}
                         >
                           <span>{bucket.label}</span>
-                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                          <span
+                            className={`ml-2 text-[11px] ${
+                              checked ? "text-white/90" : "text-zinc-600"
+                            }`}
+                          >
                             ({count})
                           </span>
                         </button>

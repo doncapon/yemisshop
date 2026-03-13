@@ -1,6 +1,6 @@
 // CatalogSettingsSection.tsx
 import React, { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import api from "../../api/client";
 
@@ -16,6 +16,26 @@ import AdminCatalogRequestsSection from "./AdminCatalogRequestsSection";
    Types
 ========================= */
 type BankVerificationStatus = "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED" | null;
+
+type SupplierAddress = {
+  id?: string | null;
+  houseNumber?: string | null;
+  streetName?: string | null;
+  postCode?: string | null;
+  town?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  lga?: string | null;
+  directionsNote?: string | null;
+  landmark?: string | null;
+  isValidated?: boolean | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  placeId?: string | null;
+  validatedAt?: string | null;
+  validationSource?: string | null;
+};
 
 type AdminSupplier = {
   id: string;
@@ -41,26 +61,47 @@ type AdminSupplier = {
   bankVerificationNote?: string | null;
   bankVerificationRequestedAt?: string | null;
   bankVerifiedAt?: string | null;
-};
 
-type SupplierFormValues = {
-  name: string;
-  type: "PHYSICAL" | "ONLINE";
-  status?: string;
-  contactEmail?: string | null;
-  whatsappPhone?: string | null;
+  userId?: string | null;
+  supplierId?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  registrationType?: string | null;
+  businessName?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  phone?: string | null;
+  email?: string | null;
 
-  apiBaseUrl?: string | null;
-  apiAuthType?: "NONE" | "BEARER" | "BASIC" | "" | null;
-  apiKey?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postcode?: string | null;
+  postalCode?: string | null;
+  zipCode?: string | null;
+  country?: string | null;
 
-  payoutMethod?: "SPLIT" | "TRANSFER" | "" | null;
-  bankCountry?: string | null;
-  bankCode?: string | null;
-  bankName?: string | null;
-  accountNumber?: string | null;
-  accountName?: string | null;
-  isPayoutEnabled?: boolean | null;
+  notes?: string | null;
+  kycStatus?: string | null;
+  verificationStatus?: string | null;
+  verifiedAt?: string | null;
+  approvedAt?: string | null;
+  rejectedAt?: string | null;
+  rejectionReason?: string | null;
+  isActive?: boolean | null;
+  isDeleted?: boolean | null;
+
+  registeredAddress?: SupplierAddress | null;
+  pickupAddress?: SupplierAddress | null;
+
+  productOffers?: number;
+  variantOffers?: number;
+  purchaseOrders?: number;
+  chosenOrderItems?: number;
+  deletable?: boolean;
+
+  [key: string]: any;
 };
 
 type AdminCategory = {
@@ -109,6 +150,49 @@ function useDebouncedValue<T>(value: T, delayMs = 150) {
     return () => window.clearTimeout(t);
   }, [value, delayMs]);
   return debounced;
+}
+
+function formatDateTime(v?: string | null) {
+  if (!v) return "—";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString();
+}
+
+function displayValue(v: any) {
+  if (v == null || v === "") return "—";
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  return String(v);
+}
+
+function maskSecret(v?: string | null) {
+  const s = String(v || "").trim();
+  if (!s) return "—";
+  if (s.length <= 4) return "••••";
+  return `${"•".repeat(Math.max(4, s.length - 4))}${s.slice(-4)}`;
+}
+
+function firstNonEmpty(...values: any[]) {
+  for (const v of values) {
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (s) return s;
+  }
+  return null;
+}
+
+function buildAddressLine1(addr?: SupplierAddress | null) {
+  if (!addr) return null;
+  return firstNonEmpty(
+    [addr.houseNumber, addr.streetName].filter(Boolean).join(" ").trim(),
+    addr.streetName,
+    addr.houseNumber
+  );
+}
+
+function buildAddressLine2(addr?: SupplierAddress | null) {
+  if (!addr) return null;
+  return firstNonEmpty(addr.landmark, addr.directionsNote, addr.lga, addr.town);
 }
 
 /* =========================
@@ -223,387 +307,416 @@ function BrandForm({
 }
 
 /* =========================
-   Supplier Form
+   Supplier View (read-only)
 ========================= */
-type BankOption = { country: string; code: string; name: string };
-
-const FALLBACK_BANKS: BankOption[] = [
-  { country: "NG", code: "044", name: "Access Bank" },
-  { country: "NG", code: "011", name: "First Bank of Nigeria" },
-  { country: "NG", code: "058", name: "Guaranty Trust Bank" },
-  { country: "NG", code: "221", name: "Stanbic IBTC Bank" },
-  { country: "NG", code: "232", name: "Sterling Bank" },
-  { country: "NG", code: "033", name: "United Bank for Africa" },
-  { country: "NG", code: "035", name: "Wema Bank" },
-];
-
-function SupplierForm({
-  editing,
-  onCancelEdit,
-  onCreate,
-  onUpdate,
+function ReadOnlyField({
+  label,
+  value,
+  mono,
 }: {
-  editing: AdminSupplier | null;
-  onCancelEdit: () => void;
-  onCreate: (payload: SupplierFormValues) => void;
-  onUpdate: (payload: SupplierFormValues & { id: string }) => void;
+  label: string;
+  value: any;
+  mono?: boolean;
 }) {
-  const banksQ = useQuery({
-    queryKey: ["admin", "banks"],
-    queryFn: async () => {
-      const { data } = await api.get<{ data: BankOption[] }>("/api/banks", {
-        withCredentials: true,
-      });
-      return Array.isArray(data?.data) && data.data.length > 0 ? data.data : FALLBACK_BANKS;
-    },
-    staleTime: 10 * 60 * 1000,
-    retry: 1,
-  });
-
-  const banks = banksQ.data ?? FALLBACK_BANKS;
-
-  const [values, setValues] = useState<SupplierFormValues>({
-    name: "",
-    type: "PHYSICAL",
-    status: "ACTIVE",
-    contactEmail: "",
-    whatsappPhone: "",
-    apiBaseUrl: "",
-    apiAuthType: "NONE",
-    apiKey: "",
-
-    payoutMethod: "",
-    bankCountry: "NG",
-    bankCode: "",
-    bankName: "",
-    accountNumber: "",
-    accountName: "",
-    isPayoutEnabled: false,
-  });
-
-  useEffect(() => {
-    if (!editing) return;
-    setValues({
-      name: editing.name ?? "",
-      type: editing.type ?? "PHYSICAL",
-      status: editing.status ?? "ACTIVE",
-      contactEmail: editing.contactEmail ?? "",
-      whatsappPhone: editing.whatsappPhone ?? "",
-      apiBaseUrl: editing.apiBaseUrl ?? "",
-      apiAuthType: editing.apiAuthType ?? "NONE",
-      apiKey: editing.apiKey ?? "",
-
-      payoutMethod: editing.payoutMethod ?? "",
-      bankCountry: editing.bankCountry ?? "NG",
-      bankCode: editing.bankCode ?? "",
-      bankName: editing.bankName ?? "",
-      accountNumber: editing.accountNumber ?? "",
-      accountName: editing.accountName ?? "",
-      isPayoutEnabled: !!editing.isPayoutEnabled,
-    });
-  }, [editing]);
-
-  const countryBanks = useMemo(
-    () => banks.filter((b) => (values.bankCountry || "NG") === b.country),
-    [banks, values.bankCountry]
+  return (
+    <div>
+      <label className="block text-xs text-ink-soft mb-1">{label}</label>
+      <div
+        className={`w-full border rounded-lg px-3 py-2 bg-zinc-50 text-sm min-h-[42px] flex items-center ${mono ? "font-mono" : ""
+          }`}
+      >
+        {displayValue(value)}
+      </div>
+    </div>
   );
+}
 
-  const emptyToNull = (v: any) => {
-    if (v === "") return null;
-    if (typeof v === "string") {
-      const t = v.trim();
-      return t === "" ? null : t;
-    }
-    return v ?? null;
-  };
+function SupplierViewPanel({
+  supplier,
+  onClose,
+}: {
+  supplier: AdminSupplier | null;
+  onClose: () => void;
+}) {
+  if (!supplier) return null;
 
-  const emptyToUndefined = (v: any) => {
-    if (v === "") return undefined;
-    if (typeof v === "string") {
-      const t = v.trim();
-      return t === "" ? undefined : t;
-    }
-    return v;
-  };
+  const registeredAddress = supplier.registeredAddress ?? null;
+  const pickupAddress = supplier.pickupAddress ?? null;
 
-  function buildSupplierApiPayload(values: SupplierFormValues): SupplierFormValues {
-    const type = values.type;
+  const registeredAddressLine1 =
+    firstNonEmpty(
+      supplier.addressLine1,
+      buildAddressLine1(registeredAddress)
+    ) ?? "—";
 
-    const payload: SupplierFormValues = {
-      name: (values.name || "").trim(),
-      type,
-      status: emptyToUndefined(values.status) ?? "ACTIVE",
+  const registeredAddressLine2 =
+    firstNonEmpty(
+      supplier.addressLine2,
+      buildAddressLine2(registeredAddress)
+    ) ?? "—";
 
-      contactEmail: emptyToNull(values.contactEmail),
-      whatsappPhone: emptyToNull(values.whatsappPhone),
+  const registeredCity =
+    firstNonEmpty(
+      supplier.city,
+      registeredAddress?.city,
+      registeredAddress?.town
+    ) ?? "—";
 
-      apiBaseUrl: type === "ONLINE" ? emptyToNull(values.apiBaseUrl) : null,
-      apiAuthType: type === "ONLINE" ? ((values.apiAuthType || "NONE") as any) : null,
-      apiKey: type === "ONLINE" ? emptyToNull(values.apiKey) : null,
+  const registeredState =
+    firstNonEmpty(
+      supplier.state,
+      registeredAddress?.state
+    ) ?? "—";
 
-      payoutMethod: (values.payoutMethod ? values.payoutMethod : null) as any,
-      bankCountry: emptyToNull(values.bankCountry) ?? "NG",
-      bankCode: emptyToNull(values.bankCode),
-      bankName: emptyToNull(values.bankName),
-      accountNumber: emptyToNull(values.accountNumber),
-      accountName: emptyToNull(values.accountName),
+  const registeredPostcode =
+    firstNonEmpty(
+      supplier.postcode,
+      supplier.postalCode,
+      supplier.zipCode,
+      registeredAddress?.postCode
+    ) ?? "—";
 
-      isPayoutEnabled: !!values.isPayoutEnabled,
-    };
+  const registeredCountry =
+    firstNonEmpty(
+      supplier.country,
+      registeredAddress?.country
+    ) ?? "—";
 
-    return payload;
-  }
+  const pickupAddressLine1 =
+    firstNonEmpty(buildAddressLine1(pickupAddress)) ?? "—";
 
-  function setBankByName(name: string) {
-    const match = countryBanks.find((b) => b.name === name);
-    setValues((v) => ({
-      ...v,
-      bankName: name || "",
-      bankCode: match?.code || "",
-    }));
-  }
+  const pickupAddressLine2 =
+    firstNonEmpty(buildAddressLine2(pickupAddress)) ?? "—";
 
-  function setBankByCode(code: string) {
-    const match = countryBanks.find((b) => b.code === code);
-    setValues((v) => ({
-      ...v,
-      bankCode: code || "",
-      bankName: match?.name || "",
-    }));
-  }
+  const pickupCity =
+    firstNonEmpty(pickupAddress?.city, pickupAddress?.town) ?? "—";
 
-  function submit() {
-    if (!values.name.trim()) {
-      alert("Supplier name is required");
-      return;
-    }
+  const pickupState =
+    firstNonEmpty(pickupAddress?.state) ?? "—";
 
-    const payload = buildSupplierApiPayload(values);
+  const pickupPostcode =
+    firstNonEmpty(pickupAddress?.postCode) ?? "—";
 
-    if (editing) onUpdate({ id: editing.id, ...payload });
-    else onCreate(payload);
-  }
+  const pickupCountry =
+    firstNonEmpty(pickupAddress?.country) ?? "—";
 
-  // lock bank edits when already pending/verified
-  const bankLocked =
-    !!editing && (editing.bankVerificationStatus === "VERIFIED" || editing.bankVerificationStatus === "PENDING");
+  const hiddenKeys = new Set([
+    "id",
+    "name",
+    "type",
+    "status",
+    "contactEmail",
+    "whatsappPhone",
+    "apiBaseUrl",
+    "apiAuthType",
+    "apiKey",
+    "payoutMethod",
+    "bankCountry",
+    "bankCode",
+    "bankName",
+    "accountNumber",
+    "accountName",
+    "isPayoutEnabled",
+    "bankVerificationStatus",
+    "bankVerificationNote",
+    "bankVerificationRequestedAt",
+    "bankVerifiedAt",
+    "userId",
+    "supplierId",
+    "createdAt",
+    "updatedAt",
+    "registrationType",
+    "businessName",
+    "firstName",
+    "lastName",
+    "phone",
+    "email",
+    "addressLine1",
+    "addressLine2",
+    "city",
+    "state",
+    "postcode",
+    "postalCode",
+    "zipCode",
+    "country",
+    "notes",
+    "kycStatus",
+    "verificationStatus",
+    "verifiedAt",
+    "approvedAt",
+    "rejectedAt",
+    "rejectionReason",
+    "isActive",
+    "isDeleted",
+    "registeredAddress",
+    "pickupAddress",
+  ]);
+
+  const extraEntries = Object.entries(supplier || {}).filter(([k, v]) => {
+    if (hiddenKeys.has(k)) return false;
+    if (typeof v === "function") return false;
+    return true;
+  });
 
   return (
     <div className="rounded-2xl border bg-white/95 p-4 md:p-6 mb-4 w-full">
-      <div className="flex items-center justify-between mb-3">
-        <h4 className="text-ink font-semibold">{editing ? "Edit Supplier" : "Add Supplier"}</h4>
-        {editing && (
-          <button className="text-sm text-zinc-600 hover:underline" onClick={onCancelEdit}>
-            Cancel edit
-          </button>
-        )}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h4 className="text-ink font-semibold">View Supplier</h4>
+          <p className="text-xs text-zinc-500">
+            Read-only supplier profile for onboarding, review and verification checks.
+          </p>
+        </div>
+
+        <button className="text-sm text-zinc-600 hover:underline" onClick={onClose}>
+          Close
+        </button>
       </div>
 
       <div className="grid grid-cols-12 gap-3">
         <div className="col-span-12 md:col-span-6">
-          <label className="block text-xs text-ink-soft mb-1">Name</label>
-          <input
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.name}
-            onChange={(e) => setValues({ ...values, name: e.target.value })}
-            placeholder="Supplier name"
-          />
+          <ReadOnlyField label="Supplier Name" value={supplier.name} />
         </div>
 
         <div className="col-span-6 md:col-span-3">
-          <label className="block text-xs text-ink-soft mb-1">Type</label>
-          <select
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.type}
-            onChange={(e) => setValues({ ...values, type: e.target.value as any })}
-          >
-            <option value="PHYSICAL">PHYSICAL</option>
-            <option value="ONLINE">ONLINE</option>
-          </select>
+          <ReadOnlyField label="Type" value={supplier.type} />
         </div>
 
         <div className="col-span-6 md:col-span-3">
-          <label className="block text-xs text-ink-soft mb-1">Status</label>
-          <select
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.status || "ACTIVE"}
-            onChange={(e) => setValues({ ...values, status: e.target.value })}
-          >
-            <option value="ACTIVE">ACTIVE</option>
-            <option value="INACTIVE">INACTIVE</option>
-          </select>
+          <ReadOnlyField label="Status" value={supplier.status} />
         </div>
 
         <div className="col-span-12 md:col-span-6">
-          <label className="block text-xs text-ink-soft mb-1">Contact Email</label>
-          <input
-            type="email"
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.contactEmail ?? ""}
-            onChange={(e) => setValues({ ...values, contactEmail: e.target.value })}
-            placeholder="e.g. vendors@company.com"
-          />
+          <ReadOnlyField label="Contact Email" value={supplier.contactEmail ?? supplier.email} />
         </div>
 
         <div className="col-span-12 md:col-span-6">
-          <label className="block text-xs text-ink-soft mb-1">WhatsApp Phone</label>
-          <input
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.whatsappPhone ?? ""}
-            onChange={(e) => setValues({ ...values, whatsappPhone: e.target.value })}
-            placeholder="+2348xxxxxxxxx"
-          />
+          <ReadOnlyField label="WhatsApp / Phone" value={supplier.whatsappPhone ?? supplier.phone} />
         </div>
 
-        {values.type === "ONLINE" && (
-          <>
-            <div className="col-span-12 md:col-span-4">
-              <label className="block text-xs text-ink-soft mb-1">API Base URL</label>
-              <input
-                className="w-full border rounded-lg px-3 py-2"
-                value={values.apiBaseUrl ?? ""}
-                onChange={(e) => setValues({ ...values, apiBaseUrl: e.target.value })}
-                placeholder="https://api.supplier.com"
-              />
-            </div>
-            <div className="col-span-6 md:col-span-4">
-              <label className="block text-xs text-ink-soft mb-1">API Auth Type</label>
-              <select
-                className="w-full border rounded-lg px-3 py-2"
-                value={values.apiAuthType ?? "NONE"}
-                onChange={(e) => setValues({ ...values, apiAuthType: e.target.value as any })}
-              >
-                <option value="NONE">NONE</option>
-                <option value="BEARER">BEARER</option>
-                <option value="BASIC">BASIC</option>
-              </select>
-            </div>
-            <div className="col-span-6 md:col-span-4">
-              <label className="block text-xs text-ink-soft mb-1">API Key / Token</label>
-              <input
-                className="w-full border rounded-lg px-3 py-2"
-                value={values.apiKey ?? ""}
-                onChange={(e) => setValues({ ...values, apiKey: e.target.value })}
-                placeholder="••••••••••••"
-              />
-            </div>
-          </>
-        )}
+        <div className="col-span-12 md:col-span-4">
+          <ReadOnlyField label="Supplier ID" value={supplier.id} mono />
+        </div>
 
-        <div className="col-span-6 md:col-span-4">
-          <label className="block text-xs text-ink-soft mb-1">Payout Method</label>
-          <select
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.payoutMethod ?? ""}
-            onChange={(e) => setValues({ ...values, payoutMethod: (e.target.value || "") as any })}
-          >
-            <option value="">—</option>
-            <option value="TRANSFER">TRANSFER</option>
-            <option value="SPLIT">SPLIT</option>
-          </select>
+        <div className="col-span-12 md:col-span-4">
+          <ReadOnlyField label="Linked User ID" value={supplier.userId} mono />
+        </div>
+
+        <div className="col-span-12 md:col-span-4">
+          <ReadOnlyField label="Registration Type" value={supplier.registrationType} />
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Business Name" value={supplier.businessName} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="First Name" value={supplier.firstName} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Last Name" value={supplier.lastName} />
+        </div>
+
+        <div className="col-span-12 md:col-span-4">
+          <ReadOnlyField label="KYC Status" value={supplier.kycStatus} />
+        </div>
+
+        <div className="col-span-12 md:col-span-4">
+          <ReadOnlyField label="Verification Status" value={supplier.verificationStatus} />
+        </div>
+
+        <div className="col-span-12 md:col-span-4">
+          <ReadOnlyField label="Bank Verification Status" value={supplier.bankVerificationStatus || "UNVERIFIED"} />
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Bank Verification Note" value={supplier.bankVerificationNote} />
+        </div>
+
+        <div className="col-span-12 md:col-span-3">
+          <ReadOnlyField label="Bank Verification Requested At" value={formatDateTime(supplier.bankVerificationRequestedAt)} />
+        </div>
+
+        <div className="col-span-12 md:col-span-3">
+          <ReadOnlyField label="Bank Verified At" value={formatDateTime(supplier.bankVerifiedAt)} />
         </div>
 
         <div className="col-span-6 md:col-span-4">
-          <label className="block text-xs text-ink-soft mb-1">Bank Country</label>
-          <select
-            disabled={bankLocked}
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.bankCountry ?? "NG"}
-            onChange={(e) =>
-              setValues((v: any) => ({
-                ...v,
-                bankCountry: e.target.value || "NG",
-                bankCode: "",
-                bankName: "",
-              }))
-            }
-          >
-            <option value="NG">Nigeria (NG)</option>
-          </select>
+          <ReadOnlyField label="Payout Method" value={supplier.payoutMethod} />
         </div>
 
-        <div className="col-span-12 md:col-span-4 flex items-end">
-          <div className="text-xs text-zinc-500">{banksQ.isFetching ? "Loading banks…" : ""}</div>
+        <div className="col-span-6 md:col-span-4">
+          <ReadOnlyField label="Payout Enabled" value={supplier.isPayoutEnabled} />
+        </div>
+
+        <div className="col-span-12 md:col-span-4">
+          <ReadOnlyField label="Bank Country" value={supplier.bankCountry} />
         </div>
 
         <div className="col-span-12 md:col-span-6">
-          <label className="block text-xs text-ink-soft mb-1">Bank Name</label>
-          <select
-            disabled={bankLocked}
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.bankName ?? ""}
-            onChange={(e) => setBankByName(e.target.value)}
-          >
-            <option value="">Select bank…</option>
-            {countryBanks.map((b) => (
-              <option key={`${b.country}-${b.code}`} value={b.name}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+          <ReadOnlyField label="Bank Name" value={supplier.bankName} />
         </div>
 
         <div className="col-span-12 md:col-span-6">
-          <label className="block text-xs text-ink-soft mb-1">Bank Code</label>
-          <select
-            disabled={bankLocked}
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.bankCode ?? ""}
-            onChange={(e) => setBankByCode(e.target.value)}
-          >
-            <option value="">Select bank…</option>
-            {countryBanks.map((b) => (
-              <option key={`${b.country}-${b.code}`} value={b.code}>
-                {b.code} — {b.name}
-              </option>
-            ))}
-          </select>
+          <ReadOnlyField label="Bank Code" value={supplier.bankCode} mono />
         </div>
 
-        <div className="col-span-12 md:col-span-8">
-          <label className="block text-xs text-ink-soft mb-1">Account Number</label>
-          <input
-            disabled={bankLocked}
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.accountNumber ?? ""}
-            onChange={(e) => setValues({ ...values, accountNumber: e.target.value })}
-            placeholder="0123456789"
-            inputMode="numeric"
-          />
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Account Number" value={supplier.accountNumber} mono />
         </div>
 
-        <div className="col-span-12 md:col-span-8">
-          <label className="block text-xs text-ink-soft mb-1">Account Name</label>
-          <input
-            disabled={bankLocked}
-            className="w-full border rounded-lg px-3 py-2"
-            value={values.accountName ?? ""}
-            onChange={(e) => setValues({ ...values, accountName: e.target.value })}
-            placeholder="e.g. ACME DISTRIBUTION LTD"
-          />
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Account Name" value={supplier.accountName} />
         </div>
 
-        <div className="col-span-12 md:col-span-4 flex items-end">
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={!!values.isPayoutEnabled}
-              onChange={(e) => setValues({ ...values, isPayoutEnabled: e.target.checked })}
-            />
-            Enable payouts for this supplier
-          </label>
+        <div className="col-span-12 md:col-span-4">
+          <ReadOnlyField label="API Base URL" value={supplier.apiBaseUrl} />
         </div>
-      </div>
 
-      <div className="mt-4 flex flex-wrap gap-2 justify-end">
-        {editing && (
-          <button className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5" onClick={onCancelEdit}>
-            Cancel
-          </button>
+        <div className="col-span-6 md:col-span-4">
+          <ReadOnlyField label="API Auth Type" value={supplier.apiAuthType} />
+        </div>
+
+        <div className="col-span-6 md:col-span-4">
+          <ReadOnlyField label="API Key / Token" value={maskSecret(supplier.apiKey)} mono />
+        </div>
+
+        {/* Registered address */}
+        <div className="col-span-12 mt-2">
+          <div className="text-sm font-semibold text-zinc-800">Registered Address</div>
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Address Line 1" value={registeredAddressLine1} />
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Address Line 2" value={registeredAddressLine2} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="City" value={registeredCity} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="State" value={registeredState} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Postcode" value={registeredPostcode} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Country" value={registeredCountry} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Town" value={registeredAddress?.town} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="LGA" value={registeredAddress?.lga} />
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Landmark" value={registeredAddress?.landmark} />
+        </div>
+
+        <div className="col-span-12">
+          <label className="block text-xs text-ink-soft mb-1">Registered Address Directions</label>
+          <div className="w-full border rounded-lg px-3 py-2 bg-zinc-50 text-sm min-h-[60px] whitespace-pre-wrap">
+            {displayValue(registeredAddress?.directionsNote)}
+          </div>
+        </div>
+
+        {/* Pickup address */}
+        <div className="col-span-12 mt-2">
+          <div className="text-sm font-semibold text-zinc-800">Pickup Address</div>
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Pickup Address Line 1" value={pickupAddressLine1} />
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Pickup Address Line 2" value={pickupAddressLine2} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Pickup City" value={pickupCity} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Pickup State" value={pickupState} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Pickup Postcode" value={pickupPostcode} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Pickup Country" value={pickupCountry} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Pickup Town" value={pickupAddress?.town} />
+        </div>
+
+        <div className="col-span-6 md:col-span-3">
+          <ReadOnlyField label="Pickup LGA" value={pickupAddress?.lga} />
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Pickup Landmark" value={pickupAddress?.landmark} />
+        </div>
+
+        <div className="col-span-12">
+          <label className="block text-xs text-ink-soft mb-1">Pickup Address Directions</label>
+          <div className="w-full border rounded-lg px-3 py-2 bg-zinc-50 text-sm min-h-[60px] whitespace-pre-wrap">
+            {displayValue(pickupAddress?.directionsNote)}
+          </div>
+        </div>
+
+        <div className="col-span-12 md:col-span-3">
+          <ReadOnlyField label="Created At" value={formatDateTime(supplier.createdAt)} />
+        </div>
+
+        <div className="col-span-12 md:col-span-3">
+          <ReadOnlyField label="Updated At" value={formatDateTime(supplier.updatedAt)} />
+        </div>
+
+        <div className="col-span-12 md:col-span-3">
+          <ReadOnlyField label="Verified At" value={formatDateTime(supplier.verifiedAt)} />
+        </div>
+
+        <div className="col-span-12 md:col-span-3">
+          <ReadOnlyField label="Approved At" value={formatDateTime(supplier.approvedAt)} />
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Rejected At" value={formatDateTime(supplier.rejectedAt)} />
+        </div>
+
+        <div className="col-span-12 md:col-span-6">
+          <ReadOnlyField label="Rejection Reason" value={supplier.rejectionReason} />
+        </div>
+
+        <div className="col-span-12">
+          <label className="block text-xs text-ink-soft mb-1">Notes</label>
+          <div className="w-full border rounded-lg px-3 py-2 bg-zinc-50 text-sm min-h-[80px] whitespace-pre-wrap">
+            {displayValue(supplier.notes)}
+          </div>
+        </div>
+
+        {extraEntries.length > 0 && (
+          <div className="col-span-12">
+            <label className="block text-xs text-ink-soft mb-1">Additional supplier data</label>
+            <pre className="w-full border rounded-lg px-3 py-3 bg-zinc-50 text-xs overflow-auto whitespace-pre-wrap">
+              {JSON.stringify(Object.fromEntries(extraEntries), null, 2)}
+            </pre>
+          </div>
         )}
-        <button className="px-3 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90" onClick={submit}>
-          {editing ? "Update Supplier" : "Add Supplier"}
-        </button>
       </div>
     </div>
   );
@@ -611,22 +724,15 @@ function SupplierForm({
 
 /* =========================
    Suppliers Section (memoized)
-   - IMPORTANT: keeps search/pagination local so typing does NOT re-render the entire page
 ========================= */
 const SuppliersSection = React.memo(function SuppliersSection(props: {
   canEdit: boolean;
   suppliers: AdminSupplier[];
 
-  editingSupplier: AdminSupplier | null;
-  setEditingSupplier: (v: AdminSupplier | null) => void;
+  viewingSupplier: AdminSupplier | null;
+  setViewingSupplier: (v: AdminSupplier | null) => void;
 
-  supplierFormKey: number;
-  setSupplierFormKey: React.Dispatch<React.SetStateAction<number>>;
-
-  createSupplier: any;
-  updateSupplier: any;
   deleteSupplier: any;
-
   bankVerifyM: any;
 
   qc: ReturnType<typeof useQueryClient>;
@@ -634,15 +740,10 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
   const {
     canEdit,
     suppliers,
-    editingSupplier,
-    setEditingSupplier,
-    supplierFormKey,
-    setSupplierFormKey,
-    createSupplier,
-    updateSupplier,
+    viewingSupplier,
+    setViewingSupplier,
     deleteSupplier,
     bankVerifyM,
-    qc,
   } = props;
 
   const [supplierSearch, setSupplierSearch] = useState("");
@@ -666,6 +767,10 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
         s.accountNumber,
         s.accountName,
         s.payoutMethod,
+        s.registrationType,
+        s.businessName,
+        s.kycStatus,
+        s.verificationStatus,
       ]
         .filter(Boolean)
         .join(" ")
@@ -693,28 +798,10 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
 
   return (
     <div style={{ overflowAnchor: "none" } as any}>
-      {canEdit && (
-        <SupplierForm
-          key={supplierFormKey}
-          editing={editingSupplier}
-          onCancelEdit={() => setEditingSupplier(null)}
-          onCreate={(payload) =>
-            createSupplier.mutate(payload, {
-              onSuccess: () => {
-                setEditingSupplier(null);
-                setSupplierFormKey((k) => k + 1);
-                qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
-              },
-            })
-          }
-          onUpdate={(payload: any) =>
-            updateSupplier.mutate(payload, {
-              onSuccess: () => {
-                setEditingSupplier(null);
-                qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
-              },
-            })
-          }
+      {viewingSupplier && (
+        <SupplierViewPanel
+          supplier={viewingSupplier}
+          onClose={() => setViewingSupplier(null)}
         />
       )}
 
@@ -809,6 +896,18 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
               const hasCoreBank = !!s.bankCode && !!s.accountNumber;
               const isVerifiableStatus = status !== "VERIFIED";
               const canVerify = isVerifiableStatus && hasCoreBank && !bankVerifyM.isPending;
+              const deletable =
+                s.deletable === true ||
+                (
+                  Number(s.productOffers ?? 0) === 0 &&
+                  Number(s.variantOffers ?? 0) === 0 &&
+                  Number(s.purchaseOrders ?? 0) === 0 &&
+                  Number(s.chosenOrderItems ?? 0) === 0
+                );
+
+              const deleteReason = !deletable
+                ? `Cannot delete: linked records exist (product offers: ${Number(s.productOffers ?? 0)}, variant offers: ${Number(s.variantOffers ?? 0)}, purchase orders: ${Number(s.purchaseOrders ?? 0)}, chosen order items: ${Number(s.chosenOrderItems ?? 0)})`
+                : "Delete unused supplier";
 
               const missingReason = !hasCoreBank
                 ? "Missing bankCode/accountNumber (bankCode often not persisted if supplier /me schema doesn't include it)."
@@ -840,29 +939,16 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
                       <div className="inline-flex flex-wrap gap-2 justify-end">
                         <button
                           type="button"
-                          onClick={() =>
-                            updateSupplier.mutate({
-                              id: s.id,
-                              status: s.status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
-                            })
-                          }
-                          className="px-2 py-1 rounded border"
-                        >
-                          {s.status === "ACTIVE" ? "Disable" : "Enable"}
-                        </button>
-
-                        <button
-                          type="button"
                           onClick={async () => {
                             const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${s.id}`, {
                               withCredentials: true,
                             });
-                            setEditingSupplier(data.data);
+                            setViewingSupplier(data.data);
                           }}
                           className="px-2 py-1 rounded border"
-                          title="Edit supplier"
+                          title="View supplier"
                         >
-                          View/Edit
+                          View
                         </button>
 
                         {status !== "VERIFIED" && (
@@ -900,14 +986,37 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
 
                         <button
                           type="button"
-                          onClick={() => deleteSupplier.mutate(s.id)}
-                          className="px-2 py-1 rounded bg-rose-600 text-white"
+                          disabled={!deletable || deleteSupplier.isPending}
+                          onClick={() => {
+                            if (!deletable) return;
+
+                            const ok = window.confirm(
+                              "Delete this supplier permanently? This only works when the supplier has no linked offers, purchase orders, or chosen order items."
+                            );
+                            if (!ok) return;
+
+                            deleteSupplier.mutate(s.id);
+                          }}
+                          className={`px-2 py-1 rounded ${deletable
+                            ? "bg-rose-600 text-white hover:bg-rose-700"
+                            : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                            }`}
+                          title={deleteReason}
                         >
-                          Delete
+                          {deletable ? "Delete" : "In use"}
                         </button>
+                        {!deletable && (
+                          <div className="text-[11px] text-zinc-500 mt-1">
+                            Offers: {Number(s.productOffers ?? 0) + Number(s.variantOffers ?? 0)} •
+                            POs: {Number(s.purchaseOrders ?? 0)} •
+                            Order items: {Number(s.chosenOrderItems ?? 0)}
+                          </div>
+                        )}
                       </div>
+
                     )}
                   </td>
+
                 </tr>
               );
             })}
@@ -930,7 +1039,7 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
    Main Section
 ========================= */
 export function CatalogSettingsSection(props: {
-  token?: string | null; // kept for compatibility; cookie auth doesn't use it
+  token?: string | null;
   canEdit: boolean;
 
   categoriesQ: any;
@@ -954,7 +1063,6 @@ export function CatalogSettingsSection(props: {
   updateAttrValue: any;
   deleteAttrValue: any;
 
-  /* Suppliers */
   suppliersQ: any;
   createSupplier: any;
   updateSupplier: any;
@@ -985,8 +1093,6 @@ export function CatalogSettingsSection(props: {
     deleteAttrValue,
 
     suppliersQ,
-    createSupplier,
-    updateSupplier,
     deleteSupplier,
   } = props;
 
@@ -997,8 +1103,7 @@ export function CatalogSettingsSection(props: {
   const attributeUsage: Record<string, number> = usageQ.data?.attributes || {};
   const brandUsage: Record<string, number> = usageQ.data?.brands || {};
 
-  const [editingSupplier, setEditingSupplier] = useState<AdminSupplier | null>(null);
-  const [supplierFormKey, setSupplierFormKey] = useState(1);
+  const [viewingSupplier, setViewingSupplier] = useState<AdminSupplier | null>(null);
 
   function SectionCard({
     title,
@@ -1032,7 +1137,6 @@ export function CatalogSettingsSection(props: {
     );
   }
 
-  // --- focus/anchor guards (stop global hotkeys + # anchors) ---
   const stopHashNav = (evt: React.SyntheticEvent) => {
     const el = (evt.target as HTMLElement)?.closest?.('a[href="#"],a[href=""]');
     if (el) {
@@ -1060,11 +1164,11 @@ export function CatalogSettingsSection(props: {
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
 
-      if (editingSupplier?.id) {
-        const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${editingSupplier.id}`, {
+      if (viewingSupplier?.id) {
+        const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${viewingSupplier.id}`, {
           withCredentials: true,
         });
-        setEditingSupplier(data.data);
+        setViewingSupplier(data.data);
       }
 
       openModal({ title: "Bank verification updated", message: "Supplier bank verification status updated." });
@@ -1074,7 +1178,6 @@ export function CatalogSettingsSection(props: {
     },
   });
 
-  // --- isolated, memoized mini-adder: prevents remount/focus loss ---
   const AttributeValueAdder = React.memo(function AttributeValueAdder({
     attributeId,
     onCreate,
@@ -1145,17 +1248,13 @@ export function CatalogSettingsSection(props: {
         className="xl:col-span-3"
         disableAnchor
         title="Suppliers"
-        subtitle="Manage suppliers available to assign to products"
+        subtitle="View supplier onboarding and verification details"
       >
         <SuppliersSection
           canEdit={canEdit}
           suppliers={(suppliersQ.data ?? []) as AdminSupplier[]}
-          editingSupplier={editingSupplier}
-          setEditingSupplier={setEditingSupplier}
-          supplierFormKey={supplierFormKey}
-          setSupplierFormKey={setSupplierFormKey}
-          createSupplier={createSupplier}
-          updateSupplier={updateSupplier}
+          viewingSupplier={viewingSupplier}
+          setViewingSupplier={setViewingSupplier}
           deleteSupplier={deleteSupplier}
           bankVerifyM={bankVerifyM}
           qc={qc}
@@ -1224,9 +1323,8 @@ export function CatalogSettingsSection(props: {
                           <button
                             type="button"
                             onClick={() => used === 0 && deleteCategory.mutate(c.id)}
-                            className={`px-2 py-1 rounded ${
-                              used === 0 ? "bg-rose-600 text-white" : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
-                            }`}
+                            className={`px-2 py-1 rounded ${used === 0 ? "bg-rose-600 text-white" : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+                              }`}
                             disabled={used > 0}
                             title={used > 0 ? "Cannot delete: category is in use" : "Delete category"}
                           >
@@ -1289,9 +1387,8 @@ export function CatalogSettingsSection(props: {
                           <button
                             type="button"
                             onClick={() => used === 0 && deleteBrand.mutate(b.id)}
-                            className={`px-2 py-1 rounded ${
-                              used === 0 ? "bg-rose-600 text-white" : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
-                            }`}
+                            className={`px-2 py-1 rounded ${used === 0 ? "bg-rose-600 text-white" : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+                              }`}
                             disabled={used > 0}
                             title={used > 0 ? "Cannot delete: brand is in use" : "Delete brand"}
                           >
@@ -1353,9 +1450,8 @@ export function CatalogSettingsSection(props: {
                       <button
                         type="button"
                         onClick={() => used === 0 && deleteAttribute.mutate(a.id)}
-                        className={`px-2 py-1 rounded ${
-                          used === 0 ? "bg-rose-600 text-white" : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
-                        }`}
+                        className={`px-2 py-1 rounded ${used === 0 ? "bg-rose-600 text-white" : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+                          }`}
                         disabled={used > 0}
                         title={used > 0 ? "Cannot delete: attribute is in use" : "Delete attribute"}
                       >

@@ -767,11 +767,16 @@ function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
 
-/** 🔢 5% markup based on supplier offer */
-const SUPPLIER_MARKUP = 1.05;
-function applySupplierMarkup(n: number | null | undefined): number | null {
+/**
+ * Supplier price pass-through:
+ * product retailPrice = supplier basePrice
+ * variant retailPrice = supplier unitPrice
+ * no markup added here.
+ */
+function useSupplierPriceDirect(n: number | null | undefined): number | null {
   if (n == null) return null;
-  const raw = n * SUPPLIER_MARKUP;
+  const raw = Number(n);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
   return Math.round(raw * 100) / 100;
 }
 
@@ -1467,7 +1472,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       null;
 
     const bestSupplierBasePrice = bestBaseByProductId.get(String(p.id)) ?? null;
-    const baseRetailFromSupplier = applySupplierMarkup(bestSupplierBasePrice);
+    const baseRetailFromSupplier = useSupplierPriceDirect(bestSupplierBasePrice);
 
     let retailPrice = p.retailPrice != null ? Number(p.retailPrice) : null;
     const autoPrice = p.autoPrice != null ? Number(p.autoPrice) : null;
@@ -1502,7 +1507,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
         for (const v of variantsArr) {
           const bestUnit = v?.id ? bestUnitByVariantId.get(String(v.id)) ?? null : null;
           const effectiveUnit = bestUnit ?? bestSupplierBasePrice ?? null;
-          const variantRetail = applySupplierMarkup(effectiveUnit);
+          const variantRetail = useSupplierPriceDirect(effectiveUnit);
 
           v.bestSupplierUnitPrice = effectiveUnit;
 
@@ -3067,8 +3072,8 @@ router.get(
         }
       }
 
-      const baseRetailFromSupplier = applySupplierMarkup(bestSupplierBasePrice);
-      const cheapestVariantRetailPrice = applySupplierMarkup(cheapestVariantUnitPrice);
+      const baseRetailFromSupplier = useSupplierPriceDirect(bestSupplierBasePrice);
+      const cheapestVariantRetailPrice = useSupplierPriceDirect(cheapestVariantUnitPrice);
 
       // attach to product
       out.bestSupplierBasePrice = bestSupplierBasePrice;
@@ -3089,7 +3094,7 @@ router.get(
           const bestUnit = vid ? bestUnitByVariantId.get(vid) ?? null : null;
 
           const effectiveUnit = bestUnit ?? bestSupplierBasePrice ?? null;
-          const variantRetail = applySupplierMarkup(effectiveUnit);
+          const variantRetail = useSupplierPriceDirect(effectiveUnit);
 
           v.bestSupplierUnitPrice = effectiveUnit;
 

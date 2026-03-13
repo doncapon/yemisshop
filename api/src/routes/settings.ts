@@ -116,12 +116,20 @@ router.get("/public", async (_req, res) => {
       (await readSetting("markupPercent")) ??
       (await readSetting("platformMarginPercent"));
 
+        const minMarginNGNRaw =
+      (await readSetting("minMarginNGN"));
+              const maxMarginPctRaw =
+      (await readSetting("maxMarginPct"));
+
     const baseServiceFeeNGN = toNumber(baseRaw, 0);
     const commsUnitCostNGN = toNumber(unitRaw, 0);
     const taxMode = toTaxMode(modeRaw);
     const taxRatePct = toNumber(rateRaw, 0);
 
     const marginPercent = Math.max(0, toNumber(marginRaw, 0));
+    const minMarginNGN = Math.max(0, toNumber(minMarginNGNRaw, 0));
+
+    const maxMarginPercent = Math.max(0, toNumber(maxMarginPctRaw, 0));
 
     // ✅ DB-only runtime flags (no env)
     const { shippingEnabled, shippingMode } = await resolveShippingFlags();
@@ -135,6 +143,8 @@ router.get("/public", async (_req, res) => {
       // ✅ include BOTH names for compatibility
       marginPercent,
       pricingMarkupPercent: marginPercent,
+      minMarginNGN,
+      maxMarginPercent,
 
       // ✅ NEW flags for UI
       shippingEnabled,

@@ -58,6 +58,203 @@ const toUndef = <T = any>(v: T | undefined | null): T | undefined =>
 const toNullablePatch = <T = any>(v: T | undefined | null): T | null | undefined =>
   v === "" || v === undefined ? undefined : (v as any);
 
+function toIsoDateOnly(v: any): string | null {
+  if (!v) return null;
+  try {
+    const d = v instanceof Date ? v : new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return null;
+  }
+}
+
+/* ---------------- shared admin supplier DTO ---------------- */
+/**
+ * Keep admin supplier details aligned with supplier.ts so the admin
+ * "View Supplier" screen can show the same onboarding/profile data.
+ */
+
+const supplierAdminSelect = {
+  id: true,
+  name: true,
+  type: true,
+
+  contactEmail: true,
+  whatsappPhone: true,
+
+  legalName: true,
+  registeredBusinessName: true,
+  registrationNumber: true,
+  registrationType: true,
+  registrationDate: true,
+  registrationCountryCode: true,
+  registryAuthorityId: true,
+
+  registryAuthority: {
+    select: {
+      id: true,
+      countryCode: true,
+      code: true,
+      name: true,
+      websiteUrl: true,
+      isActive: true,
+    },
+  },
+
+  natureOfBusiness: true,
+
+  status: true,
+  kycStatus: true,
+  kycApprovedAt: true,
+  kycCheckedAt: true,
+  kycRejectedAt: true,
+  kycRejectionReason: true,
+
+  bankCountry: true,
+  bankCode: true,
+  bankName: true,
+  accountNumber: true,
+  accountName: true,
+
+  bankVerificationStatus: true,
+  bankVerificationNote: true,
+  bankVerificationRequestedAt: true,
+  bankVerifiedAt: true,
+  bankVerifiedById: true,
+
+  pickupContactName: true,
+  pickupContactPhone: true,
+  pickupInstructions: true,
+  shippingEnabled: true,
+  shipsNationwide: true,
+  supportsDoorDelivery: true,
+  supportsPickupPoint: true,
+
+  registeredAddressId: true,
+  pickupAddressId: true,
+  registeredAddress: true,
+  pickupAddress: true,
+
+  apiBaseUrl: true,
+  apiAuthType: true,
+  apiKey: true,
+
+  payoutMethod: true,
+  isPayoutEnabled: true,
+  paystackRecipientCode: true,
+  paystackSubaccountCode: true,
+
+  userId: true,
+  user: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+    },
+  },
+} as const;
+
+function toAdminSupplierDto(s: any) {
+  return {
+    id: s.id,
+    supplierId: s.id,
+
+    name: s.name,
+    businessName: s.name,
+
+    type: s.type ?? null,
+    supplierType: s.type ?? null,
+
+    contactEmail: s.contactEmail ?? s.user?.email ?? null,
+    email: s.contactEmail ?? s.user?.email ?? null,
+
+    whatsappPhone: s.whatsappPhone ?? s.user?.phone ?? null,
+    contactPhone: s.whatsappPhone ?? s.user?.phone ?? null,
+
+    legalName: s.legalName ?? null,
+    registeredBusinessName: s.registeredBusinessName ?? null,
+    registrationNumber: s.registrationNumber ?? null,
+    registrationType: s.registrationType ?? null,
+    registrationDate: toIsoDateOnly(s.registrationDate),
+    registrationCountryCode: s.registrationCountryCode ?? null,
+
+    registryAuthorityId: s.registryAuthorityId ?? null,
+
+    registryAuthority: s.registryAuthority
+      ? {
+        id: s.registryAuthority.id,
+        countryCode: s.registryAuthority.countryCode ?? null,
+        code: s.registryAuthority.code ?? null,
+        name: s.registryAuthority.name ?? null,
+        websiteUrl: s.registryAuthority.websiteUrl ?? null,
+        isActive: s.registryAuthority.isActive ?? null,
+      }
+      : null,
+
+    natureOfBusiness: s.natureOfBusiness ?? null,
+
+    status: s.status ?? null,
+    kycStatus: s.kycStatus ?? null,
+    kycApprovedAt: s.kycApprovedAt ?? null,
+    kycCheckedAt: s.kycCheckedAt ?? null,
+    kycRejectedAt: s.kycRejectedAt ?? null,
+    kycRejectionReason: s.kycRejectionReason ?? null,
+
+    bankCountry: s.bankCountry ?? null,
+    bankCode: s.bankCode ?? null,
+    bankName: s.bankName ?? null,
+    accountName: s.accountName ?? null,
+    accountNumber: s.accountNumber ?? null,
+
+    bankVerificationStatus: s.bankVerificationStatus ?? null,
+    bankVerificationNote: s.bankVerificationNote ?? null,
+    bankVerificationRequestedAt: s.bankVerificationRequestedAt ?? null,
+    bankVerifiedAt: s.bankVerifiedAt ?? null,
+    bankVerifiedById: s.bankVerifiedById ?? null,
+
+    pickupContactName: s.pickupContactName ?? null,
+    pickupContactPhone: s.pickupContactPhone ?? null,
+    pickupInstructions: s.pickupInstructions ?? null,
+    shippingEnabled: s.shippingEnabled ?? null,
+    shipsNationwide: s.shipsNationwide ?? null,
+    supportsDoorDelivery: s.supportsDoorDelivery ?? null,
+    supportsPickupPoint: s.supportsPickupPoint ?? null,
+
+    registeredAddress: s.registeredAddress ?? null,
+    pickupAddress: s.pickupAddress ?? null,
+
+    apiBaseUrl: s.apiBaseUrl ?? null,
+    apiAuthType: s.apiAuthType ?? null,
+    apiKey: s.apiKey ?? null,
+
+    payoutMethod: s.payoutMethod ?? null,
+    isPayoutEnabled: s.isPayoutEnabled ?? null,
+    paystackRecipientCode: s.paystackRecipientCode ?? null,
+    paystackSubaccountCode: s.paystackSubaccountCode ?? null,
+
+    user: s.user
+      ? {
+        id: s.user.id,
+        firstName: s.user.firstName ?? null,
+        lastName: s.user.lastName ?? null,
+        contactFirstName: s.user.firstName ?? null,
+        contactLastName: s.user.lastName ?? null,
+        email: s.user.email ?? null,
+        phone: s.user.phone ?? null,
+        contactPhone: s.user.phone ?? s.whatsappPhone ?? null,
+      }
+      : null,
+
+    firstName: s.user?.firstName ?? null,
+    lastName: s.user?.lastName ?? null,
+    contactFirstName: s.user?.firstName ?? null,
+    contactLastName: s.user?.lastName ?? null,
+  };
+}
+
 /**
  * New offers setup:
  * - SupplierProductOffer (base price per product)
@@ -67,11 +264,10 @@ const toNullablePatch = <T = any>(v: T | undefined | null): T | null | undefined
  */
 async function supplierUsageCounts(supplierId: string) {
   const [productOffers, variantOffers, purchaseOrders, chosenOrderItems] = await Promise.all([
-    // Offers are now tied to the product, and Product has supplierId
     prisma.supplierProductOffer.count({
       where: {
         product: {
-          supplierId, // Product.supplierId
+          supplierId,
         },
       },
     }),
@@ -79,7 +275,7 @@ async function supplierUsageCounts(supplierId: string) {
     prisma.supplierVariantOffer.count({
       where: {
         product: {
-          supplierId, // Product.supplierId via productId on the variant offer
+          supplierId,
         },
       },
     }),
@@ -173,13 +369,11 @@ function computeBankPendingPatch(args: {
 }) {
   const { current, next } = args;
 
-  // Only consider keys that are actually present in payload
   const keys: Array<keyof typeof next> = ["bankCountry", "bankCode", "bankName", "accountNumber", "accountName"];
 
   const changed = keys.some((k) => {
     if (!(k in next)) return false;
     const nv = (next as any)[k];
-    // undefined means "no change"
     if (nv === undefined) return false;
     const cv = (current as any)[k];
     return String(nv ?? "") !== String(cv ?? "");
@@ -187,7 +381,6 @@ function computeBankPendingPatch(args: {
 
   if (!changed) return { changed: false, patch: {} as any };
 
-  // If they changed bank info, it must be re-verified (and payouts must be disabled)
   return {
     changed: true,
     patch: {
@@ -197,10 +390,8 @@ function computeBankPendingPatch(args: {
       bankVerifiedById: null,
       bankVerificationNote: null,
 
-      // ✅ keep payout readiness consistent
       isPayoutEnabled: false,
       paystackRecipientCode: null,
-      // If you also rely on subaccounts for SPLIT, you may want to clear this too:
       // paystackSubaccountCode: null,
     },
   };
@@ -241,11 +432,56 @@ router.get("/", requireAdmin, async (_req, res) => {
         bankVerificationNote: true,
         bankVerificationRequestedAt: true,
         bankVerifiedAt: true,
-        bankVerifiedById: true, // remove if not in schema
+        bankVerifiedById: true,
+
+        createdAt: true,
+        updatedAt: true,
+        userId: true,
+        kycStatus: true,
+        isDeleted: true,
+
+        registeredAddress: true,
+        pickupAddress: true,
+
+        user: {
+          select: {
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+          },
+        },
       },
     });
 
-    res.json({ data: suppliers });
+    const rows = await Promise.all(
+      suppliers.map(async (s) => {
+        const usage = await supplierUsageCounts(s.id);
+
+        const deletable =
+          usage.productOffers === 0 &&
+          usage.variantOffers === 0 &&
+          usage.purchaseOrders === 0 &&
+          usage.chosenOrderItems === 0;
+
+        return {
+          ...s,
+          firstName: s.user?.firstName ?? null,
+          lastName: s.user?.lastName ?? null,
+          email: s.contactEmail ?? s.user?.email ?? null,
+          phone: s.whatsappPhone ?? s.user?.phone ?? null,
+          businessName: s.name ?? null,
+
+          productOffers: usage.productOffers,
+          variantOffers: usage.variantOffers,
+          purchaseOrders: usage.purchaseOrders,
+          chosenOrderItems: usage.chosenOrderItems,
+          deletable,
+        };
+      })
+    );
+
+    res.json({ data: rows });
   } catch (e: any) {
     res.status(400).json({ error: e?.message || "Failed to fetch suppliers" });
   }
@@ -310,41 +546,12 @@ router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
 
     const supplier = await prisma.supplier.findUnique({
       where: { id },
-      select: {
-        id: true,
-        name: true,
-        type: true,
-        status: true,
-
-        contactEmail: true,
-        whatsappPhone: true,
-
-        apiBaseUrl: true,
-        apiAuthType: true,
-        apiKey: true,
-
-        payoutMethod: true,
-        bankCountry: true,
-        bankCode: true,
-        bankName: true,
-        accountNumber: true,
-        accountName: true,
-        isPayoutEnabled: true,
-
-        paystackRecipientCode: true,
-        paystackSubaccountCode: true,
-
-        bankVerificationStatus: true,
-        bankVerificationNote: true,
-        bankVerificationRequestedAt: true,
-        bankVerifiedAt: true,
-        bankVerifiedById: true, // remove if not in schema
-      },
+      select: supplierAdminSelect,
     });
 
     if (!supplier) return res.status(404).json({ error: "Supplier not found" });
 
-    res.json({ data: supplier });
+    res.json({ data: toAdminSupplierDto(supplier) });
   } catch (e: any) {
     res.status(400).json({ error: e?.message || "Failed to fetch supplier" });
   }
@@ -396,7 +603,6 @@ router.post("/", requireSuperAdmin, async (req: Request, res: Response) => {
         accountName: toNull(accountName),
         isPayoutEnabled: toBool(isPayoutEnabled, false),
 
-        // If bank details were provided at create time, we can mark as PENDING for verification.
         ...(bankCode || accountNumber
           ? {
             bankVerificationStatus: "PENDING",
@@ -448,7 +654,6 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
       isPayoutEnabled,
     } = req.body || {};
 
-    // Read current first so we can (a) protect VERIFIED bank details, (b) flip to PENDING on change
     const current = await prisma.supplier.findUnique({
       where: { id },
       select: {
@@ -468,7 +673,6 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
 
     if (!current) return res.status(404).json({ error: "Supplier not found" });
 
-    // Prepare bank patch candidates (normalized like your current code)
     const nextBank = {
       ...(bankCountry !== undefined ? { bankCountry: toUndef(bankCountry) ?? undefined } : {}),
       ...(bankCode !== undefined ? { bankCode: toUndef(bankCode) ?? undefined } : {}),
@@ -489,8 +693,6 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
       next: nextBank as any,
     });
 
-    // If already VERIFIED, block changing bank details via this endpoint.
-    // (If you prefer to ALLOW changes and just flip to PENDING, remove this block.)
     if (current.bankVerificationStatus === "VERIFIED" && bankPending.changed) {
       return res.status(400).json({
         error: "Bank details are VERIFIED and cannot be edited. Reject/Unlock or change via a dedicated flow.",
@@ -515,7 +717,6 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
         ...nextBank,
         ...(isPayoutEnabled !== undefined ? { isPayoutEnabled: toBool(isPayoutEnabled) } : {}),
 
-        // flip to PENDING (and disable payouts) if bank details changed
         ...(bankPending.changed ? bankPending.patch : {}),
       },
     });
@@ -546,19 +747,42 @@ router.delete("/:id", requireSuperAdmin, async (req: Request, res: Response) => 
     const usage = await supplierUsageCounts(id);
 
     const inUse =
-      usage.productOffers > 0 || usage.variantOffers > 0 || usage.purchaseOrders > 0 || usage.chosenOrderItems > 0;
+      usage.productOffers > 0 ||
+      usage.variantOffers > 0 ||
+      usage.purchaseOrders > 0 ||
+      usage.chosenOrderItems > 0;
 
     if (inUse) {
       return res.status(400).json({
-        error: "Cannot delete supplier: it is in use",
+        error: "Cannot delete supplier: supplier has business records",
         details: usage,
       });
     }
 
     await prisma.supplier.delete({ where: { id } });
+
     res.json({ ok: true });
   } catch (e: any) {
     res.status(400).json({ error: e?.message || "Failed to delete supplier" });
+  }
+});
+
+
+router.post("/:id/archive", requireSuperAdmin, async (req, res) => {
+  try {
+    const id = requiredString(req.params.id);
+
+    const updated = await prisma.supplier.update({
+      where: { id },
+      data: {
+        status: "INACTIVE",
+        isDeleted: true,
+      },
+    });
+
+    res.json({ ok: true, data: updated });
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message || "Failed to archive supplier" });
   }
 });
 
@@ -582,7 +806,6 @@ router.post("/:id/link-bank", requireSuperAdmin, async (req: Request, res: Respo
     });
     if (!supplier) return res.status(404).json({ error: "Supplier not found" });
 
-    // If VERIFIED, block link-bank changes too (consistent with PUT protection)
     if (supplier.bankVerificationStatus === "VERIFIED") {
       return res.status(400).json({ error: "Bank details are VERIFIED and cannot be changed." });
     }
@@ -614,7 +837,6 @@ router.post("/:id/link-bank", requireSuperAdmin, async (req: Request, res: Respo
         payoutMethod: "TRANSFER",
         isPayoutEnabled: true,
 
-        // ✅ require admin confirmation after linking/changing bank
         bankVerificationStatus: "PENDING",
         bankVerificationRequestedAt: new Date(),
         bankVerifiedAt: null,
@@ -671,10 +893,6 @@ router.post("/:id/bank-verify", requireSuperAdmin, async (req: Request, res: Res
       }
     }
 
-    // ✅ IMPORTANT FIX:
-    // When admin verifies bank details, also enable payouts.
-    // Your offers flow blocks "in-stock/active offers" if payouts are not enabled,
-    // even if bankVerificationStatus shows VERIFIED in the UI.
     const updated = await prisma.supplier.update({
       where: { id: supplierId },
       data:
@@ -685,10 +903,8 @@ router.post("/:id/bank-verify", requireSuperAdmin, async (req: Request, res: Res
             bankVerifiedById: adminId,
             bankVerificationNote: body.note ?? null,
 
-            // ✅ KEY FIX: if admin verifies the bank, payouts should be enabled
             isPayoutEnabled: true,
 
-            // ✅ Optional: ensure payout method is set if missing
             ...(current.payoutMethod ? {} : { payoutMethod: "TRANSFER" }),
           }
           : {
@@ -696,11 +912,7 @@ router.post("/:id/bank-verify", requireSuperAdmin, async (req: Request, res: Res
             bankVerifiedAt: null,
             bankVerifiedById: null,
             bankVerificationNote: body.note ?? "Rejected",
-
-            // optional policy:
-            // isPayoutEnabled: false,
           },
-
 
       select: {
         id: true,
@@ -718,12 +930,11 @@ router.post("/:id/bank-verify", requireSuperAdmin, async (req: Request, res: Res
         bankVerificationNote: true,
         bankVerificationRequestedAt: true,
         bankVerifiedAt: true,
-        bankVerifiedById: true, // remove if not in schema
+        bankVerifiedById: true,
       },
     });
 
     if (body.decision === "VERIFIED") {
-      // use the UPDATED supplier (includes isPayoutEnabled=true)
       await createPaystackRecipientIfNeeded({
         id: updated.id,
         name: updated.name,

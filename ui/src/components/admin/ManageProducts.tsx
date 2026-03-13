@@ -58,6 +58,8 @@ type AdminProduct = {
   brandId?: string | null;
   inStock?: boolean;
 
+  supplierName?: string | null;
+
   variants?: any[];
   variantCount?: number;
 
@@ -320,15 +322,14 @@ function offerUnitCost(o: any): number | null {
 }
 
 /**
- * retail = supplierCost + supplierCost * (markupPercent/100)
- * Rounded to integer NGN.
+ * New pricing rule:
+ * retail price = supplier price directly
+ * no markup added in admin manage products
  */
-function applyMarkup(cost: number, pct: number) {
+function useSupplierPriceDirect(cost: number) {
   const c = Number(cost);
-  const p = Number(pct);
   if (!Number.isFinite(c) || c <= 0) return 0;
-  const pp = Number.isFinite(p) ? p : 0;
-  return Math.round(c * (1 + pp / 100));
+  return Math.round(c);
 }
 
 async function fetchSupplierOffersForProduct(productId: string) {
@@ -591,6 +592,22 @@ export function ManageProducts({
   }
 
   const statusParam = statusFromPreset(preset);
+
+    const getSupplierName = (p: any) => {
+    const direct =
+      p?.supplierName ||
+      p?.supplier?.name ||
+      p?.supplier?.supplierName ||
+      "";
+
+    if (direct) return String(direct);
+
+    const sid = String(p?.supplierId ?? "").trim();
+    if (!sid) return "";
+
+    const found = (suppliersQ.data ?? []).find((s) => String(s.id) === sid);
+    return found?.name || "";
+  };
 
   /* ---------------- Queries ---------------- */
 
@@ -891,7 +908,7 @@ export function ManageProducts({
       const bestVariantSupplier = Number(s?.minVariantSupplierPrice ?? 0) || 0;
 
       const fromSupplierCost = minPositive(bestBaseSupplier, bestVariantSupplier);
-      const computedRetailFrom = fromSupplierCost > 0 ? applyMarkup(fromSupplierCost, pricingMarkupPercent) : 0;
+      const computedRetailFrom = fromSupplierCost > 0 ? useSupplierPriceDirect(fromSupplierCost) : 0;
 
       return {
         ...p,
@@ -1425,8 +1442,8 @@ export function ManageProducts({
 
     const fromCost = minPositive(baseCost, variantCost);
     if (fromCost <= 0) return null;
-    return applyMarkup(fromCost, pricingMarkupPercent);
-  }, [editingId, offerPriceCaps?.minBase, offerPriceCaps?.minVariantOverall, pricingMarkupPercent]);
+    return useSupplierPriceDirect(fromCost);
+  }, [editingId, offerPriceCaps?.minBase, offerPriceCaps?.minVariantOverall]);
 
   useEffect(() => {
     if (!editingId) return;
@@ -1710,7 +1727,7 @@ export function ManageProducts({
 
     if (editingId) {
       // ✅ edit mode: only show computed when offer exists (but we already filtered rows)
-      const retail = supplierVariantCost > 0 ? applyMarkup(supplierVariantCost, pricingMarkupPercent) : -1;
+      const retail = supplierVariantCost > 0 ? useSupplierPriceDirect(supplierVariantCost) : -1;
       return { variantRetail: retail, supplierVariantCost, hasComputed: supplierVariantCost > 0 };
     }
 
@@ -1928,35 +1945,7 @@ export function ManageProducts({
     variantRows: VariantRow[];
     caps: { minBase: number; minVariantByVariant: Record<string, number>; minVariantOverall: number };
   }) {
-    const { baseRetail, variantRows, caps } = args;
-    const errors: string[] = [];
-
-    const fromCost = minPositive(caps.minBase, caps.minVariantOverall);
-    if (fromCost > 0) {
-      const neededFromRetail = applyMarkup(fromCost, pricingMarkupPercent);
-      if (baseRetail < neededFromRetail) {
-        errors.push(
-          `Retail price must be >= computed FROM price (cheapest supplier cost ₦${fromCost.toLocaleString()} + markup ${pricingMarkupPercent}%).`
-        );
-      }
-    }
-
-    for (const r of variantRows ?? []) {
-      const vid = String(r?.id ?? "").trim();
-      if (!vid || !isRealVariantId(vid)) continue;
-
-      const supplierVariant = Number(caps.minVariantByVariant?.[vid] ?? 0) || 0;
-      if (supplierVariant <= 0) continue;
-
-      const neededVariantRetail = applyMarkup(supplierVariant, pricingMarkupPercent);
-      const shownVariantRetail = neededVariantRetail;
-
-      if (shownVariantRetail < neededVariantRetail) {
-        errors.push(`Variant (${vid}) retail must be >= ₦${neededVariantRetail.toLocaleString()} (cheapest supplier variant price + markup).`);
-      }
-    }
-
-    return { ok: errors.length === 0, errors };
+    return { ok: true, errors: [] as string[] };
   }
 
   function dedupeVariantRowsByCombo(rows: VariantRow[], attrs: AttrDef[]) {
@@ -2992,9 +2981,9 @@ export function ManageProducts({
   /* ============================
      Render
   ============================ */
-    const baseDefaultsSummary = useMemo(() => {
-      return summarizeBaseProductDefaults(selectedAttrs, activeAttrs || []);
-    }, [selectedAttrs, activeAttrs]);
+  const baseDefaultsSummary = useMemo(() => {
+    return summarizeBaseProductDefaults(selectedAttrs, activeAttrs || []);
+  }, [selectedAttrs, activeAttrs]);
   return (
     <div
       className="space-y-4"
@@ -3046,8 +3035,7 @@ export function ManageProducts({
 
           {editingId && (
             <div className="rounded-xl border bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              Pricing markup: <span className="font-semibold">{pricingMarkupPercent}%</span> • set in{" "}
-              <span className="font-mono">pricingMarkupPercent</span>
+              Retail pricing uses the cheapest purchasable supplier price directly.
             </div>
           )}
 
@@ -3074,7 +3062,7 @@ export function ManageProducts({
                 <div className="text-lg font-semibold">{editingId ? "Edit product" : "Create product (Admin)"}</div>
                 <div className="text-sm text-slate-500">
                   {editingId
-                    ? "Retail prices are computed from the cheapest purchasable supplier prices + markup."
+                    ? "Retail prices are computed directly from the cheapest purchasable supplier prices."
                     : "Admin can create and edit products on behalf of any supplier."}
                 </div>
               </div>
@@ -3239,9 +3227,8 @@ export function ManageProducts({
                       if (cheapest > 0) {
                         return (
                           <span>
-                            Supplier cheapest purchasable cost: ₦{cheapest.toLocaleString()} → retail ₦
-                            {applyMarkup(cheapest, pricingMarkupPercent).toLocaleString()} (markup {pricingMarkupPercent}
-                            %)
+                            Supplier cheapest purchasable price: ₦{cheapest.toLocaleString()} → retail ₦
+                            {useSupplierPriceDirect(cheapest).toLocaleString()}
                           </span>
                         );
                       }
@@ -3721,6 +3708,8 @@ export function ManageProducts({
           const status = getStatus(p);
           const owner = getOwner(p) || "—";
 
+          const supplierName = getSupplierName(p) || "—";
+
           const mobileLabel = (label: string) => {
             if (label === "Approve PUBLISHED") return "Approve";
             if (label === "Move to PENDING") return "Unpublish";
@@ -3795,6 +3784,8 @@ ove-500">Offers</div>
 
               <div className="mt-2 text-[12px] text-slate-500 truncate">Owner: {owner}</div>
 
+              <div className="mt-1 text-[12px] text-slate-500 truncate">Supplier: {supplierName}</div>
+
               {/* Actions (clean grid, no overflow) */}
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <button
@@ -3866,6 +3857,7 @@ ove-500">Offers</div>
                 <th className="p-3 cursor-pointer" onClick={() => toggleSort("status")}>
                   Status <SortIndicator k="status" />
                 </th>
+                <th className="p-3">Supplier</th>
                 <th className="p-3 cursor-pointer" onClick={() => toggleSort("owner")}>
                   Owner <SortIndicator k="owner" />
                 </th>
@@ -3893,7 +3885,7 @@ ove-500">Offers</div>
                       ) : null}
 
                       {(p.__bestBaseSupplierPrice || p.__bestVariantSupplierPrice) && (
-                        <div className="text-[11px] text-slate-500 mt-1">computed FROM uses cheapest purchasable + {pricingMarkupPercent}% markup</div>
+                        <div className="text-[11px] text-slate-500 mt-1">computed FROM uses cheapest purchasable supplier price</div>
                       )}
                     </td>
 
@@ -3909,6 +3901,7 @@ ove-500">Offers</div>
 
                     <td className="p-3">{p.inStock ? "Yes" : "No"}</td>
                     <td className="p-3">{getStatus(p)}</td>
+                    <td className="p-3">{getSupplierName(p) || "—"}</td>
                     <td className="p-3">{getOwner(p) || "—"}</td>
                     <td className="p-3">
                       <div className="flex flex-wrap gap-2">
@@ -3948,7 +3941,7 @@ ove-500">Offers</div>
 
               {!listQ.isLoading && displayRows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="p-6 text-slate-500">
+                  <td colSpan={8} className="p-6 text-slate-500">
                     No products found.
                   </td>
                 </tr>
@@ -3956,7 +3949,7 @@ ove-500">Offers</div>
 
               {listQ.isLoading && (
                 <tr>
-                  <td colSpan={7} className="p-6 text-slate-500">
+                  <td colSpan={8} className="p-6 text-slate-500">
                     Loading…
                   </td>
                 </tr>

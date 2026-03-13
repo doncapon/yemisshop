@@ -961,14 +961,38 @@ export default function AdminDashboard() {
   });
 
   const deleteSupplier = useMutation({
-    mutationFn: async (id: string) =>
-      (
-        await api.delete(`/api/admin/suppliers/${id}`, {
-          withCredentials: true,
-        })
-      ).data,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
+    mutationFn: async (id: string) => {
+      const { data } = await api.delete(`/api/admin/suppliers/${id}`, {
+        withCredentials: true,
+      });
+      return data;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
+      openModal({
+        title: "Supplier deleted",
+        message: "Supplier deleted successfully.",
+      });
+    },
+    onError: (e: any) => {
+      const backendError = e?.response?.data?.error;
+      const details = e?.response?.data?.details;
+
+      let message = backendError || "Could not delete supplier.";
+
+      if (details) {
+        message += `
+
+Product offers: ${details.productOffers ?? 0}
+Variant offers: ${details.variantOffers ?? 0}
+Purchase orders: ${details.purchaseOrders ?? 0}
+Chosen order items: ${details.chosenOrderItems ?? 0}`;
+      }
+
+      openModal({
+        title: "Delete blocked",
+        message,
+      });
     },
   });
 
@@ -1722,7 +1746,7 @@ export default function AdminDashboard() {
               />
               <TabButton
                 k="catalog"
-                label="Catalog Settings"
+                label="Supplier/Catalog Settings"
                 mobileLabel="Catalog"
                 Icon={Settings}
               />

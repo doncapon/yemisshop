@@ -73,23 +73,23 @@ type ProductWire = {
   variants?: VariantWire[];
   offers?: OfferWire[];
   attributes?:
-    | {
-        options?: Array<{
-          attributeId: string;
-          valueId: string;
-          attribute?: { id: string; name: string };
-          value?: { id: string; name: string };
-          attributeName?: string;
-          valueName?: string;
-        }>;
-        texts?: Array<{
-          attributeId: string;
-          value: string;
-          attribute?: { id: string; name: string };
-          attributeName?: string;
-        }>;
-      }
-    | null;
+  | {
+    options?: Array<{
+      attributeId: string;
+      valueId: string;
+      attribute?: { id: string; name: string };
+      value?: { id: string; name: string };
+      attributeName?: string;
+      valueName?: string;
+    }>;
+    texts?: Array<{
+      attributeId: string;
+      value: string;
+      attribute?: { id: string; name: string };
+      attributeName?: string;
+    }>;
+  }
+  | null;
 
   // ⭐ Rating fields
   ratingAvg?: number | null;
@@ -262,18 +262,18 @@ function normalizeVariants(p: any): VariantWire[] {
     imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
     options: Array.isArray(v.options)
       ? v.options
-          .map((o: any) => ({
-            attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
-            valueId: String(o.valueId ?? o.value?.id ?? ""),
-            unitPrice: readOptionUnit(o),
-            attribute: o.attribute
-              ? { id: String(o.attribute.id), name: String(o.attribute.name), type: o.attribute.type }
-              : undefined,
-            value: o.value
-              ? { id: String(o.value.id), name: String(o.value.name), code: o.value.code ?? null }
-              : undefined,
-          }))
-          .filter((o: any) => o.attributeId && o.valueId)
+        .map((o: any) => ({
+          attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
+          valueId: String(o.valueId ?? o.value?.id ?? ""),
+          unitPrice: readOptionUnit(o),
+          attribute: o.attribute
+            ? { id: String(o.attribute.id), name: String(o.attribute.name), type: o.attribute.type }
+            : undefined,
+          value: o.value
+            ? { id: String(o.value.id), name: String(o.value.name), code: o.value.code ?? null }
+            : undefined,
+        }))
+        .filter((o: any) => o.attributeId && o.valueId)
       : [],
   }));
 }
@@ -602,6 +602,21 @@ export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const backHandledRef = React.useRef(false);
+
+  const getReturnUrl = React.useCallback(() => {
+    const state = (location.state as any) || {};
+    const from = typeof state.from === "string" && state.from.trim() ? state.from : "/catalog";
+    return from;
+  }, [location.state]);
+
+  const forceReturnToCatalog = React.useCallback(() => {
+    if (backHandledRef.current) return;
+    backHandledRef.current = true;
+
+    const from = getReturnUrl();
+    window.location.assign(from);
+  }, [getReturnUrl]);
 
   const queryClient = useQueryClient();
   const { openModal } = useModal();
@@ -683,6 +698,30 @@ export default function ProductDetail() {
       return Math.max(0, Number.isFinite(v) ? v : 0);
     },
   });
+
+
+  React.useEffect(() => {
+    backHandledRef.current = false;
+
+    const state = (location.state as any) || {};
+    const from = typeof state.from === "string" && state.from.trim() ? state.from : "/catalog";
+
+    // Push a duplicate detail entry so the first browser-back stays on detail,
+    // then we force a hard navigation to the catalog route.
+    window.history.pushState({ __pd_back_trap__: true, from }, "", window.location.href);
+
+    const onPopState = () => {
+      if (backHandledRef.current) return;
+      backHandledRef.current = true;
+      window.location.assign(from);
+    };
+
+    window.addEventListener("popstate", onPopState);
+
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [location.key, location.state]);
 
   const marginPercent = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
 
@@ -778,11 +817,11 @@ export default function ProductDetail() {
         bestSupplierRating:
           rawBestSupplierRating && typeof rawBestSupplierRating === "object"
             ? {
-                ratingAvg:
-                  typeof rawBestSupplierRating.ratingAvg === "number" ? Number(rawBestSupplierRating.ratingAvg) : null,
-                ratingCount:
-                  typeof rawBestSupplierRating.ratingCount === "number" ? Number(rawBestSupplierRating.ratingCount) : null,
-              }
+              ratingAvg:
+                typeof rawBestSupplierRating.ratingAvg === "number" ? Number(rawBestSupplierRating.ratingAvg) : null,
+              ratingCount:
+                typeof rawBestSupplierRating.ratingCount === "number" ? Number(rawBestSupplierRating.ratingCount) : null,
+            }
             : null,
       };
 
@@ -1417,9 +1456,9 @@ export default function ProductDetail() {
       const optionsKey =
         variantId && selectedOptionsWire.length
           ? selectedOptionsWire
-              .map((x) => `${x.attributeId}:${x.valueId}`)
-              .sort()
-              .join("|")
+            .map((x) => `${x.attributeId}:${x.valueId}`)
+            .sort()
+            .join("|")
           : "";
 
       const unitPriceClient = toNum(computed.final, 0);
@@ -1591,14 +1630,14 @@ export default function ProductDetail() {
       ...(product.brand?.name ? { brand: { "@type": "Brand", name: product.brand.name } } : {}),
       ...(price != null
         ? {
-            offers: {
-              "@type": "Offer",
-              priceCurrency: "NGN",
-              price: String(price),
-              availability: (totalStockQty ?? 0) > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
-              url: canonical,
-            },
-          }
+          offers: {
+            "@type": "Offer",
+            priceCurrency: "NGN",
+            price: String(price),
+            availability: (totalStockQty ?? 0) > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+            url: canonical,
+          },
+        }
         : {}),
     };
 
@@ -1783,9 +1822,8 @@ export default function ProductDetail() {
     return (
       <div
         ref={innerRef}
-        className={`rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 ${silverShadowSm} ${
-          compact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm"
-        }`}
+        className={`rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 ${silverShadowSm} ${compact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm"
+          }`}
         role="alert"
         aria-live="polite"
       >
@@ -1868,15 +1906,7 @@ export default function ProductDetail() {
             <button
               type="button"
               onClick={() => {
-                const state = (location.state as any) || {};
-                const from = typeof state.from === "string" ? state.from : "/catalog";
-                const restoreScrollY =
-                  typeof state.restoreScrollY === "number" ? state.restoreScrollY : 0;
-
-                navigate(from, {
-                  replace: true,
-                  state: { restoreScrollY },
-                });
+                forceReturnToCatalog();
               }}
               className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
             >
@@ -1997,9 +2027,8 @@ export default function ProductDetail() {
                       key={`${src}-${idx}`}
                       type="button"
                       onClick={() => setMainIndex(idx)}
-                      className={`relative overflow-hidden rounded-xl bg-white ${
-                        active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder
-                      } ${silverShadowSm}`}
+                      className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder
+                        } ${silverShadowSm}`}
                       style={{ aspectRatio: "1 / 1" }}
                       aria-label={`Show image ${idx + 1}`}
                     >
@@ -2172,9 +2201,8 @@ export default function ProductDetail() {
                       return prev === next ? prev : next;
                     });
                   }}
-                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm} ${
-                    purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""
-                  }`}
+                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""
+                    }`}
                 >
                   Max
                 </button>
@@ -2185,11 +2213,10 @@ export default function ProductDetail() {
                   type="button"
                   onClick={handleAddToCart}
                   disabled={purchaseMeta.disableAddToCart || isAdding}
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${
-                    purchaseMeta.disableAddToCart
-                      ? "bg-zinc-300 cursor-not-allowed"
-                      : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
-                  }`}
+                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
+                    ? "bg-zinc-300 cursor-not-allowed"
+                    : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
+                    }`}
                 >
                   {isAdding ? "Adding…" : "Add to cart"}
                 </button>
@@ -2272,11 +2299,10 @@ export default function ProductDetail() {
                       <button
                         type="submit"
                         disabled={saveReviewMutation.isPending}
-                        className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${
-                          saveReviewMutation.isPending
-                            ? "bg-zinc-400 cursor-not-allowed"
-                            : "bg-fuchsia-600 hover:bg-fuchsia-700"
-                        }`}
+                        className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${saveReviewMutation.isPending
+                          ? "bg-zinc-400 cursor-not-allowed"
+                          : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                          }`}
                       >
                         {saveReviewMutation.isPending ? "Saving…" : myReviewQ.data ? "Update review" : "Submit review"}
                       </button>
