@@ -513,11 +513,7 @@ function computeVerificationFlags(p?: ProfileMe) {
   const emailOk = p?.emailVerified === true ? true : normalizeStampPresent(p?.emailVerifiedAt);
 
   let phoneOk: boolean;
-  if ((import.meta as any)?.env?.PHONE_VERIFY === "set") {
     phoneOk = p?.phoneVerified === true ? true : normalizeStampPresent(p?.phoneVerifiedAt);
-  } else {
-    phoneOk = true;
-  }
 
   return { emailOk, phoneOk };
 }
@@ -1196,12 +1192,6 @@ export default function Checkout() {
           // backend explicitly returned an error message
           throw new Error(shippingQ.data.error);
         }
-
-        // ✅ DO NOT block if shipping is only partially quoted.
-        // We'll show a yellow banner in the UI, but allow checkout.
-        // if (shippingQ.data?.partial) {
-        //   throw new Error("Shipping is only partially quoted. Please complete shipping zone/rate setup.");
-        // }
       }
 
       const bad = cart.find((l) => {

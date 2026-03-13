@@ -109,7 +109,9 @@ async function ensureCoreSettings() {
         { key: "profitMode", value: "accurate", isPublic: false },
         { key: "serviceFeeBaseNGN", value: "1000", isPublic: false },
         { key: "platformBaseFeeNGN", value: "100", isPublic: false },
-        { key: "pricingMarkupPercent", value: "10", isPublic: true },
+        { key: "marginPercent", value: "10", isPublic: true },
+        { key: "minMarginNGN", value: "500", isPublic: true },
+        { key: "maxMarginPct", value: "100", isPublic: true },
       ],
       skipDuplicates: true,
     });

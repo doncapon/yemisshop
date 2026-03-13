@@ -10,7 +10,6 @@ import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
 import crypto from "crypto";
 import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
 import { z } from "zod";
-import { assertVerifiedOrderOtp } from "./adminOrders.js";
 import {
   requestOrderOtpForPurposeTx,
   verifyOrderOtpForPurposeTx,
@@ -533,7 +532,7 @@ async function debugSupplierSelectionTx(
   const score = (c: CandidateOffer) => {
     const bayes =
       (Number(c.supplierRatingCount ?? 0) / (Number(c.supplierRatingCount ?? 0) + policy.bayesM)) *
-        safeNum(c.supplierRatingAvg, 0) +
+      safeNum(c.supplierRatingAvg, 0) +
       (policy.bayesM / (Number(c.supplierRatingCount ?? 0) + policy.bayesM)) * policy.globalRatingC;
 
     const inBand = safeNum(c.unitPrice, Infinity) <= bandMax;
@@ -595,6 +594,67 @@ async function debugSupplierSelectionTx(
     fallbackUsed,
     orderedTop5: topAfter,
   });
+}
+
+function retailOrNull(v: any): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? round2(n) : null;
+}
+
+async function getCheckoutRetailUnitPriceTx(
+  tx: any,
+  args: {
+    productId: string;
+    variantId: string | null;
+  }
+): Promise<number> {
+  const { productId, variantId } = args;
+
+  let variantRetail: number | null = null;
+
+  if (variantId) {
+    const variant = await tx.productVariant.findUnique({
+      where: { id: variantId },
+      select: {
+        id: true,
+        productId: true,
+        retailPrice: true,
+      },
+    });
+
+    if (!variant || String(variant.productId) !== String(productId)) {
+      throw new Error(`Variant ${variantId} does not belong to product ${productId}.`);
+    }
+
+    variantRetail = retailOrNull(variant.retailPrice);
+  }
+
+  const product = await tx.product.findUnique({
+    where: { id: productId },
+    select: {
+      id: true,
+      retailPrice: true,
+      autoPrice: true,
+      displayBasePrice: true,
+      offersFrom: true,
+    } as any,
+  });
+
+  if (!product) throw new Error("Product not found.");
+
+  const productRetail =
+    retailOrNull((product as any).retailPrice) ??
+    retailOrNull((product as any).autoPrice) ??
+    retailOrNull((product as any).displayBasePrice) ??
+    retailOrNull((product as any).offersFrom);
+
+  const retail = variantRetail ?? productRetail;
+
+  if (retail == null || retail <= 0) {
+    throw new Error(`Missing retail price for product ${productId}.`);
+  }
+
+  return round2(retail);
 }
 
 function sortOffersCheapestFirst(list: CandidateOffer[]) {
@@ -1143,8 +1203,7 @@ function assertClientUnitPriceMatches(
   const tolerance = 1;
   if (Math.abs(serverUnit - n) > tolerance) {
     throw new Error(
-      `Unit price mismatch for product ${ctx.productId}${
-        ctx.variantId ? ` (variant ${ctx.variantId})` : ""
+      `Unit price mismatch for product ${ctx.productId}${ctx.variantId ? ` (variant ${ctx.variantId})` : ""
       }. ` + `Client sent ${n}, server computed ${serverUnit}.`
     );
   }
@@ -1439,6 +1498,138 @@ async function notifySuppliersForOrderTx(
   }
 }
 
+async function getMarginConfigTx(tx: any) {
+  const percentRaw =
+    (await readSettingValueTx(tx, "platformMarginPercent")) ??
+    (await readSettingValueTx(tx, "marginPercent")) ??
+    (await readSettingValueTx(tx, "pricingMarkupPercent"));
+
+  const minMarginRaw =
+    (await readSettingValueTx(tx, "platformMinMarginNGN")) ??
+    (await readSettingValueTx(tx, "minMarginNGN")) ??
+    "0";
+
+  const maxMarginRaw =
+    (await readSettingValueTx(tx, "maxMarginPct")) ??
+    "100";
+
+  const defaultPercent = Number(percentRaw);
+  const minMarginNGN = Number(minMarginRaw);
+  const maxMarginPct = Number(maxMarginRaw);
+
+  console.log({minMarginNGN: minMarginNGN, marginPercent: defaultPercent})
+
+  return {
+    defaultPercent:
+      Number.isFinite(defaultPercent) && defaultPercent >= 0
+        ? defaultPercent
+        : 10,
+    minMarginNGN:
+      Number.isFinite(minMarginNGN) && minMarginNGN >= 0
+        ? minMarginNGN
+        : 0,
+    maxMarginPct:
+      Number.isFinite(maxMarginPct) && maxMarginPct >= 0
+        ? maxMarginPct
+        : 100,
+  };
+}
+
+async function resolveMarginPercentForItemTx(
+  tx: any,
+  args: { productId: string; variantId: string | null }
+): Promise<number> {
+  const { productId } = args;
+
+  const cfg = await getMarginConfigTx(tx);
+
+  const product = await tx.product.findUnique({
+    where: { id: productId },
+    select: {
+      id: true,
+      categoryId: true,
+      supplierId: true,
+      marginPercentOverride: true,
+    } as any,
+  });
+
+  if (!product) return cfg.defaultPercent;
+
+  const productOverride = Number((product as any).marginPercentOverride);
+  if (Number.isFinite(productOverride) && productOverride >= 0) {
+    return Math.min(productOverride, cfg.maxMarginPct);
+  }
+
+  if ((product as any).categoryId) {
+    try {
+      const category = await tx.category.findUnique({
+        where: { id: String((product as any).categoryId) },
+        select: { marginPercentOverride: true } as any,
+      });
+
+      const categoryOverride = Number((category as any)?.marginPercentOverride);
+      if (Number.isFinite(categoryOverride) && categoryOverride >= 0) {
+        return Math.min(categoryOverride, cfg.maxMarginPct);
+      }
+    } catch {
+      //
+    }
+  }
+
+  if ((product as any).supplierId) {
+    try {
+      const supplier = await tx.supplier.findUnique({
+        where: { id: String((product as any).supplierId) },
+        select: { marginPercentOverride: true } as any,
+      });
+
+      const supplierOverride = Number((supplier as any)?.marginPercentOverride);
+      if (Number.isFinite(supplierOverride) && supplierOverride >= 0) {
+        return Math.min(supplierOverride, cfg.maxMarginPct);
+      }
+    } catch {
+      //
+    }
+  }
+
+  return Math.min(cfg.defaultPercent, cfg.maxMarginPct);
+}
+
+async function computeSupplierPayoutFromRetailTx(
+  tx: any,
+  args: { retailUnit: number; productId: string; variantId: string | null }
+) {
+  const { retailUnit, productId, variantId } = args;
+
+  if (!Number.isFinite(retailUnit) || retailUnit <= 0) {
+    throw new Error("Invalid retail unit price.");
+  }
+
+  const cfg = await getMarginConfigTx(tx);
+  const marginPercent = await resolveMarginPercentForItemTx(tx, {
+    productId,
+    variantId,
+  });
+
+  const percentMarginValue = round2(retailUnit * (marginPercent / 100));
+  const actualMargin = Math.max(cfg.minMarginNGN, percentMarginValue);
+
+  if (actualMargin >= retailUnit) {
+    throw new Error(
+      `Configured margin is too high for retail price on product ${productId}.`
+    );
+  }
+
+  const supplierPayout = round2(retailUnit - actualMargin);
+
+  return {
+    marginPercent,
+    platformMargin: actualMargin,
+    supplierPayout,
+  };
+}
+
+
 async function notifyOneSupplierForPoTx(
   tx: any,
   args: { orderId: string; purchaseOrderId: string; supplierId: string },
@@ -1468,6 +1659,12 @@ async function notifyOneSupplierForPoTx(
   }
 }
 
+async function getMarginPercentTx(tx: any): Promise<number> {
+  const raw = await readSettingValueTx(tx, "marginPercent");
+  const n = Number(raw);
+  return Number.isFinite(n) ? n / 100 : 0.1; // default 10%
+}
+
 /* =========================================================
    POST /api/orders — create + allocate across offers
 ========================================================= */
@@ -1475,12 +1672,10 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   const body = req.body as CreateOrderBody;
   const items = Array.isArray(body.items) ? body.items : [];
 
-  // 🔹 Check global shipping setting once up-front
   const shippingEnabled = await isShippingEnabledTx(prisma as any);
 
   if (items.length === 0) return res.status(400).json({ error: "No items." });
 
-  // Only require shipping address when shipping feature is enabled
   if (shippingEnabled && !body.shippingAddressId && !body.shippingAddress) {
     return res
       .status(400)
@@ -1498,38 +1693,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const created = await prisma.$transaction(
       async (tx: any) => {
-        // -----------------------------
-        // Load margin
-        // -----------------------------
-        async function readSettingTx(key: string): Promise<string | null> {
-          try {
-            const row = await tx.setting.findUnique({ where: { key } });
-            return row?.value ?? null;
-          } catch {
-            try {
-              const row = await tx.setting.findFirst({ where: { key } });
-              return row?.value ?? null;
-            } catch {
-              return null;
-            }
-          }
-        }
-
-        const marginRaw =
-          (await readSettingTx("marginPercent")) ??
-          (await readSettingTx("pricingMarkupPercent")) ??
-          (await readSettingTx("markupPercent")) ??
-          (await readSettingTx("platformMarginPercent"));
-
-        const marginPercent = Math.max(0, toNumberLocal(marginRaw, 0));
-        const marginMul = 1 + marginPercent / 100;
-
-        // 🔹 Re-check with the transactional client (value should match outer, but keeps things tidy)
         const shippingEnabledTxVal = shippingEnabled;
 
-        // -----------------------------
-        // Shipping fee + rate source resolution
-        // -----------------------------
         let selectedShippingQuote: SelectedShippingQuote | null = null;
         let shippingFeeFinal = 0;
         let shippingCurrencyFinal = "NGN";
@@ -1544,6 +1709,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           const clientShippingFee = round2(
             Math.max(0, toNumberLocal((body as any).shippingFee, 0))
           );
+
           shippingFeeFinal = round2(selectedShippingQuote?.totalFee ?? clientShippingFee);
           shippingCurrencyFinal = String(
             selectedShippingQuote?.currency ?? (body as any).shippingCurrency ?? "NGN"
@@ -1557,9 +1723,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           shippingRateSourceFinal = normalizeShippingRateSource(rawRate);
         }
 
-        // -----------------------------
-        // Create base order
-        // -----------------------------
         const data: any = {
           subtotal: 0,
           tax: 0,
@@ -1567,8 +1730,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           status: "CREATED",
           user: { connect: { id: userId } },
 
-          // ✅ shipping fields (schema)
-          // - if shipping is disabled, we force shippingFee=0 and omit rateSource/breakdown
           shippingFee: shippingEnabledTxVal ? shippingFeeFinal : 0,
           shippingCurrency: shippingCurrencyFinal,
           ...(shippingEnabledTxVal && shippingRateSourceFinal
@@ -1577,11 +1738,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           shippingBreakdownJson:
             shippingEnabledTxVal && selectedShippingQuote
               ? {
-                  ...buildOrderShippingBreakdownJson(selectedShippingQuote),
-                  supplierId: selectedShippingQuote.supplierId, // store for PO allocation
-                }
+                ...buildOrderShippingBreakdownJson(selectedShippingQuote),
+                supplierId: selectedShippingQuote.supplierId,
+              }
               : shippingEnabledTxVal && shippingFeeFinal > 0
-              ? {
+                ? {
                   quoteId: null,
                   serviceLevel: "STANDARD",
                   zoneCode: null,
@@ -1602,10 +1763,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                   etaMaxDays: null,
                   pricingMeta: { source: "checkout_fallback" },
                 }
-              : null,
+                : null,
         };
 
-        // Shipping address is only created/connected if provided
         if (body.shippingAddressId) {
           data.shippingAddress = { connect: { id: body.shippingAddressId } };
         } else if (body.shippingAddress) {
@@ -1649,25 +1809,25 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
         let runningSubtotal = 0;
 
-        // -----------------------------
-        // Create items (split across suppliers)
-        // -----------------------------
         for (const line of items) {
           const productId = String((line as any).productId ?? "").trim();
           if (!productId) throw new Error("Invalid line item: missing productId.");
 
           const qtyNeeded = Number((line as any).qty ?? (line as any).quantity ?? 0);
-          if (!Number.isFinite(qtyNeeded) || qtyNeeded <= 0)
+          if (!Number.isFinite(qtyNeeded) || qtyNeeded <= 0) {
             throw new Error("Invalid line item.");
+          }
 
           const { title: productTitle } = await assertProductSellableTx(tx, productId);
 
           const selectedOptionsRaw = (line as any).selectedOptions ?? null;
           let selectedOptions: any = null;
           try {
-            if (typeof selectedOptionsRaw === "string")
+            if (typeof selectedOptionsRaw === "string") {
               selectedOptions = JSON.parse(selectedOptionsRaw);
-            else selectedOptions = selectedOptionsRaw;
+            } else {
+              selectedOptions = selectedOptionsRaw;
+            }
           } catch {
             selectedOptions = selectedOptionsRaw;
           }
@@ -1688,17 +1848,14 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           if (explicitOfferId) {
             const one = await fetchOneOfferByIdTx(tx, String(explicitOfferId));
             if (!one) throw new Error(`Offer not found/disabled for product ${productId}.`);
-            if (String(one.productId) !== productId)
-              throw new Error(
-                `Offer mismatch: wrong product for offer ${explicitOfferId}.`
-              );
+            if (String(one.productId) !== productId) {
+              throw new Error(`Offer mismatch: wrong product for offer ${explicitOfferId}.`);
+            }
 
-            // 🔹 Use the offer's own model + variantId to decide base vs variant
             const model = one.model;
             variantId = one.variantId ? String(one.variantId) : null;
 
             if (model === "VARIANT_OFFER" || variantId) {
-              // this is a variant offer (or points to a variant)
               if (!variantId && variantFromOptions) {
                 variantId = String(variantFromOptions);
               }
@@ -1707,11 +1864,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 await assertVariantSellableTx(tx, productId, variantId);
                 candidates = await fetchActiveOffersTx(tx, { productId, variantId });
               } else {
-                // extremely defensive: if we somehow still have no variant, fallback to base
                 candidates = await fetchActiveBaseOffersTx(tx, { productId });
               }
             } else {
-              // BASE_OFFER or legacy without variantId → treat as base, ignore variantFromOptions
               variantId = null;
               candidates = await fetchActiveBaseOffersTx(tx, { productId });
             }
@@ -1746,15 +1901,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             after: candidates,
           });
 
-          if (!candidates.length)
-            throw new Error(
-              `No active supplier offers for: ${productTitle}${optionsLabel}.`
-            );
+          if (!candidates.length) {
+            throw new Error(`No active supplier offers for: ${productTitle}${optionsLabel}.`);
+          }
 
           const totalAvailable = candidates.reduce(
             (s, o) => s + Math.max(0, Number(o.availableQty || 0)),
             0
           );
+
           if (totalAvailable < qtyNeeded) {
             throw new Error(
               `Insufficient stock for ${productTitle}${optionsLabel}. Need ${qtyNeeded}, available ${totalAvailable}.`
@@ -1776,10 +1931,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             if (need <= 0) break;
             if (o.availableQty <= 0) continue;
 
-            if (!o.supplierId)
-              throw new Error(
-                `Bad offer data: missing supplierId for offer ${o.id}`
-              );
+            if (!o.supplierId) {
+              throw new Error(`Bad offer data: missing supplierId for offer ${o.id}`);
+            }
 
             await assertSupplierPurchasableTx(tx, o.supplierId);
 
@@ -1795,8 +1949,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 o.model === "BASE_OFFER"
                   ? o.supplierProductOfferId ?? o.id
                   : o.model === "VARIANT_OFFER"
-                  ? o.supplierProductOfferId ?? null
-                  : null,
+                    ? o.supplierProductOfferId ?? null
+                    : null,
               supplierVariantOfferId:
                 o.model === "VARIANT_OFFER" ? String(o.id) : null,
             });
@@ -1808,39 +1962,48 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           const expectedUnits: number[] = [];
 
           for (const alloc of allocations) {
-            const supplierUnit = Number(alloc.supplierUnitCost);
-            if (!Number.isFinite(supplierUnit) || supplierUnit <= 0) {
-              throw new Error(
-                `Bad supplier price for ${productTitle}${optionsLabel}.`
-              );
+            const retailUnit = await getCheckoutRetailUnitPriceTx(tx, {
+              productId,
+              variantId,
+            });
+
+            if (!Number.isFinite(retailUnit) || retailUnit <= 0) {
+              throw new Error(`Bad retail price for ${productTitle}${optionsLabel}.`);
             }
 
-            const customerUnit = round2(supplierUnit * marginMul);
-            expectedUnits.push(customerUnit);
+            const payout = await computeSupplierPayoutFromRetailTx(tx, {
+              retailUnit,
+              productId,
+              variantId,
+            });
+
+            expectedUnits.push(retailUnit);
 
             await tx.orderItem.create({
               data: {
                 orderId: order.id,
                 productId,
-                variantId: variantId,
+                variantId,
 
                 chosenSupplierProductOfferId: alloc.supplierProductOfferId,
                 chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
                 chosenSupplierId: alloc.supplierId,
 
-                chosenSupplierUnitPrice: supplierUnit,
+                // what supplier should receive
+                chosenSupplierUnitPrice: payout.supplierPayout,
 
                 title: productTitle,
 
-                unitPrice: customerUnit,
+                // what shopper pays
+                unitPrice: retailUnit,
                 quantity: alloc.qty,
-                lineTotal: round2(customerUnit * alloc.qty),
+                lineTotal: round2(retailUnit * alloc.qty),
 
                 selectedOptions: selectedOptions ?? null,
               },
             });
 
-            runningSubtotal += customerUnit * alloc.qty;
+            runningSubtotal += retailUnit * alloc.qty;
           }
 
           if (Number.isFinite(clientUnit) && expectedUnits.length > 0) {
@@ -1871,13 +2034,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
         const svc = await computeServiceFeeForOrderTx(tx, order.id, subtotal);
 
-        // ✅ use final shipping fee ONLY if shipping is enabled
         const shippingFee = shippingEnabledTxVal ? shippingFeeFinal : 0;
         const total = round2(
           subtotal + vatAddOn + svc.serviceFeeTotal + shippingFee
         );
 
-        // ✅ IMPORTANT: update order first, so PO generation reads persisted shippingFee/shippingBreakdown
         const updatedOrder = await tx.order.update({
           where: { id: order.id },
           data: {
@@ -1886,8 +2047,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               taxMode === "INCLUDED"
                 ? vatIncluded
                 : taxMode === "ADDED"
-                ? vatAddOn
-                : 0
+                  ? vatAddOn
+                  : 0
             ),
             total,
 
@@ -1897,7 +2058,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             serviceFeeTotal: svc.serviceFeeTotal,
             serviceFee: svc.serviceFeeTotal,
 
-            // ✅ shipping persisted on order (but fee is 0 & breakdown null if disabled)
             shippingFee,
             shippingCurrency: shippingCurrencyFinal,
             ...(shippingEnabledTxVal && shippingRateSourceFinal
@@ -1906,11 +2066,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             shippingBreakdownJson:
               shippingEnabledTxVal && selectedShippingQuote
                 ? {
-                    ...buildOrderShippingBreakdownJson(selectedShippingQuote),
-                    supplierId: selectedShippingQuote.supplierId,
-                  }
+                  ...buildOrderShippingBreakdownJson(selectedShippingQuote),
+                  supplierId: selectedShippingQuote.supplierId,
+                }
                 : shippingEnabledTxVal && shippingFee > 0
-                ? {
+                  ? {
                     quoteId: null,
                     serviceLevel: "STANDARD",
                     zoneCode: null,
@@ -1931,7 +2091,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                     etaMaxDays: null,
                     pricingMeta: { source: "checkout_fallback" },
                   }
-                : null,
+                  : null,
           },
           select: {
             id: true,
@@ -1951,7 +2111,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           },
         });
 
-        // ✅ Now purchase orders can correctly read order.shippingFee / shippingBreakdownJson
         const purchaseOrders = await ensurePurchaseOrdersForOrderTx(tx, order.id);
 
         if (shippingEnabledTxVal && selectedShippingQuote?.id) {
@@ -1961,7 +2120,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           });
         }
 
-        // ✅ Notifications: shopper, suppliers, admins
         try {
           await notifyUser(
             userId,
@@ -2009,7 +2167,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             vatAddOn: round2(vatAddOn),
             serviceFeeMeta: svc.meta,
             purchaseOrders,
-            pricing: { marginPercent, marginMul },
+            pricing: { mode: "retail-equals-chosen-supplier-unit-price" },
           },
         };
       },
@@ -2045,16 +2203,16 @@ export async function computeAvailabilityForPairsTx(
   const baseAgg =
     includeBase && basePairs.length
       ? await tx.supplierProductOffer.groupBy({
-          by: ["productId"],
-          _sum: { availableQty: true },
-          where: {
-            productId: { in: basePairs.map((p) => p.productId) },
-            basePrice: { gt: 0 },
-            isActive: true,
-            inStock: true,
-            supplier: supplierCheckoutReadyRelationFilter(),
-          },
-        })
+        by: ["productId"],
+        _sum: { availableQty: true },
+        where: {
+          productId: { in: basePairs.map((p) => p.productId) },
+          basePrice: { gt: 0 },
+          isActive: true,
+          inStock: true,
+          supplier: supplierCheckoutReadyRelationFilter(),
+        },
+      })
       : [];
 
   const baseMap = new Map<string, number>();
@@ -2067,18 +2225,18 @@ export async function computeAvailabilityForPairsTx(
 
   const variantAgg = variantPairs.length
     ? await tx.supplierVariantOffer.groupBy({
-        by: ["productId", "variantId"],
-        _sum: { availableQty: true },
-        where: {
-          OR: variantPairs.map((p) => ({
-            productId: p.productId,
-            variantId: p.variantId!,
-          })),
-          isActive: true,
-          inStock: true,
-          supplier: supplierCheckoutReadyRelationFilter(),
-        },
-      })
+      by: ["productId", "variantId"],
+      _sum: { availableQty: true },
+      where: {
+        OR: variantPairs.map((p) => ({
+          productId: p.productId,
+          variantId: p.variantId!,
+        })),
+        isActive: true,
+        inStock: true,
+        supplier: supplierCheckoutReadyRelationFilter(),
+      },
+    })
     : [];
 
   const variantMap = new Map<string, number>();
@@ -2141,18 +2299,18 @@ router.get("/", requireAuth, async (req, res) => {
     const q = String(req.query.q ?? "").trim();
     const where: any = q
       ? {
-          OR: [
-            { id: { contains: q } },
-            {
-              user: {
-                email: {
-                  contains: q,
-                  mode: "insensitive" as const,
-                },
+        OR: [
+          { id: { contains: q } },
+          {
+            user: {
+              email: {
+                contains: q,
+                mode: "insensitive" as const,
               },
             },
-          ],
-        }
+          },
+        ],
+      }
       : {};
 
     const asNumLocal = (v: any, d = 0) => {
@@ -2251,7 +2409,7 @@ router.get("/", requireAuth, async (req, res) => {
         paidAmountByOrder[id] =
           (paidAmountByOrder[id] || 0) + asNumLocal(p.amount, 0);
       }
-    } catch {}
+    } catch { }
 
     const itemsByOrder: Record<string, any[]> = {};
     let allItems: any[] = [];
@@ -2933,11 +3091,11 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
     targetPhoneE164 && targetPhoneE164.length >= 4
       ? `sms/whatsapp to ***${targetPhoneE164.slice(-4)}`
       : targetEmail
-      ? `email to ${String(targetEmail).replace(
+        ? `email to ${String(targetEmail).replace(
           /(^.).+(@.*$)/,
           "$1***$2"
         )}`
-      : null;
+        : null;
 
   return res.json({ requestId: reqRow.id, expiresInSec, channelHint });
 });

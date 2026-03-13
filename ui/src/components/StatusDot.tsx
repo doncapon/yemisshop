@@ -21,6 +21,22 @@ export default function StatusDot({ label }: { label?: string | null }) {
   const raw = String(label || "—");
   const text = niceLabel(raw);
 
+  if (label === "VERIFIED") {
+    return (
+      <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">
+        VERIFIED
+      </span>
+    );
+  }
+
+    if (label === "ACTIVE") {
+    return (
+      <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">
+        ACTIVE
+      </span>
+    );
+  }
+
   return (
     <span
       className={[

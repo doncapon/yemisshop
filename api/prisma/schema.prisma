@@ -669,6 +669,7 @@ model Supplier {
   reviews                     SupplierReview[]
   riders                      SupplierRider[]
   variantOffers               SupplierVariantOffer[]       @relation("SupplierToVariantOffers")
+  isDeleted                   Boolean                      @default(false)
 
   @@index([status])
   @@index([isPayoutEnabled])
