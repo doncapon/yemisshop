@@ -2774,7 +2774,7 @@ export default function Catalog() {
                 onChange={(e) => {
                   setInStockOnly(e.target.checked);
                 }}
-                className="h-4 w-4 rounded border-zinc-300"
+                className="h-4 w-4 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
               />
               In stock
             </label>
@@ -2849,7 +2849,7 @@ export default function Catalog() {
                     onChange={(e) => {
                       setInStockOnly(e.target.checked);
                     }}
-                    className="h-4 w-4 rounded border-zinc-300"
+                    className="h-4 w-4 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
                   />
                   In stock
                 </label>

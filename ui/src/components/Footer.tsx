@@ -69,7 +69,7 @@ export default function Footer() {
         <div className="flex flex-col gap-3 sm:gap-5">
           <div className="flex items-center gap-2">
             <Link to="/" className="inline-flex items-center gap-2 min-w-0">
-              <span className="inline-grid place-items-center w-8 h-8 rounded-xl bg-primary-600 text-white text-[11px] font-semibold shrink-0">
+              <span className="inline-grid place-items-center w-8 h-8 rounded-xl bg-purple-600 text-white text-[11px] font-semibold shrink-0">
                 DS
               </span>
               <span className="font-semibold tracking-tight text-[14px] sm:text-lg truncate">
@@ -226,7 +226,7 @@ export default function Footer() {
                   />
                   <button
                     type="submit"
-                    className="rounded-xl px-3 py-2 bg-primary-600 text-white hover:bg-primary-700 transition w-full sm:w-auto font-semibold text-base sm:text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="rounded-xl px-3 py-2 bg-purple-600 text-white hover:bg-purple-700 transition w-full sm:w-auto font-semibold text-base sm:text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                     disabled={submitting}
                   >
                     {submitting ? "Subscribing…" : "Subscribe"}
