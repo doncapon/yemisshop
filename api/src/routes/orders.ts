@@ -147,14 +147,127 @@ function truthySetting(v: any) {
   return ["1", "true", "yes", "y", "on"].includes(s);
 }
 
+type CheckoutSettingsSnapshot = {
+  taxMode: "INCLUDED" | "ADDED" | "NONE";
+  taxRatePct: number;
+  baseServiceFeeNGN: number;
+  commsUnitCostNGN: number;
+
+  supplierMinBayesRating: number;
+  supplierPriceBandPct: number;
+  supplierBayesM: number;
+  supplierGlobalRatingC: number;
+
+  marginPercent: number;
+  minMarginNGN: number;
+  maxMarginPct: number;
+};
+
+async function loadCheckoutSettingsTx(tx: any): Promise<CheckoutSettingsSnapshot> {
+  const rows = await tx.setting.findMany({
+    where: {
+      key: {
+        in: [
+          "taxMode",
+          "taxRatePct",
+          "baseServiceFeeNGN",
+          "serviceFeeBaseNGN",
+          "platformBaseFeeNGN",
+          "commsServiceFeeNGN",
+          "commsUnitCostNGN",
+          "commsServiceFeeUnitNGN",
+          "commsUnitFeeNGN",
+          "supplierMinBayesRating",
+          "supplierPriceBandPct",
+          "supplierBayesM",
+          "supplierGlobalRatingC",
+          "platformMarginPercent",
+          "marginPercent",
+          "pricingMarkupPercent",
+          "platformMinMarginNGN",
+          "minMarginNGN",
+          "maxMarginPct",
+        ],
+      },
+    },
+    select: { key: true, value: true },
+  });
+
+  const map = new Map<string, string>();
+  for (const r of rows) map.set(String(r.key), String(r.value ?? ""));
+
+  const num = (v: any, d = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+
+  const taxMode = toTaxMode(map.get("taxMode"));
+
+  const baseServiceFeeNGN = Math.max(
+    0,
+    num(
+      map.get("baseServiceFeeNGN") ??
+      map.get("serviceFeeBaseNGN") ??
+      map.get("platformBaseFeeNGN") ??
+      map.get("commsServiceFeeNGN"),
+      0
+    )
+  );
+
+  const commsUnitCostNGN = Math.max(
+    0,
+    num(
+      map.get("commsUnitCostNGN") ??
+      map.get("commsServiceFeeUnitNGN") ??
+      map.get("commsUnitFeeNGN"),
+      0
+    )
+  );
+
+  const marginPercent = Math.max(
+    0,
+    num(
+      map.get("platformMarginPercent") ??
+      map.get("marginPercent") ??
+      map.get("pricingMarkupPercent"),
+      10
+    )
+  );
+
+  const minMarginNGN = Math.max(
+    0,
+    num(
+      map.get("platformMinMarginNGN") ??
+      map.get("minMarginNGN"),
+      0
+    )
+  );
+
+  const maxMarginPct = Math.max(0, num(map.get("maxMarginPct"), 100));
+
+  return {
+    taxMode,
+    taxRatePct: Math.max(0, num(map.get("taxRatePct"), 0)),
+    baseServiceFeeNGN,
+    commsUnitCostNGN,
+
+    supplierMinBayesRating: Math.max(0, num(map.get("supplierMinBayesRating"), 3.8)),
+    supplierPriceBandPct: Math.max(0, num(map.get("supplierPriceBandPct"), 2)),
+    supplierBayesM: Math.max(1, num(map.get("supplierBayesM"), 20)),
+    supplierGlobalRatingC: Math.max(0, num(map.get("supplierGlobalRatingC"), 4.2)),
+
+    marginPercent,
+    minMarginNGN,
+    maxMarginPct,
+  };
+}
+
 async function readSettingValueTx(tx: any, key: string): Promise<string | null> {
-  try {
-    const s = await tx.setting.findUnique({ where: { key } });
-    return s?.value ?? null;
-  } catch {
-    const s = await tx.setting.findFirst({ where: { key } });
-    return s?.value ?? null;
-  }
+  const s = await tx.setting.findUnique({
+    where: { key },
+    select: { value: true },
+  });
+  return s?.value ?? null;
 }
 
 type SelectedShippingQuote = {
@@ -357,34 +470,6 @@ function toTaxMode(v: any): "INCLUDED" | "ADDED" | "NONE" {
   return s === "ADDED" || s === "NONE" ? (s as any) : "INCLUDED";
 }
 
-async function getTaxModeTx(tx: any): Promise<"INCLUDED" | "ADDED" | "NONE"> {
-  const raw = await readSettingValueTx(tx, "taxMode");
-  return toTaxMode(raw);
-}
-
-async function getTaxRatePctTx(tx: any): Promise<number> {
-  const raw = await readSettingValueTx(tx, "taxRatePct");
-  const n = toNumber(raw, 0);
-  return n >= 0 ? n : 0;
-}
-
-async function getBaseServiceFeeNGNTx(tx: any): Promise<number> {
-  const baseRaw =
-    (await readSettingValueTx(tx, "baseServiceFeeNGN")) ??
-    (await readSettingValueTx(tx, "serviceFeeBaseNGN")) ??
-    (await readSettingValueTx(tx, "platformBaseFeeNGN")) ??
-    (await readSettingValueTx(tx, "commsServiceFeeNGN"));
-  return Math.max(0, toNumber(baseRaw, 0));
-}
-
-async function getCommsUnitCostNGNTx(tx: any): Promise<number> {
-  const unitRaw =
-    (await readSettingValueTx(tx, "commsUnitCostNGN")) ??
-    (await readSettingValueTx(tx, "commsServiceFeeUnitNGN")) ??
-    (await readSettingValueTx(tx, "commsUnitFeeNGN"));
-  return Math.max(0, toNumber(unitRaw, 0));
-}
-
 /** ✅ Helper: is shipping enabled globally? */
 async function isShippingEnabledTx(tx: any): Promise<boolean> {
   const raw =
@@ -434,18 +519,13 @@ function bayesRating(R: any, v: any, C: number, m: number) {
   return (safeV / (safeV + safeM)) * safeR + (safeM / (safeV + safeM)) * safeC;
 }
 
-async function getSupplierSelectionPolicyTx(tx: any) {
-  const minBayesRatingRaw = await readSettingValueTx(tx, "supplierMinBayesRating");
-  const bandPctRaw = await readSettingValueTx(tx, "supplierPriceBandPct");
-  const bayesMRaw = await readSettingValueTx(tx, "supplierBayesM");
-  const globalCRaw = await readSettingValueTx(tx, "supplierGlobalRatingC");
-
-  const minBayesRating = Math.max(0, toNumber(minBayesRatingRaw, 3.8));
-  const bandPercent = Math.max(0, toNumber(bandPctRaw, 2));
-  const bayesM = Math.max(1, toNumber(bayesMRaw, 20));
-  const globalRatingC = Math.max(0, toNumber(globalCRaw, 4.2));
-
-  return { minBayesRating, bandPercent, bayesM, globalRatingC };
+function getSupplierSelectionPolicy(settings: CheckoutSettingsSnapshot) {
+  return {
+    minBayesRating: settings.supplierMinBayesRating,
+    bandPercent: settings.supplierPriceBandPct,
+    bayesM: settings.supplierBayesM,
+    globalRatingC: settings.supplierGlobalRatingC,
+  };
 }
 
 type CandidateOffer = {
@@ -465,10 +545,13 @@ type CandidateOffer = {
   supplierRatingCount?: number | null;
 };
 
-async function orderCandidatesGateBandTx(tx: any, candidates: CandidateOffer[]) {
+function orderCandidatesGateBand(
+  candidates: CandidateOffer[],
+  settings: CheckoutSettingsSnapshot
+) {
   if (!candidates.length) return candidates;
 
-  const policy = await getSupplierSelectionPolicyTx(tx);
+  const policy = getSupplierSelectionPolicy(settings);
 
   let cheapest = Infinity;
   for (const c of candidates) cheapest = Math.min(cheapest, Number(c.unitPrice) || Infinity);
@@ -1449,15 +1532,70 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
   return createdPOs;
 }
 
-/**
- * Align to settings.ts checkout/service-fee:
- * - serviceFeeComms = unitFee * totalUnits
- * - grossBeforeGateway = itemsSubtotal + vatAddOn + base + comms
- * - gateway estimated on grossBeforeGateway
- */
-async function computeServiceFeeForOrderTx(tx: any, orderId: string, itemsSubtotal: number) {
-  const base = await getBaseServiceFeeNGNTx(tx);
-  const unitFee = await getCommsUnitCostNGNTx(tx);
+function resolveMarginPercentForItem(settings: CheckoutSettingsSnapshot): number {
+  const cfg = getMarginConfig(settings);
+
+  // default platform margin
+  let margin = cfg.defaultPercent;
+
+  // safety guard
+  if (!Number.isFinite(margin) || margin < 0) {
+    margin = 0;
+  }
+
+  // never exceed configured max
+  margin = Math.min(margin, cfg.maxMarginPct);
+
+  return margin;
+}
+
+function getMarginConfig(settings: CheckoutSettingsSnapshot) {
+  return {
+    defaultPercent: Math.min(settings.marginPercent, settings.maxMarginPct),
+    minMarginNGN: settings.minMarginNGN,
+    maxMarginPct: settings.maxMarginPct,
+  };
+}
+
+function computeSupplierPayoutFromRetail(
+  settings: CheckoutSettingsSnapshot,
+  args: { retailUnit: number; productId: string; variantId: string | null }
+) {
+  const { retailUnit, productId } = args;
+
+  if (!Number.isFinite(retailUnit) || retailUnit <= 0) {
+    throw new Error("Invalid retail unit price.");
+  }
+
+  const cfg = getMarginConfig(settings);
+  const marginPercent = resolveMarginPercentForItem(settings);
+
+  const percentMarginValue = round2(retailUnit * (marginPercent / 100));
+  const actualMargin = Math.max(cfg.minMarginNGN, percentMarginValue);
+
+  if (actualMargin >= retailUnit) {
+    throw new Error(
+      `Configured margin is too high for retail price on product ${productId}.`
+    );
+  }
+
+  const supplierPayout = round2(retailUnit - actualMargin);
+
+  return {
+    marginPercent,
+    platformMargin: actualMargin,
+    supplierPayout,
+  };
+}
+
+async function computeServiceFeeForOrderTx(
+  tx: any,
+  settings: CheckoutSettingsSnapshot,
+  orderId: string,
+  itemsSubtotal: number
+) {
+  const base = settings.baseServiceFeeNGN;
+  const unitFee = settings.commsUnitCostNGN;
 
   const rows = await tx.orderItem.findMany({
     where: { orderId },
@@ -1469,8 +1607,8 @@ async function computeServiceFeeForOrderTx(tx: any, orderId: string, itemsSubtot
     0
   );
 
-  const taxMode = await getTaxModeTx(tx);
-  const taxRatePct = await getTaxRatePctTx(tx);
+  const taxMode = settings.taxMode;
+  const taxRatePct = settings.taxRatePct;
 
   const vatAddOn =
     taxMode === "ADDED" && taxRatePct > 0
@@ -1496,6 +1634,16 @@ async function computeServiceFeeForOrderTx(tx: any, orderId: string, itemsSubtot
     meta: { totalUnits, unitFee, taxMode, taxRatePct, vatAddOn, grossBeforeGateway },
   };
 }
+
+
+
+/**
+ * Align to settings.ts checkout/service-fee:
+ * - serviceFeeComms = unitFee * totalUnits
+ * - grossBeforeGateway = itemsSubtotal + vatAddOn + base + comms
+ * - gateway estimated on grossBeforeGateway
+ */
+
 
 /* ---------------- Sellability checks ---------------- */
 
@@ -1568,85 +1716,6 @@ async function notifySuppliersForOrderTx(
   }
 }
 
-async function getMarginConfigTx(tx: any) {
-  const percentRaw =
-    (await readSettingValueTx(tx, "platformMarginPercent")) ??
-    (await readSettingValueTx(tx, "marginPercent")) ??
-    (await readSettingValueTx(tx, "pricingMarkupPercent"));
-
-  const minMarginRaw =
-    (await readSettingValueTx(tx, "platformMinMarginNGN")) ??
-    (await readSettingValueTx(tx, "minMarginNGN")) ??
-    "0";
-
-  const maxMarginRaw =
-    (await readSettingValueTx(tx, "maxMarginPct")) ??
-    "100";
-
-  const defaultPercent = Number(percentRaw);
-  const minMarginNGN = Number(minMarginRaw);
-  const maxMarginPct = Number(maxMarginRaw);
-
-  console.log({ minMarginNGN: minMarginNGN, marginPercent: defaultPercent })
-
-  return {
-    defaultPercent:
-      Number.isFinite(defaultPercent) && defaultPercent >= 0
-        ? defaultPercent
-        : 10,
-    minMarginNGN:
-      Number.isFinite(minMarginNGN) && minMarginNGN >= 0
-        ? minMarginNGN
-        : 0,
-    maxMarginPct:
-      Number.isFinite(maxMarginPct) && maxMarginPct >= 0
-        ? maxMarginPct
-        : 100,
-  };
-}
-
-async function resolveMarginPercentForItemTx(
-  tx: any,
-  _args: { productId: string; variantId: string | null }
-): Promise<number> {
-  const cfg = await getMarginConfigTx(tx);
-  return Math.min(cfg.defaultPercent, cfg.maxMarginPct);
-}
-
-async function computeSupplierPayoutFromRetailTx(
-  tx: any,
-  args: { retailUnit: number; productId: string; variantId: string | null }
-) {
-  const { retailUnit, productId, variantId } = args;
-
-  if (!Number.isFinite(retailUnit) || retailUnit <= 0) {
-    throw new Error("Invalid retail unit price.");
-  }
-
-  const cfg = await getMarginConfigTx(tx);
-  const marginPercent = await resolveMarginPercentForItemTx(tx, {
-    productId,
-    variantId,
-  });
-
-  const percentMarginValue = round2(retailUnit * (marginPercent / 100));
-  const actualMargin = Math.max(cfg.minMarginNGN, percentMarginValue);
-
-  if (actualMargin >= retailUnit) {
-    throw new Error(
-      `Configured margin is too high for retail price on product ${productId}.`
-    );
-  }
-
-  const supplierPayout = round2(retailUnit - actualMargin);
-
-  return {
-    marginPercent,
-    platformMargin: actualMargin,
-    supplierPayout,
-  };
-}
-
 
 async function notifyOneSupplierForPoTx(
   tx: any,
@@ -1677,12 +1746,6 @@ async function notifyOneSupplierForPoTx(
   }
 }
 
-async function getMarginPercentTx(tx: any): Promise<number> {
-  const raw = await readSettingValueTx(tx, "marginPercent");
-  const n = Number(raw);
-  return Number.isFinite(n) ? n / 100 : 0.1; // default 10%
-}
-
 /* =========================================================
    POST /api/orders — create + allocate across offers
 ========================================================= */
@@ -1711,6 +1774,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const created = await prisma.$transaction(
       async (tx: any) => {
+        const settings = await loadCheckoutSettingsTx(tx);
         const shippingEnabledTxVal = shippingEnabled;
 
         let selectedShippingQuote: SelectedShippingQuote | null = null;
@@ -1756,31 +1820,31 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           shippingBreakdownJson:
             shippingEnabledTxVal && selectedShippingQuote
               ? {
-                  ...buildOrderShippingBreakdownJson(selectedShippingQuote),
-                  supplierId: selectedShippingQuote.supplierId,
-                }
+                ...buildOrderShippingBreakdownJson(selectedShippingQuote),
+                supplierId: selectedShippingQuote.supplierId,
+              }
               : shippingEnabledTxVal && shippingFeeFinal > 0
                 ? {
-                    quoteId: null,
-                    serviceLevel: "STANDARD",
-                    zoneCode: null,
-                    zoneName: null,
-                    currency: shippingCurrencyFinal,
-                    rateSource:
-                      (shippingRateSourceFinal as any) ??
-                      normalizeShippingRateSource("MANUAL"),
-                    components: {
-                      shippingFee: shippingFeeFinal,
-                      remoteSurcharge: 0,
-                      fuelSurcharge: 0,
-                      handlingFee: 0,
-                      insuranceFee: 0,
-                    },
-                    totalFee: shippingFeeFinal,
-                    etaMinDays: null,
-                    etaMaxDays: null,
-                    pricingMeta: { source: "checkout_fallback" },
-                  }
+                  quoteId: null,
+                  serviceLevel: "STANDARD",
+                  zoneCode: null,
+                  zoneName: null,
+                  currency: shippingCurrencyFinal,
+                  rateSource:
+                    (shippingRateSourceFinal as any) ??
+                    normalizeShippingRateSource("MANUAL"),
+                  components: {
+                    shippingFee: shippingFeeFinal,
+                    remoteSurcharge: 0,
+                    fuelSurcharge: 0,
+                    handlingFee: 0,
+                    insuranceFee: 0,
+                  },
+                  totalFee: shippingFeeFinal,
+                  etaMinDays: null,
+                  etaMaxDays: null,
+                  pricingMeta: { source: "checkout_fallback" },
+                }
                 : null,
         };
 
@@ -1870,7 +1934,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             selectedOptions
           );
 
-          let variantId: string | null = directVariantId ?? (variantFromOptions ? String(variantFromOptions) : null);
+          let variantId: string | null =
+            directVariantId ?? (variantFromOptions ? String(variantFromOptions) : null);
 
           let explicitOffer: (CandidateOffer & { productId: string; variantId: string | null }) | null = null;
           let candidates: CandidateOffer[] = [];
@@ -1937,8 +2002,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           }
 
           const candidatesBefore = candidates.slice();
-          const policy = await getSupplierSelectionPolicyTx(tx);
-          candidates = await orderCandidatesGateBandTx(tx, candidates);
+          const policy = getSupplierSelectionPolicy(settings);
+          candidates = orderCandidatesGateBand(candidates, settings);
 
           await debugSupplierSelectionTx(tx, {
             productId,
@@ -2019,7 +2084,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               throw new Error(`Bad retail price for ${productTitle}${optionsLabel}.`);
             }
 
-            const payout = await computeSupplierPayoutFromRetailTx(tx, {
+            const payout = computeSupplierPayoutFromRetail(settings, {
               retailUnit,
               productId,
               variantId,
@@ -2067,8 +2132,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
         const subtotal = round2(runningSubtotal);
 
-        const taxMode = await getTaxModeTx(tx);
-        const taxRatePct = await getTaxRatePctTx(tx);
+        const taxMode = settings.taxMode;
+        const taxRatePct = settings.taxRatePct;
         const rate = Math.max(0, taxRatePct) / 100;
 
         const vatIncluded =
@@ -2078,7 +2143,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         const vatAddOn =
           taxMode === "ADDED" && rate > 0 ? subtotal * rate : 0;
 
-        const svc = await computeServiceFeeForOrderTx(tx, order.id, subtotal);
+        const svc = await computeServiceFeeForOrderTx(tx, settings, order.id, subtotal);
 
         const shippingFee = shippingEnabledTxVal ? shippingFeeFinal : 0;
         const total = round2(
@@ -2112,31 +2177,31 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             shippingBreakdownJson:
               shippingEnabledTxVal && selectedShippingQuote
                 ? {
-                    ...buildOrderShippingBreakdownJson(selectedShippingQuote),
-                    supplierId: selectedShippingQuote.supplierId,
-                  }
+                  ...buildOrderShippingBreakdownJson(selectedShippingQuote),
+                  supplierId: selectedShippingQuote.supplierId,
+                }
                 : shippingEnabledTxVal && shippingFee > 0
                   ? {
-                      quoteId: null,
-                      serviceLevel: "STANDARD",
-                      zoneCode: null,
-                      zoneName: null,
-                      currency: shippingCurrencyFinal,
-                      rateSource:
-                        (shippingRateSourceFinal as any) ??
-                        normalizeShippingRateSource("MANUAL"),
-                      components: {
-                        shippingFee,
-                        remoteSurcharge: 0,
-                        fuelSurcharge: 0,
-                        handlingFee: 0,
-                        insuranceFee: 0,
-                      },
-                      totalFee: shippingFee,
-                      etaMinDays: null,
-                      etaMaxDays: null,
-                      pricingMeta: { source: "checkout_fallback" },
-                    }
+                    quoteId: null,
+                    serviceLevel: "STANDARD",
+                    zoneCode: null,
+                    zoneName: null,
+                    currency: shippingCurrencyFinal,
+                    rateSource:
+                      (shippingRateSourceFinal as any) ??
+                      normalizeShippingRateSource("MANUAL"),
+                    components: {
+                      shippingFee,
+                      remoteSurcharge: 0,
+                      fuelSurcharge: 0,
+                      handlingFee: 0,
+                      insuranceFee: 0,
+                    },
+                    totalFee: shippingFee,
+                    etaMinDays: null,
+                    etaMaxDays: null,
+                    pricingMeta: { source: "checkout_fallback" },
+                  }
                   : null,
           },
           select: {
@@ -2217,7 +2282,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           },
         };
       },
-      { isolationLevel: "Serializable" as any }
+      {
+        isolationLevel: "Serializable" as any,
+        maxWait: 10_000,
+        timeout: 30_000,
+      }
     );
 
     return res.status(201).json({ data: created });
