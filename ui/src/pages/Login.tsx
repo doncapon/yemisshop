@@ -15,22 +15,13 @@ const RETURN_TO_KEY = "auth:returnTo";
 function safeReturnTo(v: unknown): string | null {
   const s = typeof v === "string" ? v : "";
   if (!s) return null;
-
-  // allow only internal paths
   if (!s.startsWith("/")) return null;
-
-  // avoid loops back to auth pages
-  if (s.startsWith("/login") || s.startsWith("/register") || s.startsWith("/forgot-password"))
+  if (s.startsWith("/login") || s.startsWith("/register") || s.startsWith("/forgot-password")) {
     return null;
-
+  }
   return s;
 }
 
-/**
- * Support both formats:
- * - state.from: "/checkout?x=1" (your current App.tsx)
- * - state.from: { pathname, search } (common react-router pattern)
- */
 function readFromState(state: any): string | null {
   if (!state) return null;
 
@@ -58,13 +49,8 @@ type MeResponse = {
 };
 
 type LoginOk = {
-  // cookie-mode: backend sets cookie; UI does not need token
-  token?: string;
-  sid?: string;
   profile: MeResponse;
   needsVerification?: boolean;
-
-  // legacy verification session token (keep for backward-compat unless backend is cookie-only here too)
   verifyToken?: string;
 };
 
@@ -81,13 +67,8 @@ function normalizeProfile(raw: any): MeResponse | null {
   const emailVerified =
     raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
 
-  let phoneVerified: boolean;
-  if ((import.meta as any)?.env?.PHONE_VERIFY === "set") {
-    phoneVerified =
-      raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
-  } else {
-    phoneVerified = true;
-  }
+  const phoneVerified =
+    raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
 
   return {
     id: String(raw.id ?? ""),
@@ -115,6 +96,17 @@ function normRole(r: any): Role {
   ) as Role;
 }
 
+function getDefaultPathByRole(role: Role): string {
+  const map: Record<Role, string> = {
+    ADMIN: "/admin",
+    SUPER_ADMIN: "/admin",
+    SHOPPER: "/",
+    SUPPLIER: "/supplier",
+    SUPPLIER_RIDER: "/supplier/orders",
+  };
+  return map[role] || "/";
+}
+
 export default function Login() {
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
@@ -126,8 +118,6 @@ export default function Login() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-
-  // 👁️ show/hide password
   const [showPassword, setShowPassword] = useState(false);
 
   const [err, setErr] = useState<string | null>(null);
@@ -146,27 +136,29 @@ export default function Login() {
   const [otpCooldown, setOtpCooldown] = useState(0);
   const [otp, setOtp] = useState("");
 
-  // ✅ Compact mobile: collapse verification panel by default
   const [verifyPanelOpen, setVerifyPanelOpen] = useState(true);
+
+  // ✅ shopper choice gate
+  const [pendingShopperProfile, setPendingShopperProfile] = useState<MeResponse | null>(null);
+  const [shopperNoticeOpen, setShopperNoticeOpen] = useState(false);
+
   const nav = useNavigate();
   const loc = useLocation();
 
-  // ✅ Freeze returnTo so it can't “disappear” during rerenders after setUser()
   const returnToRef = useRef<string | null>(null);
+  const suppressAutoRedirectRef = useRef(false);
 
   const fullyVerified = useMemo(() => {
     if (!blockedProfile) return false;
     return !!blockedProfile.emailVerified && !!blockedProfile.phoneVerified;
   }, [blockedProfile]);
 
-  // ✅ Ensure store hydrates (in case root doesn't call bootstrap)
   useEffect(() => {
     if (!hydrated) {
       bootstrap().catch(() => null);
     }
   }, [hydrated, bootstrap]);
 
-  /** ✅ Compute returnTo from: state -> query -> sessionStorage */
   const computedReturnTo = useMemo(() => {
     const stateFrom = readFromState(loc.state as any);
     const qpFrom = safeReturnTo(new URLSearchParams(loc.search).get("from"));
@@ -174,41 +166,37 @@ export default function Login() {
     let ssFrom: string | null = null;
     try {
       ssFrom = safeReturnTo(sessionStorage.getItem(RETURN_TO_KEY));
-    } catch { }
+    } catch {
+      //
+    }
 
     return stateFrom || qpFrom || ssFrom || null;
   }, [loc.state, loc.search]);
 
-  // ✅ lock the first non-null returnTo (so it survives login rerenders)
   if (returnToRef.current == null && computedReturnTo) {
     returnToRef.current = computedReturnTo;
   }
 
-  /** ✅ Persist returnTo so refresh on /login doesn't lose it */
   useEffect(() => {
     if (!returnToRef.current) return;
     try {
       sessionStorage.setItem(RETURN_TO_KEY, returnToRef.current);
-    } catch { }
-  }, [computedReturnTo]); // (computedReturnTo triggers this once when it becomes available)
+    } catch {
+      //
+    }
+  }, [computedReturnTo]);
 
-  // ✅ If already logged in (cookie session restored), bounce away
   useEffect(() => {
     if (!hydrated) return;
     if (!user?.id) return;
+    if (suppressAutoRedirectRef.current) return;
+    if (shopperNoticeOpen) return;
 
-    const defaultByRole: Record<Role, string> = {
-      ADMIN: "/admin",
-      SUPER_ADMIN: "/admin",
-      SHOPPER: "/",
-      SUPPLIER: "/supplier",
-      SUPPLIER_RIDER: "/supplier/orders",
-    };
-
-    const target = returnToRef.current || defaultByRole[normRole(user.role)] || "/";
+    const target = returnToRef.current || getDefaultPathByRole(normRole(user.role));
     nav(target, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, user?.id]);
+  }, [hydrated, user?.id, shopperNoticeOpen]);
+
 
   useEffect(() => {
     if (fullyVerified) {
@@ -236,6 +224,51 @@ export default function Login() {
     return () => clearInterval(t);
   }, [otpCooldown]);
 
+  function commitLogin(
+    profile: MeResponse,
+    needsVerification = false,
+    incomingVerifyToken?: string | null
+  ) {
+    setUser(profile);
+    setNeedsVerification(needsVerification);
+
+    try {
+      mergeGuestCartIntoUserCart(String(profile.id));
+    } catch {
+      //
+    }
+
+    queueMicrotask(() => window.dispatchEvent(new Event("cart:updated")));
+
+    try {
+      localStorage.setItem("verifyEmail", profile.email);
+      if (incomingVerifyToken) localStorage.setItem("verifyToken", incomingVerifyToken);
+      else localStorage.removeItem("verifyToken");
+    } catch {
+      //
+    }
+  }
+
+
+  function finalizeNavigate(path: string) {
+    suppressAutoRedirectRef.current = true;
+
+    try {
+      sessionStorage.removeItem(RETURN_TO_KEY);
+    } catch {
+      //
+    }
+
+    returnToRef.current = null;
+    setShopperNoticeOpen(false);
+
+    // let auth store + route guards settle first
+    window.setTimeout(() => {
+      nav(path, { replace: true });
+    }, 0);
+  }
+
+
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (loading || cooldown > 0) return;
@@ -243,9 +276,10 @@ export default function Login() {
     setErr(null);
     setEmailMsg(null);
     setOtpMsg(null);
-
     setBlockedProfile(null);
     setVerifyToken(null);
+    setPendingShopperProfile(null);
+    setShopperNoticeOpen(false);
 
     if (!email.trim() || !password.trim()) {
       setErr("Email and password are required");
@@ -254,10 +288,8 @@ export default function Login() {
 
     setLoading(true);
     try {
-      // Start clean (UI state only; cookies are handled by backend)
       clearAuth();
 
-      // ✅ IMPORTANT for cookie-mode: send credentials so Set-Cookie persists cross-origin
       const res = await api.post<LoginOk>(
         "/api/auth/login",
         {
@@ -268,86 +300,74 @@ export default function Login() {
       );
 
       const data = res.data as LoginOk;
-      const profile = data?.profile ?? null;
+      const normalizedProfile = normalizeProfile(data?.profile);
 
-      if (!profile?.id) throw new Error("Login response missing profile");
+      if (!normalizedProfile?.id) {
+        throw new Error("Login response missing profile");
+      }
 
+      const roleKey = normRole(normalizedProfile.role);
+      const isFullyVerified =
+        !!normalizedProfile.emailVerified && !!normalizedProfile.phoneVerified;
       const needsVer = !!data?.needsVerification;
       const vt = data?.verifyToken ?? null;
 
-      // ✅ Cookie is already set by backend. We only store profile for UI.
-      setUser(profile);
-      setNeedsVerification(needsVer);
-      try {
-        mergeGuestCartIntoUserCart(String(profile.id));
-      } catch { }
+      setVerifyToken(vt);
 
-      queueMicrotask(() => window.dispatchEvent(new Event("cart:updated")));
-
-      // (Optional/backward-compatible) Keep verify session token for OTP endpoints.
-      try {
-        localStorage.setItem("verifyEmail", profile.email);
-        if (vt) localStorage.setItem("verifyToken", vt);
-        else localStorage.removeItem("verifyToken");
-      } catch { }
-
-      // ✅ If backend says verification is needed but still returned 200,
-      // stay on login and show the verification panel instead of redirecting away.
-      if (needsVer) {
+      // ✅ supplier flow: stay on login page and show inline verification tools
+      if (roleKey === "SUPPLIER" && !isFullyVerified) {
+        suppressAutoRedirectRef.current = true;
+        commitLogin(normalizedProfile, true, vt);
+        setBlockedProfile(normalizedProfile);
         setErr("Please verify your email and phone number to continue.");
-        setBlockedProfile(normalizeProfile(profile));
-        setVerifyToken(vt);
         setVerifyPanelOpen(true);
         setCooldown(1);
         return;
       }
 
-      const roleKey = normRole(profile.role);
 
-      const defaultByRole: Record<Role, string> = {
-        ADMIN: "/admin",
-        SUPER_ADMIN: "/admin",
-        SHOPPER: "/",
-        SUPPLIER: "/supplier",
-        SUPPLIER_RIDER: "/supplier/orders",
-      };
+      // ✅ shopper flow: do NOT commit to store yet, show choice first
+      if (roleKey === "SHOPPER" && !isFullyVerified) {
+        suppressAutoRedirectRef.current = true;
+        setPendingShopperProfile(normalizedProfile);
+        setShopperNoticeOpen(true);
+        setCooldown(1);
+        return;
+      }
 
-      // ✅ use frozen returnTo (never changes mid-login)
-      const target = returnToRef.current || defaultByRole[roleKey] || "/";
+      commitLogin(normalizedProfile, needsVer);
 
-      // ✅ clear stored returnTo AFTER we’ve decided target
-      try {
-        sessionStorage.removeItem(RETURN_TO_KEY);
-      } catch { }
-
-      // also clear the ref so future manual /login doesn’t reuse old value
-      returnToRef.current = null;
-
-      nav(target, { replace: true });
+      const target = returnToRef.current || getDefaultPathByRole(roleKey);
+      finalizeNavigate(target);
     } catch (e: any) {
       const status = e?.response?.status;
 
-      // Backward compatible verify-block
       if (status === 403 && e?.response?.data?.needsVerification) {
         const data = e.response.data as LoginBlocked;
-
-        setErr(data.error || "Please verify your email and phone number to continue.");
-        setNeedsVerification(true);
-
         const p = normalizeProfile(data.profile);
-        setBlockedProfile(p);
-
         const vt = data.verifyToken || null;
+
         setVerifyToken(vt);
+        setNeedsVerification(true);
+        setErr(data.error || "Please verify your email and phone number to continue.");
 
-        try {
-          if (p?.email) localStorage.setItem("verifyEmail", p.email);
-          if (vt) localStorage.setItem("verifyToken", vt);
-        } catch { }
+        if (p?.role === "SUPPLIER") {
+          suppressAutoRedirectRef.current = true;
+          if (p) commitLogin(p, true, vt);
+          setBlockedProfile(p);
+          setVerifyPanelOpen(true);
+          setCooldown(1);
+          return;
+        }
 
-        setVerifyPanelOpen(true);
-        setCooldown(1);
-        return;
+
+        if (p?.role === "SHOPPER") {
+          suppressAutoRedirectRef.current = true;
+          setPendingShopperProfile(p);
+          setShopperNoticeOpen(true);
+          setCooldown(1);
+          return;
+        }
       }
 
       const msg =
@@ -407,9 +427,7 @@ export default function Login() {
 
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
       setEmailMsg(
-        emailVerifiedAt
-          ? "Email verified ✅"
-          : "Email not verified yet. Check your inbox."
+        emailVerifiedAt ? "Email verified ✅" : "Email not verified yet. Check your inbox."
       );
     } catch (e: any) {
       setEmailMsg(e?.response?.data?.error || "Could not check email status.");
@@ -489,12 +507,30 @@ export default function Login() {
     }
   };
 
+  const handleShopperVerifyNow = () => {
+    if (!pendingShopperProfile) return;
+    commitLogin(pendingShopperProfile, true, verifyToken);
+    finalizeNavigate("/verify");
+  };
+
+  const handleShopperDashboard = () => {
+    if (!pendingShopperProfile) return;
+    commitLogin(pendingShopperProfile, true, verifyToken);
+    finalizeNavigate("/dashboard");
+  };
+
+  const handleShopperCatalogue = () => {
+    if (!pendingShopperProfile) return;
+    commitLogin(pendingShopperProfile, true, verifyToken);
+    finalizeNavigate("/");
+  };
+
+
   const showSupplierVerify = blockedProfile?.role === "SUPPLIER" && !fullyVerified;
 
   return (
     <SiteLayout>
       <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
-        {/* Softer background blobs (reduced on mobile to reduce noise) */}
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute -top-28 -right-24 w-[22rem] h-[22rem] sm:w-[26rem] sm:h-[26rem] rounded-full blur-3xl opacity-30 bg-fuchsia-300/50" />
           <div className="absolute -bottom-32 -left-20 w-[24rem] h-[24rem] sm:w-[28rem] sm:h-[28rem] rounded-full blur-3xl opacity-25 bg-cyan-300/50" />
@@ -502,7 +538,6 @@ export default function Login() {
 
         <div className="relative grid place-items-center min-h-[100dvh] px-4 py-8 sm:py-10">
           <div className="w-full max-w-md">
-            {/* Header */}
             <div className="mb-4 sm:mb-6 text-center">
               <div className="flex justify-center">
                 <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/90 backdrop-blur px-4 py-2 shadow-sm">
@@ -529,7 +564,6 @@ export default function Login() {
                 </div>
               )}
 
-              {/* ✅ Supplier verification card: compact + collapsible */}
               {blockedProfile?.role === "SUPPLIER" &&
                 (fullyVerified ? (
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
@@ -561,7 +595,6 @@ export default function Login() {
 
                     {verifyPanelOpen && (
                       <div className="px-4 pb-4 space-y-4">
-                        {/* Email */}
                         {!blockedProfile.emailVerified && (
                           <div className="rounded-xl border border-amber-200 bg-white/80 p-3">
                             <div className="text-sm font-semibold text-slate-900">
@@ -592,13 +625,10 @@ export default function Login() {
                                 {emailBusy ? "Checking…" : "I verified (check)"}
                               </button>
                             </div>
-                            {emailMsg && (
-                              <div className="mt-2 text-xs text-slate-700">{emailMsg}</div>
-                            )}
+                            {emailMsg && <div className="mt-2 text-xs text-slate-700">{emailMsg}</div>}
                           </div>
                         )}
 
-                        {/* Phone OTP */}
                         {!blockedProfile.phoneVerified && (
                           <div className="rounded-xl border border-amber-200 bg-white/80 p-3">
                             <div className="text-sm font-semibold text-slate-900">
@@ -641,9 +671,7 @@ export default function Login() {
                               </div>
                             </div>
 
-                            {otpMsg && (
-                              <div className="mt-2 text-xs text-slate-700">{otpMsg}</div>
-                            )}
+                            {otpMsg && <div className="mt-2 text-xs text-slate-700">{otpMsg}</div>}
                           </div>
                         )}
 
@@ -657,7 +685,6 @@ export default function Login() {
                   </div>
                 ))}
 
-              {/* Email */}
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-zinc-800">Email</label>
                 <div className="relative">
@@ -675,8 +702,6 @@ export default function Login() {
                 </div>
               </div>
 
-              {/* Password with big pencil-drawn eye toggle */}
-              {/* Password with big swapped eye icons */}
               <div className="space-y-1">
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                   <label className="block text-sm font-medium text-zinc-800 leading-tight">
@@ -700,7 +725,6 @@ export default function Login() {
                     className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-14 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
 
-                  {/* Toggle button */}
                   <button
                     type="button"
                     onClick={() => setShowPassword((v) => !v)}
@@ -708,12 +732,7 @@ export default function Login() {
                     aria-label={showPassword ? "Hide password" : "Show password"}
                     aria-pressed={showPassword}
                   >
-                    <svg
-                      viewBox="0 0 24 24"
-                      className="w-6 h-6"
-                      aria-hidden="true"
-                    >
-                      {/* eye outline */}
+                    <svg viewBox="0 0 24 24" className="w-6 h-6" aria-hidden="true">
                       <path
                         d="M2.5 12s3.2-5.5 9.5-5.5S21.5 12 21.5 12s-3.2 5.5-9.5 5.5S2.5 12 2.5 12z"
                         fill="none"
@@ -722,8 +741,6 @@ export default function Login() {
                         strokeLinecap="round"
                         strokeLinejoin="round"
                       />
-
-                      {/* iris */}
                       <circle
                         cx={12}
                         cy={12}
@@ -732,8 +749,6 @@ export default function Login() {
                         stroke="currentColor"
                         strokeWidth={1.8}
                       />
-
-                      {/* WHEN PASSWORD IS *VISIBLE*, show the slash */}
                       {showPassword && (
                         <path
                           d="M4 4L20 20"
@@ -748,7 +763,6 @@ export default function Login() {
                 </div>
               </div>
 
-              {/* Submit */}
               <button
                 type="submit"
                 disabled={!hydrated || loading || cooldown > 0}
@@ -763,7 +777,6 @@ export default function Login() {
                       : "Login"}
               </button>
 
-              {/* Footer links */}
               <div className="pt-1 text-center text-sm text-zinc-700">
                 Don’t have an account?{" "}
                 <Link className="text-fuchsia-700 hover:underline" to="/register">
@@ -780,6 +793,75 @@ export default function Login() {
             </p>
           </div>
         </div>
+
+        {shopperNoticeOpen && pendingShopperProfile && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-[100] bg-black/50 px-4 py-6 grid place-items-center"
+          >
+            <div className="w-full max-w-md rounded-2xl border bg-white shadow-2xl overflow-hidden">
+              <div className="px-5 py-4 border-b bg-amber-50">
+                <h2 className="text-base sm:text-lg font-semibold text-zinc-900">
+                  Your account is not fully verified
+                </h2>
+                <p className="mt-1 text-sm text-zinc-700">
+                  You have logged in successfully, but checkout and some protected actions may be unavailable until you complete verification.
+                </p>
+              </div>
+
+              <div className="px-5 py-4 space-y-3">
+                <div className="rounded-xl border bg-zinc-50 px-3 py-3 text-sm">
+                  <div className="font-medium text-zinc-900">{pendingShopperProfile.email}</div>
+                  <div className="mt-2 space-y-1 text-zinc-700">
+                    <div>
+                      Email verification:{" "}
+                      <span className={pendingShopperProfile.emailVerified ? "text-emerald-700 font-semibold" : "text-amber-700 font-semibold"}>
+                        {pendingShopperProfile.emailVerified ? "Completed" : "Pending"}
+                      </span>
+                    </div>
+                    <div>
+                      Phone verification:{" "}
+                      <span className={pendingShopperProfile.phoneVerified ? "text-emerald-700 font-semibold" : "text-amber-700 font-semibold"}>
+                        {pendingShopperProfile.phoneVerified ? "Completed" : "Pending"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-sm text-zinc-600">
+                  You can verify now, go to your dashboard to manage verification, or continue to the catalogue and come back later.
+                </p>
+              </div>
+
+              <div className="px-5 py-4 border-t bg-zinc-50 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={handleShopperVerifyNow}
+                  className="inline-flex items-center justify-center rounded-xl bg-fuchsia-600 text-white px-4 py-2.5 text-sm font-semibold hover:bg-fuchsia-700"
+                >
+                  Verify now
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleShopperDashboard}
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 hover:bg-zinc-50"
+                >
+                  Dashboard
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleShopperCatalogue}
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 hover:bg-zinc-50"
+                >
+                  Catalogue
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </SiteLayout>
   );
