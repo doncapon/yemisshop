@@ -168,8 +168,8 @@ function readCatalogState(): CatalogPersistedState | null {
 
     const sortKey: SortKey =
       parsed?.sortKey === "price-asc" ||
-      parsed?.sortKey === "price-desc" ||
-      parsed?.sortKey === "relevance"
+        parsed?.sortKey === "price-desc" ||
+        parsed?.sortKey === "relevance"
         ? parsed.sortKey
         : "relevance";
 
@@ -183,8 +183,8 @@ function readCatalogState(): CatalogPersistedState | null {
         : [],
       selectedBucketIdxs: Array.isArray(parsed?.selectedBucketIdxs)
         ? parsed.selectedBucketIdxs
-            .map((n: any) => Number(n))
-            .filter((n: number) => Number.isFinite(n) && n >= 0)
+          .map((n: any) => Number(n))
+          .filter((n: number) => Number.isFinite(n) && n >= 0)
         : [],
       selectedBrands: Array.isArray(parsed?.selectedBrands)
         ? parsed.selectedBrands.map(String)
@@ -194,8 +194,8 @@ function readCatalogState(): CatalogPersistedState | null {
       inStockOnly: parsed?.inStockOnly !== false,
       expandedCats:
         parsed?.expandedCats &&
-        typeof parsed.expandedCats === "object" &&
-        !Array.isArray(parsed.expandedCats)
+          typeof parsed.expandedCats === "object" &&
+          !Array.isArray(parsed.expandedCats)
           ? parsed.expandedCats
           : {},
       page: Number.isFinite(Number(parsed?.page)) ? Math.max(1, Number(parsed.page)) : 1,
@@ -350,6 +350,23 @@ function offerStockOk(o?: SupplierOfferLite): boolean {
   return o.inStock === true || qtyOk;
 }
 
+function getActiveBaseOffer(p: Product): SupplierOfferLite | null {
+  const offers = Array.isArray(p.supplierProductOffers) ? p.supplierProductOffers : [];
+
+  for (const o of offers) {
+    if (!o) continue;
+    if (o.isActive !== true) continue;
+    if (!offerStockOk(o)) continue;
+
+    const price = Number(o.basePrice ?? o.unitPrice ?? 0);
+    if (!Number.isFinite(price) || price <= 0) continue;
+
+    return o;
+  }
+
+  return null;
+}
+
 function collectAllOffers(p: Product): SupplierOfferLite[] {
   const out: SupplierOfferLite[] = [];
   if (Array.isArray(p.supplierProductOffers)) out.push(...p.supplierProductOffers);
@@ -362,8 +379,11 @@ function collectAllOffers(p: Product): SupplierOfferLite[] {
 }
 
 function availableNow(p: Product): boolean {
-  const directQty = Number(p.availableQty);
-  if (Number.isFinite(directQty) && directQty > 0) return true;
+  const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
+
+  if (!hasVariants) {
+    return !!getActiveBaseOffer(p);
+  }
 
   const offers = collectAllOffers(p);
 
@@ -375,7 +395,6 @@ function availableNow(p: Product): boolean {
     if (Number.isFinite(q) && q > 0) return true;
   }
 
-  if (p.inStock === true) return true;
   if (
     Array.isArray(p.variants) &&
     p.variants.some((v) => v.inStock === true || (Number(v.availableQty) || 0) > 0)
@@ -493,7 +512,13 @@ function priceForFiltering(p: Product, marginPercent: number): number {
 
 function productSellable(p: Product, marginPercent: number): boolean {
   if (!isLive(p)) return false;
+
+  const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
+
+  if (!hasVariants && !getActiveBaseOffer(p)) return false;
+
   if (!availableNow(p)) return false;
+
   const price = getDisplayRetailPrice(p, marginPercent);
   return Number.isFinite(price) && price > 0;
 }
@@ -883,6 +908,8 @@ async function setServerCartQty(input: {
   titleSnapshot?: string | null;
   imageSnapshot?: string | null;
   unitPriceCache?: number | null;
+  supplierId?: string | null;
+  offerId?: string;
 }) {
   const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
   const items: any[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
@@ -917,6 +944,8 @@ async function setServerCartQty(input: {
         titleSnapshot: input.titleSnapshot ?? null,
         imageSnapshot: input.imageSnapshot ?? null,
         unitPriceCache: input.unitPriceCache ?? null,
+        supplierId: input.supplierId ?? null,
+        offerId: input.offerId ?? undefined,
       },
       AXIOS_COOKIE_CFG
     );
@@ -930,6 +959,8 @@ async function setServerCartQty(input: {
       titleSnapshot: input.titleSnapshot ?? null,
       imageSnapshot: input.imageSnapshot ?? null,
       unitPriceCache: input.unitPriceCache ?? null,
+      supplierId: input.supplierId ?? null,
+      offerId: input.offerId ?? undefined,
     },
     AXIOS_COOKIE_CFG
   );
@@ -1012,9 +1043,8 @@ const SuggestionItem = memo(function SuggestionItem({
     <li className="mb-2 last:mb-0">
       <button
         type="button"
-        className={`w-full rounded-xl px-2.5 py-2.5 text-left hover:bg-black/5 ${
-          active ? "bg-black/5" : ""
-        }`}
+        className={`w-full rounded-xl px-2.5 py-2.5 text-left hover:bg-black/5 ${active ? "bg-black/5" : ""
+          }`}
         onClick={() => onClick(p.title)}
       >
         <div className="flex items-center gap-3">
@@ -1054,6 +1084,7 @@ type ProductCardProps = {
   isSupplier: boolean;
   isAuthed: boolean;
   locationStateFrom: string;
+  canAdjustBaseQty: boolean;
   isFromCardAction: (target: EventTarget | null) => boolean;
   persistSnapshot: () => void;
   setRefineOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -1076,6 +1107,7 @@ const ProductCard = memo(
     isSupplier,
     isAuthed,
     locationStateFrom,
+    canAdjustBaseQty,
     isFromCardAction,
     persistSnapshot,
     setRefineOpen,
@@ -1089,7 +1121,7 @@ const ProductCard = memo(
     return (
       <Link
         to={`/products/${p.id}`}
-        state={{ from: locationStateFrom }}
+        state={{ from: location.pathname }}
         onClick={(e) => {
           if (isFromCardAction(e.target)) {
             e.preventDefault();
@@ -1111,9 +1143,8 @@ const ProductCard = memo(
             alt={p.title}
             loading="lazy"
             draggable={false}
-            className={`pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${
-              p._secondaryImg ? "opacity-100 group-hover:opacity-0" : "opacity-100"
-            }`}
+            className={`pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${p._secondaryImg ? "opacity-100 group-hover:opacity-0" : "opacity-100"
+              }`}
             fallback={
               <div className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-zinc-400">
                 No image
@@ -1155,11 +1186,10 @@ const ProductCard = memo(
 
                 onToggleFav(p.id);
               }}
-              className={`absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border shadow-sm transition ${
-                fav
-                  ? "border-rose-200 bg-rose-50 text-rose-600"
-                  : "border-zinc-200 bg-white/95 text-zinc-400 hover:border-rose-200 hover:text-rose-600"
-              }`}
+              className={`absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border shadow-sm transition ${fav
+                ? "border-rose-200 bg-rose-50 text-rose-600"
+                : "border-zinc-200 bg-white/95 text-zinc-400 hover:border-rose-200 hover:text-rose-600"
+                }`}
               aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
               title={fav ? "Remove from wishlist" : "Add to wishlist"}
             >
@@ -1222,26 +1252,35 @@ const ProductCard = memo(
                       type="button"
                       data-stop-card-nav="true"
                       aria-label="Increase quantity"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
+                      disabled={!canAdjustBaseQty}
+                      className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-sm font-semibold ${canAdjustBaseQty
+                        ? "bg-white/15 hover:bg-white/25"
+                        : "cursor-not-allowed bg-white/10 text-white/40"
+                        }`}
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (!canAdjustBaseQty) return;
                         void onSetCartQty(p, baseQtyInCart + 1);
                       }}
                     >
                       +
                     </button>
+                    {baseQtyInCart > 0 && !canAdjustBaseQty && (
+                      <div className="mt-2 text-[10px] text-amber-600 md:text-[11px]">
+                        This item is no longer available. You can remove it, but not increase quantity.
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <button
                     type="button"
                     data-stop-card-nav="true"
                     disabled={!inStock}
-                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium shadow-sm transition md:text-xs ${
-                      inStock
-                        ? "bg-black text-white hover:bg-black/90"
-                        : "cursor-not-allowed bg-zinc-200 text-zinc-500"
-                    }`}
+                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium shadow-sm transition md:text-xs ${inStock
+                      ? "bg-black text-white hover:bg-black/90"
+                      : "cursor-not-allowed bg-zinc-200 text-zinc-500"
+                      }`}
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1268,6 +1307,7 @@ const ProductCard = memo(
     prev.baseQtyInCart === next.baseQtyInCart &&
     prev.isSupplier === next.isSupplier &&
     prev.isAuthed === next.isAuthed &&
+    prev.canAdjustBaseQty === next.canAdjustBaseQty &&
     prev.locationStateFrom === next.locationStateFrom
 );
 
@@ -1587,7 +1627,14 @@ export default function Catalog() {
   const serverSyncQueuedQtyRef = useRef<Record<string, number | null>>({});
 
   const syncServerQtyCoalesced = useCallback(
-    (p: Product, qty: number, unitPriceCache: number, primaryImg: string | null) => {
+    (
+      p: Product,
+      qty: number,
+      unitPriceCache: number,
+      primaryImg: string | null,
+      supplierId?: string | null,
+      offerId?: string
+    ) => {
       if (!isAuthed) return;
 
       const key = `BASE:${p.id}`;
@@ -1610,6 +1657,8 @@ export default function Catalog() {
             titleSnapshot: p.title,
             imageSnapshot: primaryImg,
             unitPriceCache,
+            supplierId: supplierId ?? null,
+            offerId: offerId ?? undefined,
           });
         } catch (e: any) {
           console.error("Cart sync failed:", e?.response?.status, e?.response?.data || e?.message);
@@ -1654,40 +1703,40 @@ export default function Catalog() {
         .map((x) => {
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => ({
-                id: String(v.id),
-                sku: v.sku ?? null,
-                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
-                inStock: v.inStock === true,
-                imagesJson: normalizeImages(v.imagesJson),
-                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
-                offers: Array.isArray(v.offers)
-                  ? v.offers.map((o: any) => ({
-                      id: String(o.id),
-                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty))
-                        ? Number(o.availableQty)
+              id: String(v.id),
+              sku: v.sku ?? null,
+              retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
+              inStock: v.inStock === true,
+              imagesJson: normalizeImages(v.imagesJson),
+              availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+              offers: Array.isArray(v.offers)
+                ? v.offers.map((o: any) => ({
+                  id: String(o.id),
+                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number.isFinite(Number(o.availableQty))
+                    ? Number(o.availableQty)
+                    : null,
+                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                  currency: o.currency ?? "NGN",
+                  leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
+                  supplierRatingAvg:
+                    o.supplierRatingAvg != null
+                      ? decToNumber(o.supplierRatingAvg)
+                      : o.supplier?.ratingAvg != null
+                        ? decToNumber(o.supplier.ratingAvg)
                         : null,
-                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                      currency: o.currency ?? "NGN",
-                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
-                      supplierRatingAvg:
-                        o.supplierRatingAvg != null
-                          ? decToNumber(o.supplierRatingAvg)
-                          : o.supplier?.ratingAvg != null
-                            ? decToNumber(o.supplier.ratingAvg)
-                            : null,
-                      supplierRatingCount:
-                        o.supplierRatingCount != null
-                          ? Number(o.supplierRatingCount)
-                          : o.supplier?.ratingCount != null
-                            ? Number(o.supplier.ratingCount)
-                            : null,
-                    }))
-                  : [],
-              }))
+                  supplierRatingCount:
+                    o.supplierRatingCount != null
+                      ? Number(o.supplierRatingCount)
+                      : o.supplier?.ratingCount != null
+                        ? Number(o.supplier.ratingCount)
+                        : null,
+                }))
+                : [],
+            }))
             : [];
 
           const baseSource =
@@ -1748,9 +1797,9 @@ export default function Catalog() {
             brand:
               x.brand && (x.brand.id != null || x.brand.name != null)
                 ? {
-                    id: String(x.brand.id ?? ""),
-                    name: cleanText(x.brand.name),
-                  }
+                  id: String(x.brand.id ?? ""),
+                  name: cleanText(x.brand.name),
+                }
                 : null,
             variants,
             supplierProductOffers: baseOffers,
@@ -1779,11 +1828,13 @@ export default function Catalog() {
       const displayPrice = priceForFiltering(p, marginPercent);
       const available = availableNow(p);
 
+      const sellable = productSellable(p, marginPercent);
+
       out[i] = {
         ...p,
         _displayPrice: displayPrice,
         _availableNow: available,
-        _sellable: available && Number.isFinite(displayPrice) && displayPrice > 0,
+        _sellable: sellable,
         _primaryImg: imageCandidates[0],
         _secondaryImg: imageCandidates[1],
         _brandName: brandName,
@@ -1838,31 +1889,68 @@ export default function Catalog() {
 
   /* ---------------- Favorites ---------------- */
 
-  const favQuery = useQuery({
-    queryKey: ["favorites", "mine"],
-    enabled: !isSupplier && isAuthed,
+  const hydrated = useAuthStore((s) => s.hydrated);
+
+  const normalizeFavoriteIds = useCallback((payload: any): string[] => {
+    const root = payload ?? {};
+
+    const candidates =
+      Array.isArray(root?.productIds) ? root.productIds
+        : Array.isArray(root?.data?.productIds) ? root.data.productIds
+          : Array.isArray(root?.items) ? root.items
+            : Array.isArray(root?.data) ? root.data
+              : Array.isArray(root) ? root
+                : [];
+
+    const ids = candidates
+      .map((x: any) => {
+        if (typeof x === "string" || typeof x === "number") return String(x);
+
+        return (
+          x?.productId ??
+          x?.product?.id ??
+          x?.favoriteProductId ??
+          x?.id ??
+          null
+        );
+      })
+      .filter(Boolean)
+      .map(String);
+
+    return Array.from(new Set(ids));
+  }, []);
+
+  const [favIds, setFavIds] = useState<Set<string>>(new Set());
+
+  const favQuery = useQuery<string[]>({
+    queryKey: ["favorites", "mine", user?.id ?? "anon"],
+    enabled: hydrated && !isSupplier && isAuthed,
     retry: (count, e: any) => (Number(e?.response?.status) === 401 ? false : count < 2),
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     staleTime: 30_000,
+    initialData: [],
     queryFn: async () => {
       const { data } = await api.get("/api/favorites/mine", { withCredentials: true });
-
-      const payload: any = data ?? {};
-      let ids: string[] = [];
-
-      if (Array.isArray(payload.productIds)) ids = payload.productIds;
-      else if (Array.isArray(payload.data?.productIds)) ids = payload.data.productIds;
-      else if (Array.isArray(payload.data)) {
-        ids = payload.data.map((x: any) => x?.productId ?? x?.id ?? null).filter(Boolean);
-      }
-
-      return new Set(ids.map(String));
+      return normalizeFavoriteIds(data);
     },
-    initialData: new Set<string>(),
   });
 
-  const isFav = useCallback((id: string) => !!favQuery.data?.has(id), [favQuery.data]);
+  useEffect(() => {
+    if (!hydrated || !isAuthed || isSupplier) {
+      setFavIds(new Set());
+      return;
+    }
+
+    setFavIds(new Set((favQuery.data ?? []).map(String)));
+  }, [favQuery.data, hydrated, isAuthed, isSupplier]);
+
+  useEffect(() => {
+    if (!hydrated || !isAuthed || isSupplier) return;
+    void favQuery.refetch();
+  }, [hydrated, isAuthed, isSupplier]);
+
+  const isFav = useCallback((id: string) => favIds.has(String(id)), [favIds]);
 
   const toggleFav = useMutation({
     mutationFn: async ({ productId }: { productId: string }) => {
@@ -1871,25 +1959,53 @@ export default function Catalog() {
         { productId },
         { withCredentials: true }
       );
-      return { productId, favorited: !!data.favorited };
+      return { productId: String(productId), favorited: !!data?.favorited };
     },
+
     onMutate: async ({ productId }) => {
-      const key = ["favorites", "mine"] as const;
-      const prev = qc.getQueryData<Set<string>>(key);
-      if (prev) {
+      const pid = String(productId);
+
+      setFavIds((prev) => {
         const next = new Set(prev);
-        if (next.has(productId)) next.delete(productId);
-        else next.add(productId);
-        qc.setQueryData(key, next);
-      }
-      return { prev };
+        if (next.has(pid)) next.delete(pid);
+        else next.add(pid);
+        return next;
+      });
+
+      const key = ["favorites", "mine", user?.id ?? "anon"] as const;
+      const prev = qc.getQueryData<string[]>(key) ?? [];
+
+      const next = prev.includes(pid)
+        ? prev.filter((id) => id !== pid)
+        : [...prev, pid];
+
+      qc.setQueryData(key, next);
+
+      return { prev, pid };
     },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(["favorites", "mine"], ctx.prev);
-      openModal({ title: "Wishlist", message: "Could not update wishlist. Please try again." });
+
+    onError: (_e, _vars, ctx) => {
+      const restored = ctx?.prev ?? [];
+      setFavIds(new Set(restored.map(String)));
+      qc.setQueryData(["favorites", "mine", user?.id ?? "anon"], restored);
+
+      openModal({
+        title: "Wishlist",
+        message: "Could not update wishlist. Please try again.",
+      });
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["favorites"] });
+
+    onSuccess: ({ productId, favorited }) => {
+      setFavIds((prev) => {
+        const next = new Set(prev);
+        if (favorited) next.add(String(productId));
+        else next.delete(String(productId));
+        return next;
+      });
+    },
+
+    onSettled: async () => {
+      await qc.invalidateQueries({ queryKey: ["favorites", "mine"] });
       window.dispatchEvent(new Event("wishlist:updated"));
     },
   });
@@ -1900,6 +2016,12 @@ export default function Catalog() {
     },
     [toggleFav]
   );
+
+
+
+
+
+
 
   /* ---------------- Filters/sort ---------------- */
 
@@ -2267,9 +2389,23 @@ export default function Catalog() {
     async (p: ProductView, nextQty: number) => {
       try {
         const qty = Math.max(0, Math.floor(Number(nextQty) || 0));
-        const unitPriceCache = p._displayPrice || 0;
         const primaryImg = p._primaryImg ?? null;
         const optionsKey = "";
+
+        const activeBaseOffer = getActiveBaseOffer(p);
+
+        if (qty > 0 && !activeBaseOffer) {
+          openModal({
+            title: "Unavailable",
+            message: "This item is no longer available to add to cart. Please refresh and try again.",
+          });
+          return;
+        }
+
+        const unitPriceCache =
+          Number(activeBaseOffer?.basePrice ?? activeBaseOffer?.unitPrice ?? 0) > 0
+            ? Number(activeBaseOffer?.basePrice ?? activeBaseOffer?.unitPrice ?? 0)
+            : p._displayPrice || 0;
 
         const nextLines = upsertCartLine({
           productId: String(p.id),
@@ -2281,6 +2417,8 @@ export default function Catalog() {
           titleSnapshot: p.title ?? null,
           imageSnapshot: primaryImg ?? null,
           unitPriceCache: Number.isFinite(unitPriceCache) ? unitPriceCache : 0,
+          supplierId: activeBaseOffer?.supplierId ?? null,
+          offerId: activeBaseOffer?.id ?? undefined,
         });
 
         window.dispatchEvent(new Event("cart:updated"));
@@ -2293,7 +2431,16 @@ export default function Catalog() {
           );
         }, 0);
 
-        syncServerQtyCoalesced(p, qty, unitPriceCache, primaryImg);
+        syncServerQtyCoalesced(
+          p,
+          qty,
+          unitPriceCache,
+          primaryImg,
+          activeBaseOffer?.supplierId ?? null,
+          activeBaseOffer?.id
+        );
+
+
       } catch (err: any) {
         console.error(err);
         openModal({ title: "Cart", message: err?.message || "Could not update cart." });
@@ -2732,22 +2879,20 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
-                              checked
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
-                                  checked
-                                    ? "text-white/90 hover:bg-white/10"
-                                    : "text-zinc-600 hover:bg-black/5"
-                                }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
+                                  ? "text-white/90 hover:bg-white/10"
+                                  : "text-zinc-600 hover:bg-black/5"
+                                  }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -2766,9 +2911,8 @@ export default function Catalog() {
                             </button>
 
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({count})
                             </span>
@@ -2786,17 +2930,15 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({c.count})
                             </span>
@@ -2829,17 +2971,15 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({b.count})
                             </span>
@@ -2873,17 +3013,15 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                          }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span
-                            className={`ml-2 text-[11px] ${
-                              checked ? "text-white/90" : "text-zinc-600"
-                            }`}
+                            className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                           >
                             ({count})
                           </span>
@@ -2983,9 +3121,11 @@ export default function Catalog() {
                   {pageItems.map((p) => {
                     const fav = isFav(p.id);
                     const bestPrice = p._displayPrice;
-                    const inStock = p._availableNow;
                     const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
+                    const activeBaseOffer = hasVariants ? null : getActiveBaseOffer(p);
+                    const inStock = hasVariants ? p._availableNow : !!activeBaseOffer;
                     const baseQtyInCart = cartQtyMap.get(String(p.id)) ?? 0;
+                    const canAdjustBaseQty = hasVariants ? false : !!activeBaseOffer;
 
                     return (
                       <ProductCard
@@ -2999,6 +3139,7 @@ export default function Catalog() {
                         isSupplier={isSupplier}
                         isAuthed={isAuthed}
                         locationStateFrom={locationStateFrom}
+                        canAdjustBaseQty={canAdjustBaseQty}
                         isFromCardAction={isFromCardAction}
                         persistSnapshot={persistSnapshot}
                         setRefineOpen={setRefineOpen}
@@ -3152,11 +3293,10 @@ export default function Catalog() {
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
-                                  className={`rounded-xl px-3 py-1.5 text-xs ${
-                                    n === currentPage
-                                      ? "border border-zinc-900 bg-zinc-900 text-white"
-                                      : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
-                                  }`}
+                                  className={`rounded-xl px-3 py-1.5 text-xs ${n === currentPage
+                                    ? "border border-zinc-900 bg-zinc-900 text-white"
+                                    : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
+                                    }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -3270,22 +3410,20 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${checked
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
-                                  checked
-                                    ? "text-white/90 hover:bg-white/10"
-                                    : "text-zinc-600 hover:bg-black/5"
-                                }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
+                                  ? "text-white/90 hover:bg-white/10"
+                                  : "text-zinc-600 hover:bg-black/5"
+                                  }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -3304,9 +3442,8 @@ export default function Catalog() {
                             </button>
 
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({count})
                             </span>
@@ -3324,17 +3461,15 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({c.count})
                             </span>
@@ -3368,17 +3503,15 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({b.count})
                             </span>
@@ -3412,17 +3545,15 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                          }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span
-                            className={`ml-2 text-[11px] ${
-                              checked ? "text-white/90" : "text-zinc-600"
-                            }`}
+                            className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                           >
                             ({count})
                           </span>

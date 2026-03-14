@@ -323,9 +323,6 @@ async function getSupplierForUser(userId: string) {
 }
 
 // Prisma-safe relation filters
-function supplierPayoutReadyRelationFilter() {
-  return { is: payoutReadySupplierWhere() } as const;
-}
 function supplierCheckoutReadyRelationFilter() {
   return { is: checkoutReadySupplierWhere() } as const;
 }
@@ -619,11 +616,17 @@ async function getCheckoutRetailUnitPriceTx(
         id: true,
         productId: true,
         retailPrice: true,
+        isActive: true,
+        archivedAt: true,
       },
     });
 
     if (!variant || String(variant.productId) !== String(productId)) {
       throw new Error(`Variant ${variantId} does not belong to product ${productId}.`);
+    }
+
+    if (variant.isActive !== true || variant.archivedAt != null) {
+      throw new Error(`Variant ${variantId} is not active.`);
     }
 
     variantRetail = retailOrNull(variant.retailPrice);
@@ -635,18 +638,18 @@ async function getCheckoutRetailUnitPriceTx(
       id: true,
       retailPrice: true,
       autoPrice: true,
-      displayBasePrice: true,
-      offersFrom: true,
-    } as any,
+      status: true,
+      isDeleted: true,
+    },
   });
 
-  if (!product) throw new Error("Product not found.");
+  if (!product || product.isDeleted) {
+    throw new Error("Product not found.");
+  }
 
   const productRetail =
-    retailOrNull((product as any).retailPrice) ??
-    retailOrNull((product as any).autoPrice) ??
-    retailOrNull((product as any).displayBasePrice) ??
-    retailOrNull((product as any).offersFrom);
+    retailOrNull(product.retailPrice) ??
+    retailOrNull(product.autoPrice);
 
   const retail = variantRetail ?? productRetail;
 
@@ -670,30 +673,32 @@ async function fetchActiveBaseOffersTx(
   tx: any,
   where: { productId: string }
 ): Promise<CandidateOffer[]> {
-  // 🔹 FIX: use findMany so we see *all* base offers for this product
   const rows =
     ((await tx.supplierProductOffer.findMany({
       where: {
         productId: where.productId,
         isActive: true,
-        inStock: true,
         availableQty: { gt: 0 },
         basePrice: { gt: 0 },
         product: {
           status: "LIVE",
           isDeleted: false,
-          supplier: { ...checkoutReadySupplierWhere() },
+        },
+        supplier: {
+          ...checkoutReadySupplierWhere(),
         },
       },
       select: {
         id: true,
+        supplierId: true,
         availableQty: true,
         basePrice: true,
         leadDays: true,
-        product: {
+        supplier: {
           select: {
-            supplierId: true,
-            supplier: { select: { ratingAvg: true, ratingCount: true } },
+            status: true,
+            ratingAvg: true,
+            ratingCount: true,
           },
         },
       },
@@ -701,11 +706,13 @@ async function fetchActiveBaseOffersTx(
 
   const current: CandidateOffer[] = rows
     .map((row: any) => {
-      const supplierId = String(row.product?.supplierId ?? "");
+      const supplierId = String(row.supplierId ?? "").trim();
       const price = asNumber(row.basePrice, 0);
       const qty = Math.max(0, asNumber(row.availableQty, 0));
+      const supplierStatus = String(row.supplier?.status ?? "").toUpperCase();
 
       if (!supplierId || !(price > 0) || !(qty > 0)) return null;
+      if (supplierStatus !== "ACTIVE") return null;
 
       return {
         id: String(row.id),
@@ -717,13 +724,9 @@ async function fetchActiveBaseOffersTx(
         supplierVariantOfferId: null,
         leadDays: row.leadDays == null ? null : Number(row.leadDays),
         supplierRatingAvg:
-          row.product?.supplier?.ratingAvg != null
-            ? Number(row.product.supplier.ratingAvg)
-            : null,
+          row.supplier?.ratingAvg != null ? Number(row.supplier.ratingAvg) : null,
         supplierRatingCount:
-          row.product?.supplier?.ratingCount != null
-            ? Number(row.product.supplier.ratingCount)
-            : null,
+          row.supplier?.ratingCount != null ? Number(row.supplier.ratingCount) : null,
       } as CandidateOffer;
     })
     .filter(Boolean) as CandidateOffer[];
@@ -732,36 +735,43 @@ async function fetchActiveBaseOffersTx(
     return sortOffersCheapestFirst(current);
   }
 
-  // legacy fallback (if you still keep legacy table around)
   const legacyList =
     (await (tx.supplierOffer?.findMany?.({
       where: {
         productId: where.productId,
         variantId: null,
         isActive: true,
-        inStock: true,
         availableQty: { gt: 0 },
         unitPrice: { gt: 0 },
       },
-      select: { id: true, supplierId: true, availableQty: true, unitPrice: true },
+      select: {
+        id: true,
+        supplierId: true,
+        availableQty: true,
+        unitPrice: true,
+        inStock: true,
+      },
     }) ?? [])) ?? [];
 
   const legacy: CandidateOffer[] = (legacyList || [])
     .map((o: any) => {
-      const sid = String(o.supplierId ?? "");
-      if (!sid) return null;
+      const sid = String(o.supplierId ?? "").trim();
+      const qty = Math.max(0, asNumber(o.availableQty, 0));
+      const unit = asNumber(o.unitPrice, 0);
+
+      if (!sid || !(qty > 0) || !(unit > 0)) return null;
+
       return {
         id: String(o.id),
         supplierId: sid,
-        availableQty: Math.max(0, asNumber(o.availableQty, 0)),
-        unitPrice: asNumber(o.unitPrice, 0),
+        availableQty: qty,
+        unitPrice: unit,
         model: "LEGACY_OFFER" as const,
         supplierProductOfferId: null,
         supplierVariantOfferId: null,
       } as CandidateOffer;
     })
-    .filter(Boolean)
-    .filter((o: any) => o.availableQty > 0 && o.unitPrice > 0);
+    .filter(Boolean) as CandidateOffer[];
 
   return sortOffersCheapestFirst(legacy);
 }
@@ -775,48 +785,75 @@ export async function fetchOneOfferByIdTx(
       where: { id: offerId },
       select: {
         id: true,
+        supplierId: true,
         productId: true,
         variantId: true,
         availableQty: true,
         isActive: true,
         inStock: true,
         unitPrice: true,
+        leadDays: true,
         supplierProductOfferId: true,
-        variant: { select: { productId: true } },
-        product: { select: { supplierId: true, supplier: { select: { status: true } } } },
+        supplier: {
+          select: {
+            status: true,
+            ratingAvg: true,
+            ratingCount: true,
+          },
+        },
+        variant: {
+          select: {
+            productId: true,
+          },
+        },
+        product: {
+          select: {
+            status: true,
+            isDeleted: true,
+          },
+        },
       } as any,
     });
 
     if (vo) {
-      const sid = String((vo as any).product?.supplierId ?? "");
-      if (!sid) return null;
-
-      if (vo.isActive !== true || vo.inStock !== true || asNumber(vo.availableQty, 0) <= 0)
-        return null;
-      if (String((vo as any).product?.supplier?.status ?? "").toUpperCase() !== "ACTIVE")
-        return null;
-
+      const sid = String(vo.supplierId ?? "").trim();
+      const qty = Math.max(0, asNumber(vo.availableQty, 0));
       const supplierUnit = asNumber(vo.unitPrice, 0);
-      if (!(supplierUnit > 0)) return null;
+      const supplierStatus = String(vo.supplier?.status ?? "").toUpperCase();
+      const productStatus = String(vo.product?.status ?? "").toUpperCase();
+      const productDeleted = !!vo.product?.isDeleted;
 
-      const pid = String((vo as any).variant?.productId ?? vo.productId);
+      if (!sid) return null;
+      if (vo.isActive !== true) return null;
+      if (!(qty > 0)) return null;
+      if (!(supplierUnit > 0)) return null;
+      if (supplierStatus !== "ACTIVE") return null;
+      if (productDeleted || productStatus !== "LIVE") return null;
+
+      const pid = String(vo.variant?.productId ?? vo.productId ?? "").trim();
+      if (!pid) return null;
 
       return {
         id: String(vo.id),
         supplierId: sid,
-        availableQty: Math.max(0, asNumber(vo.availableQty, 0)),
+        availableQty: qty,
         unitPrice: supplierUnit,
         model: "VARIANT_OFFER",
         supplierProductOfferId: vo.supplierProductOfferId
           ? String(vo.supplierProductOfferId)
           : null,
         supplierVariantOfferId: String(vo.id),
+        leadDays: vo.leadDays == null ? null : Number(vo.leadDays),
+        supplierRatingAvg:
+          vo.supplier?.ratingAvg != null ? Number(vo.supplier.ratingAvg) : null,
+        supplierRatingCount:
+          vo.supplier?.ratingCount != null ? Number(vo.supplier.ratingCount) : null,
         productId: pid,
         variantId: vo.variantId == null ? null : String(vo.variantId),
       };
     }
   } catch {
-    // ignore
+    //
   }
 
   try {
@@ -824,41 +861,63 @@ export async function fetchOneOfferByIdTx(
       where: { id: offerId },
       select: {
         id: true,
+        supplierId: true,
         productId: true,
         basePrice: true,
+        availableQty: true,
         isActive: true,
         inStock: true,
-        availableQty: true,
-        product: { select: { supplierId: true, supplier: { select: { status: true } } } },
+        leadDays: true,
+        supplier: {
+          select: {
+            status: true,
+            ratingAvg: true,
+            ratingCount: true,
+          },
+        },
+        product: {
+          select: {
+            status: true,
+            isDeleted: true,
+          },
+        },
       },
     });
 
     if (bo) {
-      const sid = String((bo as any).product?.supplierId ?? "");
-      if (!sid) return null;
-
-      if (bo.isActive !== true || bo.inStock !== true || asNumber(bo.availableQty, 0) <= 0)
-        return null;
-      if (String((bo as any).product?.supplier?.status ?? "").toUpperCase() !== "ACTIVE")
-        return null;
-
+      const sid = String(bo.supplierId ?? "").trim();
+      const qty = Math.max(0, asNumber(bo.availableQty, 0));
       const supplierUnit = asNumber(bo.basePrice, 0);
+      const supplierStatus = String(bo.supplier?.status ?? "").toUpperCase();
+      const productStatus = String(bo.product?.status ?? "").toUpperCase();
+      const productDeleted = !!bo.product?.isDeleted;
+
+      if (!sid) return null;
+      if (bo.isActive !== true) return null;
+      if (!(qty > 0)) return null;
       if (!(supplierUnit > 0)) return null;
+      if (supplierStatus !== "ACTIVE") return null;
+      if (productDeleted || productStatus !== "LIVE") return null;
 
       return {
         id: String(bo.id),
         supplierId: sid,
-        availableQty: Math.max(0, asNumber(bo.availableQty, 0)),
+        availableQty: qty,
         unitPrice: supplierUnit,
         model: "BASE_OFFER",
         supplierProductOfferId: String(bo.id),
         supplierVariantOfferId: null,
+        leadDays: bo.leadDays == null ? null : Number(bo.leadDays),
+        supplierRatingAvg:
+          bo.supplier?.ratingAvg != null ? Number(bo.supplier.ratingAvg) : null,
+        supplierRatingCount:
+          bo.supplier?.ratingCount != null ? Number(bo.supplier.ratingCount) : null,
         productId: String(bo.productId),
         variantId: null,
       };
     }
   } catch {
-    // ignore
+    //
   }
 
   const so =
@@ -877,16 +936,19 @@ export async function fetchOneOfferByIdTx(
 
   if (!so) return null;
 
-  const sid = String(so.supplierId ?? "");
-  if (!sid) return null;
+  const sid = String(so.supplierId ?? "").trim();
+  const qty = Math.max(0, asNumber(so.availableQty, 0));
+  const unit = asNumber(so.unitPrice, 0);
 
-  if (so.inStock !== true || asNumber(so.availableQty, 0) <= 0) return null;
+  if (!sid) return null;
+  if (!(qty > 0)) return null;
+  if (!(unit > 0)) return null;
 
   return {
     id: String(so.id),
     supplierId: sid,
-    availableQty: Math.max(0, asNumber(so.availableQty, 0)),
-    unitPrice: asNumber(so.unitPrice, 0),
+    availableQty: qty,
+    unitPrice: unit,
     model: "LEGACY_OFFER",
     supplierProductOfferId: null,
     supplierVariantOfferId: null,
@@ -899,31 +961,34 @@ async function fetchActiveOffersTx(
   tx: any,
   where: { productId: string; variantId: string }
 ): Promise<CandidateOffer[]> {
-  // 🔹 FIX: use findMany so we see *all* variant offers for this product+variant
   const vos =
     ((await tx.supplierVariantOffer.findMany({
       where: {
         productId: where.productId,
         variantId: where.variantId,
         isActive: true,
-        inStock: true,
         availableQty: { gt: 0 },
+        unitPrice: { gt: 0 },
         product: {
           status: "LIVE",
           isDeleted: false,
-          supplier: { ...checkoutReadySupplierWhere() },
+        },
+        supplier: {
+          ...checkoutReadySupplierWhere(),
         },
       } as any,
       select: {
         id: true,
+        supplierId: true,
         availableQty: true,
         unitPrice: true,
         supplierProductOfferId: true,
         leadDays: true,
-        product: {
+        supplier: {
           select: {
-            supplierId: true,
-            supplier: { select: { ratingAvg: true, ratingCount: true } },
+            status: true,
+            ratingAvg: true,
+            ratingCount: true,
           },
         },
       } as any,
@@ -931,11 +996,13 @@ async function fetchActiveOffersTx(
 
   const current: CandidateOffer[] = vos
     .map((vo: any) => {
-      const supplierId = String(vo.product?.supplierId ?? "");
+      const supplierId = String(vo.supplierId ?? "").trim();
       const unit = asNumber(vo.unitPrice, 0);
       const qty = Math.max(0, asNumber(vo.availableQty, 0));
+      const supplierStatus = String(vo.supplier?.status ?? "").toUpperCase();
 
       if (!supplierId || !(unit > 0) || !(qty > 0)) return null;
+      if (supplierStatus !== "ACTIVE") return null;
 
       return {
         id: String(vo.id),
@@ -949,13 +1016,9 @@ async function fetchActiveOffersTx(
         supplierVariantOfferId: String(vo.id),
         leadDays: vo.leadDays != null ? Number(vo.leadDays) : null,
         supplierRatingAvg:
-          vo.product?.supplier?.ratingAvg != null
-            ? Number(vo.product.supplier.ratingAvg)
-            : null,
+          vo.supplier?.ratingAvg != null ? Number(vo.supplier.ratingAvg) : null,
         supplierRatingCount:
-          vo.product?.supplier?.ratingCount != null
-            ? Number(vo.product.supplier.ratingCount)
-            : null,
+          vo.supplier?.ratingCount != null ? Number(vo.supplier.ratingCount) : null,
       } as CandidateOffer;
     })
     .filter(Boolean) as CandidateOffer[];
@@ -964,36 +1027,43 @@ async function fetchActiveOffersTx(
     return sortOffersCheapestFirst(current);
   }
 
-  // legacy fallback
   const legacy =
     (await (tx.supplierOffer?.findMany?.({
       where: {
         productId: where.productId,
         variantId: where.variantId,
         isActive: true,
-        inStock: true,
         availableQty: { gt: 0 },
         unitPrice: { gt: 0 },
       },
-      select: { id: true, supplierId: true, availableQty: true, unitPrice: true },
+      select: {
+        id: true,
+        supplierId: true,
+        availableQty: true,
+        unitPrice: true,
+        inStock: true,
+      },
     }) ?? [])) ?? [];
 
   const legacyOut: CandidateOffer[] = (legacy || [])
     .map((o: any) => {
-      const sid = String(o.supplierId ?? "");
-      if (!sid) return null;
+      const sid = String(o.supplierId ?? "").trim();
+      const qty = Math.max(0, asNumber(o.availableQty, 0));
+      const unit = asNumber(o.unitPrice, 0);
+
+      if (!sid || !(qty > 0) || !(unit > 0)) return null;
+
       return {
         id: String(o.id),
         supplierId: sid,
-        availableQty: Math.max(0, asNumber(o.availableQty, 0)),
-        unitPrice: asNumber(o.unitPrice, 0),
+        availableQty: qty,
+        unitPrice: unit,
         model: "LEGACY_OFFER" as const,
         supplierProductOfferId: null,
         supplierVariantOfferId: null,
       } as CandidateOffer;
     })
-    .filter(Boolean)
-    .filter((o: any) => o.availableQty > 0 && o.unitPrice > 0);
+    .filter(Boolean) as CandidateOffer[];
 
   return sortOffersCheapestFirst(legacyOut);
 }
@@ -1517,7 +1587,7 @@ async function getMarginConfigTx(tx: any) {
   const minMarginNGN = Number(minMarginRaw);
   const maxMarginPct = Number(maxMarginRaw);
 
-  console.log({minMarginNGN: minMarginNGN, marginPercent: defaultPercent})
+  console.log({ minMarginNGN: minMarginNGN, marginPercent: defaultPercent })
 
   return {
     defaultPercent:
@@ -1537,61 +1607,9 @@ async function getMarginConfigTx(tx: any) {
 
 async function resolveMarginPercentForItemTx(
   tx: any,
-  args: { productId: string; variantId: string | null }
+  _args: { productId: string; variantId: string | null }
 ): Promise<number> {
-  const { productId } = args;
-
   const cfg = await getMarginConfigTx(tx);
-
-  const product = await tx.product.findUnique({
-    where: { id: productId },
-    select: {
-      id: true,
-      categoryId: true,
-      supplierId: true,
-      marginPercentOverride: true,
-    } as any,
-  });
-
-  if (!product) return cfg.defaultPercent;
-
-  const productOverride = Number((product as any).marginPercentOverride);
-  if (Number.isFinite(productOverride) && productOverride >= 0) {
-    return Math.min(productOverride, cfg.maxMarginPct);
-  }
-
-  if ((product as any).categoryId) {
-    try {
-      const category = await tx.category.findUnique({
-        where: { id: String((product as any).categoryId) },
-        select: { marginPercentOverride: true } as any,
-      });
-
-      const categoryOverride = Number((category as any)?.marginPercentOverride);
-      if (Number.isFinite(categoryOverride) && categoryOverride >= 0) {
-        return Math.min(categoryOverride, cfg.maxMarginPct);
-      }
-    } catch {
-      //
-    }
-  }
-
-  if ((product as any).supplierId) {
-    try {
-      const supplier = await tx.supplier.findUnique({
-        where: { id: String((product as any).supplierId) },
-        select: { marginPercentOverride: true } as any,
-      });
-
-      const supplierOverride = Number((supplier as any)?.marginPercentOverride);
-      if (Number.isFinite(supplierOverride) && supplierOverride >= 0) {
-        return Math.min(supplierOverride, cfg.maxMarginPct);
-      }
-    } catch {
-      //
-    }
-  }
-
   return Math.min(cfg.defaultPercent, cfg.maxMarginPct);
 }
 
@@ -1738,31 +1756,31 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           shippingBreakdownJson:
             shippingEnabledTxVal && selectedShippingQuote
               ? {
-                ...buildOrderShippingBreakdownJson(selectedShippingQuote),
-                supplierId: selectedShippingQuote.supplierId,
-              }
+                  ...buildOrderShippingBreakdownJson(selectedShippingQuote),
+                  supplierId: selectedShippingQuote.supplierId,
+                }
               : shippingEnabledTxVal && shippingFeeFinal > 0
                 ? {
-                  quoteId: null,
-                  serviceLevel: "STANDARD",
-                  zoneCode: null,
-                  zoneName: null,
-                  currency: shippingCurrencyFinal,
-                  rateSource:
-                    (shippingRateSourceFinal as any) ??
-                    normalizeShippingRateSource("MANUAL"),
-                  components: {
-                    shippingFee: shippingFeeFinal,
-                    remoteSurcharge: 0,
-                    fuelSurcharge: 0,
-                    handlingFee: 0,
-                    insuranceFee: 0,
-                  },
-                  totalFee: shippingFeeFinal,
-                  etaMinDays: null,
-                  etaMaxDays: null,
-                  pricingMeta: { source: "checkout_fallback" },
-                }
+                    quoteId: null,
+                    serviceLevel: "STANDARD",
+                    zoneCode: null,
+                    zoneName: null,
+                    currency: shippingCurrencyFinal,
+                    rateSource:
+                      (shippingRateSourceFinal as any) ??
+                      normalizeShippingRateSource("MANUAL"),
+                    components: {
+                      shippingFee: shippingFeeFinal,
+                      remoteSurcharge: 0,
+                      fuelSurcharge: 0,
+                      handlingFee: 0,
+                      insuranceFee: 0,
+                    },
+                    totalFee: shippingFeeFinal,
+                    etaMinDays: null,
+                    etaMaxDays: null,
+                    pricingMeta: { source: "checkout_fallback" },
+                  }
                 : null,
         };
 
@@ -1833,11 +1851,18 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           }
 
           const optionsLabel = formatSelectedOptionsForMsg(selectedOptions);
-          const explicitOfferId =
-            (line as any).offerId ?? (line as any).supplierOfferId ?? null;
 
-          let variantId: string | null = null;
-          let candidates: CandidateOffer[] = [];
+          const explicitOfferIdRaw =
+            (line as any).offerId ?? (line as any).supplierOfferId ?? null;
+          const explicitOfferId = explicitOfferIdRaw
+            ? String(explicitOfferIdRaw).trim()
+            : null;
+
+          const rawVariantId = (line as any).variantId ?? null;
+          const directVariantId =
+            rawVariantId && String(rawVariantId).trim()
+              ? String(rawVariantId).trim()
+              : null;
 
           const variantFromOptions = await resolveVariantIdFromSelectedOptionsTx(
             tx,
@@ -1845,47 +1870,70 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             selectedOptions
           );
 
+          let variantId: string | null = directVariantId ?? (variantFromOptions ? String(variantFromOptions) : null);
+
+          let explicitOffer: (CandidateOffer & { productId: string; variantId: string | null }) | null = null;
+          let candidates: CandidateOffer[] = [];
+
           if (explicitOfferId) {
-            const one = await fetchOneOfferByIdTx(tx, String(explicitOfferId));
-            if (!one) throw new Error(`Offer not found/disabled for product ${productId}.`);
-            if (String(one.productId) !== productId) {
-              throw new Error(`Offer mismatch: wrong product for offer ${explicitOfferId}.`);
+            explicitOffer = await fetchOneOfferByIdTx(tx, explicitOfferId);
+
+            if (
+              explicitOffer &&
+              String(explicitOffer.productId) !== String(productId)
+            ) {
+              console.warn("[create-order] explicit offer belongs to different product; ignoring", {
+                productId,
+                explicitOfferId,
+                explicitOfferProductId: explicitOffer.productId,
+              });
+              explicitOffer = null;
             }
+          }
 
-            const model = one.model;
-            variantId = one.variantId ? String(one.variantId) : null;
+          if (explicitOffer?.variantId) {
+            const explicitVariantId = String(explicitOffer.variantId);
 
-            if (model === "VARIANT_OFFER" || variantId) {
-              if (!variantId && variantFromOptions) {
-                variantId = String(variantFromOptions);
-              }
-
-              if (variantId) {
-                await assertVariantSellableTx(tx, productId, variantId);
-                candidates = await fetchActiveOffersTx(tx, { productId, variantId });
-              } else {
-                candidates = await fetchActiveBaseOffersTx(tx, { productId });
-              }
+            if (variantId && String(variantId) !== explicitVariantId) {
+              console.warn("[create-order] explicit offer variant differs from requested variant; using requested variant", {
+                productId,
+                explicitOfferId,
+                explicitVariantId,
+                requestedVariantId: variantId,
+              });
             } else {
-              variantId = null;
-              candidates = await fetchActiveBaseOffersTx(tx, { productId });
+              variantId = explicitVariantId;
             }
+          }
+
+          if (variantId) {
+            await assertVariantSellableTx(tx, productId, variantId);
+            candidates = await fetchActiveOffersTx(tx, { productId, variantId });
           } else {
-            const rawVariantId = (line as any).variantId ?? null;
-            const trimmed =
-              rawVariantId && String(rawVariantId).trim()
-                ? String(rawVariantId).trim()
-                : null;
+            candidates = await fetchActiveBaseOffersTx(tx, { productId });
+          }
 
-            if (trimmed) variantId = trimmed;
-            else if (variantFromOptions) variantId = String(variantFromOptions);
-
-            if (variantId) {
-              await assertVariantSellableTx(tx, productId, variantId);
-              candidates = await fetchActiveOffersTx(tx, { productId, variantId });
+          if (explicitOffer) {
+            const explicitStillAvailable = candidates.find((c) => c.id === explicitOffer!.id);
+            if (explicitStillAvailable) {
+              candidates = [
+                explicitStillAvailable,
+                ...candidates.filter((c) => c.id !== explicitStillAvailable.id),
+              ];
             } else {
-              candidates = await fetchActiveBaseOffersTx(tx, { productId });
+              console.warn("[create-order] explicit offer not in fresh candidate set; falling back to fresh candidates", {
+                productId,
+                variantId,
+                explicitOfferId: explicitOffer.id,
+                explicitOfferModel: explicitOffer.model,
+              });
             }
+          } else if (explicitOfferId) {
+            console.warn("[create-order] explicit offer not found; falling back to fresh candidates", {
+              productId,
+              variantId,
+              explicitOfferId,
+            });
           }
 
           const candidatesBefore = candidates.slice();
@@ -1989,12 +2037,10 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
                 chosenSupplierId: alloc.supplierId,
 
-                // what supplier should receive
                 chosenSupplierUnitPrice: payout.supplierPayout,
 
                 title: productTitle,
 
-                // what shopper pays
                 unitPrice: retailUnit,
                 quantity: alloc.qty,
                 lineTotal: round2(retailUnit * alloc.qty),
@@ -2066,31 +2112,31 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             shippingBreakdownJson:
               shippingEnabledTxVal && selectedShippingQuote
                 ? {
-                  ...buildOrderShippingBreakdownJson(selectedShippingQuote),
-                  supplierId: selectedShippingQuote.supplierId,
-                }
+                    ...buildOrderShippingBreakdownJson(selectedShippingQuote),
+                    supplierId: selectedShippingQuote.supplierId,
+                  }
                 : shippingEnabledTxVal && shippingFee > 0
                   ? {
-                    quoteId: null,
-                    serviceLevel: "STANDARD",
-                    zoneCode: null,
-                    zoneName: null,
-                    currency: shippingCurrencyFinal,
-                    rateSource:
-                      (shippingRateSourceFinal as any) ??
-                      normalizeShippingRateSource("MANUAL"),
-                    components: {
-                      shippingFee,
-                      remoteSurcharge: 0,
-                      fuelSurcharge: 0,
-                      handlingFee: 0,
-                      insuranceFee: 0,
-                    },
-                    totalFee: shippingFee,
-                    etaMinDays: null,
-                    etaMaxDays: null,
-                    pricingMeta: { source: "checkout_fallback" },
-                  }
+                      quoteId: null,
+                      serviceLevel: "STANDARD",
+                      zoneCode: null,
+                      zoneName: null,
+                      currency: shippingCurrencyFinal,
+                      rateSource:
+                        (shippingRateSourceFinal as any) ??
+                        normalizeShippingRateSource("MANUAL"),
+                      components: {
+                        shippingFee,
+                        remoteSurcharge: 0,
+                        fuelSurcharge: 0,
+                        handlingFee: 0,
+                        insuranceFee: 0,
+                      },
+                      totalFee: shippingFee,
+                      etaMinDays: null,
+                      etaMaxDays: null,
+                      pricingMeta: { source: "checkout_fallback" },
+                    }
                   : null,
           },
           select: {

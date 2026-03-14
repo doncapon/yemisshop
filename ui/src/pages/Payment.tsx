@@ -1,16 +1,16 @@
 // src/pages/Payment.tsx
-import { useEffect, useState, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import api from '../api/client';
+import { useEffect, useState, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import api from "../api/client";
 import { useModal } from "../components/ModalProvider";
-import { markPaystackExit } from '../utils/paystackReturn';
-import SiteLayout from '../layouts/SiteLayout';
+import { markPaystackExit } from "../utils/paystackReturn";
+import SiteLayout from "../layouts/SiteLayout";
 
 type InitResp = {
   reference: string;
   amount?: number;
   currency?: string;
-  mode: 'trial' | 'paystack' | 'paystack_inline_bank';
+  mode: "trial" | "paystack" | "paystack_inline_bank";
   authorization_url?: string;
   bank?: {
     bank_name: string;
@@ -19,30 +19,30 @@ type InitResp = {
   };
 };
 
-const AUTO_REDIRECT_KEY = 'paystack:autoRedirect';
-const LAST_REF_KEY = 'paystack:lastRef';
+const AUTO_REDIRECT_KEY = "paystack:autoRedirect";
+const LAST_REF_KEY = "paystack:lastRef";
 
-const ngn = new Intl.NumberFormat('en-NG', {
-  style: 'currency',
-  currency: 'NGN',
+const ngn = new Intl.NumberFormat("en-NG", {
+  style: "currency",
+  currency: "NGN",
   maximumFractionDigits: 2,
 });
 
 export default function Payment() {
   const nav = useNavigate();
   const loc = useLocation();
-  const orderId = new URLSearchParams(loc.search).get('orderId') || '';
+  const orderId = new URLSearchParams(loc.search).get("orderId") || "";
 
-  // 🔹 Read estimated totals (incl. service fee) from navigation state
   const state = (loc.state || {}) as any;
   const estimatedTotal =
-    typeof state.total === 'number'
+    typeof state.total === "number"
       ? state.total
       : state.total
         ? Number(state.total) || undefined
         : undefined;
+
   const estimatedServiceFeeTotal =
-    typeof state.serviceFeeTotal === 'number'
+    typeof state.serviceFeeTotal === "number"
       ? state.serviceFeeTotal
       : state.serviceFeeTotal
         ? Number(state.serviceFeeTotal) || undefined
@@ -51,19 +51,21 @@ export default function Payment() {
   const [loading, setLoading] = useState(false);
   const [init, setInit] = useState<InitResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const { openModal } = useModal();
   const initOnce = useRef(false);
 
   const [showHosted, setShowHosted] = useState(false);
   const [autoRedirect, setAutoRedirect] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(AUTO_REDIRECT_KEY) === '1';
+      return localStorage.getItem(AUTO_REDIRECT_KEY) === "1";
     } catch {
       return false;
     }
   });
 
-  const gotoOrders = () => nav('/orders');
+  const gotoOrders = () => nav("/orders");
+  const gotoCheckout = () => nav("/checkout");
 
   useEffect(() => {
     if (!orderId) return;
@@ -73,19 +75,57 @@ export default function Payment() {
     (async () => {
       setLoading(true);
       setErr(null);
+      setInfo(null);
+
       try {
-        // ✅ Cookie auth: rely on httpOnly session cookie
-        const { data } = await api.post<InitResp>(
-          '/api/payments/init',
-          {
-            orderId,
-            channel: 'paystack',
-            ...(typeof estimatedTotal === 'number' && Number.isFinite(estimatedTotal)
-              ? { expectedTotal: estimatedTotal }
-              : {}),
-          },
-          { withCredentials: true },
-        );
+        let payload: Record<string, any> = {
+          orderId,
+          channel: "paystack",
+        };
+
+        if (typeof estimatedTotal === "number" && Number.isFinite(estimatedTotal)) {
+          payload.expectedTotal = estimatedTotal;
+        }
+
+        let data: InitResp | null = null;
+
+        try {
+          const resp = await api.post<InitResp>("/api/payments/init", payload, {
+            withCredentials: true,
+          });
+          data = resp.data;
+        } catch (e: any) {
+          const status = Number(e?.response?.status || 0);
+          const msg = String(e?.response?.data?.error || "");
+
+          // If the backend rejects stale expectedTotal, retry once with backend as source of truth
+          if (
+            status === 409 &&
+            typeof payload.expectedTotal === "number" &&
+            /total changed|refresh checkout|mismatch/i.test(msg)
+          ) {
+            setInfo(
+              "Your order total was refreshed from the latest backend calculation."
+            );
+
+            const retry = await api.post<InitResp>(
+              "/api/payments/init",
+              {
+                orderId,
+                channel: "paystack",
+              },
+              { withCredentials: true }
+            );
+
+            data = retry.data;
+          } else {
+            throw e;
+          }
+        }
+
+        if (!data) {
+          throw new Error("Failed to initialize payment");
+        }
 
         setInit(data);
 
@@ -96,12 +136,14 @@ export default function Payment() {
               reference: data.reference,
               orderId,
               at: new Date().toISOString(),
-            }),
+            })
           );
-        } catch { }
+        } catch {
+          //
+        }
 
-        if (data.mode === 'paystack' && data.authorization_url) {
-          if (localStorage.getItem(AUTO_REDIRECT_KEY) === '1') {
+        if (data.mode === "paystack" && data.authorization_url) {
+          if (localStorage.getItem(AUTO_REDIRECT_KEY) === "1") {
             markPaystackExit();
             window.location.href = data.authorization_url;
           } else {
@@ -109,29 +151,39 @@ export default function Payment() {
           }
         }
       } catch (e: any) {
-        setErr(e?.response?.data?.error || 'Failed to init payment');
+        const status = Number(e?.response?.status || 0);
+        const message =
+          e?.response?.data?.error || e?.message || "Failed to init payment";
+
+        if (status === 409) {
+          setErr(
+            "This order was recalculated and could not be initialized for payment from this page state. Please return to checkout and continue again."
+          );
+        } else {
+          setErr(message);
+        }
       } finally {
         setLoading(false);
       }
     })();
-  }, [orderId]);
+  }, [orderId, estimatedTotal]);
 
   const markPaidManual = async () => {
     if (!init) return;
     setLoading(true);
     setErr(null);
+
     try {
-      // ✅ Cookie auth
       await api.post(
-        '/api/payments/verify',
+        "/api/payments/verify",
         { reference: init.reference, orderId },
-        { withCredentials: true },
+        { withCredentials: true }
       );
 
-      openModal({ title: 'Payment', message: 'Payment verified. Thank you!' });
+      openModal({ title: "Payment", message: "Payment verified. Thank you!" });
       nav(`/payment-callback?orderId=${orderId}&reference=${init.reference}`);
     } catch (e: any) {
-      setErr(e?.response?.data?.error || 'Verification failed');
+      setErr(e?.response?.data?.error || "Verification failed");
     } finally {
       setLoading(false);
     }
@@ -150,21 +202,20 @@ export default function Payment() {
   }
 
   const isBankFlow =
-    init?.mode === 'trial' || init?.mode === 'paystack_inline_bank';
+    init?.mode === "trial" || init?.mode === "paystack_inline_bank";
 
-  // ---------- helpers ----------
   const copyRef = async () => {
     if (!init?.reference) return;
     try {
       await navigator.clipboard.writeText(init.reference);
       openModal({
-        title: 'Reference copied',
-        message: 'Payment reference copied to clipboard.',
+        title: "Reference copied",
+        message: "Payment reference copied to clipboard.",
       });
     } catch {
       openModal({
-        title: 'Copy failed',
-        message: 'Select the reference and copy it manually.',
+        title: "Copy failed",
+        message: "Select the reference and copy it manually.",
       });
     }
   };
@@ -175,9 +226,9 @@ export default function Payment() {
     const url = init.authorization_url || window.location.href;
     if (navigator.share) {
       try {
-        await navigator.share({ title: 'Payment Reference', text, url });
+        await navigator.share({ title: "Payment Reference", text, url });
       } catch {
-        // ignore
+        //
       }
     } else {
       await copyRef();
@@ -192,13 +243,13 @@ export default function Payment() {
         `Order ID: ${orderId}\n`,
         init.amount && init.currency
           ? `Backend amount: ${init.currency} ${Number(init.amount).toLocaleString()}\n`
-          : '',
+          : "",
         `Saved: ${new Date().toLocaleString()}\n`,
       ],
-      { type: 'text/plain;charset=utf-8' },
+      { type: "text/plain;charset=utf-8" }
     );
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
     a.download = `payment-ref-${init.reference}.txt`;
     a.click();
@@ -214,24 +265,24 @@ export default function Payment() {
   const toggleAuto = (v: boolean) => {
     setAutoRedirect(v);
     try {
-      localStorage.setItem(AUTO_REDIRECT_KEY, v ? '1' : '0');
-    } catch { }
+      localStorage.setItem(AUTO_REDIRECT_KEY, v ? "1" : "0");
+    } catch {
+      //
+    }
   };
 
-  // ---------- Hosted modal ----------
   const HostedCheckoutModal = () => {
     if (!init?.authorization_url) return null;
 
     const displayTotal =
-      typeof init.amount === 'number' && init.amount > 0
+      typeof init.amount === "number" && init.amount > 0
         ? init.amount
-        : typeof estimatedTotal === 'number' && estimatedTotal > 0
+        : typeof estimatedTotal === "number" && estimatedTotal > 0
           ? estimatedTotal
           : undefined;
 
     return (
       <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/50">
-        {/* Mobile sheet: taller + more room for details */}
         <div className="fixed inset-x-0 bottom-0 sm:inset-0 sm:grid sm:place-items-center">
           <div
             className="
@@ -243,7 +294,6 @@ export default function Payment() {
               flex flex-col
             "
           >
-            {/* ✅ smaller header */}
             <div className="px-4 py-3 border-b flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-base sm:text-lg font-semibold leading-tight">
@@ -263,9 +313,7 @@ export default function Payment() {
               </button>
             </div>
 
-            {/* ✅ BIG scroll area (details) */}
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-              {/* Reference block (less padding, less nested whitespace) */}
               <div className="rounded-xl border bg-zinc-50 p-3">
                 <div className="text-[11px] text-zinc-500">Payment Reference</div>
 
@@ -299,7 +347,6 @@ export default function Payment() {
                 </div>
               </div>
 
-              {/* Total payable */}
               {displayTotal !== undefined && (
                 <div className="rounded-xl border p-3">
                   <div className="text-[11px] text-zinc-500">Total payable</div>
@@ -307,11 +354,12 @@ export default function Payment() {
                     {ngn.format(displayTotal)}
                   </div>
 
-                  {typeof estimatedTotal === 'number' &&
-                    typeof init.amount === 'number' &&
+                  {typeof estimatedTotal === "number" &&
+                    typeof init.amount === "number" &&
                     Math.abs(estimatedTotal - init.amount) > 1 && (
                       <div className="text-[10px] text-zinc-500 mt-1 leading-snug">
-                        Includes estimated service &amp; gateway fees. Backend amount ({ngn.format(init.amount)}) will be reconciled on the receipt.
+                        Checkout estimate was {ngn.format(estimatedTotal)}. Final payable amount is{" "}
+                        {ngn.format(init.amount)}.
                       </div>
                     )}
 
@@ -324,7 +372,6 @@ export default function Payment() {
               )}
             </div>
 
-            {/* ✅ smaller footer + smaller buttons */}
             <div className="px-4 py-3 border-t bg-white space-y-2">
               <label className="flex items-start gap-2 text-[10px] sm:text-xs text-zinc-600 leading-snug">
                 <input
@@ -359,39 +406,53 @@ export default function Payment() {
     );
   };
 
-
   return (
     <SiteLayout>
       <div className="mx-auto max-w-lg p-4 sm:p-6 space-y-4">
         <h1 className="text-xl sm:text-2xl font-semibold">Payment</h1>
 
         {err && (
-          <div className="p-3 rounded-xl border bg-red-50 text-red-700 text-sm">
-            {err}
+          <div className="p-3 rounded-xl border bg-red-50 text-red-700 text-sm space-y-3">
+            <div>{err}</div>
+            <div className="flex gap-2">
+              <button
+                className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+                onClick={gotoCheckout}
+              >
+                Back to checkout
+              </button>
+              <button
+                className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+                onClick={gotoOrders}
+              >
+                Go to orders
+              </button>
+            </div>
           </div>
         )}
 
-        {loading && (
-          <div className="text-sm opacity-70">
-            Loading…
+        {info && (
+          <div className="p-3 rounded-xl border bg-amber-50 text-amber-800 text-sm">
+            {info}
           </div>
         )}
 
-        {showHosted && init?.mode === 'paystack' && (
+        {loading && <div className="text-sm opacity-70">Loading…</div>}
+
+        {showHosted && init?.mode === "paystack" && (
           <div className="rounded-xl border bg-amber-50 text-amber-800 px-4 py-3 text-sm">
             You’re about to continue to Paystack. Please confirm your total and save your reference.
           </div>
         )}
 
-        {showHosted && init?.mode === 'paystack' && <HostedCheckoutModal />}
+        {showHosted && init?.mode === "paystack" && <HostedCheckoutModal />}
 
-        {/* Inline bank / trial */}
         {!loading && init && isBankFlow && (
           <div className="space-y-4">
             <div className="border rounded-2xl p-4 bg-white">
               <h2 className="font-medium mb-2">Bank Transfer Details</h2>
 
-              {init.mode === 'trial' && (
+              {init.mode === "trial" && (
                 <p className="text-sm mb-3 text-zinc-700">
                   Trial mode: use the demo bank details below and click “I’ve transferred” to continue.
                 </p>
@@ -409,16 +470,16 @@ export default function Payment() {
 
               {(estimatedTotal !== undefined || (init.amount && init.currency)) && (
                 <div className="mt-4 rounded-xl border bg-zinc-50 p-3">
-                  {typeof init.amount === 'number' ? (
+                  {typeof init.amount === "number" ? (
                     <>
                       <div className="text-[11px] text-zinc-500">Total payable</div>
                       <div className="text-lg font-semibold mt-1">
                         {ngn.format(init.amount)}
                       </div>
 
-                      {typeof estimatedTotal === 'number' && Math.abs(estimatedTotal - init.amount) > 1 ? (
+                      {typeof estimatedTotal === "number" && Math.abs(estimatedTotal - init.amount) > 1 ? (
                         <div className="text-[11px] text-zinc-500 mt-1">
-                          Checkout estimate was {ngn.format(estimatedTotal)}. Final payable amount is from your order total (includes shipping and fees).
+                          Checkout estimate was {ngn.format(estimatedTotal)}. Final payable amount is from your order total.
                         </div>
                       ) : estimatedServiceFeeTotal ? (
                         <div className="text-[11px] text-zinc-500 mt-1">
@@ -457,7 +518,7 @@ export default function Payment() {
               </button>
               <button
                 className="rounded-xl border px-4 py-3 text-sm"
-                onClick={() => nav('/cart')}
+                onClick={() => nav("/cart")}
               >
                 Back to cart
               </button>
@@ -465,7 +526,7 @@ export default function Payment() {
           </div>
         )}
 
-        {!loading && init && init.mode === 'paystack' && !init.authorization_url && (
+        {!loading && init && init.mode === "paystack" && !init.authorization_url && (
           <div className="text-sm opacity-70">
             Awaiting Paystack authorization URL…
           </div>

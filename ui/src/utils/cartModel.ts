@@ -15,7 +15,8 @@ export type SelectedOption = {
 export type CartLine = {
   productId: string;
   variantId?: string | null;
-
+  supplierId?: string | null;
+  offerId?: string;
   kind: CartItemKind;
   optionsKey: string; // "" for BASE / quick-add
   qty: number;

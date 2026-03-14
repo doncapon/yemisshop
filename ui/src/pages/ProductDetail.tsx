@@ -610,13 +610,15 @@ export default function ProductDetail() {
     return from;
   }, [location.state]);
 
-  const forceReturnToCatalog = React.useCallback(() => {
-    if (backHandledRef.current) return;
-    backHandledRef.current = true;
+  const goBack = React.useCallback(() => {
+    const state = (location.state as any) || {};
 
-    const from = getReturnUrl();
-    window.location.assign(from);
-  }, [getReturnUrl]);
+    if (state.from) {
+      navigate(state.from);
+    } else {
+      navigate(-1);
+    }
+  }, [navigate, location.state]);
 
   const queryClient = useQueryClient();
   const { openModal } = useModal();
@@ -698,30 +700,6 @@ export default function ProductDetail() {
       return Math.max(0, Number.isFinite(v) ? v : 0);
     },
   });
-
-
-  React.useEffect(() => {
-    backHandledRef.current = false;
-
-    const state = (location.state as any) || {};
-    const from = typeof state.from === "string" && state.from.trim() ? state.from : "/catalog";
-
-    // Push a duplicate detail entry so the first browser-back stays on detail,
-    // then we force a hard navigation to the catalog route.
-    window.history.pushState({ __pd_back_trap__: true, from }, "", window.location.href);
-
-    const onPopState = () => {
-      if (backHandledRef.current) return;
-      backHandledRef.current = true;
-      window.location.assign(from);
-    };
-
-    window.addEventListener("popstate", onPopState);
-
-    return () => {
-      window.removeEventListener("popstate", onPopState);
-    };
-  }, [location.key, location.state]);
 
   const marginPercent = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
 
@@ -1905,9 +1883,8 @@ export default function ProductDetail() {
           <div className="flex items-center justify-between gap-3">
             <button
               type="button"
-              onClick={() => {
-                forceReturnToCatalog();
-              }}
+              onClick={goBack}
+
               className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
             >
               ← Back

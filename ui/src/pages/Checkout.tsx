@@ -212,6 +212,11 @@ function computeLineTotal(line: CartLine): number {
   return unit * qty;
 }
 
+
+function removeCartLineByKey(lines: CartLine[], targetKey: string): CartLine[] {
+  return lines.filter((line) => lineKeyFor(line) !== targetKey);
+}
+
 /* ---------------- Supplier-split pricing quote (authoritative) ---------------- */
 
 type QuoteAllocation = {
@@ -415,17 +420,11 @@ async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload 
   return null;
 }
 
-/* ---------------- Public settings (marginPercent only) ---------------- */
+/* ---------------- Public settings ---------------- */
 
 type PublicSettings = {
-  marginPercent?: number | string | null;
-  commerce?: { marginPercent?: number | string | null } | null;
-  pricing?: { marginPercent?: number | string | null } | null;
-
-  // 🔹 flat settings coming from /api/settings/public
   shippingEnabled?: boolean | string | number | null;
 };
-
 
 const coerceBool = (v: any): boolean => {
   if (typeof v === "boolean") return v;
@@ -463,33 +462,6 @@ async function fetchPublicSettings(): Promise<PublicSettings | null> {
   return null;
 }
 
-const clampPct = (p: number) => {
-  if (!Number.isFinite(p)) return 0;
-  if (p < 0) return 0;
-  if (p > 1000) return 1000;
-  return p;
-};
-
-function extractMarginPercent(s: PublicSettings | null | undefined): number {
-  if (!s) return 0;
-
-  const direct = asMoney(s.marginPercent, NaN);
-  if (Number.isFinite(direct)) return clampPct(direct);
-
-  const commerce = asMoney(s.commerce?.marginPercent, NaN);
-  if (Number.isFinite(commerce)) return clampPct(commerce);
-
-  const pricing = asMoney(s.pricing?.marginPercent, NaN);
-  if (Number.isFinite(pricing)) return clampPct(pricing);
-
-  return 0;
-}
-
-const applyMargin = (supplierUnit: number, marginPercent: number) => {
-  const p = clampPct(marginPercent);
-  return supplierUnit * (1 + p / 100);
-};
-
 /* -------- Verification helpers -------- */
 type ProfileMe = {
   emailVerifiedAt?: unknown;
@@ -513,7 +485,7 @@ function computeVerificationFlags(p?: ProfileMe) {
   const emailOk = p?.emailVerified === true ? true : normalizeStampPresent(p?.emailVerifiedAt);
 
   let phoneOk: boolean;
-    phoneOk = p?.phoneVerified === true ? true : normalizeStampPresent(p?.phoneVerifiedAt);
+  phoneOk = p?.phoneVerified === true ? true : normalizeStampPresent(p?.phoneVerifiedAt);
 
   return { emailOk, phoneOk };
 }
@@ -743,11 +715,6 @@ export default function Checkout() {
     queryFn: fetchPublicSettings,
   });
 
-  const marginPercent = useMemo(
-    () => extractMarginPercent(publicSettingsQ.data as PublicSettings | null),
-    [publicSettingsQ.data]
-  );
-
   // 🔹 shippingEnabled from public settings (admin toggle)
   const shippingEnabledFromSettings = useMemo(
     () => extractShippingEnabled(publicSettingsQ.data as PublicSettings | null),
@@ -771,72 +738,15 @@ export default function Checkout() {
 
   const quoteSubtotalSupplier = (pricingQ.data as QuotePayload | null)?.subtotal ?? 0;
 
-  const quoteRetail = useMemo(() => {
-    const q = pricingQ.data as QuotePayload | null;
-    if (!q) return null;
-
-    const linesRetail: Record<
-      string,
-      {
-        retailLineTotal: number;
-        retailMinUnit: number;
-        retailMaxUnit: number;
-        retailAverageUnit: number;
-        allocationsRetail: Array<QuoteAllocation & { retailUnitPrice: number; retailLineTotal: number }>;
-      }
-    > = {};
-
-    let subtotalRetail = 0;
-
-    for (const [k, ln] of Object.entries(q.lines || {})) {
-      const allocs = (ln.allocations || []).filter((a) => a.qty > 0);
-
-      const allocationsRetail = allocs.map((a) => {
-        const retailUnitPrice = applyMargin(asMoney(a.unitPrice, 0), marginPercent);
-        const retailLineTotal = retailUnitPrice * Math.max(0, asInt(a.qty, 0));
-        return {
-          ...a,
-          retailUnitPrice,
-          retailLineTotal,
-        };
-      });
-
-      const retailLineTotal = allocationsRetail.reduce((s, a) => s + asMoney(a.retailLineTotal, 0), 0);
-
-      const units = allocationsRetail.map((a) => asMoney(a.retailUnitPrice, NaN)).filter((n) => Number.isFinite(n));
-      const retailMinUnit = units.length ? Math.min(...(units as number[])) : 0;
-      const retailMaxUnit = units.length ? Math.max(...(units as number[])) : 0;
-
-      const qtyReq = Math.max(1, asInt(ln.qtyRequested, 1));
-      const retailAverageUnit = qtyReq > 0 ? retailLineTotal / qtyReq : 0;
-
-      linesRetail[k] = {
-        retailLineTotal,
-        retailMinUnit,
-        retailMaxUnit,
-        retailAverageUnit,
-        allocationsRetail,
-      };
-
-      subtotalRetail += retailLineTotal;
-    }
-
-    return {
-      subtotalRetail: round2(subtotalRetail),
-      linesRetail,
-      currency: q.currency ?? null,
-    };
-  }, [pricingQ.data, marginPercent]);
-
   const cartSubtotalFallback = useMemo(
     () => cart.reduce((s, it) => s + computeLineTotal(it), 0),
     [cart]
   );
 
   const itemsSubtotal = useMemo(() => {
-    if (quoteRetail && quoteRetail.subtotalRetail > 0) return quoteRetail.subtotalRetail;
-    return cartSubtotalFallback;
-  }, [quoteRetail, cartSubtotalFallback]);
+    if (quoteSubtotalSupplier > 0) return round2(quoteSubtotalSupplier);
+    return round2(cartSubtotalFallback);
+  }, [quoteSubtotalSupplier, cartSubtotalFallback]);
 
   const units = useMemo(
     () => cart.reduce((s, it) => s + Math.max(1, num(it.qty, 1)), 0),
@@ -1184,22 +1094,41 @@ export default function Checkout() {
         }
 
         if (shippingQ.isError) {
-          // hard failure from the shipping API — still block
           throw new Error("Could not calculate shipping yet. Please check your address and try again.");
         }
 
         if (shippingQ.data?.error) {
-          // backend explicitly returned an error message
           throw new Error(shippingQ.data.error);
         }
       }
 
+      const quote = pricingQ.data as QuotePayload | null;
+
+      const invalidLine = cart.find((it) => {
+        const key = lineKeyFor(it);
+        const qLine = quote?.lines?.[key];
+        const firstAlloc = qLine?.allocations?.[0];
+
+        return !qLine || !firstAlloc || !firstAlloc.offerId;
+      });
+
+      if (invalidLine) {
+        const invalidKey = lineKeyFor(invalidLine);
+        const repaired = removeCartLineByKey(cart, invalidKey);
+        setCart(repaired);
+        saveCartRaw(repaired);
+
+        throw new Error(
+          `"${invalidLine.title || "An item"}" is no longer available at checkout and has been removed from your cart. Please review your cart and try again.`
+        );
+      }
+
       const bad = cart.find((l) => {
         const key = lineKeyFor(l);
-        const retailLine = quoteRetail?.linesRetail?.[key];
-        const hasRetail = !!retailLine && (retailLine.retailLineTotal ?? 0) > 0;
+        const supplierLine = quote?.lines?.[key];
+        const hasQuotedSupplierPrice = !!supplierLine && asMoney(supplierLine.lineTotal, 0) > 0;
         const cachedUnit = num(l.unitPrice, num(l.price, 0));
-        return cachedUnit <= 0 && !hasRetail;
+        return cachedUnit <= 0 && !hasQuotedSupplierPrice;
       });
       if (bad) throw new Error("One or more items have no price. Please remove and re-add them to cart.");
 
@@ -1213,13 +1142,9 @@ export default function Checkout() {
         if (vaShip) throw new Error(vaShip);
       }
 
-      const quote = pricingQ.data as QuotePayload | null;
-      const retail = quoteRetail;
-
       const items = cart.map((it) => {
         const key = lineKeyFor(it);
         const qLine = quote?.lines?.[key];
-        const rLine = retail?.linesRetail?.[key];
         const firstAlloc = qLine?.allocations?.[0];
 
         const kind: "BASE" | "VARIANT" =
@@ -1237,8 +1162,8 @@ export default function Checkout() {
               ? it.variantId
               : undefined;
 
-        const unitRetail =
-          rLine?.retailAverageUnit ?? asMoney(it.unitPrice, asMoney(it.price, 0));
+        const unitSupplier =
+          qLine?.averageUnit ?? firstAlloc?.unitPrice ?? asMoney(it.unitPrice, asMoney(it.price, 0));
 
         return {
           key,
@@ -1248,8 +1173,8 @@ export default function Checkout() {
           kind,
           selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
           supplierId: firstAlloc?.supplierId || it.supplierId || undefined,
-          offerId: firstAlloc?.offerId || it.offerId || undefined,
-          unitPriceCache: unitRetail,
+          offerId: firstAlloc?.offerId || undefined,
+          unitPriceCache: unitSupplier,
         };
       });
 
@@ -1277,7 +1202,7 @@ export default function Checkout() {
               partial: shippingQ.data.partial,
             }
             : null,
-        shippingMode, // always DELIVERY when enabled
+        shippingMode,
 
         itemsSubtotal,
         taxMode: fee.taxMode,
@@ -1285,7 +1210,7 @@ export default function Checkout() {
         vatAddOn: fee.vatAddOn,
         total: payableTotal,
 
-        marginPercent,
+        marginPercent: 0,
 
         quoteSubtotalSupplier: asMoney(quoteSubtotalSupplier, 0),
         quoteCurrency: (pricingQ.data as QuotePayload | null)?.currency ?? null,
@@ -1473,7 +1398,6 @@ export default function Checkout() {
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-4 sm:gap-5 md:gap-6">
             <section className="space-y-4 sm:space-y-5 md:space-y-6">
-              {/* Home Address */}
               <Card tone="emerald" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
                   tone="emerald"
@@ -1543,7 +1467,6 @@ export default function Checkout() {
                 )}
               </Card>
 
-              {/* Shipping Address */}
               <Card tone="amber" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
                   tone="amber"
@@ -1681,14 +1604,13 @@ export default function Checkout() {
               </Card>
             </section>
 
-            {/* RIGHT: Summary / Action */}
             <aside className="lg:sticky lg:top-6 h-max">
               <Card className="p-4 sm:p-5">
                 <h2 className="text-base sm:text-lg font-semibold text-ink">Order Summary</h2>
 
                 <div className="mt-3 space-y-2 text-xs sm:text-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">Items Subtotal (retail)</span>
+                    <span className="text-ink-soft">Items Subtotal</span>
                     <span className="font-medium">{ngn.format(itemsSubtotal)}</span>
                   </div>
 
@@ -1786,7 +1708,7 @@ export default function Checkout() {
                 </button>
 
                 <p className="mt-3 text-[10px] sm:text-[11px] text-ink-soft text-center leading-4">
-                  Totals use live supplier offers + margin. If an offer changes or stock reallocates, your pricing may update.
+                  Totals use live supplier offers. If an offer changes or stock reallocates, your pricing may update.
                 </p>
               </Card>
             </aside>

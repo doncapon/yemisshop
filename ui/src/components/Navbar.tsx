@@ -1,7 +1,7 @@
 // src/components/Navbar.tsx
 import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, MouseEvent as ReactMouseEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useAuthStore } from "../store/auth";
@@ -26,7 +26,7 @@ import {
   LogOut,
   Settings,
   ClipboardList,
-  RotateCcw, // ✅ new icon for Returns
+  RotateCcw,
 } from "lucide-react";
 import { performLogout } from "../utils/logout";
 
@@ -47,10 +47,6 @@ function normRole(role: unknown) {
   return r;
 }
 
-/**
- * ✅ Click-away hook with a stable internal handler.
- * - Uses a ref to the latest onAway callback to avoid re-binding document listeners on each render.
- */
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
   const onAwayRef = useRef(onAway);
@@ -81,6 +77,7 @@ function IconNavLink({
   disabled,
   badgeCount,
   onPrefetch,
+  hardNavigate = true,
 }: {
   to: string;
   end?: boolean;
@@ -90,8 +87,26 @@ function IconNavLink({
   disabled?: boolean;
   badgeCount?: number;
   onPrefetch?: () => void;
+  hardNavigate?: boolean;
 }) {
   const count = Number(badgeCount || 0);
+
+  const handleClick = useCallback(
+    (e: ReactMouseEvent<HTMLAnchorElement>) => {
+      if (disabled) {
+        e.preventDefault();
+        return;
+      }
+
+      onClick?.();
+
+      if (!hardNavigate) return;
+
+      e.preventDefault();
+      window.location.assign(to);
+    },
+    [disabled, onClick, hardNavigate, to]
+  );
 
   return (
     <NavLink
@@ -99,7 +114,7 @@ function IconNavLink({
       end={end}
       onMouseEnter={onPrefetch}
       onFocus={onPrefetch}
-      onClick={onClick}
+      onClick={handleClick}
       className={({ isActive }) => {
         const base =
           "group relative inline-flex items-center justify-center rounded-xl border px-2.5 py-2 transition select-none";
@@ -109,7 +124,6 @@ function IconNavLink({
         return `${base} ${isActive ? active : idle} ${disabled ? dis : ""}`;
       }}
       aria-label={label}
-      title={label}
     >
       <span className="inline-flex items-center justify-center pointer-events-none">{icon}</span>
 
@@ -135,8 +149,6 @@ function IconNavLink({
   );
 }
 
-/* ---------------- Mobile menu UI helpers ---------------- */
-
 function MobileMenuButton({
   icon,
   label,
@@ -160,8 +172,8 @@ function MobileMenuButton({
     variant === "primary"
       ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-95"
       : variant === "danger"
-        ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
-        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
+      ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
+      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
 
   const iconColor = variant === "primary" ? "text-white" : "text-zinc-700";
 
@@ -185,7 +197,6 @@ export default function Navbar() {
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // ✅ Stable click-away close (prevents re-binding churn)
   const closeUserMenu = useCallback(() => setMenuOpen(false), []);
   const menuRef = useClickAway<HTMLDivElement>(closeUserMenu);
 
@@ -223,6 +234,12 @@ export default function Navbar() {
     return init || "U";
   }, [firstName, lastName]);
 
+  const hardGo = useCallback((to: string) => {
+    setMenuOpen(false);
+    setMobileMoreOpen(false);
+    window.location.assign(to);
+  }, []);
+
   const logout = useCallback(async () => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
@@ -230,32 +247,25 @@ export default function Navbar() {
     const target = `${loc.pathname}${loc.search}`;
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch { }
+    } catch {}
 
     const qp = encodeURIComponent(target);
-
-    // ✅ Go to login with return path
     await performLogout(`/login?from=${qp}`);
   }, [loc.pathname, loc.search]);
 
   const brandHref = isRider ? "/supplier/orders" : "/";
 
-  // ✅ close drawer on navigation
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
-  // ✅ Cookie-mode: logged in = we have a user in store
   const isLoggedIn = !!user?.id;
 
   const showShopNav = !isLoggedIn || (!isSupplier && !isSuperAdmin && !isRider);
-  const showBuyerNav = isLoggedIn && !isSupplier && !isRider; // includes admins
+  const showBuyerNav = isLoggedIn && !isSupplier && !isRider;
   const showCartDesktop = !isSupplier && !isRider;
   const showSupplierNav = isLoggedIn && isSupplier && !isRider;
   const showRiderNav = isLoggedIn && isRider;
-
-  // ✅ MOBILE: show Cart icon always for anyone who isn't supplier/rider
   const showCartMobile = !isSupplier && !isRider;
 
-  // ✅ prevent background scroll when drawer is open
   useEffect(() => {
     if (!mobileMoreOpen) return;
     const prev = document.documentElement.style.overflow;
@@ -265,10 +275,6 @@ export default function Navbar() {
     };
   }, [mobileMoreOpen]);
 
-  /**
-   * ✅ Forced logout flag (DO NOT early return before hooks!)
-   * This avoids React hook order mismatch that can freeze the UI when this flag flips mid-session.
-   */
   const [forced, setForced] = useState(() => {
     try {
       return sessionStorage.getItem("auth:forcedLogout") === "1";
@@ -277,7 +283,6 @@ export default function Navbar() {
     }
   });
 
-  // optional: respond to changes (e.g. another tab sets it)
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === "auth:forcedLogout") setForced(e.newValue === "1");
@@ -286,9 +291,6 @@ export default function Navbar() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  /**
-   * ✅ Session verification (SAFE)
-   */
   const verifySession = useCallback(async () => {
     if (forced) return;
 
@@ -297,7 +299,6 @@ export default function Navbar() {
     if (!st.user?.id) return;
 
     try {
-      // ✅ baseURL is /api already
       const { data } = await api.get("/auth/me", AXIOS_COOKIE_CFG);
       if (data?.id) {
         useAuthStore.setState({ user: data });
@@ -311,20 +312,16 @@ export default function Navbar() {
     }
   }, [forced]);
 
-  // ✅ Re-check on navigation
   useEffect(() => {
     verifySession();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loc.key]);
+  }, [loc.key, verifySession]);
 
-  // ✅ Re-check when tab regains focus
   useEffect(() => {
     const onFocus = () => verifySession();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [verifySession]);
 
-  // ✅ Prefetch wishlist so it shows instantly when opening Wishlist page
   const prefetchWishlist = useCallback(async () => {
     if (!useAuthStore.getState().user?.id) return;
 
@@ -350,20 +347,21 @@ export default function Navbar() {
     });
   }, [qc]);
 
-  // ✅ OK to return AFTER hooks
   if (forced) return null;
 
-  // helper for returns route (customer vs admin)
   const returnsHref = "/returns-refunds";
 
   return (
     <>
       <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white">
         <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-3 sm:px-4 md:px-8 flex items-center justify-between gap-2">
-          {/* LEFT */}
           <div className="flex items-center gap-3 min-w-0">
-            <Link
-              to={brandHref}
+            <a
+              href={brandHref}
+              onClick={(e) => {
+                e.preventDefault();
+                hardGo(brandHref);
+              }}
               className="inline-flex items-center hover:opacity-95 min-w-0 max-w-[52vw] xs:max-w-[56vw] sm:max-w-none overflow-hidden"
               aria-label="DaySpring home"
               title="DaySpring"
@@ -371,7 +369,7 @@ export default function Navbar() {
               <span className="block origin-left scale-[0.92] xs:scale-95 sm:scale-100 pointer-events-none">
                 <DaySpringLogo size={28} />
               </span>
-            </Link>
+            </a>
 
             <nav className="hidden md:flex items-center gap-2 ml-2">
               {showRiderNav ? (
@@ -411,7 +409,6 @@ export default function Navbar() {
                     />
                   )}
 
-                  {/* Buyer-only links */}
                   {showBuyerNav && (
                     <>
                       <IconNavLink
@@ -430,6 +427,7 @@ export default function Navbar() {
                       />
                     </>
                   )}
+
                   {isAdmin && (
                     <IconNavLink
                       to="/admin/offer-changes"
@@ -438,14 +436,13 @@ export default function Navbar() {
                       label="Offer approvals"
                     />
                   )}
-                  {isAdmin && <IconNavLink to="/admin" end icon={<Shield size={18} />} label="Admin" />}
 
+                  {isAdmin && <IconNavLink to="/admin" end icon={<Shield size={18} />} label="Admin" />}
                 </>
               )}
             </nav>
           </div>
 
-          {/* RIGHT */}
           <div className="flex items-center gap-2 shrink-0">
             <div className="hidden md:block">
               <NotificationsBell placement="navbar" />
@@ -454,22 +451,22 @@ export default function Navbar() {
             <div className="hidden md:flex items-center gap-2">
               {!isLoggedIn ? (
                 <>
-                  <NavLink
-                    to="/register-supplier"
+                  <button
+                    type="button"
+                    onClick={() => hardGo("/register-supplier")}
                     className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 transition"
                     title="Become a supplier"
                   >
                     <Store size={16} />
                     <span className="hidden lg:inline">Become a supplier</span>
-                  </NavLink>
+                  </button>
 
-                  {/* ✅ include ?from= so refresh on login page still returns */}
                   <button
                     type="button"
                     onClick={() => {
                       const target = `${loc.pathname}${loc.search}`;
                       const qp = encodeURIComponent(target);
-                      nav(`/login?from=${qp}`, { state: { from: target } });
+                      hardGo(`/login?from=${qp}`);
                     }}
                     className="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                     title="Login"
@@ -478,14 +475,15 @@ export default function Navbar() {
                     <span className="hidden lg:inline">Login</span>
                   </button>
 
-                  <NavLink
-                    to="/register"
+                  <button
+                    type="button"
+                    onClick={() => hardGo("/register")}
                     className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold hover:opacity-90 transition"
                     title="Register"
                   >
                     <CheckCircle2 size={16} />
                     <span className="hidden lg:inline">Register</span>
-                  </NavLink>
+                  </button>
                 </>
               ) : (
                 <div className="flex items-center gap-2">
@@ -518,10 +516,7 @@ export default function Navbar() {
                             <button
                               type="button"
                               className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                              onClick={() => {
-                                setMenuOpen(false);
-                                nav("/supplier/orders");
-                              }}
+                              onClick={() => hardGo("/supplier/orders")}
                               role="menuitem"
                             >
                               <Truck size={16} />
@@ -544,10 +539,7 @@ export default function Navbar() {
                             <button
                               type="button"
                               className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                              onClick={() => {
-                                setMenuOpen(false);
-                                nav("/profile");
-                              }}
+                              onClick={() => hardGo("/profile")}
                               role="menuitem"
                             >
                               <User size={16} />
@@ -557,10 +549,7 @@ export default function Navbar() {
                             <button
                               type="button"
                               className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                              onClick={() => {
-                                setMenuOpen(false);
-                                nav("/account/sessions");
-                              }}
+                              onClick={() => hardGo("/account/sessions")}
                               role="menuitem"
                             >
                               <Settings size={16} />
@@ -571,10 +560,7 @@ export default function Navbar() {
                               <button
                                 type="button"
                                 className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                                onClick={() => {
-                                  setMenuOpen(false);
-                                  nav("/customer-dashboard");
-                                }}
+                                onClick={() => hardGo("/customer-dashboard")}
                                 role="menuitem"
                               >
                                 <User size={16} />
@@ -586,10 +572,7 @@ export default function Navbar() {
                               <button
                                 type="button"
                                 className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                                onClick={() => {
-                                  setMenuOpen(false);
-                                  nav("/orders");
-                                }}
+                                onClick={() => hardGo("/orders")}
                                 role="menuitem"
                               >
                                 <Package size={16} />
@@ -597,15 +580,11 @@ export default function Navbar() {
                               </button>
                             )}
 
-                            {/* ✅ Returns & refunds in user menu */}
                             {!isSupplier && (
                               <button
                                 type="button"
                                 className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                                onClick={() => {
-                                  setMenuOpen(false);
-                                  nav(returnsHref);
-                                }}
+                                onClick={() => hardGo(returnsHref)}
                                 role="menuitem"
                               >
                                 <RotateCcw size={16} />
@@ -617,10 +596,7 @@ export default function Navbar() {
                               <button
                                 type="button"
                                 className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                                onClick={() => {
-                                  setMenuOpen(false);
-                                  nav("/admin/settings");
-                                }}
+                                onClick={() => hardGo("/admin/settings")}
                                 role="menuitem"
                               >
                                 <Shield size={16} />
@@ -647,17 +623,20 @@ export default function Navbar() {
               )}
             </div>
 
-            {/* Mobile */}
             <div className="md:hidden flex items-center gap-2 shrink-0">
               <NotificationsBell placement="navbar" />
 
-              {/* ✅ Cart ALWAYS visible on mobile (swap with wishlist) */}
               {showCartMobile && (
                 <NavLink
                   to="/cart"
                   end
+                  onClick={(e) => {
+                    e.preventDefault();
+                    hardGo("/cart");
+                  }}
                   className={({ isActive }) =>
-                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
+                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${
+                      isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
                     }`
                   }
                   aria-label="Cart"
@@ -685,7 +664,6 @@ export default function Navbar() {
           </div>
         </div>
 
-        {/* Mobile drawer */}
         {mobileMoreOpen && (
           <div className="md:hidden">
             <div className="fixed inset-0 z-40 bg-black/60" onClick={() => setMobileMoreOpen(false)} />
@@ -710,10 +688,7 @@ export default function Navbar() {
                       <MobileMenuButton
                         icon={<Truck size={18} />}
                         label="Orders"
-                        onClick={() => {
-                          setMobileMoreOpen(false);
-                          nav("/supplier/orders");
-                        }}
+                        onClick={() => hardGo("/supplier/orders")}
                       />
                       <MobileMenuButton icon={<LogOut size={18} />} label="Logout" variant="danger" onClick={logout} />
                     </>
@@ -722,10 +697,7 @@ export default function Navbar() {
                       <MobileMenuButton
                         icon={<LayoutGrid size={18} />}
                         label="Products"
-                        onClick={() => {
-                          setMobileMoreOpen(false);
-                          nav(isSupplier ? "/supplier/catalog-offers" : "/");
-                        }}
+                        onClick={() => hardGo(isSupplier ? "/supplier/catalog-offers" : "/")}
                       />
 
                       {showBuyerNav && (
@@ -733,9 +705,8 @@ export default function Navbar() {
                           icon={<Heart size={18} />}
                           label="Wishlist"
                           onClick={() => {
-                            prefetchWishlist();
-                            setMobileMoreOpen(false);
-                            nav("/wishlist");
+                            void prefetchWishlist();
+                            hardGo("/wishlist");
                           }}
                         />
                       )}
@@ -744,22 +715,15 @@ export default function Navbar() {
                         <MobileMenuButton
                           icon={<Package size={18} />}
                           label="Orders"
-                          onClick={() => {
-                            setMobileMoreOpen(false);
-                            nav("/orders");
-                          }}
+                          onClick={() => hardGo("/orders")}
                         />
                       )}
 
-                      {/* ✅ Returns & refunds on mobile */}
                       {showBuyerNav && (
                         <MobileMenuButton
                           icon={<RotateCcw size={18} />}
                           label="Returns & refunds"
-                          onClick={() => {
-                            setMobileMoreOpen(false);
-                            nav(returnsHref);
-                          }}
+                          onClick={() => hardGo(returnsHref)}
                         />
                       )}
 
@@ -767,10 +731,7 @@ export default function Navbar() {
                         <MobileMenuButton
                           icon={<Store size={18} />}
                           label="Supplier dashboard"
-                          onClick={() => {
-                            setMobileMoreOpen(false);
-                            nav("/supplier");
-                          }}
+                          onClick={() => hardGo("/supplier")}
                         />
                       )}
 
@@ -778,10 +739,7 @@ export default function Navbar() {
                         <MobileMenuButton
                           icon={<User size={18} />}
                           label="Customer dashboard"
-                          onClick={() => {
-                            setMobileMoreOpen(false);
-                            nav("/customer-dashboard");
-                          }}
+                          onClick={() => hardGo("/customer-dashboard")}
                         />
                       )}
 
@@ -789,10 +747,7 @@ export default function Navbar() {
                         <MobileMenuButton
                           icon={<User size={18} />}
                           label="Dashboard"
-                          onClick={() => {
-                            setMobileMoreOpen(false);
-                            nav("/dashboard");
-                          }}
+                          onClick={() => hardGo("/dashboard")}
                         />
                       )}
 
@@ -801,21 +756,14 @@ export default function Navbar() {
                           <MobileMenuButton
                             icon={<ClipboardList size={18} />}
                             label="Offer approvals"
-                            onClick={() => {
-                              setMobileMoreOpen(false);
-                              nav("/admin/offer-changes");
-                            }}
+                            onClick={() => hardGo("/admin/offer-changes")}
                           />
 
                           <MobileMenuButton
                             icon={<Shield size={18} />}
                             label="Admin"
-                            onClick={() => {
-                              setMobileMoreOpen(false);
-                              nav("/admin");
-                            }}
+                            onClick={() => hardGo("/admin")}
                           />
-
                         </>
                       )}
 
@@ -826,10 +774,7 @@ export default function Navbar() {
                           <MobileMenuButton
                             icon={<Store size={18} />}
                             label="Supply"
-                            onClick={() => {
-                              setMobileMoreOpen(false);
-                              nav("/register-supplier");
-                            }}
+                            onClick={() => hardGo("/register-supplier")}
                           />
                           <MobileMenuButton
                             icon={<User size={18} />}
@@ -837,18 +782,14 @@ export default function Navbar() {
                             onClick={() => {
                               const target = `${loc.pathname}${loc.search}`;
                               const qp = encodeURIComponent(target);
-                              setMobileMoreOpen(false);
-                              nav(`/login?from=${qp}`, { state: { from: target } });
+                              hardGo(`/login?from=${qp}`);
                             }}
                           />
                           <MobileMenuButton
                             icon={<CheckCircle2 size={18} />}
                             label="Register"
                             variant="primary"
-                            onClick={() => {
-                              setMobileMoreOpen(false);
-                              nav("/register");
-                            }}
+                            onClick={() => hardGo("/register")}
                           />
                         </>
                       ) : (
@@ -856,18 +797,12 @@ export default function Navbar() {
                           <MobileMenuButton
                             icon={<User size={18} />}
                             label="Edit profile"
-                            onClick={() => {
-                              setMobileMoreOpen(false);
-                              nav("/profile");
-                            }}
+                            onClick={() => hardGo("/profile")}
                           />
                           <MobileMenuButton
                             icon={<Settings size={18} />}
                             label="Sessions"
-                            onClick={() => {
-                              setMobileMoreOpen(false);
-                              nav("/account/sessions");
-                            }}
+                            onClick={() => hardGo("/account/sessions")}
                           />
                           <MobileMenuButton
                             icon={<LogOut size={18} />}

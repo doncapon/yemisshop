@@ -46,6 +46,140 @@ function pics(seed: string | number): string[] {
   ];
 }
 
+type SeedBankOption = {
+  country: "NG";
+  code: string;
+  name: string;
+};
+
+const SEED_BANKS: SeedBankOption[] = [
+  { country: "NG", code: "011", name: "First Bank of Nigeria" },
+  { country: "NG", code: "033", name: "United Bank for Africa" },
+  { country: "NG", code: "044", name: "Access Bank" },
+  { country: "NG", code: "057", name: "Zenith Bank" },
+  { country: "NG", code: "058", name: "Guaranty Trust Bank" },
+  { country: "NG", code: "070", name: "Fidelity Bank" },
+  { country: "NG", code: "076", name: "Polaris Bank" },
+  { country: "NG", code: "214", name: "FCMB" },
+  { country: "NG", code: "215", name: "Unity Bank" },
+  { country: "NG", code: "221", name: "Stanbic IBTC Bank" },
+  { country: "NG", code: "232", name: "Sterling Bank" },
+  { country: "NG", code: "035", name: "Wema Bank" },
+];
+
+/** keep seed deterministic */
+function seededAccountNumber(n: number) {
+  return `10000000${String(n).padStart(2, "0")}`; // 10 digits
+}
+
+function seededRegistrationNumber(n: number) {
+  return `RC-${String(1000000 + n)}`;
+}
+
+function seededSupplierBank(index: number) {
+  return SEED_BANKS[index % SEED_BANKS.length];
+}
+
+async function ensureRegistryAuthorityNigeria() {
+  const ra = await prisma.registryAuthority.upsert({
+    where: {
+      countryCode_code: {
+        countryCode: "NG",
+        code: "CAC",
+      },
+    },
+    update: {
+      name: "Corporate Affairs Commission",
+      websiteUrl: "https://www.cac.gov.ng",
+      isActive: true,
+    },
+    create: {
+      countryCode: "NG",
+      code: "CAC",
+      name: "Corporate Affairs Commission",
+      websiteUrl: "https://www.cac.gov.ng",
+      isActive: true,
+    },
+    select: { id: true },
+  });
+
+  return ra.id;
+}
+
+function activeSupplierPayload(args: {
+  name: string;
+  type: "ONLINE" | "PHYSICAL";
+  contactEmail: string;
+  whatsappPhone: string;
+  registeredAddressId: string;
+  pickupAddressId: string;
+  pickupContactName: string;
+  pickupContactPhone: string;
+  pickupInstructions: string;
+  leadDays: number;
+  handlingFee: number;
+  bankCode: string;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+  registryAuthorityId: string;
+  registrationNumber: string;
+  legalName?: string;
+}) {
+  const now = new Date();
+
+  return {
+    type: args.type,
+    status: "ACTIVE",
+    contactEmail: args.contactEmail,
+    whatsappPhone: args.whatsappPhone,
+
+    legalName: args.legalName ?? args.name,
+    registeredBusinessName: args.name,
+    registrationType: "REGISTERED_BUSINESS",
+    registrationNumber: args.registrationNumber,
+    registrationDate: new Date("2024-01-15T00:00:00.000Z"),
+    registrationCountryCode: "NG",
+    registryAuthorityId: args.registryAuthorityId,
+    natureOfBusiness: "Retail and wholesale supply",
+
+    registeredAddressId: args.registeredAddressId,
+    pickupAddressId: args.pickupAddressId,
+
+    kycStatus: "APPROVED",
+    kycApprovedAt: now,
+    kycCheckedAt: now,
+    kycRejectedAt: null,
+    kycRejectionReason: null,
+
+    payoutMethod: "BANK_TRANSFER",
+    bankCountry: "NG",
+    bankCode: args.bankCode,
+    bankName: args.bankName,
+    accountNumber: args.accountNumber,
+    accountName: args.accountName,
+
+    bankVerificationNote: "Seeded local/dev supplier bank details",
+    bankVerificationRequestedAt: now,
+    bankVerificationStatus: "VERIFIED" as const,
+    bankVerifiedAt: now,
+
+    isPayoutEnabled: true,
+
+    pickupContactName: args.pickupContactName,
+    pickupContactPhone: args.pickupContactPhone,
+    pickupInstructions: args.pickupInstructions,
+    shippingEnabled: true,
+    shipsNationwide: true,
+    defaultLeadDays: args.leadDays,
+    sameDayCutoffHour: 14,
+    handlingFee: toDec2(args.handlingFee),
+    supportsDoorDelivery: true,
+    supportsPickupPoint: chance(0.35),
+  };
+}
+
+
 function toDec(n: number) {
   return new Prisma.Decimal(Math.round(n * 100) / 100);
 }
@@ -239,8 +373,21 @@ async function ensureSupplierUserAndSuppliers() {
     log(`Created Supplier user: ${SUPPLIER_EMAIL}`);
   } else {
     userId = existingUser.id;
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        role: "SUPPLIER",
+        status: "VERIFIED",
+        emailVerifiedAt: new Date(),
+        phoneVerifiedAt: new Date(),
+      },
+    });
+
     log(`Supplier user already present: ${SUPPLIER_EMAIL}`);
   }
+
+  const registryAuthorityId = await ensureRegistryAuthorityNigeria();
 
   const makeSupplierAddresses = async (
     seedName: string,
@@ -287,51 +434,54 @@ async function ensureSupplierUserAndSuppliers() {
 
   const mainName = "Main Household Supplier";
   const mainAddrs = await makeSupplierAddresses(mainName, "Lagos", "Lagos", "Ikeja");
+  const mainBank = seededSupplierBank(0);
 
   const mainSupplier = await prisma.supplier.upsert({
     where: { name: mainName },
     update: {
       userId,
-      type: "ONLINE",
-      status: "ACTIVE",
-      contactEmail: SUPPLIER_EMAIL,
-      whatsappPhone: "+2348100000002",
-      registeredAddressId: mainAddrs.reg.id,
-      pickupAddressId: mainAddrs.pickup.id,
-      pickupContactName: "Main Dispatch",
-      pickupContactPhone: "+2348100000002",
-      pickupInstructions: "Pickup between 9am and 5pm",
-      shippingEnabled: true,
-      shipsNationwide: true,
-      defaultLeadDays: 2,
-      sameDayCutoffHour: 14,
-      handlingFee: toDec2(80),
-      supportsDoorDelivery: true,
-      supportsPickupPoint: chance(0.4),
-      bankVerificationStatus: "VERIFIED",
-      isPayoutEnabled: true,
+      ...activeSupplierPayload({
+        name: mainName,
+        type: "ONLINE",
+        contactEmail: SUPPLIER_EMAIL,
+        whatsappPhone: "+2348100000002",
+        registeredAddressId: mainAddrs.reg.id,
+        pickupAddressId: mainAddrs.pickup.id,
+        pickupContactName: "Main Dispatch",
+        pickupContactPhone: "+2348100000002",
+        pickupInstructions: "Pickup between 9am and 5pm",
+        leadDays: 2,
+        handlingFee: 80,
+        bankCode: mainBank.code,
+        bankName: mainBank.name,
+        accountNumber: seededAccountNumber(1),
+        accountName: "Main Household Supplier",
+        registryAuthorityId,
+        registrationNumber: seededRegistrationNumber(1),
+      }),
     },
     create: {
       name: mainName,
       userId,
-      type: "ONLINE",
-      status: "ACTIVE",
-      contactEmail: SUPPLIER_EMAIL,
-      whatsappPhone: "+2348100000002",
-      registeredAddressId: mainAddrs.reg.id,
-      pickupAddressId: mainAddrs.pickup.id,
-      pickupContactName: "Main Dispatch",
-      pickupContactPhone: "+2348100000002",
-      pickupInstructions: "Pickup between 9am and 5pm",
-      shippingEnabled: true,
-      shipsNationwide: true,
-      defaultLeadDays: 2,
-      sameDayCutoffHour: 14,
-      handlingFee: toDec2(80),
-      supportsDoorDelivery: true,
-      supportsPickupPoint: chance(0.4),
-      bankVerificationStatus: "VERIFIED",
-      isPayoutEnabled: true,
+      ...activeSupplierPayload({
+        name: mainName,
+        type: "ONLINE",
+        contactEmail: SUPPLIER_EMAIL,
+        whatsappPhone: "+2348100000002",
+        registeredAddressId: mainAddrs.reg.id,
+        pickupAddressId: mainAddrs.pickup.id,
+        pickupContactName: "Main Dispatch",
+        pickupContactPhone: "+2348100000002",
+        pickupInstructions: "Pickup between 9am and 5pm",
+        leadDays: 2,
+        handlingFee: 80,
+        bankCode: mainBank.code,
+        bankName: mainBank.name,
+        accountNumber: seededAccountNumber(1),
+        accountName: "Main Household Supplier",
+        registryAuthorityId,
+        registrationNumber: seededRegistrationNumber(1),
+      }),
     },
     select: { id: true, name: true },
   });
@@ -343,6 +493,7 @@ async function ensureSupplierUserAndSuppliers() {
       city: "Lagos",
       lga: "Surulere",
       type: "PHYSICAL" as const,
+      bankIdx: 1,
     },
     {
       name: "Comfort Home Store",
@@ -350,6 +501,7 @@ async function ensureSupplierUserAndSuppliers() {
       city: "Ibadan",
       lga: "Ibadan North",
       type: "ONLINE" as const,
+      bankIdx: 2,
     },
     {
       name: "Rivers Kitchen Outlet",
@@ -357,6 +509,7 @@ async function ensureSupplierUserAndSuppliers() {
       city: "Port Harcourt",
       lga: "Port Harcourt",
       type: "PHYSICAL" as const,
+      bankIdx: 3,
     },
     {
       name: "Abuja Essentials",
@@ -364,52 +517,63 @@ async function ensureSupplierUserAndSuppliers() {
       city: "Abuja",
       lga: "Abuja Municipal",
       type: "ONLINE" as const,
+      bankIdx: 4,
     },
   ];
 
   const others: { id: string; name: string }[] = [];
 
-  for (const def of otherDefs) {
+  for (const [i, def] of otherDefs.entries()) {
     const addrs = await makeSupplierAddresses(def.name, def.state, def.city, def.lga);
+    const bank = seededSupplierBank(def.bankIdx);
+
+    const emailSlug = def.name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const phone = `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`;
 
     const s = await prisma.supplier.upsert({
       where: { name: def.name },
       update: {
-        type: def.type,
-        status: "ACTIVE",
-        contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
-        whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-        registeredAddressId: addrs.reg.id,
-        pickupAddressId: addrs.pickup.id,
-        pickupContactName: `${def.name} Dispatch`,
-        pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-        pickupInstructions: "Pickup weekdays 9am–4pm",
-        shippingEnabled: true,
-        shipsNationwide: true,
-        defaultLeadDays: randInt(1, 4),
-        sameDayCutoffHour: 13,
-        handlingFee: toDec2(randInt(0, 150)),
-        supportsDoorDelivery: true,
-        supportsPickupPoint: chance(0.35),
+        ...activeSupplierPayload({
+          name: def.name,
+          type: def.type,
+          contactEmail: `${emailSlug}@example.com`,
+          whatsappPhone: phone,
+          registeredAddressId: addrs.reg.id,
+          pickupAddressId: addrs.pickup.id,
+          pickupContactName: `${def.name} Dispatch`,
+          pickupContactPhone: phone,
+          pickupInstructions: "Pickup weekdays 9am–4pm",
+          leadDays: randInt(1, 4),
+          handlingFee: randInt(0, 150),
+          bankCode: bank.code,
+          bankName: bank.name,
+          accountNumber: seededAccountNumber(i + 2),
+          accountName: def.name,
+          registryAuthorityId,
+          registrationNumber: seededRegistrationNumber(i + 2),
+        }),
       },
       create: {
         name: def.name,
-        type: def.type,
-        status: "ACTIVE",
-        contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
-        whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-        registeredAddressId: addrs.reg.id,
-        pickupAddressId: addrs.pickup.id,
-        pickupContactName: `${def.name} Dispatch`,
-        pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-        pickupInstructions: "Pickup weekdays 9am–4pm",
-        shippingEnabled: true,
-        shipsNationwide: true,
-        defaultLeadDays: randInt(1, 4),
-        sameDayCutoffHour: 13,
-        handlingFee: toDec2(randInt(0, 150)),
-        supportsDoorDelivery: true,
-        supportsPickupPoint: chance(0.35),
+        ...activeSupplierPayload({
+          name: def.name,
+          type: def.type,
+          contactEmail: `${emailSlug}@example.com`,
+          whatsappPhone: phone,
+          registeredAddressId: addrs.reg.id,
+          pickupAddressId: addrs.pickup.id,
+          pickupContactName: `${def.name} Dispatch`,
+          pickupContactPhone: phone,
+          pickupInstructions: "Pickup weekdays 9am–4pm",
+          leadDays: randInt(1, 4),
+          handlingFee: randInt(0, 150),
+          bankCode: bank.code,
+          bankName: bank.name,
+          accountNumber: seededAccountNumber(i + 2),
+          accountName: def.name,
+          registryAuthorityId,
+          registrationNumber: seededRegistrationNumber(i + 2),
+        }),
       },
       select: { id: true, name: true },
     });
