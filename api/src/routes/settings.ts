@@ -3,6 +3,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireSuperAdmin } from "../middleware/auth.js";
 import { requiredString } from "../lib/http.js";
+import { releaseDueHeldPayoutsOnce } from "../jobs/payoutRelease.job.js";
 
 const router = Router();
 
@@ -87,6 +88,50 @@ async function resolveShippingFlags(): Promise<{
   return { shippingEnabled, shippingMode };
 }
 
+async function upsertSetting(key: string, value: string, isPublic = false, meta: any = null) {
+  try {
+    return await prisma.setting.upsert({
+      where: { key },
+      update: { value, isPublic, meta },
+      create: { key, value, isPublic, meta } as any,
+    });
+  } catch (e: any) {
+    if (e?.code === "P2022" || /Unknown argument .*isPublic|meta/i.test(String(e?.message))) {
+      const existing = await prisma.setting.findFirst({ where: { key } });
+      if (existing) {
+        return await prisma.setting.update({
+          where: { id: existing.id },
+          data: { value } as any,
+        });
+      }
+      return await prisma.setting.create({
+        data: { key, value } as any,
+      });
+    }
+    throw e;
+  }
+}
+
+function parseIntervalHours(v: unknown): 3 | 4 | 6 | 8 | 12 | 24 {
+  const n = Number(v);
+  if (n === 3 || n === 4 || n === 6 || n === 8 || n === 12 || n === 24) return n;
+  return 6;
+}
+
+function parseTimezone(v: unknown): string {
+  const s = String(v ?? "").trim();
+  return s || "UTC";
+}
+
+function safeJsonParse<T = any>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 /* -------------------------- PUBLIC endpoints FIRST ----------------------- */
 
 /**
@@ -116,9 +161,9 @@ router.get("/public", async (_req, res) => {
       (await readSetting("markupPercent")) ??
       (await readSetting("platformMarginPercent"));
 
-        const minMarginNGNRaw =
+    const minMarginNGNRaw =
       (await readSetting("minMarginNGN"));
-              const maxMarginPctRaw =
+    const maxMarginPctRaw =
       (await readSetting("maxMarginPct"));
 
     const baseServiceFeeNGN = toNumber(baseRaw, 0);
@@ -217,7 +262,7 @@ router.get("/checkout/service-fee", async (req, res) => {
           const sid = (p as any).supplierId;
           if (sid) supplierSet.add(String(sid));
         }
-      } catch {}
+      } catch { }
 
       // legacy offers if present
       try {
@@ -229,7 +274,7 @@ router.get("/checkout/service-fee", async (req, res) => {
         for (const o of offers || []) {
           if (o?.supplierId) supplierSet.add(String(o.supplierId));
         }
-      } catch {}
+      } catch { }
 
       const distinctSuppliers = supplierSet.size || pIds.length;
       notificationsCount = Math.max(1, distinctSuppliers);
@@ -278,6 +323,108 @@ router.get("/checkout/service-fee", async (req, res) => {
 router.get("/", requireAuth, requireSuperAdmin, async (_req, res) => {
   const rows = await prisma.setting.findMany({ orderBy: { key: "asc" } });
   return res.json(rows);
+});
+
+router.get("/payout-release-scheduler", requireAuth, requireSuperAdmin, async (_req, res) => {
+  try {
+    const [
+      enabledRaw,
+      intervalRaw,
+      timezoneRaw,
+      lastRunAtRaw,
+      lastRunStatusRaw,
+      lastRunSummaryRaw,
+      lastRunErrorRaw,
+    ] = await Promise.all([
+      readSetting("payoutReleaseSchedulerEnabled"),
+      readSetting("payoutReleaseIntervalHours"),
+      readSetting("payoutReleaseSchedulerTimezone"),
+      readSetting("payoutReleaseLastRunAt"),
+      readSetting("payoutReleaseLastRunStatus"),
+      readSetting("payoutReleaseLastRunSummary"),
+      readSetting("payoutReleaseLastRunError"),
+    ]);
+
+    return res.json({
+      enabled: enabledRaw === null ? true : parseBool(enabledRaw, true),
+      intervalHours: parseIntervalHours(intervalRaw),
+      timezone: parseTimezone(timezoneRaw),
+      lastRunAt: lastRunAtRaw || null,
+      lastRunStatus: lastRunStatusRaw || null,
+      lastRunSummary: safeJsonParse(lastRunSummaryRaw, null),
+      lastRunError: lastRunErrorRaw || null,
+    });
+  } catch (e) {
+    console.error("GET /api/settings/payout-release-scheduler failed:", e);
+    return res.status(500).json({ error: "Failed to load payout release scheduler settings" });
+  }
+});
+
+router.post("/payout-release-scheduler", requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const enabled = parseBool(req.body?.enabled, true);
+    const intervalHours = parseIntervalHours(req.body?.intervalHours);
+    const timezone = parseTimezone(req.body?.timezone);
+
+    await Promise.all([
+      upsertSetting("payoutReleaseSchedulerEnabled", String(enabled)),
+      upsertSetting("payoutReleaseIntervalHours", String(intervalHours)),
+      upsertSetting("payoutReleaseSchedulerTimezone", timezone),
+    ]);
+
+    return res.json({
+      ok: true,
+      enabled,
+      intervalHours,
+      timezone,
+    });
+  } catch (e) {
+    console.error("POST /api/settings/payout-release-scheduler failed:", e);
+    return res.status(500).json({ error: "Failed to save payout release scheduler settings" });
+  }
+});
+
+router.post("/payout-release-scheduler/run-now", requireAuth, requireSuperAdmin, async (_req, res) => {
+  const startedAt = new Date();
+
+  try {
+    await Promise.all([
+      upsertSetting("payoutReleaseLastRunStatus", "RUNNING"),
+      upsertSetting("payoutReleaseLastRunAt", startedAt.toISOString()),
+      upsertSetting("payoutReleaseLastRunSummary", ""),
+      upsertSetting("payoutReleaseLastRunError", ""),
+    ]);
+
+    const summary = await releaseDueHeldPayoutsOnce();
+
+    await Promise.all([
+      upsertSetting("payoutReleaseLastRunStatus", "SUCCESS"),
+      upsertSetting("payoutReleaseLastRunAt", startedAt.toISOString()),
+      upsertSetting("payoutReleaseLastRunSummary", JSON.stringify(summary)),
+      upsertSetting("payoutReleaseLastRunError", ""),
+    ]);
+
+    return res.json({
+      ok: true,
+      startedAt: startedAt.toISOString(),
+      summary,
+    });
+  } catch (e: any) {
+    const message = String(e?.message || e || "unknown_error");
+
+    await Promise.all([
+      upsertSetting("payoutReleaseLastRunStatus", "FAILED"),
+      upsertSetting("payoutReleaseLastRunAt", startedAt.toISOString()),
+      upsertSetting("payoutReleaseLastRunSummary", ""),
+      upsertSetting("payoutReleaseLastRunError", message),
+    ]);
+
+    console.error("POST /api/settings/payout-release-scheduler/run-now failed:", e);
+    return res.status(500).json({
+      error: "Failed to run payout release now",
+      detail: message,
+    });
+  }
 });
 
 router.get("/:id", requireAuth, requireSuperAdmin, async (req, res) => {

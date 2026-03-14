@@ -102,15 +102,6 @@ export async function trackPurchaseIfNeeded(paymentId: string) {
     fbclid: p.order.fbclid ?? null,
   };
 
-  // ✅ For now: just log + mark as sent so you can test end-to-end.
-  // Later: if hasMarketingConsent, call Meta CAPI / Google MP here.
-  console.log("[track] PURCHASE", {
-    consent: { hasMarketingConsent, hasAnalyticsConsent: !!user?.consentAnalyticsAt },
-    provider: p.provider,
-    providerTxId: p.providerTxId,
-    payload,
-  });
-
   await prisma.payment.update({
     where: { id: p.id },
     data: { purchaseEventSentAt: new Date() },

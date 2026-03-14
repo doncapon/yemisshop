@@ -1,14 +1,16 @@
 // api/src/routes/refunds.ts
+// api/src/routes/adminRefunds.ts
 import { Router } from "express";
-import { NotificationType, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { notifyMany } from "../services/notifications.service.js";
+import { notifyMany, notifyUser } from "../services/notifications.service.js";
+import { requiredString } from "../lib/http.js";
+import { syncProductInStockCacheTx } from "../services/inventory.service.js";
+import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
+import { Prisma } from "@prisma/client";
 
 const router = Router();
 
-const isAdmin = (role?: string) =>
-    ["ADMIN", "SUPER_ADMIN"].includes(String(role || "").toUpperCase());
 
 function normRole(r?: string) {
     return String(r || "").toUpperCase();
@@ -34,310 +36,585 @@ function sumOrderItems(orderItems: Array<{ unitPrice: any; quantity: number }>) 
     return itemsAmount;
 }
 
-async function getAdminUserIds() {
-    const admins = await prisma.user.findMany({
-        where: { role: { in: ["ADMIN", "SUPER_ADMIN"] } as any },
-        select: { id: true },
-    });
-    return admins.map((a: { id: string }) => a.id);
-}
-
 /** PO status helpers (safe string-based to avoid enum mismatch at runtime) */
 function poStatusUpper(v: any) {
     return String(v ?? "").toUpperCase();
 }
 
-function canMovePoToRefundRequested(current: any) {
-    const s = poStatusUpper(current);
-
-    // Don’t stomp final states
-    if (["DELIVERED", "COMPLETED", "CANCELED", "CANCELLED", "REFUNDED"].includes(s)) return false;
-
-    // Already set
-    if (s === "REFUND_REQUESTED") return false;
-
-    // Otherwise ok
-    return true;
-}
-
 /**
- * GET /api/refunds/mine
- * Customer sees all refund cases they requested
+ * GET /api/refunds
+ *
+ * Admin:
+ * - sees all refunds
+ * - supports q, status, take, skip
+ *
+ * Shopper:
+ * - sees only refunds where requestedByUserId = actorId
+ *
+ * Supplier:
+ * - sees only refunds for their supplierId
+ *
+ * Query:
+ * - q: optional search by orderId, purchaseOrderId, supplierId, providerReference
+ * - status: optional RefundStatus
+ * - take, skip
  */
-router.get("/mine", requireAuth, async (req: any, res) => {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+router.get("/", requireAuth, async (req: any, res) => {
+  const actorId = normStr(req.user?.id);
+  const role = normRole(req.user?.role);
 
-    const rows = await prisma.refund.findMany({
-        where: { requestedByUserId: userId },
-        orderBy: { createdAt: "desc" },
-        include: {
-            supplier: { select: { id: true, name: true } },
-            purchaseOrder: { select: { id: true, status: true, payoutStatus: true } },
-            events: { orderBy: { createdAt: "desc" }, take: 10 },
-            items: {
-                include: {
-                    orderItem: { select: { id: true, title: true, quantity: true, unitPrice: true } },
-                },
-            },
-        },
+  if (!actorId) return res.status(401).json({ error: "Unauthorized" });
+
+  const q = normStr(req.query.q).toLowerCase();
+  const status = normStr(req.query.status).toUpperCase();
+  const take = Math.min(100, Math.max(1, Number(req.query.take ?? 50)));
+  const skip = Math.max(0, Number(req.query.skip ?? 0));
+
+  const where: any = {};
+
+  if (status) {
+    where.status = status;
+  }
+
+  if (isAdmin(role)) {
+    if (q) {
+      where.OR = [
+        { orderId: { contains: q, mode: "insensitive" } },
+        { purchaseOrderId: { contains: q, mode: "insensitive" } },
+        { supplierId: { contains: q, mode: "insensitive" } },
+        { providerReference: { contains: q, mode: "insensitive" } },
+      ];
+    }
+  } else if (role === "SUPPLIER") {
+    const supplier = await prisma.supplier.findFirst({
+      where: { userId: actorId },
+      select: { id: true },
     });
 
-    return res.json({ data: rows });
-});
-
-/**
- * POST /api/refunds
- * body: { orderId, reason, message?, evidenceUrls?, purchaseOrderId?, orderItemIds?, faultParty? }
- *
- * Notes:
- * - Refund requires purchaseOrderId (schema: String + @@unique([purchaseOrderId])).
- * - If purchaseOrderId omitted, create one Refund per PurchaseOrder in the order.
- */
-router.post("/", requireAuth, async (req: any, res) => {
-    const actorId = req.user?.id;
-    const role = normRole(req.user?.role);
-
-    if (!actorId) return res.status(401).json({ error: "Unauthorized" });
-    if (role !== "SHOPPER" && !isAdmin(role)) {
-        return res.status(403).json({ error: "Only customers/admin can request refunds" });
+    if (!supplier?.id) {
+      return res.status(403).json({ error: "Supplier account not found" });
     }
 
-    const orderId = normStr(req.body?.orderId);
-    const reason = normStr(req.body?.reason);
-    const message = normStr(req.body?.message) || null;
-    const purchaseOrderId = req.body?.purchaseOrderId ? normStr(req.body.purchaseOrderId) : null;
-    const evidenceUrls = Array.isArray(req.body?.evidenceUrls) ? req.body.evidenceUrls : null;
-    const faultParty = req.body?.faultParty ? normStr(req.body.faultParty) : null;
+    where.supplierId = supplier.id;
 
-    const orderItemIdsFromArray: string[] | null = Array.isArray(req.body?.orderItemIds)
-        ? req.body.orderItemIds.map((x: any) => String(x)).filter(Boolean)
-        : null;
+    if (q) {
+      where.AND = [
+        { supplierId: supplier.id },
+        {
+          OR: [
+            { orderId: { contains: q, mode: "insensitive" } },
+            { purchaseOrderId: { contains: q, mode: "insensitive" } },
+            { providerReference: { contains: q, mode: "insensitive" } },
+          ],
+        },
+      ];
+      delete where.supplierId;
+    }
+  } else {
+    // shopper / normal user
+    where.requestedByUserId = actorId;
 
-    const orderItemIdsFromItems: string[] | null = Array.isArray(req.body?.items)
-        ? req.body.items
-            .map((x: any) => String(x?.orderItemId ?? "").trim())
-            .filter(Boolean)
-        : null;
+    if (q) {
+      where.AND = [
+        { requestedByUserId: actorId },
+        {
+          OR: [
+            { orderId: { contains: q, mode: "insensitive" } },
+            { purchaseOrderId: { contains: q, mode: "insensitive" } },
+            { providerReference: { contains: q, mode: "insensitive" } },
+          ],
+        },
+      ];
+      delete where.requestedByUserId;
+    }
+  }
 
-    const orderItemIds: string[] | null =
-        (orderItemIdsFromArray && orderItemIdsFromArray.length ? orderItemIdsFromArray : null) ||
-        (orderItemIdsFromItems && orderItemIdsFromItems.length ? orderItemIdsFromItems : null);
-
-    if (!orderId) return res.status(400).json({ error: "orderId is required" });
-    if (!reason) return res.status(400).json({ error: "reason is required" });
-
-    const order = await prisma.order.findUnique({
-        where: { id: orderId },
-        select: {
+  const [rows, total] = await Promise.all([
+    prisma.refund.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take,
+      skip,
+      include: {
+        order: {
+          select: {
             id: true,
             userId: true,
             status: true,
+            createdAt: true,
             total: true,
-            tax: true,
-            serviceFeeBase: true,
-            serviceFeeComms: true,
-            serviceFeeGateway: true,
-            serviceFeeTotal: true,
+          },
         },
+        purchaseOrder: {
+          select: {
+            id: true,
+            status: true,
+            payoutStatus: true,
+            supplierId: true,
+          },
+        },
+        supplier: {
+          select: {
+            id: true,
+            name: true,
+            userId: true,
+          },
+        },
+        requestedBy: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        adminResolvedBy: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        items: {
+          include: {
+            orderItem: {
+              select: {
+                id: true,
+                title: true,
+                quantity: true,
+                unitPrice: true,
+                lineTotal: true,
+              },
+            },
+          },
+        },
+        events: {
+          orderBy: { createdAt: "desc" },
+          take: 8,
+        },
+      },
+    }),
+    prisma.refund.count({ where }),
+  ]);
+
+  return res.json({
+    ok: true,
+    data: rows,
+    meta: {
+      total,
+      take,
+      skip,
+      role,
+    },
+  });
+});
+
+const isAdmin = (role?: string) =>
+  ["ADMIN", "SUPER_ADMIN"].includes(String(role || "").toUpperCase());
+
+function norm(s?: any) {
+  return String(s ?? "").trim();
+}
+
+function upper(s?: any) {
+  return norm(s).toUpperCase();
+}
+
+function lower(s?: any) {
+  return norm(s).toLowerCase();
+}
+
+async function getAdminUserIds() {
+  const admins = await prisma.user.findMany({
+    where: { role: { in: ["ADMIN", "SUPER_ADMIN"] } as any },
+    select: { id: true },
+  });
+  return admins.map((a: { id: string }) => a.id);
+}
+
+
+/**
+ * PATCH /api/refunds/:id/decision
+ * body: { decision: "APPROVE"|"REJECT", note? }
+ *
+ * Rules:
+ * - You can only APPROVE/REJECT from certain states (prevents weird transitions)
+ * - Writes RefundEvent
+ * - Notifies: customer + supplier + admins (updated)
+ */
+router.patch("/:id/decision", requireAuth, async (req: any, res) => {
+  if (!isAdmin(req.user?.role)) return res.status(403).json({ error: "Admin only" });
+
+  const id = norm(req.params.id);
+  const decision = upper(req.body?.decision);
+  const note = norm(req.body?.note) || null;
+
+  if (!["APPROVE", "REJECT"].includes(decision)) {
+    return res.status(400).json({ error: "Invalid decision" });
+  }
+
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      const refund = await tx.refund.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          orderId: true,
+          purchaseOrderId: true,
+          supplierId: true,
+          requestedByUserId: true,
+        },
+      });
+      if (!refund) throw new Error("Refund not found");
+
+      // Guard: only allow admin decision from specific statuses
+      const allowed = new Set([
+        "SUPPLIER_REVIEW",
+        "SUPPLIER_ACCEPTED",
+        "SUPPLIER_REJECTED",
+        "ESCALATED",
+        "REQUESTED",
+      ]);
+      if (!allowed.has(String(refund.status))) {
+        throw new Error(`Cannot decide refund from status: ${refund.status}`);
+      }
+
+      const nextStatus = decision === "APPROVE" ? ("APPROVED" as any) : ("REJECTED" as any);
+
+      const r2 = await tx.refund.update({
+        where: { id },
+        data: {
+          status: nextStatus,
+          adminResolvedAt: new Date(),
+          adminResolvedById: req.user?.id ?? null,
+          adminDecision: decision,
+          adminNote: note ?? undefined,
+        },
+      });
+
+      await tx.refundEvent.create({
+        data: {
+          refundId: id,
+          type: decision === "APPROVE" ? "ADMIN_APPROVED" : "ADMIN_REJECTED",
+          message: note ?? undefined,
+          meta: { adminId: req.user?.id, decision },
+        },
+      });
+
+      return { r2, refund };
     });
 
-    if (!order) return res.status(404).json({ error: "Order not found" });
+    // ---- Notifications (outside tx) ----
+    const refundRow = updated.r2;
+    const refundMeta = updated.refund;
 
-    // Shopper can only request refund for their own order
-    if (!isAdmin(role) && order.userId !== actorId) {
-        return res.status(403).json({ error: "Forbidden" });
+    // Notify customer
+    if (refundMeta.requestedByUserId) {
+      await notifyUser(refundMeta.requestedByUserId, {
+        type: "REFUND_STATUS_CHANGED",
+        title: "Refund updated",
+        body:
+          decision === "APPROVE"
+            ? `Your refund was approved for order ${refundMeta.orderId}.`
+            : `Your refund was rejected for order ${refundMeta.orderId}.`,
+        data: { refundId: refundMeta.id, orderId: refundMeta.orderId, decision },
+      });
     }
 
-    // ✅ who should “requestedByUserId” represent?
-    // - If admin raises on behalf of customer: store customer id so it shows in /mine
-    // - Otherwise store actor id
-    const requestedByUserId = isAdmin(role) ? order.userId : actorId;
-
-    try {
-        const created = await prisma.$transaction(async (tx) => {
-            let pos: Array<{ id: string; supplierId: string; orderId: string }> = [];
-
-            if (purchaseOrderId) {
-                const po = await tx.purchaseOrder.findUnique({
-                    where: { id: purchaseOrderId },
-                    select: { id: true, supplierId: true, orderId: true },
-                });
-                if (!po || po.orderId !== orderId) throw new Error("Invalid purchaseOrderId");
-                pos = [po];
-            } else {
-                pos = await tx.purchaseOrder.findMany({
-                    where: { orderId },
-                    select: { id: true, supplierId: true, orderId: true },
-                });
-            }
-
-            if (!pos.length) {
-                throw new Error("No purchase orders found for this order yet.");
-            }
-
-            const out: any[] = [];
-
-            for (const po of pos) {
-                // unique purchaseOrderId
-                const existing = await tx.refund.findUnique({
-                    where: { purchaseOrderId: po.id },
-                    select: { id: true },
-                });
-                if (existing) {
-                    throw new Error(`Refund already exists for purchase order ${po.id}`);
-                }
-
-                // PO items -> orderItemIds
-                const poItems = await tx.purchaseOrderItem.findMany({
-                    where: { purchaseOrderId: po.id },
-                    select: { orderItemId: true },
-                });
-
-                const poOrderItemIds = poItems.map((x) => x.orderItemId).filter(Boolean) as string[];
-
-                const targetItemIds =
-                    orderItemIds && orderItemIds.length
-                        ? poOrderItemIds.filter((id) => orderItemIds.includes(id))
-                        : poOrderItemIds;
-
-                if (!targetItemIds.length) {
-                    throw new Error(
-                        orderItemIds && orderItemIds.length
-                            ? "Selected items are not part of this purchase order."
-                            : "No items found for this purchase order."
-                    );
-                }
-
-                const items = await tx.orderItem.findMany({
-                    where: { id: { in: targetItemIds } },
-                    select: { id: true, unitPrice: true, quantity: true, title: true },
-                });
-
-                const itemsAmount = sumOrderItems(items);
-
-                // Policy: default these to 0 (admin can later adjust if you add UI)
-                const taxAmount = new Prisma.Decimal(0);
-                const serviceFeeBaseAmount = new Prisma.Decimal(0);
-                const serviceFeeCommsAmount = new Prisma.Decimal(0);
-                const serviceFeeGatewayAmount = new Prisma.Decimal(0);
-
-                const totalAmount = itemsAmount
-                    .plus(taxAmount)
-                    .plus(serviceFeeBaseAmount)
-                    .plus(serviceFeeCommsAmount)
-                    .plus(serviceFeeGatewayAmount);
-
-                const refund = await tx.refund.create({
-                    data: {
-                        orderId,
-                        purchaseOrderId: po.id,
-                        supplierId: po.supplierId,
-
-                        status: "SUPPLIER_REVIEW" as any,
-
-                        requestedByUserId,
-                        requestedAt: new Date(),
-
-                        reason,
-                        meta: {
-                            message,
-                            evidenceUrls,
-                        },
-                        faultParty: faultParty || undefined,
-
-                        itemsAmount,
-                        taxAmount,
-                        serviceFeeBaseAmount,
-                        serviceFeeCommsAmount,
-                        serviceFeeGatewayAmount,
-                        totalAmount,
-
-                        provider: null,
-                        providerReference: null,
-                        providerStatus: null,
-                        providerPayload: Prisma.JsonNull,
-                    },
-                });
-
-                // ✅ Update PurchaseOrder to show supplier “refund requested” (safe)
-                const poRow = await tx.purchaseOrder.findUnique({
-                    where: { id: po.id },
-                    select: { id: true, status: true },
-                });
-
-                if (poRow && canMovePoToRefundRequested(poRow.status)) {
-                    await tx.purchaseOrder.update({
-                        where: { id: po.id },
-                        data: { status: "REFUND_REQUESTED" as any },
-                    });
-                }
-
-                // RefundItems
-                for (const it of items) {
-                    await tx.refundItem.create({
-                        data: {
-                            refundId: refund.id,
-                            orderItemId: it.id,
-                            qty: Number(it.quantity || 0),
-                        },
-                    });
-                }
-
-                // Event trail
-                await tx.refundEvent.create({
-                    data: {
-                        refundId: refund.id,
-                        type: "REQUESTED",
-                        message: message ?? undefined,
-                        meta: {
-                            reason,
-                            evidenceUrls,
-                            purchaseOrderId: po.id,
-                            supplierId: po.supplierId,
-                            orderItemIds: items.map((i) => i.id),
-                        },
-                    },
-                });
-
-                out.push(refund);
-            }
-
-            return out;
+    // Notify supplier user (if supplierId + supplier user exists)
+    if (refundMeta.supplierId) {
+      const supplier = await prisma.supplier.findUnique({
+        where: { id: refundMeta.supplierId },
+        select: { userId: true, name: true },
+      });
+      if (supplier?.userId) {
+        await notifyUser(supplier.userId, {
+          type: "REFUND_STATUS_CHANGED",
+          title: "Refund updated",
+          body:
+            decision === "APPROVE"
+              ? `Admin approved a refund on order ${refundMeta.orderId}.`
+              : `Admin rejected a refund on order ${refundMeta.orderId}.`,
+          data: { refundId: refundMeta.id, orderId: refundMeta.orderId, decision },
         });
+      }
+    }
 
-        // Notify suppliers + admins
-        const supplierIds = Array.from(new Set(created.map((r: any) => r.supplierId).filter(Boolean))) as string[];
+    // Notify all admins
+    const adminUserIds = await getAdminUserIds();
+    await notifyMany(adminUserIds, {
+      type: "REFUND_STATUS_CHANGED",
+      title: "Refund decision recorded",
+      body: `Admin ${decision} for refund on order ${refundMeta.orderId}.`,
+      data: { refundId: refundMeta.id, orderId: refundMeta.orderId, decision },
+    });
 
-        if (supplierIds.length) {
-            const supplierUsers = await prisma.supplier.findMany({
-                where: { id: { in: supplierIds } },
-                select: { userId: true, id: true, name: true },
-            });
+    return res.json({ ok: true, data: refundRow });
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message || "Failed to record decision" });
+  }
+});
 
-            await notifyMany(
-                supplierUsers.map((s: any) => s.userId).filter(Boolean),
-                {
-                    type:  NotificationType.REFUND_REQUESTED,
-                    title: "New refund request",
-                    body: `A customer requested a refund on order ${orderId}.`,
-                    data: { orderId, supplierIds, refundIds: created.map((r: any) => r.id) },
-                }
-            );
+/**
+ * POST /api/refunds/:id/approve
+ * Approves a refund request.
+ *
+ * Inventory behavior:
+ * - restores stock for refunded order items immediately on approval
+ * - increments chosen supplier offer qty back
+ * - recomputes product stock cache
+ *
+ * Rules:
+ * - only admin
+ * - only allow approval from REQUESTED / SUPPLIER_REVIEW / SUPPLIER_ACCEPTED / ESCALATED
+ * - if already APPROVED, returns current row
+ */
+router.post("/:id/approve", requireAuth, async (req: any, res) => {
+  if (!isAdmin(req.user?.role)) {
+    return res.status(403).json({ error: "Admin only" });
+  }
+
+  const id = norm(requiredString(req.params.id));
+
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      const refund = await tx.refund.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          orderId: true,
+          purchaseOrderId: true,
+          supplierId: true,
+          requestedByUserId: true,
+        },
+      });
+
+      if (!refund) {
+        throw new Error("Refund not found");
+      }
+
+      const currentStatus = String(refund.status || "").toUpperCase();
+
+      if (currentStatus === "APPROVED") {
+        const existing = await tx.refund.findUnique({ where: { id } });
+        return { refund: existing, meta: refund, alreadyApproved: true };
+      }
+
+      if (
+        !["REQUESTED", "SUPPLIER_REVIEW", "SUPPLIER_ACCEPTED", "ESCALATED"].includes(
+          currentStatus
+        )
+      ) {
+        throw new Error(`Cannot approve refund from status: ${refund.status}`);
+      }
+
+      const refundItems = await tx.refundItem.findMany({
+        where: { refundId: id },
+        select: {
+          id: true,
+          qty: true,
+          orderItemId: true,
+          orderItem: {
+            select: {
+              id: true,
+              orderId: true,
+              productId: true,
+              variantId: true,
+              quantity: true,
+              chosenSupplierProductOfferId: true,
+              chosenSupplierVariantOfferId: true,
+            },
+          },
+        },
+      });
+
+      const approvedRefund = await tx.refund.update({
+        where: { id },
+        data: {
+          status: "APPROVED" as any,
+          adminResolvedAt: new Date(),
+          adminResolvedById: String(req.user?.id),
+          adminDecision: req.body?.adminDecision
+            ? String(req.body.adminDecision)
+            : "APPROVED",
+          adminNote: req.body?.adminNote ? String(req.body.adminNote) : undefined,
+        },
+      });
+
+      await tx.refundEvent.create({
+        data: {
+          refundId: id,
+          type: "ADMIN_APPROVED",
+          message: "Refund approved",
+          meta: {
+            adminId: req.user?.id,
+            adminDecision: req.body?.adminDecision ?? "APPROVED",
+            adminNote: req.body?.adminNote ?? null,
+          },
+        },
+      });
+
+      // Reflect refund-requested state on PO if present
+      if (refund.purchaseOrderId) {
+        try {
+          await tx.purchaseOrder.update({
+            where: { id: refund.purchaseOrderId },
+            data: {
+              status: "REFUND_REQUESTED" as any,
+            },
+          });
+        } catch {
+          // ignore
         }
+      }
 
-        const adminUserIds = await getAdminUserIds();
-        await notifyMany(adminUserIds, {
-            type:  NotificationType.REFUND_REQUESTED,
-            title: "Refund requested",
-            body: `Refund requested on order ${orderId}.`,
-            data: { orderId, refundIds: created.map((r: any) => r.id) },
-        });
+      // -----------------------------------
+      // RESTORE INVENTORY ON APPROVAL
+      // -----------------------------------
+      for (const ri of refundItems) {
+        const oi = ri.orderItem;
+        if (!oi) continue;
 
-        return res.json({ ok: true, data: created });
-    } catch (e: any) {
-        return res.status(400).json({ error: e?.message || "Refund request failed" });
+        const restoreQty = Math.max(
+          0,
+          Number(ri.qty ?? oi.quantity ?? 0)
+        );
+
+        if (restoreQty <= 0) continue;
+
+        if (oi.chosenSupplierVariantOfferId) {
+          const updatedVariantOffer = await tx.supplierVariantOffer.update({
+            where: { id: String(oi.chosenSupplierVariantOfferId) },
+            data: {
+              availableQty: { increment: restoreQty },
+              inStock: true,
+            },
+            select: {
+              id: true,
+              availableQty: true,
+              productId: true,
+              variantId: true,
+            },
+          });
+
+          const variantProductId =
+            updatedVariantOffer.productId
+              ? String(updatedVariantOffer.productId)
+              : oi.productId
+                ? String(oi.productId)
+                : null;
+
+          if (variantProductId) {
+            await recomputeProductStockTx(tx, variantProductId);
+            await syncProductInStockCacheTx(tx, variantProductId);
+          }
+        } else if (oi.chosenSupplierProductOfferId) {
+          const updatedBaseOffer = await tx.supplierProductOffer.update({
+            where: { id: String(oi.chosenSupplierProductOfferId) },
+            data: {
+              availableQty: { increment: restoreQty },
+              inStock: true,
+            },
+            select: {
+              id: true,
+              availableQty: true,
+              productId: true,
+            },
+          });
+
+          const baseProductId =
+            updatedBaseOffer.productId
+              ? String(updatedBaseOffer.productId)
+              : oi.productId
+                ? String(oi.productId)
+                : null;
+
+          if (baseProductId) {
+            await recomputeProductStockTx(tx, baseProductId);
+            await syncProductInStockCacheTx(tx, baseProductId);
+          }
+        } else if (oi.productId) {
+          // Fallback if chosen offer IDs are missing
+          await recomputeProductStockTx(tx, String(oi.productId));
+          await syncProductInStockCacheTx(tx, String(oi.productId));
+        }
+      }
+
+      return {
+        refund: approvedRefund,
+        meta: refund,
+        alreadyApproved: false,
+      };
+    });
+
+    const refundMeta = updated.meta;
+
+    // ---- Notifications ----
+
+    // Customer
+    if (refundMeta.requestedByUserId) {
+      await notifyUser(refundMeta.requestedByUserId, {
+        type: "REFUND_STATUS_CHANGED",
+        title: "Refund approved",
+        body: `Your refund has been approved for order ${refundMeta.orderId}.`,
+        data: {
+          refundId: refundMeta.id,
+          orderId: refundMeta.orderId,
+          status: "APPROVED",
+        },
+      });
     }
+
+    // Supplier
+    if (refundMeta.supplierId) {
+      const supplier = await prisma.supplier.findUnique({
+        where: { id: refundMeta.supplierId },
+        select: { userId: true, name: true },
+      });
+
+      if (supplier?.userId) {
+        await notifyUser(supplier.userId, {
+          type: "REFUND_STATUS_CHANGED",
+          title: "Refund approved",
+          body: `A refund has been approved for order ${refundMeta.orderId}.`,
+          data: {
+            refundId: refundMeta.id,
+            orderId: refundMeta.orderId,
+            status: "APPROVED",
+          },
+        });
+      }
+    }
+
+    // Admins
+    const adminUserIds = await getAdminUserIds();
+    await notifyMany(adminUserIds, {
+      type: "REFUND_STATUS_CHANGED",
+      title: "Refund approved",
+      body: `Refund approved for order ${refundMeta.orderId}.`,
+      data: {
+        refundId: refundMeta.id,
+        orderId: refundMeta.orderId,
+        status: "APPROVED",
+      },
+    });
+
+    return res.json({
+      ok: true,
+      data: updated.refund,
+      meta: {
+        inventoryRestored: !updated.alreadyApproved,
+      },
+    });
+  } catch (e: any) {
+    return res.status(400).json({
+      error: e?.message || "Failed to approve refund",
+    });
+  }
 });
 
 export default router;
+

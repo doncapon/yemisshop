@@ -1,7 +1,7 @@
 // src/pages/Wishlist.tsx
 import React from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import SiteLayout from "../layouts/SiteLayout";
 import api from "../api/client";
 import { useAuthStore } from "../store/auth";
@@ -24,6 +24,40 @@ type WishlistItem = {
     variants?: Array<{ id: string } | null> | null;
     sku?: string | null;
   } | null;
+};
+
+type SupplierOfferLite = {
+  id: string;
+  supplierId?: string | null;
+  isActive?: boolean;
+  inStock?: boolean;
+  availableQty?: number | null;
+  basePrice?: number | null;
+  unitPrice?: number | null;
+};
+
+type VariantLite = {
+  id: string;
+  inStock?: boolean | null;
+  availableQty?: number | null;
+  imagesJson?: string[];
+  offers?: SupplierOfferLite[];
+};
+
+type CatalogProductLite = {
+  id: string;
+  title: string;
+  retailPrice?: number | null;
+  computedRetailPrice?: number | null;
+  autoPrice?: number | null;
+  displayBasePrice?: number | null;
+  offersFrom?: number | null;
+  availableQty?: number | null;
+  inStock?: boolean | null;
+  imagesJson?: string[];
+  variants?: VariantLite[];
+  supplierProductOffers?: SupplierOfferLite[];
+  status?: string;
 };
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
@@ -115,6 +149,188 @@ function pickImageValue(input: any): string | null {
   return resolved ?? null;
 }
 
+function decToNumber(v: any): number {
+  const n = typeof v === "string" ? parseFloat(v) : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeImages(val: any): string[] {
+  if (!val) return [];
+
+  const out: string[] = [];
+
+  const pushOne = (input: any) => {
+    if (input == null) return;
+
+    if (Array.isArray(input)) {
+      for (const item of input) pushOne(item);
+      return;
+    }
+
+    if (typeof input === "object") {
+      const candidate =
+        input.url ??
+        input.src ??
+        input.image ??
+        input.imageUrl ??
+        input.absoluteUrl ??
+        null;
+
+      if (candidate != null) pushOne(candidate);
+      return;
+    }
+
+    if (typeof input === "string") {
+      const s = input.trim();
+      if (!s) return;
+
+      if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith("{") && s.endsWith("}"))) {
+        try {
+          pushOne(JSON.parse(s));
+          return;
+        } catch {
+          //
+        }
+      }
+
+      const parts = s
+        .split(/[\n,]/g)
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      if (parts.length > 1) {
+        for (const p of parts) pushOne(p);
+        return;
+      }
+
+      out.push(s);
+    }
+  };
+
+  pushOne(val);
+  return out.filter(Boolean);
+}
+
+function offerStockOk(o?: SupplierOfferLite): boolean {
+  if (!o || o.isActive === false) return false;
+
+  const qty = o.availableQty;
+  const hasQty = qty != null && Number.isFinite(Number(qty));
+  const qtyOk = !hasQty ? true : Number(qty) > 0;
+
+  return o.inStock === true || qtyOk;
+}
+
+function collectAllOffers(p: CatalogProductLite): SupplierOfferLite[] {
+  const out: SupplierOfferLite[] = [];
+  if (Array.isArray(p.supplierProductOffers)) out.push(...p.supplierProductOffers);
+  if (Array.isArray(p.variants)) {
+    for (const v of p.variants) {
+      if (Array.isArray(v.offers)) out.push(...v.offers);
+    }
+  }
+  return out;
+}
+
+function cheapestActiveBaseOfferPrice(p: CatalogProductLite): number | null {
+  const offers = Array.isArray(p.supplierProductOffers) ? p.supplierProductOffers : [];
+  let best: number | null = null;
+
+  for (const o of offers) {
+    if (!o || o.isActive === false || !offerStockOk(o)) continue;
+    const raw = o.basePrice ?? o.unitPrice ?? null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    if (best == null || n < best) best = n;
+  }
+
+  return best;
+}
+
+function cheapestActiveVariantOfferPrice(p: CatalogProductLite): number | null {
+  let best: number | null = null;
+
+  const variants = Array.isArray(p.variants) ? p.variants : [];
+  for (const v of variants) {
+    const offers = Array.isArray(v.offers) ? v.offers : [];
+    for (const o of offers) {
+      if (!o || o.isActive === false || !offerStockOk(o)) continue;
+      const raw = o.unitPrice ?? o.basePrice ?? null;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      if (best == null || n < best) best = n;
+    }
+  }
+
+  return best;
+}
+
+function cheapestActiveAnyOfferPrice(p: CatalogProductLite): number | null {
+  const offers = collectAllOffers(p);
+  let best: number | null = null;
+
+  for (const o of offers) {
+    if (!o || o.isActive === false || !offerStockOk(o)) continue;
+    const raw = o.unitPrice ?? o.basePrice ?? null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    if (best == null || n < best) best = n;
+  }
+
+  return best;
+}
+
+function getDisplayRetailPrice(p: CatalogProductLite): number {
+  const apiComputed = Number(p.computedRetailPrice);
+  if (Number.isFinite(apiComputed) && apiComputed > 0) return apiComputed;
+
+  const hasOptions = Array.isArray(p.variants) && p.variants.length > 0;
+
+  if (hasOptions) {
+    const baseRaw = cheapestActiveBaseOfferPrice(p);
+    if (baseRaw != null) return baseRaw;
+
+    const varRaw = cheapestActiveVariantOfferPrice(p);
+    if (varRaw != null) return varRaw;
+  } else {
+    const anyRaw = cheapestActiveAnyOfferPrice(p);
+    if (anyRaw != null) return anyRaw;
+  }
+
+  const raw =
+    Number(p.offersFrom) > 0
+      ? Number(p.offersFrom)
+      : Number(p.retailPrice) > 0
+      ? Number(p.retailPrice)
+      : Number(p.autoPrice) > 0
+      ? Number(p.autoPrice)
+      : Number(p.displayBasePrice) > 0
+      ? Number(p.displayBasePrice)
+      : 0;
+
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function getProductImageCandidates(p: CatalogProductLite): string[] {
+  const out: string[] = [];
+
+  const push = (val: any) => {
+    const imgs = normalizeImages(val);
+    for (const img of imgs) {
+      const resolved = resolveImageUrl(img);
+      if (resolved && !out.includes(resolved)) out.push(resolved);
+    }
+  };
+
+  push(p.imagesJson);
+
+  if (Array.isArray(p.variants)) {
+    for (const v of p.variants) push(v.imagesJson);
+  }
+
+  return out;
+}
+
 async function fetchWishlist(): Promise<WishlistItem[]> {
   const { data } = await api.get("/api/favorites", AXIOS_COOKIE_CFG);
 
@@ -123,6 +339,81 @@ async function fetchWishlist(): Promise<WishlistItem[]> {
   if (Array.isArray(data)) return data as any;
 
   return [];
+}
+
+async function fetchCatalogProductsLite(): Promise<CatalogProductLite[]> {
+  const { data } = await api.get("/api/products", {
+    params: {
+      include: "variants,offers",
+      status: "LIVE",
+      take: 200,
+      page: 1,
+    },
+  });
+
+  const raw: any[] = Array.isArray(data)
+    ? data
+    : Array.isArray((data as any)?.data)
+    ? (data as any).data
+    : [];
+
+  return raw
+    .filter((x) => x && x.id != null)
+    .map((x) => {
+      const variants: VariantLite[] = Array.isArray(x.variants)
+        ? x.variants.map((v: any) => ({
+            id: String(v.id),
+            inStock: v.inStock === true,
+            imagesJson: normalizeImages(v.imagesJson),
+            availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+            offers: Array.isArray(v.offers)
+              ? v.offers.map((o: any) => ({
+                  id: String(o.id),
+                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number.isFinite(Number(o.availableQty))
+                    ? Number(o.availableQty)
+                    : null,
+                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                }))
+              : [],
+          }))
+        : [];
+
+      const baseSource =
+        (Array.isArray((x as any).supplierProductOffers) && x.supplierProductOffers) ||
+        (Array.isArray((x as any).supplierOffers) && (x as any).supplierOffers) ||
+        [];
+
+      const baseOffers: SupplierOfferLite[] = baseSource.map((o: any) => ({
+        id: String(o.id),
+        supplierId: o.supplierId ?? o.supplier?.id ?? null,
+        isActive: o.isActive === true,
+        inStock: o.inStock === true,
+        availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+        basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+        unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+      }));
+
+      return {
+        id: String(x.id),
+        title: String(x.title ?? ""),
+        retailPrice: x.retailPrice != null ? decToNumber(x.retailPrice) : null,
+        computedRetailPrice:
+          x.computedRetailPrice != null ? decToNumber(x.computedRetailPrice) : null,
+        autoPrice: x.autoPrice != null ? decToNumber(x.autoPrice) : null,
+        displayBasePrice: x.displayBasePrice != null ? decToNumber(x.displayBasePrice) : null,
+        offersFrom: x.offersFrom != null ? decToNumber(x.offersFrom) : null,
+        inStock: x.inStock === true,
+        availableQty: Number.isFinite(Number(x.availableQty)) ? Number(x.availableQty) : null,
+        imagesJson: normalizeImages(x.imagesJson),
+        variants,
+        supplierProductOffers: baseOffers,
+        status: String(x.status ?? ""),
+      } satisfies CatalogProductLite;
+    });
 }
 
 async function setServerCartQty(input: {
@@ -150,7 +441,9 @@ async function setServerCartQty(input: {
   );
 
   if (input.qty <= 0) {
-    if (found?.id) await api.delete(`/api/cart/items/${found.id}`, AXIOS_COOKIE_CFG);
+    if (found?.id) {
+      await api.delete(`/api/cart/items/${found.id}`, AXIOS_COOKIE_CFG);
+    }
     return;
   }
 
@@ -188,22 +481,49 @@ async function setServerCartQty(input: {
 export default function Wishlist() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const isLoggedIn = !!useAuthStore.getState().user?.id;
+
+  const fromHere = `${location.pathname}${location.search}`;
+
+  const goToCatalogHard = React.useCallback(() => {
+    window.location.assign("/");
+  }, []);
+
+  const goToProductWithBack = React.useCallback(
+    (href: string) => {
+      navigate(href, { state: { from: fromHere } });
+    },
+    [navigate, fromHere]
+  );
 
   const q = useQuery({
     queryKey: ["favorites"],
     queryFn: fetchWishlist,
-
     placeholderData: () => {
       const cached = qc.getQueryData(["favorites"]) as WishlistItem[] | undefined;
       return cached;
     },
-
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: "always",
     retry: 1,
   });
+
+  const catalogProductsQ = useQuery({
+    queryKey: ["wishlist", "catalog-products-lite"],
+    queryFn: fetchCatalogProductsLite,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+
+  const catalogProductMap = React.useMemo(() => {
+    const map = new Map<string, CatalogProductLite>();
+    const rows = Array.isArray(catalogProductsQ.data) ? catalogProductsQ.data : [];
+    for (const p of rows) map.set(String(p.id), p);
+    return map;
+  }, [catalogProductsQ.data]);
 
   const rows = Array.isArray(q.data) ? q.data : [];
   const hasRows = rows.length > 0;
@@ -232,10 +552,18 @@ export default function Wishlist() {
       const variantId = null;
       const optionsKey = "";
 
-      const priceRaw = (item as any).computedRetailPrice ?? p.retailPrice ?? 0;
+      const catalogProduct = catalogProductMap.get(String(productId));
+
+      const priceRaw =
+        catalogProduct != null
+          ? getDisplayRetailPrice(catalogProduct)
+          : (item as any).computedRetailPrice ?? p.retailPrice ?? 0;
+
       const unitPriceNum = Number.isFinite(Number(priceRaw)) ? Number(priceRaw) : 0;
 
-      const img = pickImageValue(p.images ?? p.imagesJson ?? null);
+      const img =
+        (catalogProduct ? pickImageValue(getProductImageCandidates(catalogProduct)) : null) ??
+        pickImageValue(p.images ?? p.imagesJson ?? null);
 
       const existingLines = readCartLines();
       const existingQty = qtyInCart(existingLines, productId, null);
@@ -313,7 +641,10 @@ export default function Wishlist() {
             {!showInitialLoading && !q.isError && hasRows && (
               <button
                 type="button"
-                onClick={() => q.refetch()}
+                onClick={() => {
+                  void q.refetch();
+                  void catalogProductsQ.refetch();
+                }}
                 className="text-xs px-3 py-1.5 rounded-full border bg-zinc-50 hover:bg-zinc-100 text-zinc-700"
               >
                 Refresh
@@ -336,12 +667,13 @@ export default function Wishlist() {
           {showEmpty && (
             <div className="py-10 text-center text-sm text-zinc-600">
               <p>Your wishlist is empty.</p>
-              <Link
-                to="/"
+              <button
+                type="button"
+                onClick={goToCatalogHard}
                 className="inline-flex mt-3 text-xs font-semibold px-4 py-2 rounded-full border bg-white hover:bg-zinc-50"
               >
                 Browse products
-              </Link>
+              </button>
             </div>
           )}
 
@@ -352,13 +684,22 @@ export default function Wishlist() {
                 const title = p?.title || "Product";
                 const href = p?.id ? `/products/${p.id}` : "#";
 
-                const img = pickImageValue(p?.images ?? p?.imagesJson ?? null);
+                const catalogProduct = catalogProductMap.get(String(it.productId));
 
-                const priceRaw = (it as any).computedRetailPrice ?? p?.retailPrice ?? null;
+                const img =
+                  (catalogProduct ? pickImageValue(getProductImageCandidates(catalogProduct)) : null) ??
+                  pickImageValue(p?.images ?? p?.imagesJson ?? null);
+
+                const priceRaw =
+                  catalogProduct != null
+                    ? getDisplayRetailPrice(catalogProduct)
+                    : (it as any).computedRetailPrice ?? p?.retailPrice ?? null;
+
                 const price =
                   typeof priceRaw === "number" && Number.isFinite(priceRaw) ? priceRaw : null;
 
-                const hasVariants = Array.isArray(p?.variants) && p!.variants!.filter(Boolean).length > 0;
+                const hasVariants =
+                  Array.isArray(catalogProduct?.variants) && catalogProduct.variants.length > 0;
 
                 const removing =
                   toggleFavMut.isPending && toggleFavMut.variables === it.productId;
@@ -371,7 +712,11 @@ export default function Wishlist() {
                     key={it.id}
                     className="flex flex-col rounded-xl border bg-zinc-50 hover:bg-zinc-50/80 transition overflow-hidden shadow-sm"
                   >
-                    <Link to={href} className="block bg-zinc-100 overflow-hidden">
+                    <Link
+                      to={href}
+                      state={{ from: fromHere }}
+                      className="block bg-zinc-100 overflow-hidden"
+                    >
                       {img ? (
                         <img
                           src={img}
@@ -392,6 +737,7 @@ export default function Wishlist() {
                     <div className="flex flex-col p-2.5">
                       <Link
                         to={href}
+                        state={{ from: fromHere }}
                         className="text-sm font-semibold text-zinc-900 line-clamp-2 hover:underline"
                       >
                         {title}
@@ -418,7 +764,7 @@ export default function Wishlist() {
                         {hasVariants ? (
                           <button
                             type="button"
-                            onClick={() => navigate(href)}
+                            onClick={() => goToProductWithBack(href)}
                             className="flex-1 text-xs font-semibold px-3 py-1.5 rounded-lg text-white bg-zinc-900 hover:bg-zinc-800"
                           >
                             Choose options

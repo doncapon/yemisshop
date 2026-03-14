@@ -44,11 +44,11 @@
   --color-warning: #F59E0B;
   --color-info:    #0EA5E9;
 
-  --color-text:        white; /* if you want dark text instead, set to #0f172a */
-  --color-text-muted:  #475569; /* slate-600 */
-  --color-border:      #e2e8f0; /* slate-200 */
+  --color-text:        white;
+  --color-text-muted:  #475569;
+  --color-border:      #e2e8f0;
   --color-bg:          #ffffff;
-  --color-bg-soft:     #f8fafc; /* slate-50 */
+  --color-bg-soft:     #f8fafc;
 
   /* Optional radii & shadows */
   --radius-xl: 0.9rem;
@@ -66,7 +66,11 @@
 
 /* Optional: gradient helper */
 .bg-hero-radial {
-  background-image: radial-gradient(1200px 400px at 50% -100px, rgba(59,130,246,0.18), transparent 60%);
+  background-image: radial-gradient(
+    1200px 400px at 50% -100px,
+    rgba(59, 130, 246, 0.18),
+    transparent 60%
+  );
 }
 
 /* ===========================
@@ -74,36 +78,35 @@
    =========================== */
 
 :root {
-  --silver-border: rgba(203, 213, 225, 0.95);   /* slate-300-ish */
-  --silver-border-soft: rgba(226, 232, 240, 0.9); /* slate-200-ish */
+  --silver-border: rgba(203, 213, 225, 0.95);
+  --silver-border-soft: rgba(226, 232, 240, 0.9);
   --silver-highlight: rgba(255, 255, 255, 0.75);
 
-  /* very subtle shadows */
-  --silver-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-  --silver-shadow-hover: 0 2px 6px rgba(15, 23, 42, 0.10);
+  /* softened a bit for better paint performance */
+  --silver-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --silver-shadow-hover: 0 2px 5px rgba(15, 23, 42, 0.08);
 }
 
 :root.dark {
-  --silver-border: rgba(148, 163, 184, 0.55);  /* slate-400-ish */
+  --silver-border: rgba(148, 163, 184, 0.55);
   --silver-border-soft: rgba(148, 163, 184, 0.35);
   --silver-highlight: rgba(255, 255, 255, 0.10);
 
-  --silver-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --silver-shadow-hover: 0 2px 6px rgba(0, 0, 0, 0.45);
+  --silver-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --silver-shadow-hover: 0 2px 5px rgba(0, 0, 0, 0.36);
 }
 
-/* Simple “silver border + tiny shadow” */
 .silver-border {
   border: 1px solid var(--silver-border);
   box-shadow: inset 0 1px 0 var(--silver-highlight), var(--silver-shadow);
 }
 
-/* Slightly fancier: silver gradient edge */
 .silver-border-grad {
   border: 1px solid transparent;
   background:
     linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
-    linear-gradient(135deg,
+    linear-gradient(
+      135deg,
       rgba(255,255,255,0.90),
       rgba(148,163,184,0.75),
       rgba(255,255,255,0.60)
@@ -111,15 +114,13 @@
   box-shadow: inset 0 1px 0 var(--silver-highlight), var(--silver-shadow);
 }
 
-/* Optional gentle hover (use on cards/buttons) */
 .silver-hover:hover {
   box-shadow: inset 0 1px 0 var(--silver-highlight), var(--silver-shadow-hover);
 }
 
-
-/* ===================== Modal (uses Tailwind v4 @theme tokens) ===================== */
+/* ===================== Modal ===================== */
 :root {
-  --modal-backdrop: rgba(17, 24, 39, 0.6); /* based on --color-ink */
+  --modal-backdrop: rgba(17, 24, 39, 0.6);
   --modal-panel-bg: var(--color-surface);
   --modal-panel-fg: var(--color-ink);
   --modal-ring: var(--color-surface-ring);
@@ -132,7 +133,6 @@
   --modal-panel-fg: var(--color-ink);
 }
 
-/* Overlay */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -144,29 +144,29 @@
   animation: modal-fade-in 160ms ease-out;
 }
 
-/* Panel */
 .modal-panel {
+  position: relative;
   width: 100%;
-  max-width: 32rem; /* ~512px */
+  max-width: 32rem;
   background: var(--modal-panel-bg);
   color: var(--modal-panel-fg);
   border-radius: var(--modal-radius);
   box-shadow:
-    0 20px 30px rgba(0, 0, 0, 0.15),
+    0 12px 24px rgba(0, 0, 0, 0.12),
     0 0 0 1px var(--modal-ring);
   padding: 1.25rem 1.25rem 1rem;
   transform-origin: center;
-  animation: modal-pop-in 180ms cubic-bezier(.2,.8,.2,1);
+  animation: modal-pop-in 180ms cubic-bezier(.2, .8, .2, 1);
 }
 
-/* Header */
 .modal-title {
   margin: 0 0 .25rem 0;
-  font-size: 1.125rem; /* text-lg */
+  font-size: 1.125rem;
   line-height: 1.5rem;
   font-weight: 700;
   color: var(--color-ink);
 }
+
 :root.dark .modal-title {
   color: var(--color-ink);
 }
@@ -177,7 +177,6 @@
   line-height: 1.6;
 }
 
-/* Footer / actions (optional container) */
 .modal-actions {
   display: flex;
   gap: .5rem;
@@ -185,7 +184,6 @@
   margin-top: 1rem;
 }
 
-/* Buttons */
 .modal-btn {
   appearance: none;
   border: 0;
@@ -199,17 +197,20 @@
   background: var(--color-primary-600);
   color: var(--color-ink-invert);
 }
-.modal-btn.primary:hover { background: var(--color-primary-700); }
+
+.modal-btn.primary:hover {
+  background: var(--color-primary-700);
+}
 
 .modal-btn.ghost {
   background: transparent;
   color: var(--color-ink-soft);
 }
+
 .modal-btn.ghost:hover {
   background: var(--color-surface-alt);
 }
 
-/* Close (X) */
 .modal-close {
   position: absolute;
   top: .75rem;
@@ -224,15 +225,17 @@
   border: none;
   cursor: pointer;
 }
+
 .modal-close:hover {
   background: var(--color-surface-alt);
   color: var(--color-ink);
 }
 
-/* Animations */
 @keyframes modal-fade-in {
-  from { opacity: 0; } to { opacity: 1; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
+
 @keyframes modal-pop-in {
   from {
     opacity: 0;
@@ -244,12 +247,23 @@
   }
 }
 
-/* Respect reduced motion */
 @media (prefers-reduced-motion: reduce) {
-  .modal-overlay, .modal-panel {
+  .modal-overlay,
+  .modal-panel {
     animation: none !important;
   }
+
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+  }
 }
+
 html {
   font-size: 110%;
 }
@@ -260,34 +274,16 @@ html {
   }
 }
 
-
-@media (max-width: 410px) {
-  body {
-    zoom: 0.867; /* reduce by 1/3 */
-  }
-}
-
-@media (max-width: 210px) {
-  body {
-    zoom: 0.567; /* reduce by 1/3 */
-  }
-}
-
-
-
 /* ===========================
-   ✅ GLOBAL: stop “page drift”
-   (This is the real fix)
+   GLOBAL layout + scroll fixes
    =========================== */
 
-/* 1) Make all sizing predictable */
 *,
 *::before,
 *::after {
   box-sizing: border-box;
 }
 
-/* 2) Kill Vite-template centering/flex on :root/body */
 :root {
   width: 100%;
   max-width: none !important;
@@ -295,55 +291,78 @@ html {
   padding: 0 !important;
 }
 
-/* 3) Ensure the document scrolls normally (not a centered flex container) */
 html,
 body {
   width: 100%;
   max-width: 100%;
+  min-height: 100%;
   margin: 0;
   padding: 0;
-
-  /* IMPORTANT: avoid sideways panning */
-  overflow-x: hidden;            /* use hidden for widest browser support */
-  overscroll-behavior-x: none;   /* stops sideways “rubber band” */
-  touch-action: pan-y;           /* vertical scrolling only */
-  scrollbar-gutter: stable;      /* reduces subtle reflow/shift */
-}
-
-/* 4) Force body layout to be normal block (Vite template often sets flex) */
-body {
-  display: block !important;
-}
-
-/* Prevent horizontal layout shift when content height changes */
-html {
+  overflow-x: clip;
+  overscroll-behavior-x: none;
   scrollbar-gutter: stable;
 }
 
-/* Fallback for older browsers */
 body {
-  overflow-y: scroll;
+  display: block !important;
+  min-height: 100vh;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-
-/* 5) Root must not be constrained/centered by any old template styles */
+/* Root must not be constrained/centered by old Vite template styles */
 #root {
   width: 100%;
   max-width: none !important;
+  min-height: 100vh;
   margin: 0 !important;
   padding: 0 !important;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
-#root {
-  min-height: 100vh;
+/* Make anchor/programmatic scroll nicer without affecting natural touchpad scroll too much */
+html:focus-within {
+  scroll-behavior: smooth;
 }
 
+/* Better defaults for media to reduce layout shifts */
+img,
+picture,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* Improve long-page paint isolation a little on big sections */
+main,
+section {
+  min-width: 0;
+}
+
+/* Forms */
+input,
+button,
+textarea,
+select {
+  font: inherit;
+}
+
+/* Optional utility if some page still leaks horizontal scroll */
+.page-no-x {
+  overflow-x: clip;
+}
+
+/* Keep this if you use a stable cart summary area */
 .cart-summary-stable {
-  min-height: 180px; /* whatever fits your summary */
+  min-height: 180px;
   position: relative;
 }
 
 .cart-summary-stable > * {
-  transition: opacity 0.25s ease;
+  transition: opacity 0.2s ease;
 }

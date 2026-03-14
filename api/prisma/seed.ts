@@ -46,6 +46,140 @@ function pics(seed: string | number): string[] {
   ];
 }
 
+type SeedBankOption = {
+  country: "NG";
+  code: string;
+  name: string;
+};
+
+const SEED_BANKS: SeedBankOption[] = [
+  { country: "NG", code: "011", name: "First Bank of Nigeria" },
+  { country: "NG", code: "033", name: "United Bank for Africa" },
+  { country: "NG", code: "044", name: "Access Bank" },
+  { country: "NG", code: "057", name: "Zenith Bank" },
+  { country: "NG", code: "058", name: "Guaranty Trust Bank" },
+  { country: "NG", code: "070", name: "Fidelity Bank" },
+  { country: "NG", code: "076", name: "Polaris Bank" },
+  { country: "NG", code: "214", name: "FCMB" },
+  { country: "NG", code: "215", name: "Unity Bank" },
+  { country: "NG", code: "221", name: "Stanbic IBTC Bank" },
+  { country: "NG", code: "232", name: "Sterling Bank" },
+  { country: "NG", code: "035", name: "Wema Bank" },
+];
+
+/** keep seed deterministic */
+function seededAccountNumber(n: number) {
+  return `10000000${String(n).padStart(2, "0")}`; // 10 digits
+}
+
+function seededRegistrationNumber(n: number) {
+  return `RC-${String(1000000 + n)}`;
+}
+
+function seededSupplierBank(index: number) {
+  return SEED_BANKS[index % SEED_BANKS.length];
+}
+
+async function ensureRegistryAuthorityNigeria() {
+  const ra = await prisma.registryAuthority.upsert({
+    where: {
+      countryCode_code: {
+        countryCode: "NG",
+        code: "CAC",
+      },
+    },
+    update: {
+      name: "Corporate Affairs Commission",
+      websiteUrl: "https://www.cac.gov.ng",
+      isActive: true,
+    },
+    create: {
+      countryCode: "NG",
+      code: "CAC",
+      name: "Corporate Affairs Commission",
+      websiteUrl: "https://www.cac.gov.ng",
+      isActive: true,
+    },
+    select: { id: true },
+  });
+
+  return ra.id;
+}
+
+function activeSupplierPayload(args: {
+  name: string;
+  type: "ONLINE" | "PHYSICAL";
+  contactEmail: string;
+  whatsappPhone: string;
+  registeredAddressId: string;
+  pickupAddressId: string;
+  pickupContactName: string;
+  pickupContactPhone: string;
+  pickupInstructions: string;
+  leadDays: number;
+  handlingFee: number;
+  bankCode: string;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+  registryAuthorityId: string;
+  registrationNumber: string;
+  legalName?: string;
+}) {
+  const now = new Date();
+
+  return {
+    type: args.type,
+    status: "ACTIVE",
+    contactEmail: args.contactEmail,
+    whatsappPhone: args.whatsappPhone,
+
+    legalName: args.legalName ?? args.name,
+    registeredBusinessName: args.name,
+    registrationType: "REGISTERED_BUSINESS",
+    registrationNumber: args.registrationNumber,
+    registrationDate: new Date("2024-01-15T00:00:00.000Z"),
+    registrationCountryCode: "NG",
+    registryAuthorityId: args.registryAuthorityId,
+    natureOfBusiness: "Retail and wholesale supply",
+
+    registeredAddressId: args.registeredAddressId,
+    pickupAddressId: args.pickupAddressId,
+
+    kycStatus: "APPROVED",
+    kycApprovedAt: now,
+    kycCheckedAt: now,
+    kycRejectedAt: null,
+    kycRejectionReason: null,
+
+    payoutMethod: "BANK_TRANSFER",
+    bankCountry: "NG",
+    bankCode: args.bankCode,
+    bankName: args.bankName,
+    accountNumber: args.accountNumber,
+    accountName: args.accountName,
+
+    bankVerificationNote: "Seeded local/dev supplier bank details",
+    bankVerificationRequestedAt: now,
+    bankVerificationStatus: "VERIFIED" as const,
+    bankVerifiedAt: now,
+
+    isPayoutEnabled: true,
+
+    pickupContactName: args.pickupContactName,
+    pickupContactPhone: args.pickupContactPhone,
+    pickupInstructions: args.pickupInstructions,
+    shippingEnabled: true,
+    shipsNationwide: true,
+    defaultLeadDays: args.leadDays,
+    sameDayCutoffHour: 14,
+    handlingFee: toDec2(args.handlingFee),
+    supportsDoorDelivery: true,
+    supportsPickupPoint: chance(0.35),
+  };
+}
+
+
 function toDec(n: number) {
   return new Prisma.Decimal(Math.round(n * 100) / 100);
 }
@@ -108,10 +242,11 @@ async function ensureCoreSettings() {
         { key: "commsUnitCostNGN", value: "100", isPublic: false },
         { key: "profitMode", value: "accurate", isPublic: false },
         { key: "serviceFeeBaseNGN", value: "1000", isPublic: false },
-        { key: "platformBaseFeeNGN", value: "100", isPublic: false },
         { key: "marginPercent", value: "10", isPublic: true },
-        { key: "minMarginNGN", value: "500", isPublic: true },
-        { key: "maxMarginPct", value: "100", isPublic: true },
+        { key: "payoutReleaseSchedulerEnabled", value: "true", isPublic: true },
+        { key: "payoutReleaseIntervalHours", value: "6", isPublic: true },
+        { key: "payoutReleaseSchedulerTimezone", value: "UTC", isPublic: true },
+        { key: "shippingEnabled", value: "false", isPublic: true },
       ],
       skipDuplicates: true,
     });
@@ -186,6 +321,89 @@ async function ensureSuperAdmin() {
   return user.id;
 }
 
+
+async function ensureApprovedSupplierDocuments(args: {
+  supplierId: string;
+  supplierName: string;
+}) {
+  const { supplierId, supplierName } = args;
+
+  const docs: Array<{
+    kind:
+    | "BUSINESS_REGISTRATION_CERTIFICATE"
+    | "GOVERNMENT_ID"
+    | "PROOF_OF_ADDRESS"
+    | "BANK_PROOF";
+    originalFilename: string;
+    mimeType: string;
+  }> = [
+      {
+        kind: "BUSINESS_REGISTRATION_CERTIFICATE",
+        originalFilename: `${uniqSlugBase(supplierName)}-cac-certificate.pdf`,
+        mimeType: "application/pdf",
+      },
+      {
+        kind: "GOVERNMENT_ID",
+        originalFilename: `${uniqSlugBase(supplierName)}-government-id.pdf`,
+        mimeType: "application/pdf",
+      },
+      {
+        kind: "PROOF_OF_ADDRESS",
+        originalFilename: `${uniqSlugBase(supplierName)}-proof-of-address.pdf`,
+        mimeType: "application/pdf",
+      },
+      {
+        kind: "BANK_PROOF",
+        originalFilename: `${uniqSlugBase(supplierName)}-bank-proof.pdf`,
+        mimeType: "application/pdf",
+      },
+    ];
+
+  for (const doc of docs) {
+    const existing = await prisma.supplierDocument.findFirst({
+      where: {
+        supplierId,
+        kind: doc.kind,
+      },
+      select: { id: true },
+    });
+
+    const storageKey = `seed/suppliers/${supplierId}/${doc.originalFilename}`;
+    const now = new Date();
+
+    if (existing) {
+      await prisma.supplierDocument.update({
+        where: { id: existing.id },
+        data: {
+          storageKey,
+          originalFilename: doc.originalFilename,
+          mimeType: doc.mimeType,
+          size: 1024,
+          status: "APPROVED",
+          note: "Seeded approved supplier document",
+          reviewedAt: now,
+          reviewedByUserId: null,
+        },
+      });
+    } else {
+      await prisma.supplierDocument.create({
+        data: {
+          supplierId,
+          kind: doc.kind,
+          storageKey,
+          originalFilename: doc.originalFilename,
+          mimeType: doc.mimeType,
+          size: 1024,
+          status: "APPROVED",
+          note: "Seeded approved supplier document",
+          reviewedAt: now,
+          reviewedByUserId: null,
+        },
+      });
+    }
+  }
+}
+
 /* ----------------------------------------------------------------------------
   Supplier user + suppliers
 ---------------------------------------------------------------------------- */
@@ -239,8 +457,21 @@ async function ensureSupplierUserAndSuppliers() {
     log(`Created Supplier user: ${SUPPLIER_EMAIL}`);
   } else {
     userId = existingUser.id;
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        role: "SUPPLIER",
+        status: "VERIFIED",
+        emailVerifiedAt: new Date(),
+        phoneVerifiedAt: new Date(),
+      },
+    });
+
     log(`Supplier user already present: ${SUPPLIER_EMAIL}`);
   }
+
+  const registryAuthorityId = await ensureRegistryAuthorityNigeria();
 
   const makeSupplierAddresses = async (
     seedName: string,
@@ -287,53 +518,61 @@ async function ensureSupplierUserAndSuppliers() {
 
   const mainName = "Main Household Supplier";
   const mainAddrs = await makeSupplierAddresses(mainName, "Lagos", "Lagos", "Ikeja");
+  const mainBank = seededSupplierBank(0);
 
   const mainSupplier = await prisma.supplier.upsert({
     where: { name: mainName },
     update: {
       userId,
-      type: "ONLINE",
-      status: "ACTIVE",
-      contactEmail: SUPPLIER_EMAIL,
-      whatsappPhone: "+2348100000002",
-      registeredAddressId: mainAddrs.reg.id,
-      pickupAddressId: mainAddrs.pickup.id,
-      pickupContactName: "Main Dispatch",
-      pickupContactPhone: "+2348100000002",
-      pickupInstructions: "Pickup between 9am and 5pm",
-      shippingEnabled: true,
-      shipsNationwide: true,
-      defaultLeadDays: 2,
-      sameDayCutoffHour: 14,
-      handlingFee: toDec2(80),
-      supportsDoorDelivery: true,
-      supportsPickupPoint: chance(0.4),
-      bankVerificationStatus: "VERIFIED",
-      isPayoutEnabled: true,
+      ...activeSupplierPayload({
+        name: mainName,
+        type: "ONLINE",
+        contactEmail: SUPPLIER_EMAIL,
+        whatsappPhone: "+2348100000002",
+        registeredAddressId: mainAddrs.reg.id,
+        pickupAddressId: mainAddrs.pickup.id,
+        pickupContactName: "Main Dispatch",
+        pickupContactPhone: "+2348100000002",
+        pickupInstructions: "Pickup between 9am and 5pm",
+        leadDays: 2,
+        handlingFee: 80,
+        bankCode: mainBank.code,
+        bankName: mainBank.name,
+        accountNumber: seededAccountNumber(1),
+        accountName: "Main Household Supplier",
+        registryAuthorityId,
+        registrationNumber: seededRegistrationNumber(1),
+      }),
     },
     create: {
       name: mainName,
       userId,
-      type: "ONLINE",
-      status: "ACTIVE",
-      contactEmail: SUPPLIER_EMAIL,
-      whatsappPhone: "+2348100000002",
-      registeredAddressId: mainAddrs.reg.id,
-      pickupAddressId: mainAddrs.pickup.id,
-      pickupContactName: "Main Dispatch",
-      pickupContactPhone: "+2348100000002",
-      pickupInstructions: "Pickup between 9am and 5pm",
-      shippingEnabled: true,
-      shipsNationwide: true,
-      defaultLeadDays: 2,
-      sameDayCutoffHour: 14,
-      handlingFee: toDec2(80),
-      supportsDoorDelivery: true,
-      supportsPickupPoint: chance(0.4),
-      bankVerificationStatus: "VERIFIED",
-      isPayoutEnabled: true,
+      ...activeSupplierPayload({
+        name: mainName,
+        type: "ONLINE",
+        contactEmail: SUPPLIER_EMAIL,
+        whatsappPhone: "+2348100000002",
+        registeredAddressId: mainAddrs.reg.id,
+        pickupAddressId: mainAddrs.pickup.id,
+        pickupContactName: "Main Dispatch",
+        pickupContactPhone: "+2348100000002",
+        pickupInstructions: "Pickup between 9am and 5pm",
+        leadDays: 2,
+        handlingFee: 80,
+        bankCode: mainBank.code,
+        bankName: mainBank.name,
+        accountNumber: seededAccountNumber(1),
+        accountName: "Main Household Supplier",
+        registryAuthorityId,
+        registrationNumber: seededRegistrationNumber(1),
+      }),
     },
     select: { id: true, name: true },
+  });
+
+  await ensureApprovedSupplierDocuments({
+    supplierId: mainSupplier.id,
+    supplierName: mainSupplier.name,
   });
 
   const otherDefs = [
@@ -343,6 +582,7 @@ async function ensureSupplierUserAndSuppliers() {
       city: "Lagos",
       lga: "Surulere",
       type: "PHYSICAL" as const,
+      bankIdx: 1,
     },
     {
       name: "Comfort Home Store",
@@ -350,6 +590,7 @@ async function ensureSupplierUserAndSuppliers() {
       city: "Ibadan",
       lga: "Ibadan North",
       type: "ONLINE" as const,
+      bankIdx: 2,
     },
     {
       name: "Rivers Kitchen Outlet",
@@ -357,6 +598,7 @@ async function ensureSupplierUserAndSuppliers() {
       city: "Port Harcourt",
       lga: "Port Harcourt",
       type: "PHYSICAL" as const,
+      bankIdx: 3,
     },
     {
       name: "Abuja Essentials",
@@ -364,55 +606,73 @@ async function ensureSupplierUserAndSuppliers() {
       city: "Abuja",
       lga: "Abuja Municipal",
       type: "ONLINE" as const,
+      bankIdx: 4,
     },
   ];
 
   const others: { id: string; name: string }[] = [];
 
-  for (const def of otherDefs) {
+  for (const [i, def] of otherDefs.entries()) {
     const addrs = await makeSupplierAddresses(def.name, def.state, def.city, def.lga);
+    const bank = seededSupplierBank(def.bankIdx);
+
+    const emailSlug = def.name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const phone = `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`;
 
     const s = await prisma.supplier.upsert({
       where: { name: def.name },
       update: {
-        type: def.type,
-        status: "ACTIVE",
-        contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
-        whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-        registeredAddressId: addrs.reg.id,
-        pickupAddressId: addrs.pickup.id,
-        pickupContactName: `${def.name} Dispatch`,
-        pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-        pickupInstructions: "Pickup weekdays 9am–4pm",
-        shippingEnabled: true,
-        shipsNationwide: true,
-        defaultLeadDays: randInt(1, 4),
-        sameDayCutoffHour: 13,
-        handlingFee: toDec2(randInt(0, 150)),
-        supportsDoorDelivery: true,
-        supportsPickupPoint: chance(0.35),
+        ...activeSupplierPayload({
+          name: def.name,
+          type: def.type,
+          contactEmail: `${emailSlug}@example.com`,
+          whatsappPhone: phone,
+          registeredAddressId: addrs.reg.id,
+          pickupAddressId: addrs.pickup.id,
+          pickupContactName: `${def.name} Dispatch`,
+          pickupContactPhone: phone,
+          pickupInstructions: "Pickup weekdays 9am–4pm",
+          leadDays: randInt(1, 4),
+          handlingFee: randInt(0, 150),
+          bankCode: bank.code,
+          bankName: bank.name,
+          accountNumber: seededAccountNumber(i + 2),
+          accountName: def.name,
+          registryAuthorityId,
+          registrationNumber: seededRegistrationNumber(i + 2),
+        }),
       },
       create: {
         name: def.name,
-        type: def.type,
-        status: "ACTIVE",
-        contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
-        whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-        registeredAddressId: addrs.reg.id,
-        pickupAddressId: addrs.pickup.id,
-        pickupContactName: `${def.name} Dispatch`,
-        pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
-        pickupInstructions: "Pickup weekdays 9am–4pm",
-        shippingEnabled: true,
-        shipsNationwide: true,
-        defaultLeadDays: randInt(1, 4),
-        sameDayCutoffHour: 13,
-        handlingFee: toDec2(randInt(0, 150)),
-        supportsDoorDelivery: true,
-        supportsPickupPoint: chance(0.35),
+        ...activeSupplierPayload({
+          name: def.name,
+          type: def.type,
+          contactEmail: `${emailSlug}@example.com`,
+          whatsappPhone: phone,
+          registeredAddressId: addrs.reg.id,
+          pickupAddressId: addrs.pickup.id,
+          pickupContactName: `${def.name} Dispatch`,
+          pickupContactPhone: phone,
+          pickupInstructions: "Pickup weekdays 9am–4pm",
+          leadDays: randInt(1, 4),
+          handlingFee: randInt(0, 150),
+          bankCode: bank.code,
+          bankName: bank.name,
+          accountNumber: seededAccountNumber(i + 2),
+          accountName: def.name,
+          registryAuthorityId,
+          registrationNumber: seededRegistrationNumber(i + 2),
+        }),
       },
       select: { id: true, name: true },
     });
+
+    await ensureApprovedSupplierDocuments({
+      supplierId: s.id,
+      supplierName: s.name,
+    });
+
+    others.push(s);
 
     others.push(s);
   }
@@ -979,86 +1239,86 @@ async function ensureShippingSetup() {
     lgasJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
     priority: number;
   }> = [
-    {
-      code: "LAGOS_LOCAL",
-      name: "Lagos Local",
-      statesJson: ["Lagos"],
-      lgasJson: [
-        "Ikeja",
-        "Eti-Osa",
-        "Surulere",
-        "Kosofe",
-        "Alimosho",
-        "Mushin",
-        "Lagos Island",
-        "Lagos Mainland",
-      ],
-      priority: 10,
-    },
-    {
-      code: "SW_NEAR",
-      name: "South West (Near)",
-      statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
-      lgasJson: Prisma.JsonNull,
-      priority: 20,
-    },
-    {
-      code: "SOUTH_REGIONAL",
-      name: "South (Regional)",
-      statesJson: [
-        "Abia",
-        "Anambra",
-        "Akwa Ibom",
-        "Bayelsa",
-        "Cross River",
-        "Delta",
-        "Edo",
-        "Ebonyi",
-        "Enugu",
-        "Imo",
-        "Rivers",
-      ],
-      lgasJson: Prisma.JsonNull,
-      priority: 30,
-    },
-    {
-      code: "NORTH_REGIONAL",
-      name: "North (Regional)",
-      statesJson: [
-        "FCT",
-        "Abuja",
-        "Federal Capital Territory",
-        "Kaduna",
-        "Kano",
-        "Plateau",
-        "Nasarawa",
-        "Benue",
-        "Niger",
-        "Kwara",
-        "Borno",
-        "Bauchi",
-        "Adamawa",
-        "Sokoto",
-        "Kebbi",
-        "Zamfara",
-        "Katsina",
-        "Jigawa",
-        "Yobe",
-        "Taraba",
-        "Gombe",
-        "Kogi",
-      ],
-      lgasJson: Prisma.JsonNull,
-      priority: 40,
-    },
-    {
-      code: "NIGERIA_FALLBACK",
-      name: "Nigeria Fallback",
-      statesJson: Prisma.JsonNull,
-      lgasJson: Prisma.JsonNull,
-      priority: 999,
-    },
-  ];
+      {
+        code: "LAGOS_LOCAL",
+        name: "Lagos Local",
+        statesJson: ["Lagos"],
+        lgasJson: [
+          "Ikeja",
+          "Eti-Osa",
+          "Surulere",
+          "Kosofe",
+          "Alimosho",
+          "Mushin",
+          "Lagos Island",
+          "Lagos Mainland",
+        ],
+        priority: 10,
+      },
+      {
+        code: "SW_NEAR",
+        name: "South West (Near)",
+        statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
+        lgasJson: Prisma.JsonNull,
+        priority: 20,
+      },
+      {
+        code: "SOUTH_REGIONAL",
+        name: "South (Regional)",
+        statesJson: [
+          "Abia",
+          "Anambra",
+          "Akwa Ibom",
+          "Bayelsa",
+          "Cross River",
+          "Delta",
+          "Edo",
+          "Ebonyi",
+          "Enugu",
+          "Imo",
+          "Rivers",
+        ],
+        lgasJson: Prisma.JsonNull,
+        priority: 30,
+      },
+      {
+        code: "NORTH_REGIONAL",
+        name: "North (Regional)",
+        statesJson: [
+          "FCT",
+          "Abuja",
+          "Federal Capital Territory",
+          "Kaduna",
+          "Kano",
+          "Plateau",
+          "Nasarawa",
+          "Benue",
+          "Niger",
+          "Kwara",
+          "Borno",
+          "Bauchi",
+          "Adamawa",
+          "Sokoto",
+          "Kebbi",
+          "Zamfara",
+          "Katsina",
+          "Jigawa",
+          "Yobe",
+          "Taraba",
+          "Gombe",
+          "Kogi",
+        ],
+        lgasJson: Prisma.JsonNull,
+        priority: 40,
+      },
+      {
+        code: "NIGERIA_FALLBACK",
+        name: "Nigeria Fallback",
+        statesJson: Prisma.JsonNull,
+        lgasJson: Prisma.JsonNull,
+        priority: 999,
+      },
+    ];
 
   const zoneByCode = new Map<string, string>();
 
@@ -1374,70 +1634,70 @@ async function seedProducts(args: {
 
     const product = existing
       ? await prisma.product.update({
-          where: { id: existing.id },
-          data: {
-            title: item.title,
-            description:
-              item.status === "LIVE"
-                ? "Live product seeded for development and testing."
-                : "Pending product seeded for development and testing.",
-            retailPrice: toDec(item.retail),
-            sku: item.sku,
-            status: item.status,
-            imagesJson: pics(`${item.sku}-${item.brandId}`),
-            isDeleted: false,
-            availableQty: 0,
-            inStock: true,
-            shippingCost: toDec2(0),
-            weightGrams: parcel.weightGrams,
-            lengthCm: toDec2(parcel.lengthCm),
-            widthCm: toDec2(parcel.widthCm),
-            heightCm: toDec2(parcel.heightCm),
-            isFragile: parcel.isFragile,
-            isBulky: parcel.isBulky,
-            shippingClass: parcel.shippingClass,
-            freeShipping: false,
-            supplier: { connect: { id: supplierId } },
-            category: { connect: { id: categoryId } },
-            brand: { connect: { id: item.brandId } },
-            owner: { connect: { id: superAdminId } },
-            createdBy: { connect: { id: superAdminId } },
-            updatedBy: { connect: { id: superAdminId } },
-          },
-          select: { id: true, sku: true },
-        })
+        where: { id: existing.id },
+        data: {
+          title: item.title,
+          description:
+            item.status === "LIVE"
+              ? "Live product seeded for development and testing."
+              : "Pending product seeded for development and testing.",
+          retailPrice: toDec(item.retail),
+          sku: item.sku,
+          status: item.status,
+          imagesJson: pics(`${item.sku}-${item.brandId}`),
+          isDeleted: false,
+          availableQty: 0,
+          inStock: true,
+          shippingCost: toDec2(0),
+          weightGrams: parcel.weightGrams,
+          lengthCm: toDec2(parcel.lengthCm),
+          widthCm: toDec2(parcel.widthCm),
+          heightCm: toDec2(parcel.heightCm),
+          isFragile: parcel.isFragile,
+          isBulky: parcel.isBulky,
+          shippingClass: parcel.shippingClass,
+          freeShipping: false,
+          supplier: { connect: { id: supplierId } },
+          category: { connect: { id: categoryId } },
+          brand: { connect: { id: item.brandId } },
+          owner: { connect: { id: superAdminId } },
+          createdBy: { connect: { id: superAdminId } },
+          updatedBy: { connect: { id: superAdminId } },
+        },
+        select: { id: true, sku: true },
+      })
       : await prisma.product.create({
-          data: {
-            title: item.title,
-            description:
-              item.status === "LIVE"
-                ? "Live product seeded for development and testing."
-                : "Pending product seeded for development and testing.",
-            retailPrice: toDec(item.retail),
-            sku: item.sku,
-            status: item.status,
-            imagesJson: pics(`${item.sku}-${item.brandId}`),
-            isDeleted: false,
-            availableQty: 0,
-            inStock: true,
-            shippingCost: toDec2(0),
-            weightGrams: parcel.weightGrams,
-            lengthCm: toDec2(parcel.lengthCm),
-            widthCm: toDec2(parcel.widthCm),
-            heightCm: toDec2(parcel.heightCm),
-            isFragile: parcel.isFragile,
-            isBulky: parcel.isBulky,
-            shippingClass: parcel.shippingClass,
-            freeShipping: false,
-            supplier: { connect: { id: supplierId } },
-            category: { connect: { id: categoryId } },
-            brand: { connect: { id: item.brandId } },
-            owner: { connect: { id: superAdminId } },
-            createdBy: { connect: { id: superAdminId } },
-            updatedBy: { connect: { id: superAdminId } },
-          },
-          select: { id: true, sku: true },
-        });
+        data: {
+          title: item.title,
+          description:
+            item.status === "LIVE"
+              ? "Live product seeded for development and testing."
+              : "Pending product seeded for development and testing.",
+          retailPrice: toDec(item.retail),
+          sku: item.sku,
+          status: item.status,
+          imagesJson: pics(`${item.sku}-${item.brandId}`),
+          isDeleted: false,
+          availableQty: 0,
+          inStock: true,
+          shippingCost: toDec2(0),
+          weightGrams: parcel.weightGrams,
+          lengthCm: toDec2(parcel.lengthCm),
+          widthCm: toDec2(parcel.widthCm),
+          heightCm: toDec2(parcel.heightCm),
+          isFragile: parcel.isFragile,
+          isBulky: parcel.isBulky,
+          shippingClass: parcel.shippingClass,
+          freeShipping: false,
+          supplier: { connect: { id: supplierId } },
+          category: { connect: { id: categoryId } },
+          brand: { connect: { id: item.brandId } },
+          owner: { connect: { id: superAdminId } },
+          createdBy: { connect: { id: superAdminId } },
+          updatedBy: { connect: { id: superAdminId } },
+        },
+        select: { id: true, sku: true },
+      });
 
     await ensureProductAttributeOptions(product.id, attrs);
 
@@ -1509,7 +1769,7 @@ async function validateSeedShippingReadiness() {
   if (badProducts.length) {
     throw new Error(
       `Shipping validation failed: ${badProducts.length} product(s) missing parcel fields. ` +
-        `Examples: ${badProducts.map((p) => p.sku || p.id).join(", ")}`
+      `Examples: ${badProducts.map((p) => p.sku || p.id).join(", ")}`
     );
   }
 
@@ -1531,7 +1791,7 @@ async function validateSeedShippingReadiness() {
   if (badVariants.length) {
     throw new Error(
       `Shipping validation failed: ${badVariants.length} variant(s) missing parcel override fields. ` +
-        `Examples: ${badVariants.map((v) => v.sku || v.id).join(", ")}`
+      `Examples: ${badVariants.map((v) => v.sku || v.id).join(", ")}`
     );
   }
 
@@ -1551,7 +1811,7 @@ async function validateSeedShippingReadiness() {
   if (badSuppliers.length) {
     throw new Error(
       `Shipping validation failed: ${badSuppliers.length} supplier(s) not shipping-ready. ` +
-        `Examples: ${badSuppliers.map((s) => s.name).join(", ")}`
+      `Examples: ${badSuppliers.map((s) => s.name).join(", ")}`
     );
   }
 

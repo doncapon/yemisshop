@@ -732,7 +732,6 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
       return res.status(400).json({ error: "Missing orderId" });
     }
 
-    // OTP is OPTIONAL
     const otpToken = String(req.get("x-otp-token") ?? req.body?.otpToken ?? "").trim();
     if (otpToken) {
       await consumePayOrderOtpOrThrow({
@@ -758,30 +757,35 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
         createdAt: true,
       },
     });
-    
+
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // ✅ Optional client total from checkout (for drift detection only; never trusted)
+    // ✅ payments route must not introduce any extra uplift.
+    // We use the persisted order total only, as-is.
+    const payableTotal = round2(asNum(order.total, 0));
+    const subtotal = round2(asNum((order as any).subtotal, 0));
+    const tax = round2(asNum((order as any).tax, 0));
+    const serviceFeeTotal = round2(asNum((order as any).serviceFeeTotal, 0));
+    const shippingFee = round2(asNum((order as any).shippingFee, 0));
+
     const clientExpectedTotalRaw = req.body?.expectedTotal ?? req.body?.total ?? null;
     if (clientExpectedTotalRaw != null) {
       const clientExpectedTotal = round2(asNum(clientExpectedTotalRaw, NaN));
-      const orderTotal = round2(asNum(order.total, 0));
 
       if (Number.isFinite(clientExpectedTotal)) {
-        const diff = round2(orderTotal - clientExpectedTotal);
+        const diff = round2(payableTotal - clientExpectedTotal);
 
-        // 1 naira tolerance to avoid noisy decimal differences
         if (Math.abs(diff) > 1) {
           console.warn("[payments/init] total mismatch", {
             orderId: order.id,
             userId,
-            orderTotal,
+            payableTotal,
             clientExpectedTotal,
             diff,
-            subtotal: round2(asNum((order as any).subtotal, 0)),
-            tax: round2(asNum((order as any).tax, 0)),
-            serviceFeeTotal: round2(asNum((order as any).serviceFeeTotal, 0)),
-            shippingFee: round2(asNum((order as any).shippingFee, 0)),
+            subtotal,
+            tax,
+            serviceFeeTotal,
+            shippingFee,
             shippingCurrency: (order as any).shippingCurrency ?? "NGN",
             shippingRateSource: (order as any).shippingRateSource ?? null,
           });
@@ -791,24 +795,23 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
             "PAYMENT_INIT",
             "Checkout total differed from persisted order total during payment init",
             {
-              orderTotal,
+              payableTotal,
               clientExpectedTotal,
               diff,
-              subtotal: round2(asNum((order as any).subtotal, 0)),
-              tax: round2(asNum((order as any).tax, 0)),
-              serviceFeeTotal: round2(asNum((order as any).serviceFeeTotal, 0)),
-              shippingFee: round2(asNum((order as any).shippingFee, 0)),
+              subtotal,
+              tax,
+              serviceFeeTotal,
+              shippingFee,
               shippingCurrency: (order as any).shippingCurrency ?? "NGN",
               shippingRateSource: (order as any).shippingRateSource ?? null,
             }
           );
 
-          // ✅ Optional: strict in non-prod so you catch it early
           if (String(process.env.NODE_ENV || "").toLowerCase() !== "production") {
             return res.status(409).json({
               error: "Order total changed. Please refresh checkout and try again.",
               code: "TOTAL_MISMATCH",
-              orderTotal,
+              orderTotal: payableTotal,
               clientExpectedTotal,
               diff,
             });
@@ -833,18 +836,14 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
         channel: true,
         providerPayload: true,
         status: true,
-        amount: true, // ✅ needed to detect stale pending payment amounts
+        amount: true,
       },
     });
 
-    // ✅ If order total changed (shipping/service fee/etc), do NOT reuse stale pending payment.
-    // IMPORTANT: per request, do NOT cancel old pending rows — just ignore and create a new one.
     if (pay) {
-      const pendingAmt = Number((pay as any).amount ?? 0);
-      const currentOrderTotal = Number(order.total ?? 0);
+      const pendingAmt = round2(asNum((pay as any).amount, 0));
 
-      // 1 naira tolerance for decimal/rounding safety
-      if (Math.abs(pendingAmt - currentOrderTotal) > 1) {
+      if (Math.abs(pendingAmt - payableTotal) > 1) {
         await logOrderActivity(
           orderId,
           "PAYMENT_INIT",
@@ -852,7 +851,7 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           {
             reference: pay.reference,
             oldAmount: pendingAmt,
-            newAmount: currentOrderTotal,
+            newAmount: payableTotal,
           }
         );
 
@@ -860,22 +859,24 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
       }
     }
 
-    // Resume fresh existing Paystack init if we already have an auth URL
     if (pay && isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) && channel === "paystack") {
       const authUrl = (pay.providerPayload as any)?.authorization_url;
       if (authUrl) {
         await logOrderActivity(orderId, "PAYMENT_RESUME", "Resumed existing Paystack attempt", {
           reference: pay.reference,
+          amount: payableTotal,
         });
+
         return res.json({
           mode: "paystack",
           reference: pay.reference,
+          amount: payableTotal,
+          currency: "NGN",
           authorization_url: authUrl,
         });
       }
     }
 
-    // Ignore expired pending payment and create a new one
     if (pay && !isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN)) {
       await logOrderActivity(
         orderId,
@@ -891,7 +892,6 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
       pay = null as any;
     }
 
-    // Create a fresh pending payment if none should be reused
     if (!pay) {
       const created = await prisma.payment.create({
         data: {
@@ -900,7 +900,7 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           channel: TRIAL_MODE ? "trial" : channel,
           provider: TRIAL_MODE ? "TRIAL" : channel === "paystack" ? "PAYSTACK" : null,
           providerEnv: TRIAL_MODE || process.env.PAYSTACK_LIVE_MODE !== "true" ? "test" : "live",
-          amount: order.total, // ✅ authoritative total (includes shipping/service fees)
+          amount: payableTotal,
           status: "PENDING",
         },
       });
@@ -920,13 +920,13 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
       await logOrderActivity(orderId, "PAYMENT_INIT", `Trial init (${channel})`, {
         reference: pay!.reference,
         channel,
-        amount: toNumber(order.total),
+        amount: payableTotal,
       });
 
       return res.json({
         mode: "trial",
         reference: pay!.reference,
-        amount: toNumber(order.total),
+        amount: payableTotal,
         currency: "NGN",
         autoPaid: INLINE_APPROVAL === "auto",
         bank: {
@@ -967,7 +967,7 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
 
       const initPayload: any = {
         email: userEmail,
-        amount: toKobo(order.total), // ✅ authoritative total from order (includes shipping)
+        amount: toKobo(payableTotal),
         reference: pay!.reference,
         currency: "NGN",
         callback_url,
@@ -1008,12 +1008,18 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
 
       await logOrderActivity(orderId, "PAYMENT_INIT", "Paystack init", {
         reference: pay!.reference,
-        amount: toNumber(order.total),
+        amount: payableTotal,
+        subtotal,
+        tax,
+        serviceFeeTotal,
+        shippingFee,
       });
 
       return res.json({
         mode: "paystack",
         reference: pay!.reference,
+        amount: payableTotal,
+        currency: "NGN",
         authorization_url: data?.authorization_url,
         data,
       });
@@ -1021,13 +1027,17 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
 
     await logOrderActivity(orderId, "PAYMENT_INIT", "Inline bank init", {
       reference: pay!.reference,
-      amount: toNumber(order.total),
+      amount: payableTotal,
+      subtotal,
+      tax,
+      serviceFeeTotal,
+      shippingFee,
     });
 
     return res.json({
       mode: "paystack_inline_bank",
       reference: pay!.reference,
-      amount: toNumber(order.total),
+      amount: payableTotal,
       currency: "NGN",
       bank: {
         bank_name: BANK_NAME || "GTB Banks Virtual",

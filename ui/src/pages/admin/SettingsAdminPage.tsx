@@ -15,19 +15,65 @@ type Setting = {
 
 type ValueType = "text" | "select";
 
-// Known keys with preset options (auto-applied on key match)
+type PayoutSchedulerCardState = {
+  enabled: boolean;
+  intervalHours: 3 | 4 | 6 | 8 | 12 | 24;
+  timezone: string;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+  lastRunSummary: {
+    scanned?: number;
+    released?: number;
+    skipped?: number;
+    failed?: number;
+    details?: Array<{
+      allocationId: string;
+      purchaseOrderId: string | null;
+      action: "released" | "skipped" | "failed";
+      reason?: string;
+    }>;
+  } | null;
+  lastRunError: string | null;
+};
+
 const KNOWN_KEY_OPTIONS: Record<string, string[]> = {
   taxMode: ["INCLUDED", "ADDED", "NONE"],
-
-  // optional: shipping keys
   shippingEnabled: ["true", "false"],
   shippingMode: ["DELIVERY", "PICKUP_ONLY"],
+
+  payoutReleaseSchedulerEnabled: ["true", "false"],
+  payoutReleaseIntervalHours: ["3", "4", "6", "8", "12", "24"],
+  payoutReleaseSchedulerTimezone: ["UTC", "Europe/London"],
 };
+
+const SCHEDULER_INTERVAL_OPTIONS = [
+  { value: 3, label: "Every 3 hours" },
+  { value: 4, label: "Every 4 hours" },
+  { value: 6, label: "Every 6 hours" },
+  { value: 8, label: "Every 8 hours" },
+  { value: 12, label: "Every 12 hours" },
+  { value: 24, label: "Once daily" },
+] as const;
+
+const SCHEDULER_TIMEZONE_OPTIONS = ["UTC", "Europe/London"];
 
 export default function SettingsAdminPage() {
   const [rows, setRows] = useState<Setting[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+
+  const [schedulerLoading, setSchedulerLoading] = useState(true);
+  const [schedulerSaving, setSchedulerSaving] = useState(false);
+  const [schedulerRunningNow, setSchedulerRunningNow] = useState(false);
+  const [scheduler, setScheduler] = useState<PayoutSchedulerCardState>({
+    enabled: true,
+    intervalHours: 6,
+    timezone: "UTC",
+    lastRunAt: null,
+    lastRunStatus: null,
+    lastRunSummary: null,
+    lastRunError: null,
+  });
 
   const [q, setQ] = useState("");
 
@@ -35,9 +81,9 @@ export default function SettingsAdminPage() {
     key: string;
     value: string;
     isPublic: boolean;
-    meta: string; // free-form JSON editor (optional)
-    valueType: ValueType; // text | select
-    optionsText: string; // comma-separated options if valueType=select
+    meta: string;
+    valueType: ValueType;
+    optionsText: string;
   }>({
     key: "",
     value: "",
@@ -47,7 +93,34 @@ export default function SettingsAdminPage() {
     optionsText: "",
   });
 
-  // When key matches a known key, gently enhance with presets without fighting user choice.
+  async function loadSettingsList() {
+    const res = await api.get<Setting[]>("/api/settings");
+    setRows(res.data);
+  }
+
+  async function loadSchedulerCard() {
+    const res = await api.get<PayoutSchedulerCardState>("/api/settings/payout-release-scheduler");
+    setScheduler(res.data);
+  }
+
+  async function loadAll() {
+    try {
+      setLoading(true);
+      setSchedulerLoading(true);
+      await Promise.all([loadSettingsList(), loadSchedulerCard()]);
+      setErr(null);
+    } catch (e: any) {
+      setErr(e?.response?.data?.error || e?.message || "Failed to load settings");
+    } finally {
+      setLoading(false);
+      setSchedulerLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadAll();
+  }, []);
+
   useEffect(() => {
     const key = creating.key.trim();
     const presets = KNOWN_KEY_OPTIONS[key];
@@ -65,21 +138,6 @@ export default function SettingsAdminPage() {
       });
     }
   }, [creating.key]);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        const res = await api.get<Setting[]>("/api/settings");
-        setRows(res.data);
-        setErr(null);
-      } catch (e: any) {
-        setErr(e?.response?.data?.error || e?.message || "Failed to load settings");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -139,6 +197,14 @@ export default function SettingsAdminPage() {
         optionsText: "",
       });
       setErr(null);
+
+      if (
+        ["payoutReleaseSchedulerEnabled", "payoutReleaseIntervalHours", "payoutReleaseSchedulerTimezone"].includes(
+          res.data.key
+        )
+      ) {
+        await loadSchedulerCard();
+      }
     } catch (e: any) {
       setErr(e?.response?.data?.error || e?.message || "Create failed");
     }
@@ -150,7 +216,6 @@ export default function SettingsAdminPage() {
   ) {
     try {
       if (!row.updatedAt) {
-        // fallback: still try (API might fall back too)
         const res = await api.patch<Setting>(`/api/settings/${row.id}`, patch);
         setRows((prev) => prev.map((r) => (r.id === row.id ? res.data : r)));
         setErr(null);
@@ -164,8 +229,15 @@ export default function SettingsAdminPage() {
 
       setRows((prev) => prev.map((r) => (r.id === row.id ? res.data : r)));
       setErr(null);
+
+      if (
+        ["payoutReleaseSchedulerEnabled", "payoutReleaseIntervalHours", "payoutReleaseSchedulerTimezone"].includes(
+          row.key
+        )
+      ) {
+        await loadSchedulerCard();
+      }
     } catch (e: any) {
-      // ✅ handle optimistic conflict
       if (e?.response?.status === 409) {
         const msg =
           e?.response?.data?.error ||
@@ -174,7 +246,6 @@ export default function SettingsAdminPage() {
 
         setErr(msg);
 
-        // update UI with latest server row so user sees current value immediately
         if (current?.id) {
           setRows((prev) => prev.map((r) => (r.id === current.id ? current : r)));
         }
@@ -189,17 +260,240 @@ export default function SettingsAdminPage() {
     if (!confirm("Delete setting?")) return;
     try {
       await api.delete<void>(`/api/settings/${id}`);
+      const deleted = rows.find((r) => r.id === id);
       setRows((prev) => prev.filter((r) => r.id !== id));
+
+      if (
+        deleted &&
+        ["payoutReleaseSchedulerEnabled", "payoutReleaseIntervalHours", "payoutReleaseSchedulerTimezone"].includes(
+          deleted.key
+        )
+      ) {
+        await loadSchedulerCard();
+      }
     } catch (e: any) {
       setErr(e?.response?.data?.error || e?.message || "Delete failed");
     }
   }
 
+  async function saveSchedulerCard() {
+    try {
+      setSchedulerSaving(true);
+      await api.post("/api/settings/payout-release-scheduler", {
+        enabled: scheduler.enabled,
+        intervalHours: scheduler.intervalHours,
+        timezone: scheduler.timezone,
+      });
+      await Promise.all([loadSchedulerCard(), loadSettingsList()]);
+      setErr(null);
+    } catch (e: any) {
+      setErr(e?.response?.data?.error || e?.message || "Failed to save payout release scheduler");
+    } finally {
+      setSchedulerSaving(false);
+    }
+  }
+
+  async function runSchedulerNow() {
+    if (!confirm("Run payout release now?")) return;
+
+    try {
+      setSchedulerRunningNow(true);
+      await api.post("/api/settings/payout-release-scheduler/run-now");
+      await Promise.all([loadSchedulerCard(), loadSettingsList()]);
+      setErr(null);
+    } catch (e: any) {
+      setErr(
+        e?.response?.data?.detail ||
+          e?.response?.data?.error ||
+          e?.message ||
+          "Failed to run payout release now"
+      );
+    } finally {
+      setSchedulerRunningNow(false);
+    }
+  }
+
+  const summary = scheduler.lastRunSummary;
+
   return (
     <SiteLayout>
       <div className="min-h-[calc(100vh-64px)] bg-zinc-50">
-        <div className="p-6 max-w-4xl mx-auto">
+        <div className="p-6 max-w-5xl mx-auto">
           <h1 className="text-2xl font-semibold mb-4 text-zinc-900">Settings</h1>
+
+          {err && (
+            <div className="bg-white border border-zinc-200 text-zinc-800 px-3 py-2 rounded-lg mb-4">
+              {err}
+            </div>
+          )}
+
+          {/* Dedicated payout scheduler card */}
+          <div className="bg-white border border-zinc-200 rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-900">Payout Release Scheduler</h2>
+                <p className="text-sm text-zinc-600 mt-1">
+                  Control how often held supplier payouts are checked and released.
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-lg border border-zinc-200 text-zinc-900 disabled:opacity-50"
+                  onClick={runSchedulerNow}
+                  disabled={schedulerLoading || schedulerRunningNow}
+                >
+                  {schedulerRunningNow ? "Running…" : "Run now"}
+                </button>
+
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-lg bg-zinc-900 text-white disabled:opacity-50"
+                  onClick={saveSchedulerCard}
+                  disabled={schedulerLoading || schedulerSaving}
+                >
+                  {schedulerSaving ? "Saving…" : "Save scheduler"}
+                </button>
+              </div>
+            </div>
+
+            {schedulerLoading ? (
+              <div className="text-sm text-zinc-600">Loading scheduler…</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+                  <label className="block">
+                    <div className="text-sm font-medium text-zinc-700 mb-1">Enabled</div>
+                    <select
+                      className="border border-zinc-200 rounded-lg px-3 py-2 bg-white text-zinc-900 w-full focus:outline-none focus:ring-2 focus:ring-zinc-200"
+                      value={scheduler.enabled ? "true" : "false"}
+                      onChange={(e) =>
+                        setScheduler((s) => ({
+                          ...s,
+                          enabled: e.target.value === "true",
+                        }))
+                      }
+                    >
+                      <option value="true">Enabled</option>
+                      <option value="false">Disabled</option>
+                    </select>
+                  </label>
+
+                  <label className="block">
+                    <div className="text-sm font-medium text-zinc-700 mb-1">Frequency</div>
+                    <select
+                      className="border border-zinc-200 rounded-lg px-3 py-2 bg-white text-zinc-900 w-full focus:outline-none focus:ring-2 focus:ring-zinc-200"
+                      value={String(scheduler.intervalHours)}
+                      onChange={(e) =>
+                        setScheduler((s) => ({
+                          ...s,
+                          intervalHours: Number(e.target.value) as 3 | 4 | 6 | 8 | 12 | 24,
+                        }))
+                      }
+                    >
+                      {SCHEDULER_INTERVAL_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={String(opt.value)}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="block">
+                    <div className="text-sm font-medium text-zinc-700 mb-1">Timezone</div>
+                    <select
+                      className="border border-zinc-200 rounded-lg px-3 py-2 bg-white text-zinc-900 w-full focus:outline-none focus:ring-2 focus:ring-zinc-200"
+                      value={scheduler.timezone}
+                      onChange={(e) =>
+                        setScheduler((s) => ({
+                          ...s,
+                          timezone: e.target.value,
+                        }))
+                      }
+                    >
+                      {SCHEDULER_TIMEZONE_OPTIONS.map((tz) => (
+                        <option key={tz} value={tz}>
+                          {tz}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
+                  <InfoTile
+                    label="Status"
+                    value={scheduler.lastRunStatus || "—"}
+                  />
+                  <InfoTile
+                    label="Last run"
+                    value={scheduler.lastRunAt ? new Date(scheduler.lastRunAt).toLocaleString() : "—"}
+                  />
+                  <InfoTile
+                    label="Released"
+                    value={String(summary?.released ?? 0)}
+                  />
+                  <InfoTile
+                    label="Skipped / Failed"
+                    value={`${summary?.skipped ?? 0} / ${summary?.failed ?? 0}`}
+                  />
+                </div>
+
+                {summary && (
+                  <div className="rounded-xl border border-zinc-200 p-4 bg-zinc-50 mb-4">
+                    <div className="text-sm font-medium text-zinc-800 mb-2">Last run summary</div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-zinc-700">
+                      <div>Scanned: <span className="font-semibold">{summary.scanned ?? 0}</span></div>
+                      <div>Released: <span className="font-semibold">{summary.released ?? 0}</span></div>
+                      <div>Skipped: <span className="font-semibold">{summary.skipped ?? 0}</span></div>
+                      <div>Failed: <span className="font-semibold">{summary.failed ?? 0}</span></div>
+                    </div>
+
+                    {!!summary.details?.length && (
+                      <div className="mt-3 overflow-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-zinc-600">
+                              <th className="text-left py-2 pr-3">Allocation</th>
+                              <th className="text-left py-2 pr-3">PO</th>
+                              <th className="text-left py-2 pr-3">Action</th>
+                              <th className="text-left py-2">Reason</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {summary.details.slice(0, 10).map((d, idx) => (
+                              <tr key={`${d.allocationId}-${idx}`} className="border-t border-zinc-200">
+                                <td className="py-2 pr-3 font-mono text-xs text-zinc-800 break-all">
+                                  {d.allocationId}
+                                </td>
+                                <td className="py-2 pr-3 font-mono text-xs text-zinc-700 break-all">
+                                  {d.purchaseOrderId || "—"}
+                                </td>
+                                <td className="py-2 pr-3 text-zinc-800">
+                                  {d.action}
+                                </td>
+                                <td className="py-2 text-zinc-600 break-all">
+                                  {d.reason || "—"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {!!scheduler.lastRunError && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                    <div className="font-medium mb-1">Last error</div>
+                    <div className="break-all">{scheduler.lastRunError}</div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
 
           <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-3">
             <input
@@ -210,14 +504,11 @@ export default function SettingsAdminPage() {
             />
           </div>
 
-          {err && (
-            <div className="bg-white border border-zinc-200 text-zinc-800 px-3 py-2 rounded-lg mb-4">
-              {err}
-            </div>
-          )}
-
           {/* Create new */}
-          <form onSubmit={create} className="bg-white border border-zinc-200 rounded-2xl p-4 mb-6 space-y-3 shadow-sm">
+          <form
+            onSubmit={create}
+            className="bg-white border border-zinc-200 rounded-2xl p-4 mb-6 space-y-3 shadow-sm"
+          >
             <div className="font-medium text-zinc-900">Create setting</div>
 
             <div className="grid md:grid-cols-2 gap-3">
@@ -229,7 +520,6 @@ export default function SettingsAdminPage() {
                 required
               />
 
-              {/* Value type toggle */}
               <div className="flex items-center gap-4">
                 <label className="inline-flex items-center gap-2 text-sm text-zinc-700">
                   <input
@@ -265,7 +555,6 @@ export default function SettingsAdminPage() {
               </div>
             </div>
 
-            {/* Value input: text or select */}
             {creating.valueType === "text" ? (
               <div className="grid md:grid-cols-2 gap-3">
                 <input
@@ -330,7 +619,6 @@ export default function SettingsAdminPage() {
               </div>
             )}
 
-            {/* Optional meta JSON */}
             <input
               className="border border-zinc-200 rounded-lg px-3 py-2 w-full bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-200"
               placeholder='meta (JSON, e.g. {"help":"shown in UI"})'
@@ -418,6 +706,15 @@ export default function SettingsAdminPage() {
         </div>
       </div>
     </SiteLayout>
+  );
+}
+
+function InfoTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-zinc-200 p-3 bg-zinc-50">
+      <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1">{label}</div>
+      <div className="text-sm font-semibold text-zinc-900 break-words">{value}</div>
+    </div>
   );
 }
 
