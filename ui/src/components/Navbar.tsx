@@ -184,8 +184,8 @@ function MobileMenuButton({
     variant === "primary"
       ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-95"
       : variant === "danger"
-      ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
-      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
+        ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
+        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
 
   const iconColor = variant === "primary" ? "text-white" : "text-zinc-700";
 
@@ -203,8 +203,22 @@ export default function Navbar() {
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  const nav = useNavigate();
   const loc = useLocation();
+  const pathname = loc.pathname.toLowerCase();
+
+  const isLoginPage =
+    pathname === "/login" ||
+    pathname.startsWith("/login/") ||
+    pathname === "/forgot-password" ||
+    pathname === "/reset-password";
+
+  const isRegisterPage =
+    pathname === "/register" ||
+    pathname.startsWith("/register/");
+
+  const isSupplierRegisterPage =
+    pathname === "/register-supplier" ||
+    pathname.startsWith("/register-supplier/");
 
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -264,7 +278,7 @@ export default function Navbar() {
     const target = `${loc.pathname}${loc.search}`;
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch {}
+    } catch { }
 
     const qp = encodeURIComponent(target);
     await performLogout(`/login?from=${qp}`);
@@ -498,7 +512,10 @@ export default function Navbar() {
                   <button
                     type="button"
                     onClick={() => hardGo("/register-supplier")}
-                    className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 transition"
+                    className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isSupplierRegisterPage
+                        ? "bg-zinc-900 text-white border-zinc-900"
+                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      }`}
                     title="Become a supplier"
                   >
                     <Store size={16} />
@@ -512,7 +529,10 @@ export default function Navbar() {
                       const qp = encodeURIComponent(target);
                       hardGo(`/login?from=${qp}`);
                     }}
-                    className="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                    className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isLoginPage
+                        ? "bg-zinc-900 text-white border-zinc-900"
+                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      }`}
                     title="Login"
                   >
                     <User size={16} />
@@ -522,7 +542,10 @@ export default function Navbar() {
                   <button
                     type="button"
                     onClick={() => hardGo("/register")}
-                    className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold hover:opacity-90 transition"
+                    className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isRegisterPage
+                        ? "bg-zinc-900 text-white border-zinc-900"
+                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      }`}
                     title="Register"
                   >
                     <CheckCircle2 size={16} />
@@ -679,8 +702,7 @@ export default function Navbar() {
                     hardGo("/cart");
                   }}
                   className={({ isActive }) =>
-                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${
-                      isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
+                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
                     }`
                   }
                   aria-label="Cart"
