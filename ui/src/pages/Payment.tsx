@@ -65,7 +65,8 @@ export default function Payment() {
   });
 
   const gotoOrders = () => nav("/orders");
-  const gotoCheckout = () => nav("/checkout");
+  const gotoCheckout = () => nav("/cart");
+  const gotoCart = () => nav("/cart");
 
   useEffect(() => {
     if (!orderId) return;
@@ -78,7 +79,7 @@ export default function Payment() {
       setInfo(null);
 
       try {
-        let payload: Record<string, any> = {
+        const payload: Record<string, any> = {
           orderId,
           channel: "paystack",
         };
@@ -98,15 +99,12 @@ export default function Payment() {
           const status = Number(e?.response?.status || 0);
           const msg = String(e?.response?.data?.error || "");
 
-          // If the backend rejects stale expectedTotal, retry once with backend as source of truth
           if (
             status === 409 &&
             typeof payload.expectedTotal === "number" &&
             /total changed|refresh checkout|mismatch/i.test(msg)
           ) {
-            setInfo(
-              "Your order total was refreshed from the latest backend calculation."
-            );
+            setInfo("Your order total was refreshed from the latest backend calculation.");
 
             const retry = await api.post<InitResp>(
               "/api/payments/init",
@@ -142,10 +140,24 @@ export default function Payment() {
           //
         }
 
+        if (
+          typeof data.amount === "number" &&
+          typeof estimatedTotal === "number" &&
+          Number.isFinite(data.amount) &&
+          Number.isFinite(estimatedTotal) &&
+          Math.abs(data.amount - estimatedTotal) > 1
+        ) {
+          setInfo(
+            `Your payable total was refreshed from ${ngn.format(estimatedTotal)} to ${ngn.format(
+              data.amount
+            )} based on the latest backend calculation.`
+          );
+        }
+
         if (data.mode === "paystack" && data.authorization_url) {
           if (localStorage.getItem(AUTO_REDIRECT_KEY) === "1") {
             markPaystackExit();
-            window.location.href = data.authorization_url;
+            window.location.replace(data.authorization_url);
           } else {
             setShowHosted(true);
           }
@@ -157,7 +169,7 @@ export default function Payment() {
 
         if (status === 409) {
           setErr(
-            "This order was recalculated and could not be initialized for payment from this page state. Please return to checkout and continue again."
+            "This order was recalculated and could not be initialized for payment from this page state. Please return to cart and continue again."
           );
         } else {
           setErr(message);
@@ -259,7 +271,7 @@ export default function Payment() {
   const goToPaystack = () => {
     if (!init?.authorization_url) return;
     markPaystackExit();
-    window.location.href = init.authorization_url;
+    window.location.replace(init.authorization_url);
   };
 
   const toggleAuto = (v: boolean) => {
@@ -277,9 +289,7 @@ export default function Payment() {
     const displayTotal =
       typeof init.amount === "number" && init.amount > 0
         ? init.amount
-        : typeof estimatedTotal === "number" && estimatedTotal > 0
-          ? estimatedTotal
-          : undefined;
+        : undefined;
 
     return (
       <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/50">
@@ -307,7 +317,10 @@ export default function Payment() {
               <button
                 aria-label="Close"
                 className="shrink-0 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-black/5"
-                onClick={() => setShowHosted(false)}
+                onClick={() => {
+                  setShowHosted(false);
+                  gotoCart();
+                }}
               >
                 ✕
               </button>
@@ -358,14 +371,16 @@ export default function Payment() {
                     typeof init.amount === "number" &&
                     Math.abs(estimatedTotal - init.amount) > 1 && (
                       <div className="text-[10px] text-zinc-500 mt-1 leading-snug">
-                        Checkout estimate was {ngn.format(estimatedTotal)}. Final payable amount is{" "}
+                        Your earlier checkout estimate was {ngn.format(estimatedTotal)}.
+                        This payment page is using the latest backend total of{" "}
                         {ngn.format(init.amount)}.
                       </div>
                     )}
 
                   {estimatedServiceFeeTotal ? (
                     <div className="text-[10px] text-zinc-500 mt-1">
-                      Estimated service &amp; gateway fees: {ngn.format(estimatedServiceFeeTotal)}
+                      Estimated service &amp; gateway fees from checkout:{" "}
+                      {ngn.format(estimatedServiceFeeTotal)}
                     </div>
                   ) : null}
                 </div>
@@ -388,7 +403,7 @@ export default function Payment() {
               <div className="grid grid-cols-2 gap-2">
                 <button
                   className="rounded-xl border bg-white hover:bg-black/5 py-2.5 text-sm"
-                  onClick={gotoOrders}
+                  onClick={gotoCart}
                 >
                   Pay later
                 </button>
@@ -419,7 +434,7 @@ export default function Payment() {
                 className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
                 onClick={gotoCheckout}
               >
-                Back to checkout
+                Back to cart
               </button>
               <button
                 className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
@@ -468,32 +483,21 @@ export default function Payment() {
                 <p className="text-sm">Bank details will be shown here.</p>
               )}
 
-              {(estimatedTotal !== undefined || (init.amount && init.currency)) && (
+              {typeof init.amount === "number" && init.amount > 0 && (
                 <div className="mt-4 rounded-xl border bg-zinc-50 p-3">
-                  {typeof init.amount === "number" ? (
-                    <>
-                      <div className="text-[11px] text-zinc-500">Total payable</div>
-                      <div className="text-lg font-semibold mt-1">
-                        {ngn.format(init.amount)}
-                      </div>
+                  <div className="text-[11px] text-zinc-500">Total payable</div>
+                  <div className="text-lg font-semibold mt-1">
+                    {ngn.format(init.amount)}
+                  </div>
 
-                      {typeof estimatedTotal === "number" && Math.abs(estimatedTotal - init.amount) > 1 ? (
-                        <div className="text-[11px] text-zinc-500 mt-1">
-                          Checkout estimate was {ngn.format(estimatedTotal)}. Final payable amount is from your order total.
-                        </div>
-                      ) : estimatedServiceFeeTotal ? (
-                        <div className="text-[11px] text-zinc-500 mt-1">
-                          Includes estimated service &amp; gateway fees: {ngn.format(estimatedServiceFeeTotal)}
-                        </div>
-                      ) : null}
-                    </>
-                  ) : estimatedTotal !== undefined ? (
-                    <>
-                      <div className="text-[11px] text-zinc-500">Total payable</div>
-                      <div className="text-lg font-semibold mt-1">
-                        {ngn.format(estimatedTotal)}
-                      </div>
-                    </>
+                  {typeof estimatedTotal === "number" && Math.abs(estimatedTotal - init.amount) > 1 ? (
+                    <div className="text-[11px] text-zinc-500 mt-1">
+                      Earlier checkout estimate was {ngn.format(estimatedTotal)}. This page is using the latest backend total.
+                    </div>
+                  ) : estimatedServiceFeeTotal ? (
+                    <div className="text-[11px] text-zinc-500 mt-1">
+                      Includes estimated service &amp; gateway fees: {ngn.format(estimatedServiceFeeTotal)}
+                    </div>
                   ) : null}
                 </div>
               )}
@@ -518,7 +522,7 @@ export default function Payment() {
               </button>
               <button
                 className="rounded-xl border px-4 py-3 text-sm"
-                onClick={() => nav("/cart")}
+                onClick={gotoCart}
               >
                 Back to cart
               </button>

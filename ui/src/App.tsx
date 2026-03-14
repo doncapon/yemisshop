@@ -534,7 +534,7 @@ export default function App() {
     } catch {}
   }, [loc.key]);
 
-  useEffect(() => {
+    useEffect(() => {
     if (!hydrated) return;
     if (isAuthed) return;
 
@@ -566,15 +566,28 @@ export default function App() {
     if (!isProtectedPath) return;
     if (p === "/login") return;
 
-    const target = `${loc.pathname}${loc.search}`;
+    const rawTarget = `${loc.pathname}${loc.search}`;
+
+    // ✅ Never send timed-out users straight back into checkout.
+    // Send them to cart after login so they can review/restart safely.
+    const returnTarget = p === "/checkout" ? "/cart" : rawTarget;
 
     try {
-      sessionStorage.setItem("auth:returnTo", target);
+      sessionStorage.setItem("auth:returnTo", returnTarget);
     } catch {}
 
-    const qp = encodeURIComponent(target);
-    nav(`/login?from=${qp}`, { replace: true, state: { from: target } });
+    const qp = encodeURIComponent(returnTarget);
+    nav(`/login?from=${qp}`, { replace: true, state: { from: returnTarget } });
   }, [hydrated, isAuthed, loc.pathname, loc.search, nav]);
+
+    useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("auth:returnTo");
+      if (saved && saved.startsWith("/checkout")) {
+        sessionStorage.setItem("auth:returnTo", "/cart");
+      }
+    } catch {}
+  }, [loc.pathname]);
 
   return (
     <ModalProvider>
