@@ -735,18 +735,18 @@ export default function Checkout() {
     staleTime: 10_000,
     queryFn: () => fetchPricingQuoteForCart(cart),
   });
-
   const quoteSubtotalSupplier = (pricingQ.data as QuotePayload | null)?.subtotal ?? 0;
 
+  // ✅ Customer-facing subtotal must come from the cart's retail/unit prices,
+  // not from supplier-side quote allocations.
   const cartSubtotalFallback = useMemo(
-    () => cart.reduce((s, it) => s + computeLineTotal(it), 0),
+    () => round2(cart.reduce((s, it) => s + computeLineTotal(it), 0)),
     [cart]
   );
 
   const itemsSubtotal = useMemo(() => {
-    if (quoteSubtotalSupplier > 0) return round2(quoteSubtotalSupplier);
-    return round2(cartSubtotalFallback);
-  }, [quoteSubtotalSupplier, cartSubtotalFallback]);
+    return cartSubtotalFallback;
+  }, [cartSubtotalFallback]);
 
   const units = useMemo(
     () => cart.reduce((s, it) => s + Math.max(1, num(it.qty, 1)), 0),
@@ -1162,8 +1162,9 @@ export default function Checkout() {
               ? it.variantId
               : undefined;
 
-        const unitSupplier =
-          qLine?.averageUnit ?? firstAlloc?.unitPrice ?? asMoney(it.unitPrice, asMoney(it.price, 0));
+        // ✅ Keep customer-facing cart/retail unit price as the cached unit price.
+        // Supplier quote is for allocation/offer selection only, not shopper subtotal display.
+        const retailUnit = asMoney(it.unitPrice, asMoney(it.price, 0));
 
         return {
           key,
@@ -1174,7 +1175,7 @@ export default function Checkout() {
           selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
           supplierId: firstAlloc?.supplierId || it.supplierId || undefined,
           offerId: firstAlloc?.offerId || undefined,
-          unitPriceCache: unitSupplier,
+          unitPriceCache: retailUnit,
         };
       });
 
