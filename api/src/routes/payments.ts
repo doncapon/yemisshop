@@ -177,6 +177,7 @@ async function ensureSupplierOrderRef(tx: any, orderId: string, supplierId: stri
   return ref;
 }
 
+
 async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
   const items = await tx.orderItem.findMany({
     where: { orderId },
@@ -248,7 +249,6 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     });
 
     if (!po) {
-      // ✅ Create idempotently (safe on webhook retries)
       try {
         po = await tx.purchaseOrder.create({
           data: {
@@ -282,15 +282,19 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
       },
     });
 
-    await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
-    for (const orderItemId of g.itemIds) {
-      await tx.purchaseOrderItem.create({
-        data: {
-          purchaseOrderId: po.id,
+    await tx.purchaseOrderItem.deleteMany({
+      where: { purchaseOrderId: po.id },
+    });
+
+    if (g.itemIds.length) {
+      await tx.purchaseOrderItem.createMany({
+        data: g.itemIds.map((orderItemId) => ({
+          purchaseOrderId: po!.id,
           orderItemId,
           externalRef: null,
           externalStatus: null,
-        },
+        })),
+        skipDuplicates: true,
       });
     }
 
@@ -299,6 +303,7 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
 
   return createdOrUpdated;
 }
+
 
 /**
  * ✅ Record supplier allocations when payment is PAID.
@@ -534,85 +539,89 @@ async function recomputeProfitForPayment(paymentId: string) {
 async function finalizePaidFlow(paymentId: string) {
   console.log("[finalizePaidFlow] start", { paymentId });
 
-  // ✅ Do NOT call prisma (global) inside the transaction callback indirectly.
-  // We'll track later after commit.
   let trackPaymentId: string | null = null;
 
-  const result = await prisma.$transaction(async (tx: any) => {
-    const p = await tx.payment.findUnique({
-      where: { id: paymentId },
-      select: {
-        id: true,
-        orderId: true,
-        status: true,
-        amount: true,
-        feeAmount: true,
-        reference: true,
-        channel: true,
-        order: {
-          select: {
-            id: true,
-            total: true,
-            serviceFeeTotal: true,
+  const result = await prisma.$transaction(
+    async (tx: any) => {
+      const p = await tx.payment.findUnique({
+        where: { id: paymentId },
+        select: {
+          id: true,
+          orderId: true,
+          status: true,
+          amount: true,
+          feeAmount: true,
+          reference: true,
+          channel: true,
+          order: {
+            select: {
+              id: true,
+              total: true,
+              serviceFeeTotal: true,
+            },
           },
         },
-      },
-    });
+      });
 
-    if (!p || p.status !== "PAID" || !p.orderId) return null;
+      if (!p || p.status !== "PAID" || !p.orderId) return null;
 
+      const next =
+        process.env.TURN_OFF_AWAIT_CONF === "true"
+          ? "PAID"
+          : "AWAITING_FULFILLMENT";
 
-    const next =
-      process.env.TURN_OFF_AWAIT_CONF === "true" ? "PAID" : "AWAITING_FULFILLMENT";
+      await tx.order.update({
+        where: { id: p.orderId },
+        data: { status: next as any },
+      });
 
-    await tx.order.update({
-      where: { id: p.orderId },
-      data: { status: next as any },
-    });
+      const total = Number(p.order?.total) || 0;
+      const svc = Number(p.order?.serviceFeeTotal) || 0;
+      const amt = Number(p.amount) || 0;
 
-    const total = Number(p.order?.total) || 0;
-    const svc = Number(p.order?.serviceFeeTotal) || 0;
-    const amt = Number(p.amount) || 0;
+      if (total > 0 && svc > 0 && amt > 0) {
+        const slice = svc * Math.max(0, Math.min(1, amt / total));
 
-    // NOTE: This upsert uses paymentId as unique; ensure you have @@unique([paymentId]) or paymentId @unique on OrderComms
-    if (total > 0 && svc > 0 && amt > 0) {
-      const slice = svc * Math.max(0, Math.min(1, amt / total));
-      await tx.orderComms.upsert({
-        where: { paymentId: p.id },
-        create: {
-          orderId: p.orderId,
+        await tx.orderComms.upsert({
+          where: { paymentId: p.id },
+          create: {
+            orderId: p.orderId,
+            paymentId: p.id,
+            amount: slice,
+            channel: p.channel ?? null,
+            reason: "SUPPLIER_NOTIFY",
+          },
+          update: {
+            amount: slice,
+            channel: p.channel ?? null,
+            reason: "SUPPLIER_NOTIFY",
+          },
+        });
+      }
+
+      await tx.paymentEvent.create({
+        data: {
           paymentId: p.id,
-          amount: slice,
-          channel: p.channel ?? null,
-          reason: "SUPPLIER_NOTIFY",
-        },
-        update: {
-          amount: slice,
-          channel: p.channel ?? null,
-          reason: "SUPPLIER_NOTIFY",
+          type: "FINALIZE_PAID",
+          data: { reference: p.reference },
         },
       });
+
+      await ensurePurchaseOrdersForOrderTx(tx, p.orderId);
+      await recordSupplierAllocationsOnPaidTx(tx, p.id, p.orderId);
+
+      trackPaymentId = p.id;
+
+      return { orderId: p.orderId, paymentId: p.id };
+    },
+    {
+      maxWait: 10_000,
+      timeout: 20_000,
     }
-
-    await tx.paymentEvent.create({
-      data: {
-        paymentId: p.id,
-        type: "FINALIZE_PAID",
-        data: { reference: p.reference },
-      },
-    });
-
-    await ensurePurchaseOrdersForOrderTx(tx, p.orderId);
-    await recordSupplierAllocationsOnPaidTx(tx, p.id, p.orderId);
-
-    trackPaymentId = p.id;
-
-    return { orderId: p.orderId, paymentId: p.id };
-  });
+  );
 
   if (!result) return;
 
-  // ✅ after commit
   if (trackPaymentId) {
     try {
       await trackPurchaseIfNeeded(trackPaymentId);
@@ -623,7 +632,6 @@ async function finalizePaidFlow(paymentId: string) {
 
   const { orderId } = result;
 
-  // Supplier notifications (idempotent)
   const alreadyNotified = await prisma.paymentEvent.findFirst({
     where: {
       paymentId: result.paymentId,
@@ -665,7 +673,6 @@ async function finalizePaidFlow(paymentId: string) {
     console.error("recomputeProfitForPayment failed", e);
   }
 
-  // Customer email (idempotent)
   const alreadyEmailed = await prisma.paymentEvent.findFirst({
     where: {
       paymentId: result.paymentId,
@@ -690,6 +697,7 @@ async function finalizePaidFlow(paymentId: string) {
 
   console.log("[finalizePaidFlow] done", result);
 }
+
 
 /* ----------------------------- Public endpoints ----------------------------- */
 
