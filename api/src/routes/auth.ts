@@ -57,8 +57,8 @@ const RegisterSchema = z.object({
     .refine((d) => {
       const today = new Date();
       const years = (today.getTime() - d.getTime()) / (365.25 * 24 * 3600 * 1000);
-      return years >= 18;
-    }, { message: "You must be at least 18 years old" }),
+      return years >= 16;
+    }, { message: "You must be at least 16 years old" }),
 });
 
 const VerifyPhoneSchema = z.object({
