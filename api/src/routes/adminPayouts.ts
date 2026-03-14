@@ -478,7 +478,9 @@ router.post(
       const adminId = String(req.user?.id ?? "") || null;
 
       const result = await prisma.$transaction((tx) =>
-        releaseHeldPayoutForPO_Tx(tx, String(purchaseOrderId))
+        releaseHeldPayoutForPO_Tx(tx, String(purchaseOrderId), {
+          allowBeforeHoldWindow: true,
+        })
       );
 
       // Notifications (same as before)
@@ -512,9 +514,8 @@ router.post(
           await notifyAdmins({
             type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
             title: "Payout released for PO",
-            body: `Payout released for purchase order ${po.id} (order ${po.orderId}) to supplier ${
-              po.supplier?.name ?? po.supplierId
-            }.`,
+            body: `Payout released for purchase order ${po.id} (order ${po.orderId}) to supplier ${po.supplier?.name ?? po.supplierId
+              }.`,
             data: {
               purchaseOrderId: po.id,
               orderId: po.orderId,

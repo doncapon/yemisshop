@@ -3,8 +3,17 @@ import { Router, type Request, type Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { SupplierPaymentStatus } from "@prisma/client";
+import { paySupplierForPurchaseOrder } from "../services/payout.service.js";
 
 const router = Router();
+
+
+const PAYOUT_EXECUTION_MODE = String(
+  process.env.PAYOUT_EXECUTION_MODE ??
+  (String(process.env.NODE_ENV || "").toLowerCase() === "production"
+    ? "provider"
+    : "mock")
+).toLowerCase();
 
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
 const isSupplier = (role?: string) => role === "SUPPLIER";
@@ -203,6 +212,164 @@ export async function computeSupplierBalance(supplierId: string) {
     ledgerDebits,
   };
 }
+
+
+async function mockFinalizePayoutForPOTx(tx: any, purchaseOrderId: string, actor?: { id?: string; role?: string }) {
+  const po = await tx.purchaseOrder.findUnique({
+    where: { id: purchaseOrderId },
+    select: {
+      id: true,
+      orderId: true,
+      supplierId: true,
+      supplierAmount: true,
+      status: true,
+      payoutStatus: true,
+      paidOutAt: true,
+      payoutHoldUntil: true,
+    },
+  });
+
+  if (!po) {
+    const err: any = new Error("PurchaseOrder not found");
+    err.status = 404;
+    throw err;
+  }
+
+  const poStatus = String(po.status || "").toUpperCase();
+  if (poStatus !== "DELIVERED") {
+    const err: any = new Error("Cannot payout unless PO is DELIVERED");
+    err.status = 409;
+    throw err;
+  }
+
+  const verifiedAt = await getDeliveryOtpVerifiedAtForPO(tx, po.id);
+  if (!verifiedAt) {
+    const err: any = new Error("Payout not allowed until delivery OTP is verified");
+    err.status = 409;
+    throw err;
+  }
+
+  if (await hasOpenComplaintsForPO(tx, po.id)) {
+    const err: any = new Error(
+      "Order has an open customer complaint/refund or dispute; payout cannot be released yet."
+    );
+    err.status = 409;
+    throw err;
+  }
+
+  await assertSupplierPayoutReadyTx(tx, po.supplierId);
+
+  const payoutStatus = String(po.payoutStatus || "").toUpperCase();
+
+  if (po.paidOutAt || payoutStatus === "RELEASED") {
+    return {
+      ok: true,
+      mode: "mock",
+      alreadyReleased: true,
+      releasedAt: po.paidOutAt ?? null,
+    };
+  }
+
+  const payment = await tx.payment.findFirst({
+    where: { orderId: po.orderId, status: "PAID" as any },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!payment) {
+    const err: any = new Error("No PAID payment found for this order");
+    err.status = 409;
+    throw err;
+  }
+
+  const alloc = await tx.supplierPaymentAllocation.findFirst({
+    where: {
+      paymentId: payment.id,
+      purchaseOrderId: po.id,
+      supplierId: po.supplierId,
+      status: { in: ["HELD", "APPROVED", "PENDING"] as any },
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      amount: true,
+      meta: true,
+      releasedAt: true,
+      holdUntil: true,
+    },
+  });
+
+  if (!alloc) {
+    const paidAlloc = await tx.supplierPaymentAllocation.findFirst({
+      where: {
+        paymentId: payment.id,
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+        status: "PAID" as any,
+      },
+      select: { id: true, releasedAt: true },
+    });
+
+    if (paidAlloc) {
+      await tx.purchaseOrder.update({
+        where: { id: po.id },
+        data: {
+          payoutStatus: "RELEASED" as any,
+          ...(po.paidOutAt ? {} : { paidOutAt: paidAlloc.releasedAt ?? new Date() }),
+          payoutHoldUntil: null,
+        },
+      });
+
+      return {
+        ok: true,
+        mode: "mock",
+        alreadyReleased: true,
+        releasedAt: paidAlloc.releasedAt ?? null,
+      };
+    }
+
+    const err: any = new Error("No eligible allocation found for payout");
+    err.status = 409;
+    throw err;
+  }
+
+  const releasedAt = new Date();
+
+  await tx.supplierPaymentAllocation.update({
+    where: { id: alloc.id },
+    data: {
+      status: "PAID" as any,
+      releasedAt,
+      holdUntil: null,
+      meta: {
+        ...(alloc.meta ?? {}),
+        payoutMode: "mock",
+        payoutExecutionMode: PAYOUT_EXECUTION_MODE,
+        releasedByUserId: actor?.id ?? null,
+        releasedByRole: actor?.role ?? null,
+        releasedAt: releasedAt.toISOString(),
+      },
+    } as any,
+  });
+
+  await tx.purchaseOrder.update({
+    where: { id: po.id },
+    data: {
+      payoutStatus: "RELEASED" as any,
+      paidOutAt: releasedAt,
+      payoutHoldUntil: null,
+    },
+  });
+
+  return {
+    ok: true,
+    mode: "mock",
+    allocationId: alloc.id,
+    amount: asNum(alloc.amount, 0),
+    releasedAt,
+  };
+}
+
+
 
 /**
  * GET /api/supplier/payouts/summary
@@ -663,7 +830,6 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
     const userId = req.user?.id;
     const poId = String(req.params.poId);
 
-    // suppliers only here; admin has separate admin routes
     if (isAdmin(req.user?.role)) {
       return res
         .status(403)
@@ -681,28 +847,58 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
     }
     if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
 
-    const out = await prisma.$transaction(async (tx) => {
-      const po = await tx.purchaseOrder.findUnique({
-        where: { id: poId },
-        select: { id: true, supplierId: true, orderId: true },
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+      select: { id: true, supplierId: true, orderId: true },
+    });
+    if (!po) {
+      return res.status(404).json({ error: "PurchaseOrder not found" });
+    }
+
+    if (isSupplier(role) && String(po.supplierId) !== String(supplierId)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    // If hold window is active, this endpoint places payout into HELD first
+    if (PAYOUT_HOLD_DAYS > 0) {
+      const out = await prisma.$transaction(async (tx) => {
+        return releasePayoutForPOTx(tx, poId);
       });
-      if (!po) {
-        const err: any = new Error("PurchaseOrder not found");
-        err.status = 404;
-        throw err;
-      }
 
-      // Suppliers can only release their own PO
-      if (isSupplier(role) && String(po.supplierId) !== String(supplierId)) {
-        const err: any = new Error("Forbidden");
-        err.status = 403;
-        throw err;
-      }
+      return res.json({
+        ok: true,
+        data: out,
+        executionMode: PAYOUT_EXECUTION_MODE,
+      });
+    }
 
-      return releasePayoutForPOTx(tx, poId);
+    // If hold window is disabled, release immediately
+    if (PAYOUT_EXECUTION_MODE !== "provider") {
+      const out = await prisma.$transaction(async (tx) => {
+        return mockFinalizePayoutForPOTx(tx, poId, {
+          id: req.user?.id,
+          role: req.user?.role,
+        });
+      });
+
+      return res.json({
+        ok: true,
+        data: out,
+        executionMode: PAYOUT_EXECUTION_MODE,
+      });
+    }
+
+    // Production / real provider path
+    const out = await paySupplierForPurchaseOrder(poId, {
+      id: req.user?.id,
+      role: req.user?.role,
     });
 
-    return res.json({ ok: true, data: out });
+    return res.json({
+      ok: true,
+      data: out,
+      executionMode: "provider",
+    });
   } catch (e: any) {
     const status = e?.status ? Number(e.status) : 500;
     const msg = e?.message || "Failed to release payout";

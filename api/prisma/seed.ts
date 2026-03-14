@@ -320,6 +320,89 @@ async function ensureSuperAdmin() {
   return user.id;
 }
 
+
+async function ensureApprovedSupplierDocuments(args: {
+  supplierId: string;
+  supplierName: string;
+}) {
+  const { supplierId, supplierName } = args;
+
+  const docs: Array<{
+    kind:
+    | "BUSINESS_REGISTRATION_CERTIFICATE"
+    | "GOVERNMENT_ID"
+    | "PROOF_OF_ADDRESS"
+    | "BANK_PROOF";
+    originalFilename: string;
+    mimeType: string;
+  }> = [
+      {
+        kind: "BUSINESS_REGISTRATION_CERTIFICATE",
+        originalFilename: `${uniqSlugBase(supplierName)}-cac-certificate.pdf`,
+        mimeType: "application/pdf",
+      },
+      {
+        kind: "GOVERNMENT_ID",
+        originalFilename: `${uniqSlugBase(supplierName)}-government-id.pdf`,
+        mimeType: "application/pdf",
+      },
+      {
+        kind: "PROOF_OF_ADDRESS",
+        originalFilename: `${uniqSlugBase(supplierName)}-proof-of-address.pdf`,
+        mimeType: "application/pdf",
+      },
+      {
+        kind: "BANK_PROOF",
+        originalFilename: `${uniqSlugBase(supplierName)}-bank-proof.pdf`,
+        mimeType: "application/pdf",
+      },
+    ];
+
+  for (const doc of docs) {
+    const existing = await prisma.supplierDocument.findFirst({
+      where: {
+        supplierId,
+        kind: doc.kind,
+      },
+      select: { id: true },
+    });
+
+    const storageKey = `seed/suppliers/${supplierId}/${doc.originalFilename}`;
+    const now = new Date();
+
+    if (existing) {
+      await prisma.supplierDocument.update({
+        where: { id: existing.id },
+        data: {
+          storageKey,
+          originalFilename: doc.originalFilename,
+          mimeType: doc.mimeType,
+          size: 1024,
+          status: "APPROVED",
+          note: "Seeded approved supplier document",
+          reviewedAt: now,
+          reviewedByUserId: null,
+        },
+      });
+    } else {
+      await prisma.supplierDocument.create({
+        data: {
+          supplierId,
+          kind: doc.kind,
+          storageKey,
+          originalFilename: doc.originalFilename,
+          mimeType: doc.mimeType,
+          size: 1024,
+          status: "APPROVED",
+          note: "Seeded approved supplier document",
+          reviewedAt: now,
+          reviewedByUserId: null,
+        },
+      });
+    }
+  }
+}
+
 /* ----------------------------------------------------------------------------
   Supplier user + suppliers
 ---------------------------------------------------------------------------- */
@@ -486,6 +569,11 @@ async function ensureSupplierUserAndSuppliers() {
     select: { id: true, name: true },
   });
 
+  await ensureApprovedSupplierDocuments({
+    supplierId: mainSupplier.id,
+    supplierName: mainSupplier.name,
+  });
+
   const otherDefs = [
     {
       name: "City Electronics Hub",
@@ -577,6 +665,13 @@ async function ensureSupplierUserAndSuppliers() {
       },
       select: { id: true, name: true },
     });
+
+    await ensureApprovedSupplierDocuments({
+      supplierId: s.id,
+      supplierName: s.name,
+    });
+
+    others.push(s);
 
     others.push(s);
   }
@@ -1143,86 +1238,86 @@ async function ensureShippingSetup() {
     lgasJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
     priority: number;
   }> = [
-    {
-      code: "LAGOS_LOCAL",
-      name: "Lagos Local",
-      statesJson: ["Lagos"],
-      lgasJson: [
-        "Ikeja",
-        "Eti-Osa",
-        "Surulere",
-        "Kosofe",
-        "Alimosho",
-        "Mushin",
-        "Lagos Island",
-        "Lagos Mainland",
-      ],
-      priority: 10,
-    },
-    {
-      code: "SW_NEAR",
-      name: "South West (Near)",
-      statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
-      lgasJson: Prisma.JsonNull,
-      priority: 20,
-    },
-    {
-      code: "SOUTH_REGIONAL",
-      name: "South (Regional)",
-      statesJson: [
-        "Abia",
-        "Anambra",
-        "Akwa Ibom",
-        "Bayelsa",
-        "Cross River",
-        "Delta",
-        "Edo",
-        "Ebonyi",
-        "Enugu",
-        "Imo",
-        "Rivers",
-      ],
-      lgasJson: Prisma.JsonNull,
-      priority: 30,
-    },
-    {
-      code: "NORTH_REGIONAL",
-      name: "North (Regional)",
-      statesJson: [
-        "FCT",
-        "Abuja",
-        "Federal Capital Territory",
-        "Kaduna",
-        "Kano",
-        "Plateau",
-        "Nasarawa",
-        "Benue",
-        "Niger",
-        "Kwara",
-        "Borno",
-        "Bauchi",
-        "Adamawa",
-        "Sokoto",
-        "Kebbi",
-        "Zamfara",
-        "Katsina",
-        "Jigawa",
-        "Yobe",
-        "Taraba",
-        "Gombe",
-        "Kogi",
-      ],
-      lgasJson: Prisma.JsonNull,
-      priority: 40,
-    },
-    {
-      code: "NIGERIA_FALLBACK",
-      name: "Nigeria Fallback",
-      statesJson: Prisma.JsonNull,
-      lgasJson: Prisma.JsonNull,
-      priority: 999,
-    },
-  ];
+      {
+        code: "LAGOS_LOCAL",
+        name: "Lagos Local",
+        statesJson: ["Lagos"],
+        lgasJson: [
+          "Ikeja",
+          "Eti-Osa",
+          "Surulere",
+          "Kosofe",
+          "Alimosho",
+          "Mushin",
+          "Lagos Island",
+          "Lagos Mainland",
+        ],
+        priority: 10,
+      },
+      {
+        code: "SW_NEAR",
+        name: "South West (Near)",
+        statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
+        lgasJson: Prisma.JsonNull,
+        priority: 20,
+      },
+      {
+        code: "SOUTH_REGIONAL",
+        name: "South (Regional)",
+        statesJson: [
+          "Abia",
+          "Anambra",
+          "Akwa Ibom",
+          "Bayelsa",
+          "Cross River",
+          "Delta",
+          "Edo",
+          "Ebonyi",
+          "Enugu",
+          "Imo",
+          "Rivers",
+        ],
+        lgasJson: Prisma.JsonNull,
+        priority: 30,
+      },
+      {
+        code: "NORTH_REGIONAL",
+        name: "North (Regional)",
+        statesJson: [
+          "FCT",
+          "Abuja",
+          "Federal Capital Territory",
+          "Kaduna",
+          "Kano",
+          "Plateau",
+          "Nasarawa",
+          "Benue",
+          "Niger",
+          "Kwara",
+          "Borno",
+          "Bauchi",
+          "Adamawa",
+          "Sokoto",
+          "Kebbi",
+          "Zamfara",
+          "Katsina",
+          "Jigawa",
+          "Yobe",
+          "Taraba",
+          "Gombe",
+          "Kogi",
+        ],
+        lgasJson: Prisma.JsonNull,
+        priority: 40,
+      },
+      {
+        code: "NIGERIA_FALLBACK",
+        name: "Nigeria Fallback",
+        statesJson: Prisma.JsonNull,
+        lgasJson: Prisma.JsonNull,
+        priority: 999,
+      },
+    ];
 
   const zoneByCode = new Map<string, string>();
 
@@ -1538,70 +1633,70 @@ async function seedProducts(args: {
 
     const product = existing
       ? await prisma.product.update({
-          where: { id: existing.id },
-          data: {
-            title: item.title,
-            description:
-              item.status === "LIVE"
-                ? "Live product seeded for development and testing."
-                : "Pending product seeded for development and testing.",
-            retailPrice: toDec(item.retail),
-            sku: item.sku,
-            status: item.status,
-            imagesJson: pics(`${item.sku}-${item.brandId}`),
-            isDeleted: false,
-            availableQty: 0,
-            inStock: true,
-            shippingCost: toDec2(0),
-            weightGrams: parcel.weightGrams,
-            lengthCm: toDec2(parcel.lengthCm),
-            widthCm: toDec2(parcel.widthCm),
-            heightCm: toDec2(parcel.heightCm),
-            isFragile: parcel.isFragile,
-            isBulky: parcel.isBulky,
-            shippingClass: parcel.shippingClass,
-            freeShipping: false,
-            supplier: { connect: { id: supplierId } },
-            category: { connect: { id: categoryId } },
-            brand: { connect: { id: item.brandId } },
-            owner: { connect: { id: superAdminId } },
-            createdBy: { connect: { id: superAdminId } },
-            updatedBy: { connect: { id: superAdminId } },
-          },
-          select: { id: true, sku: true },
-        })
+        where: { id: existing.id },
+        data: {
+          title: item.title,
+          description:
+            item.status === "LIVE"
+              ? "Live product seeded for development and testing."
+              : "Pending product seeded for development and testing.",
+          retailPrice: toDec(item.retail),
+          sku: item.sku,
+          status: item.status,
+          imagesJson: pics(`${item.sku}-${item.brandId}`),
+          isDeleted: false,
+          availableQty: 0,
+          inStock: true,
+          shippingCost: toDec2(0),
+          weightGrams: parcel.weightGrams,
+          lengthCm: toDec2(parcel.lengthCm),
+          widthCm: toDec2(parcel.widthCm),
+          heightCm: toDec2(parcel.heightCm),
+          isFragile: parcel.isFragile,
+          isBulky: parcel.isBulky,
+          shippingClass: parcel.shippingClass,
+          freeShipping: false,
+          supplier: { connect: { id: supplierId } },
+          category: { connect: { id: categoryId } },
+          brand: { connect: { id: item.brandId } },
+          owner: { connect: { id: superAdminId } },
+          createdBy: { connect: { id: superAdminId } },
+          updatedBy: { connect: { id: superAdminId } },
+        },
+        select: { id: true, sku: true },
+      })
       : await prisma.product.create({
-          data: {
-            title: item.title,
-            description:
-              item.status === "LIVE"
-                ? "Live product seeded for development and testing."
-                : "Pending product seeded for development and testing.",
-            retailPrice: toDec(item.retail),
-            sku: item.sku,
-            status: item.status,
-            imagesJson: pics(`${item.sku}-${item.brandId}`),
-            isDeleted: false,
-            availableQty: 0,
-            inStock: true,
-            shippingCost: toDec2(0),
-            weightGrams: parcel.weightGrams,
-            lengthCm: toDec2(parcel.lengthCm),
-            widthCm: toDec2(parcel.widthCm),
-            heightCm: toDec2(parcel.heightCm),
-            isFragile: parcel.isFragile,
-            isBulky: parcel.isBulky,
-            shippingClass: parcel.shippingClass,
-            freeShipping: false,
-            supplier: { connect: { id: supplierId } },
-            category: { connect: { id: categoryId } },
-            brand: { connect: { id: item.brandId } },
-            owner: { connect: { id: superAdminId } },
-            createdBy: { connect: { id: superAdminId } },
-            updatedBy: { connect: { id: superAdminId } },
-          },
-          select: { id: true, sku: true },
-        });
+        data: {
+          title: item.title,
+          description:
+            item.status === "LIVE"
+              ? "Live product seeded for development and testing."
+              : "Pending product seeded for development and testing.",
+          retailPrice: toDec(item.retail),
+          sku: item.sku,
+          status: item.status,
+          imagesJson: pics(`${item.sku}-${item.brandId}`),
+          isDeleted: false,
+          availableQty: 0,
+          inStock: true,
+          shippingCost: toDec2(0),
+          weightGrams: parcel.weightGrams,
+          lengthCm: toDec2(parcel.lengthCm),
+          widthCm: toDec2(parcel.widthCm),
+          heightCm: toDec2(parcel.heightCm),
+          isFragile: parcel.isFragile,
+          isBulky: parcel.isBulky,
+          shippingClass: parcel.shippingClass,
+          freeShipping: false,
+          supplier: { connect: { id: supplierId } },
+          category: { connect: { id: categoryId } },
+          brand: { connect: { id: item.brandId } },
+          owner: { connect: { id: superAdminId } },
+          createdBy: { connect: { id: superAdminId } },
+          updatedBy: { connect: { id: superAdminId } },
+        },
+        select: { id: true, sku: true },
+      });
 
     await ensureProductAttributeOptions(product.id, attrs);
 
@@ -1673,7 +1768,7 @@ async function validateSeedShippingReadiness() {
   if (badProducts.length) {
     throw new Error(
       `Shipping validation failed: ${badProducts.length} product(s) missing parcel fields. ` +
-        `Examples: ${badProducts.map((p) => p.sku || p.id).join(", ")}`
+      `Examples: ${badProducts.map((p) => p.sku || p.id).join(", ")}`
     );
   }
 
@@ -1695,7 +1790,7 @@ async function validateSeedShippingReadiness() {
   if (badVariants.length) {
     throw new Error(
       `Shipping validation failed: ${badVariants.length} variant(s) missing parcel override fields. ` +
-        `Examples: ${badVariants.map((v) => v.sku || v.id).join(", ")}`
+      `Examples: ${badVariants.map((v) => v.sku || v.id).join(", ")}`
     );
   }
 
@@ -1715,7 +1810,7 @@ async function validateSeedShippingReadiness() {
   if (badSuppliers.length) {
     throw new Error(
       `Shipping validation failed: ${badSuppliers.length} supplier(s) not shipping-ready. ` +
-        `Examples: ${badSuppliers.map((s) => s.name).join(", ")}`
+      `Examples: ${badSuppliers.map((s) => s.name).join(", ")}`
     );
   }
 

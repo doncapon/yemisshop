@@ -653,6 +653,7 @@ app.use((req, res) => {
 /* ------------------------------ Error handler ------------------------------ */
 
 import { ZodError } from "zod";
+import { registerJobs } from "./jobs/registerJobs.js";
 
 app.use((err: any, _req: any, res: any, _next: any) => {
   console.error(err);
@@ -675,4 +676,5 @@ const HOST = process.env.HOST || "0.0.0.0";
 
 app.listen(PORT, HOST, () => {
   console.log(`API on http://${HOST}:${PORT}`);
+  registerJobs();
 });
