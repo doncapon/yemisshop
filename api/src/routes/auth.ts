@@ -33,8 +33,23 @@ const RegisterSchema = z.object({
   middleName: z.string().optional(),
   lastName: z.string().min(1),
   role: z.string().default("SHOPPER"),
-  dialCode: z.string().optional(),
-  localPhone: z.string().optional(),
+
+  // ✅ now required
+  dialCode: z
+    .string()
+    .trim()
+    .min(1, "Country dial code is required")
+    .refine((v) => /^\+\d{1,4}$/.test(v), "Invalid country dial code"),
+
+  // ✅ now required
+  localPhone: z
+    .string()
+    .trim()
+    .min(6, "Phone number is required")
+    .transform((v) => v.replace(/\D/g, ""))
+    .refine((v) => v.length >= 6, "Please enter a valid phone number")
+    .refine((v) => v.length <= 15, "Please enter a valid phone number"),
+
   dateOfBirth: z
     .string()
     .transform((s) => new Date(s))
@@ -85,9 +100,17 @@ const wrap =
     };
 
 function toE164(dialCode?: string, local?: string): string | null {
-  if (!dialCode || !local) return null;
-  const dc = dialCode.startsWith("+") ? dialCode : `+${dialCode}`;
-  return `${dc}${local}`.replace(/\s+/g, "");
+  const dc = String(dialCode ?? "").trim();
+  const localDigits = String(local ?? "").replace(/\D/g, "");
+
+  if (!dc || !localDigits) return null;
+
+  const normalizedDial = dc.startsWith("+") ? dc : `+${dc}`;
+
+  if (!/^\+\d{1,4}$/.test(normalizedDial)) return null;
+  if (localDigits.length < 6 || localDigits.length > 15) return null;
+
+  return `${normalizedDial}${localDigits}`;
 }
 
 async function createUserSession(req: Request, userId: string, role?: string | null) {
@@ -395,11 +418,17 @@ router.post(
   wrap(async (req, res) => {
     const body = RegisterSchema.parse(req.body);
 
-    const existing = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
+    const existing = await prisma.user.findUnique({
+      where: { email: body.email.toLowerCase() },
+    });
     if (existing) return res.status(409).json({ error: "Email already registered" });
 
     const passwordHash = await bcrypt.hash(body.password, 10);
     const phone = toE164(body.dialCode, body.localPhone);
+
+    if (!phone) {
+      return res.status(400).json({ error: "A valid phone number is required" });
+    }
 
     const user = await prisma.user.create({
       data: {
@@ -416,9 +445,9 @@ router.post(
     });
 
     const result = {
-      message: "Registered. Verify email and (optionally) enter the WhatsApp code.",
+      message: "Registered. Verify email and phone number.",
       tempToken: signJwt({ id: user.id, role: user.role, email: user.email }, "1h"),
-      phoneOtpSent: Boolean(phone),
+      phoneOtpSent: false,
       emailSent: false,
       smsSent: false,
     };
@@ -432,20 +461,36 @@ router.post(
         });
         result.emailSent = true;
       } catch (e) {
-        console.warn("send email verification failed:", (e as any)?.message);
+        console.warn("[register] send email verification failed:", (e as any)?.message);
       }
 
-      if (phone && phone.startsWith("+")) {
-        const r = await issueOtp({
-          identifier: user.id,
-          userId: user.id,
-          phoneE164: phone,
-          channelPref: "whatsapp",
+      const r = await issueOtp({
+        identifier: user.id,
+        userId: user.id,
+        phoneE164: phone,
+        channelPref: "whatsapp",
+      });
+
+      result.phoneOtpSent = !!r.ok;
+
+      console.log("[register] OTP send result", {
+        userId: user.id,
+        phoneE164: phone,
+        ok: r.ok,
+        error: r.ok ? null : r.error,
+      });
+
+      if (r.ok) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            phoneOtpLastSentAt: new Date(),
+            phoneOtpSendCountDay: 1,
+          } as any,
         });
-        result.phoneOtpSent = r.ok;
       }
     } catch (e) {
-      console.warn("post-register side-effects failed (continuing):", (e as any)?.message);
+      console.warn("[register] post-register side-effects failed (continuing):", (e as any)?.message);
     }
 
     return res.status(201).json(result);

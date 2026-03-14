@@ -9,11 +9,13 @@ type RegisterResponse = {
   message: string;
   tempToken?: string;
   phoneOtpSent?: boolean;
+  emailSent?: boolean;
 };
 
 type Country = { name: string; code: string; dial: string };
+
 const COUNTRIES: Country[] = [
-  { name: "Country", code: "", dial: "dial" },
+  { name: "Select country", code: "", dial: "" },
   { name: "Nigeria", code: "NG", dial: "+234" },
   { name: "United States", code: "US", dial: "+1" },
   { name: "United Kingdom", code: "GB", dial: "+44" },
@@ -36,7 +38,7 @@ const COUNTRIES: Country[] = [
   { name: "Brazil", code: "BR", dial: "+55" },
   { name: "Mexico", code: "MX", dial: "+52" },
   { name: "Australia", code: "AU", dial: "+61" },
-  { name: "New Zealand", code: "NZ", dial: "64" },
+  { name: "New Zealand", code: "NZ", dial: "+64" },
   { name: "UAE", code: "AE", dial: "+971" },
   { name: "Saudi Arabia", code: "SA", dial: "+966" },
   { name: "Turkey", code: "TR", dial: "+90" },
@@ -47,25 +49,38 @@ const COUNTRIES: Country[] = [
   { name: "Ethiopia", code: "ET", dial: "+251" },
 ];
 
+function normalizeLocalPhone(input: string): string {
+  return String(input ?? "").replace(/\D/g, "");
+}
+
+function buildE164Phone(countryDial: string, localPhone: string): string | null {
+  const dial = String(countryDial ?? "").trim();
+  const localDigits = normalizeLocalPhone(localPhone);
+
+  if (!dial || !localDigits) return null;
+
+  const safeDial = dial.startsWith("+") ? dial : `+${dial}`;
+  return `${safeDial}${localDigits}`;
+}
+
 export default function Register() {
   const [form, setForm] = useState({
     email: "",
     firstName: "",
     middleName: "",
     lastName: "",
-    countryDial: "dial",
+    countryDial: "",
     localPhone: "",
     password: "",
     confirmPassword: "",
     role: "SHOPPER" as Role,
-    dateOfBirth: "", // YYYY-MM-DD
+    dateOfBirth: "",
   });
 
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const nav = useNavigate();
 
-  // 👁️ Show / hide password toggles
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
@@ -93,8 +108,17 @@ export default function Register() {
     if (!form.lastName.trim()) return "Please enter your last name";
     if (!form.email.trim()) return "Please enter your email";
     if (!/^\S+@\S+\.\S+$/.test(form.email)) return "Please enter a valid email";
-    if (form.countryDial === "dial") {
+
+    if (!form.countryDial.trim()) {
       return "Please select your country code";
+    }
+
+    const localDigits = normalizeLocalPhone(form.localPhone);
+    if (!localDigits) {
+      return "Please enter your phone number";
+    }
+    if (localDigits.length < 6) {
+      return "Please enter a valid phone number";
     }
 
     const pwd = form.password ?? "";
@@ -102,28 +126,28 @@ export default function Register() {
     const hasLetter = /[A-Za-z]/.test(pwd);
     const hasNumber = /\d/.test(pwd);
     const hasSpecial = /[^A-Za-z0-9]/.test(pwd);
+
     if (!hasMinLen || !hasLetter || !hasNumber || !hasSpecial) {
       return "Password must be at least 8 characters and include a letter, a number, and a special character.";
     }
 
-    if (form.password !== form.confirmPassword) return "Passwords do not match";
-
-    const localDigits = form.localPhone.replace(/\D/g, "");
-    if (localDigits && localDigits.length < 6) return "Please enter a valid phone number";
+    if (form.password !== form.confirmPassword) {
+      return "Passwords do not match";
+    }
 
     if (!form.dateOfBirth) return "Please select your date of birth";
     if (!/^\d{4}-\d{2}-\d{2}$/.test(form.dateOfBirth)) {
       return "Please use a valid date (YYYY-MM-DD).";
     }
+
     const yearStr = form.dateOfBirth.slice(0, 4);
     if (!/^\d{4}$/.test(yearStr)) return "Birth year must be exactly 4 digits.";
 
-    const dob = new Date(form.dateOfBirth + "T00:00:00");
+    const dob = new Date(`${form.dateOfBirth}T00:00:00`);
     if (Number.isNaN(+dob)) return "Please select a valid date of birth";
 
     const today = new Date();
 
-    // helper: exact age in years (integer)
     const getAgeYears = (birth: Date, now: Date) => {
       let age = now.getFullYear() - birth.getFullYear();
       const m = now.getMonth() - birth.getMonth();
@@ -133,7 +157,7 @@ export default function Register() {
 
     const age = getAgeYears(dob, today);
 
-    if (age < 16) return "You must be at least 18 years old to register";
+    if (age < 18) return "You must be at least 18 years old to register";
     if (age > 125) return "Please enter a valid date of birth (age must be 125 or younger)";
 
     return null;
@@ -143,7 +167,7 @@ export default function Register() {
     try {
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch {
-      /* noop */
+      //
     }
   };
 
@@ -161,9 +185,14 @@ export default function Register() {
     try {
       setSubmitting(true);
 
-      const phone = form.localPhone.trim()
-        ? `+${form.countryDial}${form.localPhone.replace(/\D/g, "")}`
-        : null;
+      const localDigits = normalizeLocalPhone(form.localPhone);
+      const phone = buildE164Phone(form.countryDial, localDigits);
+
+      if (!phone) {
+        setErr("Please enter a valid phone number");
+        scrollTopOnError();
+        return;
+      }
 
       const payload = {
         email: form.email.trim().toLowerCase(),
@@ -174,8 +203,10 @@ export default function Register() {
         password: form.password,
         role: form.role,
         dialCode: form.countryDial,
-        localPhone: form.localPhone,
-        dateOfBirth: form.dateOfBirth ? new Date(form.dateOfBirth).toISOString() : undefined,
+        localPhone: localDigits,
+        dateOfBirth: form.dateOfBirth
+          ? new Date(`${form.dateOfBirth}T00:00:00`).toISOString()
+          : undefined,
       };
 
       const { data } = await api.post<RegisterResponse>("/api/auth/register", payload);
@@ -183,7 +214,9 @@ export default function Register() {
       try {
         localStorage.setItem("verifyEmail", payload.email);
         if (data?.tempToken) localStorage.setItem("verifyToken", data.tempToken);
-      } catch {}
+      } catch {
+        //
+      }
 
       const q = new URLSearchParams({ e: payload.email }).toString();
       nav(`/verify?${q}`);
@@ -206,29 +239,30 @@ export default function Register() {
     return Math.min(s, 4);
   }, [form.password]);
 
-  // shared input styles (✅ smaller on mobile, not huge pills)
   const inputBase =
     "w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-[16px] text-slate-900 placeholder:text-slate-400 " +
     "outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm";
 
   const labelBase = "block text-sm font-semibold text-slate-800 mb-1";
 
-  const passwordInputBase = `${inputBase} pr-20`; // extra space for the toggle button
+  const passwordInputBase = `${inputBase} pr-20`;
 
   const toggleBtnBase =
     "absolute inset-y-0 right-2 flex items-center text-xs font-medium text-slate-500 hover:text-slate-700";
 
+  const phonePreview = useMemo(() => {
+    const built = buildE164Phone(form.countryDial, form.localPhone);
+    return built || "—";
+  }, [form.countryDial, form.localPhone]);
+
   return (
     <SiteLayout>
       <div className="min-h-[100dvh] relative overflow-hidden bg-gradient-to-b from-zinc-50 to-white">
-        {/* soft blobs (lighter than before for mobile readability) */}
         <div className="pointer-events-none absolute -top-28 -right-20 w-[26rem] h-[26rem] rounded-full blur-3xl opacity-30 bg-fuchsia-300/50" />
         <div className="pointer-events-none absolute -bottom-28 -left-16 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-25 bg-cyan-300/50" />
 
         <div className="relative px-3 sm:px-4 py-6 sm:py-10">
-          {/* ✅ Full-width on mobile; card breathes nicely */}
           <div className="mx-auto w-full max-w-lg">
-            {/* Header */}
             <div className="mb-5 text-center">
               <h1 className="text-2xl sm:text-3xl font-semibold text-zinc-900">
                 Create your account
@@ -248,7 +282,6 @@ export default function Register() {
                 </div>
               )}
 
-              {/* Name */}
               <div>
                 <label className={labelBase}>Your name</label>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -276,7 +309,6 @@ export default function Register() {
                 </div>
               </div>
 
-              {/* Email + DOB */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div>
                   <label className={labelBase}>Email</label>
@@ -298,11 +330,10 @@ export default function Register() {
                     onChange={onDateChange}
                     className={inputBase}
                   />
-                  <p className="mt-1 text-xs text-slate-500">Must be 16+ years old.</p>
+                  <p className="mt-1 text-xs text-slate-500">Must be 18+ years old.</p>
                 </div>
               </div>
 
-              {/* Phone (✅ compact 2-col on mobile) */}
               <div>
                 <label className={labelBase}>Phone</label>
                 <div className="grid grid-cols-[9rem,1fr] gap-2">
@@ -313,15 +344,17 @@ export default function Register() {
                     aria-label="Country code"
                   >
                     {COUNTRIES.map((c) => (
-                      <option key={`${c.code}-${c.dial}`} value={c.dial}>
-                        {c.name} {c.dial && c.dial !== "dial" ? `(${c.dial})` : ""}
+                      <option key={`${c.code}-${c.dial}-${c.name}`} value={c.dial}>
+                        {c.name} {c.dial ? `(${c.dial})` : ""}
                       </option>
                     ))}
                   </select>
 
                   <input
                     value={form.localPhone}
-                    onChange={onChange("localPhone")}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, localPhone: e.target.value.replace(/[^\d\s()-]/g, "") }))
+                    }
                     inputMode="tel"
                     autoComplete="tel-national"
                     className={inputBase}
@@ -329,14 +362,10 @@ export default function Register() {
                   />
                 </div>
                 <p className="mt-1 text-xs text-slate-500">
-                  Format:{" "}
-                  {form.countryDial === "dial"
-                    ? "—"
-                    : `${form.countryDial} ${form.localPhone.replace(/\D/g, "")}`}
+                  Format: {phonePreview}
                 </p>
               </div>
 
-              {/* Passwords */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div>
                   <label className={labelBase}>Password</label>
@@ -414,7 +443,6 @@ export default function Register() {
                 </div>
               </div>
 
-              {/* Submit */}
               <button
                 type="submit"
                 disabled={submitting}

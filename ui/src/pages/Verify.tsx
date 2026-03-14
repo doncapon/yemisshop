@@ -1,4 +1,4 @@
-// src/pages/VerifyEmail.tsx
+// src/pages/Verify.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
