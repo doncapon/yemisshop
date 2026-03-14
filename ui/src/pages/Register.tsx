@@ -157,7 +157,7 @@ export default function Register() {
 
     const age = getAgeYears(dob, today);
 
-    if (age < 18) return "You must be at least 18 years old to register";
+    if (age < 16) return "You must be at least 16 years old to register";
     if (age > 125) return "Please enter a valid date of birth (age must be 125 or younger)";
 
     return null;
@@ -330,7 +330,7 @@ export default function Register() {
                     onChange={onDateChange}
                     className={inputBase}
                   />
-                  <p className="mt-1 text-xs text-slate-500">Must be 18+ years old.</p>
+                  <p className="mt-1 text-xs text-slate-500">Must be 16+ years old.</p>
                 </div>
               </div>
 
