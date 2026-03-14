@@ -246,8 +246,7 @@ async function ensureCoreSettings() {
         { key: "payoutReleaseSchedulerEnabled", value: "true", isPublic: true },
         { key: "payoutReleaseIntervalHours", value: "6", isPublic: true },
         { key: "payoutReleaseSchedulerTimezone", value: "UTC", isPublic: true },
-        { key: "maxMarginPct", value: "100", isPublic: true },
-        { key: "maxMarginPct", value: "100", isPublic: true },
+        { key: "shippingEnabled", value: "false", isPublic: true },
       ],
       skipDuplicates: true,
     });
