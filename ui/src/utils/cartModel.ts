@@ -61,6 +61,21 @@ function normOptionsKey(raw: any): string {
   return parts.join("|");
 }
 
+function normalizeSelectedOptions(raw: any): SelectedOption[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  const out = raw
+    .map((o: any) => ({
+      attributeId: o?.attributeId != null ? String(o.attributeId) : undefined,
+      attribute: o?.attribute != null ? String(o.attribute) : undefined,
+      valueId: o?.valueId != null ? String(o.valueId) : undefined,
+      value: o?.value != null ? String(o.value) : undefined,
+    }))
+    .filter((o) => o.attributeId || o.attribute || o.valueId || o.value);
+
+  return out.length ? out : undefined;
+}
+
 function normalizeLine(x: any): CartLine | null {
   const productId = toStr(x?.productId);
   if (!productId) return null;
@@ -76,11 +91,13 @@ function normalizeLine(x: any): CartLine | null {
   return {
     productId,
     variantId,
+    supplierId: x?.supplierId != null ? toStr(x.supplierId) || null : undefined,
+    offerId: x?.offerId != null ? toStr(x.offerId) || undefined : undefined,
     kind,
     optionsKey,
     qty: normQty(x?.qty),
 
-    selectedOptions: Array.isArray(x?.selectedOptions) ? x.selectedOptions : undefined,
+    selectedOptions: normalizeSelectedOptions(x?.selectedOptions),
     titleSnapshot: x?.titleSnapshot != null ? String(x.titleSnapshot) : null,
     imageSnapshot: x?.imageSnapshot != null ? String(x.imageSnapshot) : null,
     unitPriceCache:
@@ -99,46 +116,52 @@ function sameIdentity(a: CartLine, b: CartLine) {
   );
 }
 
+function stableStringify(value: any): string {
+  try {
+    return JSON.stringify(value ?? null);
+  } catch {
+    return "";
+  }
+}
+
+function dedupeNormalizedLines(lines: CartLine[]): CartLine[] {
+  const kept = lines.filter((l) => (l.qty ?? 0) > 0);
+
+  const out: CartLine[] = [];
+  for (const l of kept) {
+    const idx = out.findIndex((x) => sameIdentity(x, l));
+    if (idx >= 0) {
+      out[idx] = {
+        ...out[idx],
+        supplierId: out[idx].supplierId ?? l.supplierId ?? undefined,
+        offerId: out[idx].offerId ?? l.offerId ?? undefined,
+        qty: normQty((out[idx].qty ?? 0) + (l.qty ?? 0)),
+        titleSnapshot: out[idx].titleSnapshot || l.titleSnapshot || null,
+        imageSnapshot: out[idx].imageSnapshot || l.imageSnapshot || null,
+        unitPriceCache: out[idx].unitPriceCache ?? l.unitPriceCache ?? null,
+        selectedOptions:
+          (out[idx].selectedOptions?.length ? out[idx].selectedOptions : null) ||
+          (l.selectedOptions?.length ? l.selectedOptions : undefined),
+      };
+    } else {
+      out.push(l);
+    }
+  }
+
+  return out;
+}
+
+function normalizeCartArray(raw: any): CartLine[] {
+  const arr: any[] = Array.isArray(raw) ? raw : [];
+  const normalized = arr.map(normalizeLine).filter(Boolean) as CartLine[];
+  return dedupeNormalizedLines(normalized);
+}
+
 /** Read local cart lines (always returns array). */
 export function readCartLines(): CartLine[] {
   try {
-    const raw: any = loadCartRaw();
-    const arr: any[] = Array.isArray(raw) ? raw : [];
-
-    // normalize + drop empty/invalid
-    const normalized = arr
-      .map(normalizeLine)
-      .filter(Boolean) as CartLine[];
-
-    // drop qty<=0
-    const kept = normalized.filter((l) => (l.qty ?? 0) > 0);
-
-    // de-dupe by identity (merge qty)
-    const out: CartLine[] = [];
-    for (const l of kept) {
-      const idx = out.findIndex((x) => sameIdentity(x, l));
-      if (idx >= 0) {
-        out[idx] = {
-          ...out[idx],
-          // merge qty
-          qty: normQty((out[idx].qty ?? 0) + (l.qty ?? 0)),
-          // keep best snapshots
-          titleSnapshot: out[idx].titleSnapshot || l.titleSnapshot || null,
-          imageSnapshot: out[idx].imageSnapshot || l.imageSnapshot || null,
-          unitPriceCache: out[idx].unitPriceCache ?? l.unitPriceCache ?? null,
-          selectedOptions:
-            (out[idx].selectedOptions?.length ? out[idx].selectedOptions : null) ||
-            (l.selectedOptions?.length ? l.selectedOptions : undefined),
-        };
-      } else {
-        out.push(l);
-      }
-    }
-
-    // persist cleaned cart once so old bad shapes stop reappearing
-    saveCartRaw(out as any);
-
-    return out;
+    const raw = loadCartRaw();
+    return normalizeCartArray(raw);
   } catch {
     return [];
   }
@@ -146,15 +169,15 @@ export function readCartLines(): CartLine[] {
 
 /** Write local cart lines (always normalizes and dispatches cart:updated via saveCartRaw). */
 export function writeCartLines(lines: CartLine[]) {
-  const safe = Array.isArray(lines) ? lines : [];
-  const normalized = safe
-    .map(normalizeLine)
-    .filter(Boolean) as CartLine[];
+  const next = normalizeCartArray(Array.isArray(lines) ? lines : []);
+  const prev = normalizeCartArray(loadCartRaw());
 
-  // drop qty<=0
-  const kept = normalized.filter((l) => (l.qty ?? 0) > 0);
+  // Critical guard: do not re-save identical cart data.
+  if (stableStringify(prev) === stableStringify(next)) {
+    return;
+  }
 
-  saveCartRaw(kept as any);
+  saveCartRaw(next as any);
 }
 
 /** Upsert/remove a line by (productId, variantId, kind, optionsKey). */
@@ -166,7 +189,6 @@ export function upsertCartLine(input: CartLine): CartLine[] {
   if (!normalized) return rows;
 
   const nextQty = normQty(normalized.qty);
-
   const idx = rows.findIndex((x) => sameIdentity(x, normalized));
 
   let next: CartLine[];
@@ -184,13 +206,13 @@ export function upsertCartLine(input: CartLine): CartLine[] {
   }
 
   writeCartLines(next);
-  return next;
+  return readCartLines();
 }
 
 /** Convert stored lines -> MiniCartToast rows (correct field names for toast). */
 export function toMiniCartRows(lines: CartLine[]): MiniCartRow[] {
   const arr = Array.isArray(lines) ? lines : [];
-  const normalized = arr.map(normalizeLine).filter(Boolean) as CartLine[];
+  const normalized = normalizeCartArray(arr);
 
   return normalized.map((x) => {
     const qty = Math.max(0, Number(x.qty) || 0);
@@ -229,7 +251,7 @@ export function toCartPageItems(
   resolveImageUrl?: (s?: string | null) => string | undefined
 ): CartPageItem[] {
   const arr = Array.isArray(lines) ? lines : [];
-  const normalized = arr.map(normalizeLine).filter(Boolean) as CartLine[];
+  const normalized = normalizeCartArray(arr);
 
   return normalized.map((x) => {
     const qty = Math.max(1, Number(x.qty) || 1);
@@ -239,7 +261,7 @@ export function toCartPageItems(
     const img = resolveImageUrl ? resolveImageUrl(imgRaw) : imgRaw || undefined;
 
     return {
-      kind: x.kind, // already normalized
+      kind: x.kind,
       productId: String(x.productId),
       variantId: x.variantId == null ? null : String(x.variantId),
       title: String(x.titleSnapshot ?? ""),
@@ -261,7 +283,7 @@ export function qtyInCart(lines: CartLine[], productId: string, variantId: strin
   const kind: CartItemKind = vid ? "VARIANT" : "BASE";
   const optionsKey = "";
 
-  const normalized = (lines || []).map(normalizeLine).filter(Boolean) as CartLine[];
+  const normalized = normalizeCartArray(lines || []);
 
   return normalized
     .filter((x) => {

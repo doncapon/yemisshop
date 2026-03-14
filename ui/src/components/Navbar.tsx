@@ -7,8 +7,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "../store/auth";
 import NotificationsBell from "../components/notifications/NotificationsBell";
 import DaySpringLogo from "../components/brand/DayspringLogo";
-import { useCartCount } from "../hooks/useCartCount";
 import api from "../api/client";
+import { readCartLines } from "../utils/cartModel";
 
 import {
   Home,
@@ -45,6 +45,18 @@ function normRole(role: unknown) {
   if (r === "SUPERADMIN") r = "SUPER_ADMIN";
   if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
   return r;
+}
+
+function getCartQtyFromStorage(): number {
+  try {
+    const lines = readCartLines();
+    return (Array.isArray(lines) ? lines : []).reduce((sum, line) => {
+      const qty = Math.max(0, Number(line?.qty) || 0);
+      return sum + qty;
+    }, 0);
+  } catch {
+    return 0;
+  }
 }
 
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
@@ -197,6 +209,13 @@ export default function Navbar() {
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
+  const [cartQty, setCartQty] = useState<number>(() => getCartQtyFromStorage());
+
+  const syncCartQty = useCallback(() => {
+    const nextQty = getCartQtyFromStorage();
+    setCartQty((prev) => (prev === nextQty ? prev : nextQty));
+  }, []);
+
   const closeUserMenu = useCallback(() => setMenuOpen(false), []);
   const menuRef = useClickAway<HTMLDivElement>(closeUserMenu);
 
@@ -209,8 +228,6 @@ export default function Navbar() {
   const isSuperAdmin = roleNorm === "SUPER_ADMIN";
   const isAdmin = roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN";
   const isRider = roleNorm === "SUPPLIER_RIDER";
-
-  const cartCount = useCartCount();
 
   const firstName = user?.firstName?.trim() || null;
   const middleName = (user as any)?.middleName?.trim?.() || null;
@@ -265,6 +282,33 @@ export default function Navbar() {
   const showSupplierNav = isLoggedIn && isSupplier && !isRider;
   const showRiderNav = isLoggedIn && isRider;
   const showCartMobile = !isSupplier && !isRider;
+
+  useEffect(() => {
+    syncCartQty();
+  }, [loc.key, syncCartQty]);
+
+  useEffect(() => {
+    const onCartUpdated = () => syncCartQty();
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key || e.key.toLowerCase().includes("cart")) syncCartQty();
+    };
+    const onFocus = () => syncCartQty();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") syncCartQty();
+    };
+
+    window.addEventListener("cart:updated", onCartUpdated as EventListener);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      window.removeEventListener("cart:updated", onCartUpdated as EventListener);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [syncCartQty]);
 
   useEffect(() => {
     if (!mobileMoreOpen) return;
@@ -405,7 +449,7 @@ export default function Navbar() {
                       end
                       icon={<ShoppingCart size={18} />}
                       label="Cart"
-                      badgeCount={cartCount.totalQty}
+                      badgeCount={cartQty}
                     />
                   )}
 
@@ -643,9 +687,9 @@ export default function Navbar() {
                   title="Cart"
                 >
                   <ShoppingCart size={18} className="pointer-events-none" />
-                  {Number(cartCount?.totalQty || 0) > 0 && (
+                  {cartQty > 0 && (
                     <span className="pointer-events-none absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                      {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
+                      {cartQty > 9 ? "9+" : cartQty}
                     </span>
                   )}
                 </NavLink>

@@ -527,7 +527,7 @@ export default function AdminDashboard() {
     mutationFn: async (id: string) =>
       (
         await api.post(
-          `/api/admin/refunds/${id}/mark-refunded`,
+          `/api/admin/refunds/${id}/approve`,
           {},
           { withCredentials: true }
         )
@@ -2597,7 +2597,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     mutationFn: async (id: string) =>
       (
         await api.post(
-          `/api/admin/refunds/${encodeURIComponent(id)}/mark-refunded`,
+          `/api/admin/refunds/${encodeURIComponent(id)}/approve`,
           {},
           { withCredentials: true }
         )

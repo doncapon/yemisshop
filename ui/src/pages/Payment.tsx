@@ -1,5 +1,5 @@
 // src/pages/Payment.tsx
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import { useModal } from "../components/ModalProvider";
@@ -21,6 +21,7 @@ type InitResp = {
 
 const AUTO_REDIRECT_KEY = "paystack:autoRedirect";
 const LAST_REF_KEY = "paystack:lastRef";
+const INIT_TIMEOUT_MS = 15000;
 
 const ngn = new Intl.NumberFormat("en-NG", {
   style: "currency",
@@ -28,34 +29,75 @@ const ngn = new Intl.NumberFormat("en-NG", {
   maximumFractionDigits: 2,
 });
 
+type PageStatus = "idle" | "initializing" | "redirecting" | "ready" | "error";
+
+function safeNumber(v: any): number | undefined {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function getErrorMessage(e: any): string {
+  return String(e?.response?.data?.error || e?.message || "").trim();
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label = "Request timed out"): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = window.setTimeout(() => reject(new Error(label)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(id);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(id);
+        reject(err);
+      }
+    );
+  });
+}
+
 export default function Payment() {
   const nav = useNavigate();
   const loc = useLocation();
-  const orderId = new URLSearchParams(loc.search).get("orderId") || "";
+  const { openModal } = useModal();
+
+  const orderId = useMemo(() => {
+    return new URLSearchParams(loc.search).get("orderId") || "";
+  }, [loc.search]);
 
   const state = (loc.state || {}) as any;
+
+  const sessionInit = useMemo(() => {
+    try {
+      const raw = sessionStorage.getItem("payment:init");
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw) as any;
+      if (!parsed || String(parsed.orderId || "") !== String(orderId || "")) return null;
+
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, [orderId]);
+
+  const bootstrap = state && Object.keys(state).length ? state : sessionInit || {};
+
   const estimatedTotal =
-    typeof state.total === "number"
-      ? state.total
-      : state.total
-        ? Number(state.total) || undefined
-        : undefined;
+    typeof bootstrap.total === "number" ? bootstrap.total : safeNumber(bootstrap.total);
 
   const estimatedServiceFeeTotal =
-    typeof state.serviceFeeTotal === "number"
-      ? state.serviceFeeTotal
-      : state.serviceFeeTotal
-        ? Number(state.serviceFeeTotal) || undefined
-        : undefined;
+    typeof bootstrap.serviceFeeTotal === "number"
+      ? bootstrap.serviceFeeTotal
+      : safeNumber(bootstrap.serviceFeeTotal);
 
-  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<PageStatus>("idle");
   const [init, setInit] = useState<InitResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const { openModal } = useModal();
-  const initOnce = useRef(false);
-
   const [showHosted, setShowHosted] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
   const [autoRedirect, setAutoRedirect] = useState<boolean>(() => {
     try {
       return localStorage.getItem(AUTO_REDIRECT_KEY) === "1";
@@ -64,55 +106,74 @@ export default function Payment() {
     }
   });
 
+  const redirectTimerRef = useRef<number | null>(null);
+
+  const loading = status === "initializing";
+  const redirecting = status === "redirecting";
+
   const gotoOrders = () => nav("/orders");
   const gotoCheckout = () => nav("/cart");
   const gotoCart = () => nav("/cart");
 
   useEffect(() => {
-    if (!orderId) return;
-    if (initOnce.current) return;
-    initOnce.current = true;
+    return () => {
+      if (redirectTimerRef.current != null) {
+        window.clearTimeout(redirectTimerRef.current);
+      }
+    };
+  }, []);
 
-    (async () => {
-      setLoading(true);
+  useEffect(() => {
+    if (!orderId) {
+      setStatus("error");
+      setErr("Missing order ID.");
+      return;
+    }
+
+    let alive = true;
+
+    const initPayment = async () => {
+      setStatus("initializing");
       setErr(null);
       setInfo(null);
+      setInit(null);
+      setShowHosted(false);
 
       try {
-        const payload: Record<string, any> = {
+        const basePayload: Record<string, any> = {
           orderId,
           channel: "paystack",
         };
 
-        if (typeof estimatedTotal === "number" && Number.isFinite(estimatedTotal)) {
-          payload.expectedTotal = estimatedTotal;
-        }
+        const firstPayload: Record<string, any> =
+          typeof estimatedTotal === "number" && Number.isFinite(estimatedTotal)
+            ? { ...basePayload, expectedTotal: estimatedTotal }
+            : basePayload;
 
         let data: InitResp | null = null;
+        let retriedWithoutExpectedTotal = false;
 
         try {
-          const resp = await api.post<InitResp>("/api/payments/init", payload, {
-            withCredentials: true,
-          });
+          const resp = await withTimeout(
+            api.post<InitResp>("/api/payments/init", firstPayload, {
+              withCredentials: true,
+            }),
+            INIT_TIMEOUT_MS,
+            "Payment initialization is taking too long."
+          );
           data = resp.data;
         } catch (e: any) {
-          const status = Number(e?.response?.status || 0);
-          const msg = String(e?.response?.data?.error || "");
+          const statusCode = Number(e?.response?.status || 0);
 
-          if (
-            status === 409 &&
-            typeof payload.expectedTotal === "number" &&
-            /total changed|refresh checkout|mismatch/i.test(msg)
-          ) {
-            setInfo("Your order total was refreshed from the latest backend calculation.");
+          if (statusCode === 409) {
+            retriedWithoutExpectedTotal = true;
 
-            const retry = await api.post<InitResp>(
-              "/api/payments/init",
-              {
-                orderId,
-                channel: "paystack",
-              },
-              { withCredentials: true }
+            const retry = await withTimeout(
+              api.post<InitResp>("/api/payments/init", basePayload, {
+                withCredentials: true,
+              }),
+              INIT_TIMEOUT_MS,
+              "Payment initialization retry is taking too long."
             );
 
             data = retry.data;
@@ -121,8 +182,14 @@ export default function Payment() {
           }
         }
 
+        if (!alive) return;
+
         if (!data) {
-          throw new Error("Failed to initialize payment");
+          throw new Error("Failed to initialize payment.");
+        }
+
+        if (!data.reference) {
+          throw new Error("Payment reference was not returned.");
         }
 
         setInit(data);
@@ -140,6 +207,10 @@ export default function Payment() {
           //
         }
 
+        if (retriedWithoutExpectedTotal) {
+          setInfo("Your order total was refreshed from the latest backend calculation.");
+        }
+
         if (
           typeof data.amount === "number" &&
           typeof estimatedTotal === "number" &&
@@ -154,67 +225,111 @@ export default function Payment() {
           );
         }
 
-        if (data.mode === "paystack" && data.authorization_url) {
-          if (localStorage.getItem(AUTO_REDIRECT_KEY) === "1") {
-            markPaystackExit();
-            window.location.replace(data.authorization_url);
-          } else {
-            setShowHosted(true);
+        if (data.mode === "paystack") {
+          if (!data.authorization_url) {
+            setStatus("error");
+            setErr("Payment link was not returned. Please try again or go to your orders.");
+            return;
           }
-        }
-      } catch (e: any) {
-        const status = Number(e?.response?.status || 0);
-        const message =
-          e?.response?.data?.error || e?.message || "Failed to init payment";
 
-        if (status === 409) {
+          if (autoRedirect) {
+            setStatus("redirecting");
+
+            redirectTimerRef.current = window.setTimeout(() => {
+              if (!alive) return;
+              try {
+                markPaystackExit();
+                window.location.assign(data!.authorization_url!);
+              } catch {
+                if (!alive) return;
+                setStatus("ready");
+                setShowHosted(true);
+                setInfo("Automatic redirect did not complete. Please continue manually.");
+              }
+            }, 120);
+
+            return;
+          }
+
+          setShowHosted(true);
+          setStatus("ready");
+          return;
+        }
+
+        setStatus("ready");
+      } catch (e: any) {
+        if (!alive) return;
+
+        const statusCode = Number(e?.response?.status || 0);
+        const message = getErrorMessage(e) || "Failed to initialize payment.";
+
+        if (statusCode === 401) {
+          setErr("Your session has expired. Please log in again.");
+        } else if (statusCode === 409) {
           setErr(
-            "This order was recalculated and could not be initialized for payment from this page state. Please return to cart and continue again."
+            "This order was recalculated and could not be initialized for payment. Please reopen payment from your orders page."
           );
         } else {
           setErr(message);
         }
-      } finally {
-        setLoading(false);
+
+        setStatus("error");
       }
-    })();
-  }, [orderId, estimatedTotal]);
+    };
+
+    void initPayment();
+
+    return () => {
+      alive = false;
+    };
+  }, [orderId, estimatedTotal, autoRedirect, attempt]);
+
+  const retryInit = () => {
+    setAttempt((n) => n + 1);
+  };
+
+  useEffect(() => {
+    if (!orderId) return;
+
+    try {
+      const raw = sessionStorage.getItem("payment:init");
+      if (!raw) return;
+
+      const parsed = JSON.parse(raw) as any;
+      if (String(parsed?.orderId || "") === String(orderId)) {
+        sessionStorage.removeItem("payment:init");
+      }
+    } catch {
+      //
+    }
+  }, [orderId]);
 
   const markPaidManual = async () => {
     if (!init) return;
-    setLoading(true);
+
+    setStatus("initializing");
     setErr(null);
 
     try {
-      await api.post(
-        "/api/payments/verify",
-        { reference: init.reference, orderId },
-        { withCredentials: true }
+      await withTimeout(
+        api.post(
+          "/api/payments/verify",
+          { reference: init.reference, orderId },
+          { withCredentials: true }
+        ),
+        INIT_TIMEOUT_MS,
+        "Payment verification is taking too long."
       );
 
       openModal({ title: "Payment", message: "Payment verified. Thank you!" });
-      nav(`/payment-callback?orderId=${orderId}&reference=${init.reference}`);
+      nav(`/payment-callback?orderId=${orderId}&reference=${init.reference}`, {
+        replace: true,
+      });
     } catch (e: any) {
-      setErr(e?.response?.data?.error || "Verification failed");
-    } finally {
-      setLoading(false);
+      setErr(getErrorMessage(e) || "Verification failed");
+      setStatus("error");
     }
   };
-
-  if (!orderId) {
-    return (
-      <SiteLayout>
-        <div className="mx-auto max-w-md p-4 sm:p-6">
-          <div className="rounded-2xl border bg-white p-4 text-sm">
-            Missing order ID.
-          </div>
-        </div>
-      </SiteLayout>
-    );
-  }
-
-  const isBankFlow =
-    init?.mode === "trial" || init?.mode === "paystack_inline_bank";
 
   const copyRef = async () => {
     if (!init?.reference) return;
@@ -236,6 +351,7 @@ export default function Payment() {
     if (!init?.reference) return;
     const text = `Payment reference: ${init.reference}\nOrder: ${orderId}`;
     const url = init.authorization_url || window.location.href;
+
     if (navigator.share) {
       try {
         await navigator.share({ title: "Payment Reference", text, url });
@@ -249,6 +365,7 @@ export default function Payment() {
 
   const downloadRef = () => {
     if (!init?.reference) return;
+
     const blob = new Blob(
       [
         `Payment Reference: ${init.reference}\n`,
@@ -260,6 +377,7 @@ export default function Payment() {
       ],
       { type: "text/plain;charset=utf-8" }
     );
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -269,9 +387,20 @@ export default function Payment() {
   };
 
   const goToPaystack = () => {
-    if (!init?.authorization_url) return;
-    markPaystackExit();
-    window.location.replace(init.authorization_url);
+    if (!init?.authorization_url) {
+      setErr("Payment link is missing. Please try again.");
+      setStatus("error");
+      return;
+    }
+
+    try {
+      setStatus("redirecting");
+      markPaystackExit();
+      window.location.assign(init.authorization_url);
+    } catch {
+      setStatus("ready");
+      setErr("Could not open Paystack automatically. Please try again.");
+    }
   };
 
   const toggleAuto = (v: boolean) => {
@@ -283,13 +412,32 @@ export default function Payment() {
     }
   };
 
-  const HostedCheckoutModal = () => {
-    if (!init?.authorization_url) return null;
+  if (!orderId) {
+    return (
+      <SiteLayout>
+        <div className="mx-auto max-w-md p-4 sm:p-6">
+          <div className="rounded-2xl border bg-white p-4 text-sm space-y-3">
+            <div>Missing order ID.</div>
+            <button
+              className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+              onClick={gotoOrders}
+            >
+              Go to orders
+            </button>
+          </div>
+        </div>
+      </SiteLayout>
+    );
+  }
 
-    const displayTotal =
-      typeof init.amount === "number" && init.amount > 0
-        ? init.amount
-        : undefined;
+  const isBankFlow =
+    init?.mode === "trial" || init?.mode === "paystack_inline_bank";
+
+  const displayTotal =
+    typeof init?.amount === "number" && init.amount > 0 ? init.amount : undefined;
+
+  const HostedCheckoutModal = () => {
+    if (!showHosted || !init?.authorization_url) return null;
 
     return (
       <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/50">
@@ -363,9 +511,7 @@ export default function Payment() {
               {displayTotal !== undefined && (
                 <div className="rounded-xl border p-3">
                   <div className="text-[11px] text-zinc-500">Total payable</div>
-                  <div className="text-lg font-semibold mt-1">
-                    {ngn.format(displayTotal)}
-                  </div>
+                  <div className="text-lg font-semibold mt-1">{ngn.format(displayTotal)}</div>
 
                   {typeof estimatedTotal === "number" &&
                     typeof init.amount === "number" &&
@@ -395,9 +541,7 @@ export default function Payment() {
                   checked={autoRedirect}
                   onChange={(e) => toggleAuto(e.target.checked)}
                 />
-                <span>
-                  Always skip this step and go straight to Paystack next time
-                </span>
+                <span>Always skip this step and go straight to Paystack next time</span>
               </label>
 
               <div className="grid grid-cols-2 gap-2">
@@ -442,6 +586,12 @@ export default function Payment() {
               >
                 Go to orders
               </button>
+              <button
+                className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+                onClick={retryInit}
+              >
+                Retry
+              </button>
             </div>
           </div>
         )}
@@ -452,7 +602,43 @@ export default function Payment() {
           </div>
         )}
 
-        {loading && <div className="text-sm opacity-70">Loading…</div>}
+        {loading && (
+          <div className="rounded-xl border bg-white p-4 text-sm opacity-80 space-y-3">
+            <div>Initializing payment…</div>
+            <div className="flex gap-2">
+              <button
+                className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+                onClick={retryInit}
+              >
+                Retry
+              </button>
+              <button
+                className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+                onClick={gotoOrders}
+              >
+                Go to orders
+              </button>
+            </div>
+          </div>
+        )}
+
+        {redirecting && init?.mode === "paystack" && (
+          <div className="rounded-xl border bg-white p-5 text-center space-y-2">
+            <div className="text-lg font-semibold">Redirecting to Paystack…</div>
+            <div className="text-sm text-zinc-600">
+              Please wait while we open your payment page.
+            </div>
+
+            <div className="pt-2">
+              <button
+                className="rounded-xl bg-zinc-900 text-white hover:opacity-90 px-4 py-2 text-sm"
+                onClick={goToPaystack}
+              >
+                Continue now
+              </button>
+            </div>
+          </div>
+        )}
 
         {showHosted && init?.mode === "paystack" && (
           <div className="rounded-xl border bg-amber-50 text-amber-800 px-4 py-3 text-sm">
@@ -460,9 +646,9 @@ export default function Payment() {
           </div>
         )}
 
-        {showHosted && init?.mode === "paystack" && <HostedCheckoutModal />}
+        <HostedCheckoutModal />
 
-        {!loading && init && isBankFlow && (
+        {!loading && !redirecting && init && isBankFlow && (
           <div className="space-y-4">
             <div className="border rounded-2xl p-4 bg-white">
               <h2 className="font-medium mb-2">Bank Transfer Details</h2>
@@ -530,11 +716,40 @@ export default function Payment() {
           </div>
         )}
 
-        {!loading && init && init.mode === "paystack" && !init.authorization_url && (
-          <div className="text-sm opacity-70">
-            Awaiting Paystack authorization URL…
-          </div>
-        )}
+        {!loading &&
+          !redirecting &&
+          init &&
+          init.mode === "paystack" &&
+          !showHosted &&
+          !!init.authorization_url && (
+            <div className="rounded-xl border bg-white p-4 space-y-3">
+              <div className="text-sm text-zinc-700">Your payment is ready.</div>
+              <div className="flex gap-2">
+                <button
+                  className="rounded-xl bg-zinc-900 text-white hover:opacity-90 px-4 py-2 text-sm"
+                  onClick={goToPaystack}
+                >
+                  Continue to Paystack
+                </button>
+                <button
+                  className="rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+                  onClick={gotoOrders}
+                >
+                  Go to orders
+                </button>
+              </div>
+            </div>
+          )}
+
+        {!loading &&
+          !redirecting &&
+          init &&
+          init.mode === "paystack" &&
+          !init.authorization_url && (
+            <div className="rounded-xl border bg-red-50 text-red-700 px-4 py-3 text-sm">
+              Payment link was not returned. Please try again from your orders page.
+            </div>
+          )}
       </div>
     </SiteLayout>
   );

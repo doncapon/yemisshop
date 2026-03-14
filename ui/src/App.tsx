@@ -96,6 +96,12 @@ function normRole(role: unknown) {
   return r;
 }
 
+function getAuthUserKey(user: any) {
+  const id = String(user?.id ?? "").trim();
+  const email = String(user?.email ?? "").trim().toLowerCase();
+  return id || email || "";
+}
+
 function AdminLayout() {
   return <Outlet />;
 }
@@ -505,6 +511,10 @@ export default function App() {
 
   const riderAllowPrefixes = useMemo(() => ["/supplier/orders"], []);
 
+  const prevAuthedRef = React.useRef(false);
+  const prevUserKeyRef = React.useRef<string>("");
+  const lastAuthedPathRef = React.useRef<string>("/");
+
   useIdleLogout();
 
   useEffect(() => {
@@ -534,7 +544,38 @@ export default function App() {
     } catch {}
   }, [loc.key]);
 
-    useEffect(() => {
+  useEffect(() => {
+    if (!hydrated) return;
+
+    if (isAuthed) {
+      const currentPath = `${loc.pathname}${loc.search}`;
+      if (loc.pathname !== "/login") {
+        lastAuthedPathRef.current = currentPath || "/";
+      }
+
+      prevAuthedRef.current = true;
+      prevUserKeyRef.current = getAuthUserKey(user);
+      return;
+    }
+
+    if (prevAuthedRef.current) {
+      const previousUserKey = prevUserKeyRef.current;
+      const previousPath = lastAuthedPathRef.current || "/";
+
+      try {
+        sessionStorage.setItem("auth:timedOutUserKey", previousUserKey);
+        sessionStorage.setItem(
+          "auth:timedOutReturnTo",
+          previousPath.startsWith("/checkout") ? "/cart" : previousPath
+        );
+      } catch {}
+    }
+
+    prevAuthedRef.current = false;
+    prevUserKeyRef.current = "";
+  }, [hydrated, isAuthed, user, loc.pathname, loc.search]);
+
+  useEffect(() => {
     if (!hydrated) return;
     if (isAuthed) return;
 
@@ -567,9 +608,6 @@ export default function App() {
     if (p === "/login") return;
 
     const rawTarget = `${loc.pathname}${loc.search}`;
-
-    // ✅ Never send timed-out users straight back into checkout.
-    // Send them to cart after login so they can review/restart safely.
     const returnTarget = p === "/checkout" ? "/cart" : rawTarget;
 
     try {
@@ -580,7 +618,7 @@ export default function App() {
     nav(`/login?from=${qp}`, { replace: true, state: { from: returnTarget } });
   }, [hydrated, isAuthed, loc.pathname, loc.search, nav]);
 
-    useEffect(() => {
+  useEffect(() => {
     try {
       const saved = sessionStorage.getItem("auth:returnTo");
       if (saved && saved.startsWith("/checkout")) {
@@ -588,6 +626,40 @@ export default function App() {
       }
     } catch {}
   }, [loc.pathname]);
+
+  useEffect(() => {
+    if (!hydrated || !isAuthed) return;
+    if (loc.pathname !== "/login") return;
+
+    const currentUserKey = getAuthUserKey(user);
+
+    let timedOutUserKey = "";
+    let timedOutReturnTo = "";
+    let genericReturnTo = "";
+
+    try {
+      timedOutUserKey = sessionStorage.getItem("auth:timedOutUserKey") || "";
+      timedOutReturnTo = sessionStorage.getItem("auth:timedOutReturnTo") || "";
+      genericReturnTo = sessionStorage.getItem("auth:returnTo") || "";
+    } catch {}
+
+    const sameTimedOutUser =
+      !!currentUserKey &&
+      !!timedOutUserKey &&
+      currentUserKey === timedOutUserKey;
+
+    const target = sameTimedOutUser
+      ? timedOutReturnTo || genericReturnTo || "/"
+      : "/";
+
+    try {
+      sessionStorage.removeItem("auth:returnTo");
+      sessionStorage.removeItem("auth:timedOutReturnTo");
+      sessionStorage.removeItem("auth:timedOutUserKey");
+    } catch {}
+
+    nav(target, { replace: true });
+  }, [hydrated, isAuthed, user, loc.pathname, nav]);
 
   return (
     <ModalProvider>
@@ -599,7 +671,7 @@ export default function App() {
             <Toaster position="top-right" />
             <ScrollToTop />
 
-            <Routes>
+            <Routes key={loc.key}>
               <Route path="/" element={<HomeRoute />} />
               <Route path="/products/:id" element={<ProductDetail />} />
               <Route path="/cart" element={<Cart />} />

@@ -4,6 +4,8 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { notifyMany, notifyUser } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
+import { syncProductInStockCacheTx } from "../services/inventory.service.js";
+import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
 
 const router = Router();
 
@@ -207,23 +209,23 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
 });
 
 /**
- * POST /api/admin/refunds/:id/mark-refunded
- * Marks refund as REFUNDED after you actually process Paystack/manual refund.
+ * POST /api/admin/refunds/:id/approve
+ * Approves a refund request.
  *
- * body (optional):
- * - providerStatus
- * - providerReference
- * - providerPayload
- * - paidAt
+ * Inventory behavior:
+ * - restores stock for refunded order items immediately on approval
+ * - increments chosen supplier offer qty back
+ * - recomputes product stock cache
  *
  * Rules:
- * - only allow mark-refunded from APPROVED (or already REFUNDED)
- * - writes RefundEvent
- * - optionally updates PurchaseOrder payoutStatus -> REFUNDED
- * - optionally updates Payment status -> REFUNDED
+ * - only admin
+ * - only allow approval from REQUESTED / SUPPLIER_REVIEW / SUPPLIER_ACCEPTED / ESCALATED
+ * - if already APPROVED, returns current row
  */
-router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
-  if (!isAdmin(req.user?.role)) return res.status(403).json({ error: "Admin only" });
+router.post("/:id/approve", requireAuth, async (req: any, res) => {
+  if (!isAdmin(req.user?.role)) {
+    return res.status(403).json({ error: "Admin only" });
+  }
 
   const id = norm(requiredString(req.params.id));
 
@@ -240,71 +242,180 @@ router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
           requestedByUserId: true,
         },
       });
-      if (!refund) throw new Error("Refund not found");
 
-      const status = String(refund.status);
-      if (status !== "APPROVED" && status !== "REFUNDED") {
-        throw new Error(`Cannot mark refunded from status: ${refund.status}`);
+      if (!refund) {
+        throw new Error("Refund not found");
       }
 
-      const r2 = await tx.refund.update({
+      const currentStatus = String(refund.status || "").toUpperCase();
+
+      if (currentStatus === "APPROVED") {
+        const existing = await tx.refund.findUnique({ where: { id } });
+        return { refund: existing, meta: refund, alreadyApproved: true };
+      }
+
+      if (
+        !["REQUESTED", "SUPPLIER_REVIEW", "SUPPLIER_ACCEPTED", "ESCALATED"].includes(
+          currentStatus
+        )
+      ) {
+        throw new Error(`Cannot approve refund from status: ${refund.status}`);
+      }
+
+      const refundItems = await tx.refundItem.findMany({
+        where: { refundId: id },
+        select: {
+          id: true,
+          qty: true,
+          orderItemId: true,
+          orderItem: {
+            select: {
+              id: true,
+              orderId: true,
+              productId: true,
+              variantId: true,
+              quantity: true,
+              chosenSupplierProductOfferId: true,
+              chosenSupplierVariantOfferId: true,
+            },
+          },
+        },
+      });
+
+      const approvedRefund = await tx.refund.update({
         where: { id },
         data: {
-          status: "REFUNDED" as any,
-          processedAt: new Date(),
-          providerStatus: req.body?.providerStatus ? String(req.body.providerStatus) : undefined,
-          providerReference: req.body?.providerReference ? String(req.body.providerReference) : undefined,
-          providerPayload: req.body?.providerPayload ?? undefined,
-          paidAt: req.body?.paidAt ? new Date(String(req.body.paidAt)) : undefined,
+          status: "APPROVED" as any,
+          adminResolvedAt: new Date(),
+          adminResolvedById: String(req.user?.id),
+          adminDecision: req.body?.adminDecision
+            ? String(req.body.adminDecision)
+            : "APPROVED",
+          adminNote: req.body?.adminNote ? String(req.body.adminNote) : undefined,
         },
       });
 
       await tx.refundEvent.create({
         data: {
           refundId: id,
-          type: "ADMIN_MARK_REFUNDED",
-          message: "Marked as refunded",
+          type: "ADMIN_APPROVED",
+          message: "Refund approved",
           meta: {
             adminId: req.user?.id,
-            providerStatus: req.body?.providerStatus ?? null,
-            providerReference: req.body?.providerReference ?? null,
+            adminDecision: req.body?.adminDecision ?? "APPROVED",
+            adminNote: req.body?.adminNote ?? null,
           },
         },
       });
 
-      // Reflect on PO payoutStatus
-      try {
-        await tx.purchaseOrder.update({
-          where: { id: refund.purchaseOrderId },
-          data: { payoutStatus: "REFUNDED" as any },
-        });
-      } catch {
-        // ignore if PO missing (shouldn't happen)
+      // Reflect refund-requested state on PO if present
+      if (refund.purchaseOrderId) {
+        try {
+          await tx.purchaseOrder.update({
+            where: { id: refund.purchaseOrderId },
+            data: {
+              status: "REFUND_REQUESTED" as any,
+            },
+          });
+        } catch {
+          // ignore
+        }
       }
 
-      // Reflect on payment (optional)
-      try {
-        await tx.payment.updateMany({
-          where: { orderId: refund.orderId },
-          data: { status: "REFUNDED" as any, refundedAt: new Date() },
-        });
-      } catch {
-        // ignore
+      // -----------------------------------
+      // RESTORE INVENTORY ON APPROVAL
+      // -----------------------------------
+      for (const ri of refundItems) {
+        const oi = ri.orderItem;
+        if (!oi) continue;
+
+        const restoreQty = Math.max(
+          0,
+          Number(ri.qty ?? oi.quantity ?? 0)
+        );
+
+        if (restoreQty <= 0) continue;
+
+        if (oi.chosenSupplierVariantOfferId) {
+          const updatedVariantOffer = await tx.supplierVariantOffer.update({
+            where: { id: String(oi.chosenSupplierVariantOfferId) },
+            data: {
+              availableQty: { increment: restoreQty },
+              inStock: true,
+            },
+            select: {
+              id: true,
+              availableQty: true,
+              productId: true,
+              variantId: true,
+            },
+          });
+
+          const variantProductId =
+            updatedVariantOffer.productId
+              ? String(updatedVariantOffer.productId)
+              : oi.productId
+                ? String(oi.productId)
+                : null;
+
+          if (variantProductId) {
+            await recomputeProductStockTx(tx, variantProductId);
+            await syncProductInStockCacheTx(tx, variantProductId);
+          }
+        } else if (oi.chosenSupplierProductOfferId) {
+          const updatedBaseOffer = await tx.supplierProductOffer.update({
+            where: { id: String(oi.chosenSupplierProductOfferId) },
+            data: {
+              availableQty: { increment: restoreQty },
+              inStock: true,
+            },
+            select: {
+              id: true,
+              availableQty: true,
+              productId: true,
+            },
+          });
+
+          const baseProductId =
+            updatedBaseOffer.productId
+              ? String(updatedBaseOffer.productId)
+              : oi.productId
+                ? String(oi.productId)
+                : null;
+
+          if (baseProductId) {
+            await recomputeProductStockTx(tx, baseProductId);
+            await syncProductInStockCacheTx(tx, baseProductId);
+          }
+        } else if (oi.productId) {
+          // Fallback if chosen offer IDs are missing
+          await recomputeProductStockTx(tx, String(oi.productId));
+          await syncProductInStockCacheTx(tx, String(oi.productId));
+        }
       }
 
-      return { r2, refund };
+      return {
+        refund: approvedRefund,
+        meta: refund,
+        alreadyApproved: false,
+      };
     });
 
+    const refundMeta = updated.meta;
+
     // ---- Notifications ----
-    const refundMeta = updated.refund;
 
     // Customer
     if (refundMeta.requestedByUserId) {
       await notifyUser(refundMeta.requestedByUserId, {
         type: "REFUND_STATUS_CHANGED",
-        title: "Refund completed",
-        body: `Your refund has been marked as refunded for order ${refundMeta.orderId}.`,
-        data: { refundId: refundMeta.id, orderId: refundMeta.orderId, status: "REFUNDED" },
+        title: "Refund approved",
+        body: `Your refund has been approved for order ${refundMeta.orderId}.`,
+        data: {
+          refundId: refundMeta.id,
+          orderId: refundMeta.orderId,
+          status: "APPROVED",
+        },
       });
     }
 
@@ -314,12 +425,17 @@ router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
         where: { id: refundMeta.supplierId },
         select: { userId: true, name: true },
       });
+
       if (supplier?.userId) {
         await notifyUser(supplier.userId, {
           type: "REFUND_STATUS_CHANGED",
-          title: "Refund completed",
-          body: `A refund has been marked as refunded for order ${refundMeta.orderId}.`,
-          data: { refundId: refundMeta.id, orderId: refundMeta.orderId, status: "REFUNDED" },
+          title: "Refund approved",
+          body: `A refund has been approved for order ${refundMeta.orderId}.`,
+          data: {
+            refundId: refundMeta.id,
+            orderId: refundMeta.orderId,
+            status: "APPROVED",
+          },
         });
       }
     }
@@ -328,14 +444,26 @@ router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
     const adminUserIds = await getAdminUserIds();
     await notifyMany(adminUserIds, {
       type: "REFUND_STATUS_CHANGED",
-      title: "Refund marked refunded",
-      body: `Refund marked REFUNDED for order ${refundMeta.orderId}.`,
-      data: { refundId: refundMeta.id, orderId: refundMeta.orderId, status: "REFUNDED" },
+      title: "Refund approved",
+      body: `Refund approved for order ${refundMeta.orderId}.`,
+      data: {
+        refundId: refundMeta.id,
+        orderId: refundMeta.orderId,
+        status: "APPROVED",
+      },
     });
 
-    return res.json({ ok: true, data: updated.r2 });
+    return res.json({
+      ok: true,
+      data: updated.refund,
+      meta: {
+        inventoryRestored: !updated.alreadyApproved,
+      },
+    });
   } catch (e: any) {
-    return res.status(400).json({ error: e?.message || "Failed to mark refunded" });
+    return res.status(400).json({
+      error: e?.message || "Failed to approve refund",
+    });
   }
 });
 

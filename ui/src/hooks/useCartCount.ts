@@ -2,9 +2,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuthStore } from "../store/auth";
 import api from "../api/client";
+import { readCartLines } from "../utils/cartModel";
 
 /* =========================================================
-   Cart storage v2 keys (must match Cart.tsx)
+   Cart storage v2 keys (legacy fallback support)
 ========================================================= */
 const GUEST_CART_KEY = "cart:guest:v2";
 const USER_CART_KEY_PREFIX = "cart:user:";
@@ -21,6 +22,11 @@ type CartStorageV2 = {
   expiresAt: number;
 };
 
+type CartCountSummary = {
+  distinct: number;
+  totalQty: number;
+};
+
 function safeParse<T>(raw: string | null): T | null {
   if (!raw) return null;
   try {
@@ -31,25 +37,29 @@ function safeParse<T>(raw: string | null): T | null {
 }
 
 function loadRawArrayFromKey(key: string): any[] {
-  const v2 = safeParse<CartStorageV2>(localStorage.getItem(key));
-  if (v2?.v === 2 && Array.isArray(v2.items)) return v2.items;
+  try {
+    const v2 = safeParse<CartStorageV2>(localStorage.getItem(key));
+    if (v2?.v === 2 && Array.isArray(v2.items)) return v2.items;
 
-  // legacy fallback: only for guest key
-  if (key === GUEST_CART_KEY) {
-    const legacy = safeParse<any[]>(localStorage.getItem("cart"));
-    if (Array.isArray(legacy)) return legacy;
+    // legacy fallback: only for guest key
+    if (key === GUEST_CART_KEY) {
+      const legacy = safeParse<any[]>(localStorage.getItem("cart"));
+      if (Array.isArray(legacy)) return legacy;
+    }
+  } catch {
+    // ignore
   }
 
   return [];
 }
 
-// ✅ tolerate qty OR quantity
+// tolerate qty OR quantity
 function readQty(line: any) {
   const q = line?.qty ?? line?.quantity ?? 0;
   return Math.max(0, Math.floor(Number(q) || 0));
 }
 
-function computeCounts(lines: any[]) {
+function computeCounts(lines: any[]): CartCountSummary {
   let totalQty = 0;
   let distinct = 0;
 
@@ -60,31 +70,47 @@ function computeCounts(lines: any[]) {
       totalQty += q;
     }
   }
+
   return { distinct, totalQty };
+}
+
+function sameCounts(a: CartCountSummary | null | undefined, b: CartCountSummary | null | undefined) {
+  return (a?.distinct ?? 0) === (b?.distinct ?? 0) && (a?.totalQty ?? 0) === (b?.totalQty ?? 0);
+}
+
+function zeroCounts(): CartCountSummary {
+  return { distinct: 0, totalQty: 0 };
+}
+
+/**
+ * Canonical local read:
+ * Prefer cartModel.readCartLines() because it is the normalized cart source.
+ * Fall back to legacy keyed storage only if needed.
+ */
+function getLocalCartCounts(userId: string | null): CartCountSummary {
+  try {
+    const normalized = readCartLines();
+    if (Array.isArray(normalized)) {
+      return computeCounts(normalized);
+    }
+  } catch {
+    // ignore and fall back
+  }
+
+  if (!userId) {
+    return computeCounts(loadRawArrayFromKey(GUEST_CART_KEY));
+  }
+
+  return computeCounts(loadRawArrayFromKey(userCartKey(userId)));
 }
 
 type ServerSummary = { distinct: number; totalQty: number };
 
-/**
- * ✅ Cart count logic:
- * - Guest: localStorage guest cart
- * - Logged-in:
- *    - Try server summary if available
- *    - If endpoint missing / errors => FALL BACK to localStorage user cart
- *
- * This version prevents "Maximum update depth exceeded" by:
- * - NOT tying server fetches to a state "tick" dependency loop
- * - Refetching server summary only on userId change + cart events
- * - Rate limiting + in-flight guard
- */
-export function useCartCount() {
+export function useCartCount(): CartCountSummary {
   const userIdRaw = useAuthStore((s) => s.user?.id ?? null);
   const userId = userIdRaw == null ? null : String(userIdRaw);
 
-  // Local-only tick (drives localStorage recount)
-  const [localTick, setLocalTick] = useState(0);
-
-  // Server summary state (drives badge when logged in)
+  const [localCounts, setLocalCounts] = useState<CartCountSummary>(() => getLocalCartCounts(userId));
   const [server, setServer] = useState<ServerSummary | null>(null);
 
   const userIdRef = useRef<string | null>(userId);
@@ -92,27 +118,28 @@ export function useCartCount() {
     userIdRef.current = userId;
   }, [userId]);
 
-  // ---- Server fetch controls (prevents storms/loops) ----
   const inFlightRef = useRef(false);
   const lastFetchAtRef = useRef(0);
   const RATE_LIMIT_MS = 600;
 
+  const syncLocalCounts = useCallback(() => {
+    const next = getLocalCartCounts(userIdRef.current);
+    setLocalCounts((prev) => (sameCounts(prev, next) ? prev : next));
+  }, []);
+
   const refreshServerSummary = useCallback(async () => {
     const uid = userIdRef.current;
 
-    // not logged in
     if (!uid) {
-      setServer(null);
+      setServer((prev) => (prev == null ? prev : null));
       return;
     }
 
-    // rate-limit to avoid rapid re-triggers
     const now = Date.now();
     if (now - lastFetchAtRef.current < RATE_LIMIT_MS) return;
-    lastFetchAtRef.current = now;
-
-    // in-flight guard
     if (inFlightRef.current) return;
+
+    lastFetchAtRef.current = now;
     inFlightRef.current = true;
 
     try {
@@ -124,86 +151,79 @@ export function useCartCount() {
         totalQty: Math.max(0, Number(root.totalQty ?? 0) || 0),
       };
 
-      // ✅ only update state if changed (prevents pointless re-renders)
-      setServer((prev) => {
-        if (!prev) return next;
-        if (prev.distinct === next.distinct && prev.totalQty === next.totalQty) return prev;
-        return next;
-      });
-    } catch (_e) {
-      // endpoint missing/errored => fallback to local user cart
-      setServer(null);
+      setServer((prev) => (sameCounts(prev, next) ? prev : next));
+    } catch {
+      setServer((prev) => (prev == null ? prev : null));
     } finally {
       inFlightRef.current = false;
     }
   }, []);
 
-  // bump local tick (recount localStorage)
-  const bumpLocal = useCallback(() => {
-    setLocalTick((t) => t + 1);
-  }, []);
-
-  // On login/logout: reset + refresh server once
+  // On auth switch, resync local immediately and clear stale server state
   useEffect(() => {
-    // reset server summary on user switch
     setServer(null);
-
-    // recount local cart immediately too (guest->user key changes)
-    bumpLocal();
-
-    // fetch server summary once after auth switch
+    syncLocalCounts();
     void refreshServerSummary();
-  }, [userId, bumpLocal, refreshServerSummary]);
+  }, [userId, syncLocalCounts, refreshServerSummary]);
 
-  // Listen to cart updates + storage changes
+  // Listen to all cart-changing signals
   useEffect(() => {
     const onCartUpdated = () => {
-      bumpLocal();
-      // also refresh server summary (if logged in)
+      syncLocalCounts();
       void refreshServerSummary();
     };
 
     const onStorage = (e: StorageEvent) => {
       const k = e.key || "";
-      if (k === "cart" || k === GUEST_CART_KEY || k.startsWith(USER_CART_KEY_PREFIX)) {
-        bumpLocal();
+      if (!k || k === "cart" || k === GUEST_CART_KEY || k.startsWith(USER_CART_KEY_PREFIX)) {
+        syncLocalCounts();
         void refreshServerSummary();
       }
     };
 
-    // NOTE: focus-based bumping can be too aggressive in some apps.
-    // Keep it, but only recount local; server refresh is rate-limited anyway.
     const onFocus = () => {
-      bumpLocal();
+      syncLocalCounts();
       void refreshServerSummary();
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        syncLocalCounts();
+        void refreshServerSummary();
+      }
     };
 
     window.addEventListener("cart:updated", onCartUpdated as EventListener);
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
       window.removeEventListener("cart:updated", onCartUpdated as EventListener);
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [bumpLocal, refreshServerSummary]);
+  }, [syncLocalCounts, refreshServerSummary]);
 
-  // Return counts
   return useMemo(() => {
-    // guest
-    if (!userId) {
-      const items = loadRawArrayFromKey(GUEST_CART_KEY);
-      return computeCounts(items);
+    const local = localCounts ?? zeroCounts();
+
+    // Most important rule:
+    // if local cart is empty, do not keep showing an old non-zero server badge.
+    if (local.totalQty === 0 && local.distinct === 0) {
+      return local;
     }
 
-    // logged-in: prefer server if it has anything non-zero
-    if (server && (server.totalQty > 0 || server.distinct > 0)) return server;
+    // If server matches or is available, you can use it.
+    // But never let a stale server non-zero override a newly emptied local cart.
+    if (server) {
+      return {
+        distinct: Math.max(local.distinct, server.distinct),
+        totalQty: Math.max(local.totalQty, server.totalQty),
+      };
+    }
 
-    // fallback: local user cart
-    const items = loadRawArrayFromKey(userCartKey(userId));
-    // depend on localTick so badge updates instantly on cart:updated
-    void localTick; // explicit usage for clarity
-    return computeCounts(items);
-  }, [userId, server, localTick]);
+    return local;
+  }, [localCounts, server]);
 }

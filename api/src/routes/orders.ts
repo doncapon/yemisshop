@@ -22,6 +22,7 @@ import {
   notifySupplierBySupplierId,
 } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
+import { hasSuccessfulPaymentForOrderTx, markPendingPaymentsCanceledTx, restoreOrderInventoryTx } from "../services/orderInventory.service.js";
 
 const router = Router();
 
@@ -44,7 +45,6 @@ type Address = {
   state?: string;
   country?: string;
 };
-
 type CartItem = {
   productId: string;
   variantId?: string | null;
@@ -61,8 +61,9 @@ type CartItem = {
     value: string;
   }>;
 
-  // client may send it; server will NOT trust it for pricing
+  // customer-facing checkout price snapshot
   unitPrice?: number;
+  unitPriceCache?: number;
 };
 
 type CreateOrderBody = {
@@ -261,6 +262,73 @@ async function loadCheckoutSettingsTx(tx: any): Promise<CheckoutSettingsSnapshot
     maxMarginPct,
   };
 }
+function getClientCheckoutUnitPrice(line: any): number | null {
+  const direct = Number(line?.unitPrice);
+  if (Number.isFinite(direct) && direct > 0) return round2(direct);
+
+  const cached = Number(line?.unitPriceCache);
+  if (Number.isFinite(cached) && cached > 0) return round2(cached);
+
+  return null;
+}
+
+function getFallbackCustomerUnitFromSupplierCost(
+  supplierUnitCost: number,
+  settings: CheckoutSettingsSnapshot,
+  ctx: { productId: string; variantId: string | null }
+): number {
+  const cfg = getMarginConfig(settings);
+  const marginPercent = resolveMarginPercentForItem(settings);
+
+  const percentMarginValue = round2(supplierUnitCost * (marginPercent / 100));
+  const actualMargin = Math.max(cfg.minMarginNGN, percentMarginValue);
+
+  const customerUnit = round2(supplierUnitCost + actualMargin);
+
+  if (!(customerUnit > 0)) {
+    throw new Error(
+      `Could not compute customer unit price for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
+      }.`
+    );
+  }
+
+  return customerUnit;
+}
+
+function assertClientCheckoutUnitReasonable(
+  clientUnit: number,
+  supplierUnitCost: number,
+  settings: CheckoutSettingsSnapshot,
+  ctx: { productId: string; variantId: string | null }
+) {
+  if (!(clientUnit > 0)) {
+    throw new Error(
+      `Invalid checkout unit price for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
+      }.`
+    );
+  }
+
+  if (clientUnit + 1 < supplierUnitCost) {
+    throw new Error(
+      `Checkout unit price is below supplier cost for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
+      }.`
+    );
+  }
+
+  const maxMarginPct = Math.max(0, Number(settings.maxMarginPct ?? 100));
+  const maxReasonable =
+    supplierUnitCost > 0
+      ? round2(supplierUnitCost * (1 + maxMarginPct / 100) + Math.max(0, settings.minMarginNGN))
+      : clientUnit;
+
+  if (supplierUnitCost > 0 && clientUnit - maxReasonable > 5) {
+    throw new Error(
+      `Checkout unit price is outside allowed margin bounds for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
+      }.`
+    );
+  }
+}
+
 
 async function readSettingValueTx(tx: any, key: string): Promise<string | null> {
   const s = await tx.setting.findUnique({
@@ -1516,6 +1584,7 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     });
 
     await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
+
     for (const orderItemId of g.itemIds) {
       await tx.purchaseOrderItem.create({ data: { purchaseOrderId: po.id, orderItemId } });
     }
@@ -1755,7 +1824,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
   const shippingEnabled = await isShippingEnabledTx(prisma as any);
 
-  if (items.length === 0) return res.status(400).json({ error: "No items." });
+  if (items.length === 0) {
+    return res.status(400).json({ error: "No items." });
+  }
 
   if (shippingEnabled && !body.shippingAddressId && !body.shippingAddress) {
     return res
@@ -1764,11 +1835,83 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   }
 
   const userId = getUserId(req);
-  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+  if (!userId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
 
   const toNumberLocal = (v: any, def = 0) => {
     const n = Number(v);
     return Number.isFinite(n) ? n : def;
+  };
+
+  const getClientCheckoutUnitPrice = (line: any): number | null => {
+    const direct = Number(line?.unitPrice);
+    if (Number.isFinite(direct) && direct > 0) return round2(direct);
+
+    const cached = Number(line?.unitPriceCache);
+    if (Number.isFinite(cached) && cached > 0) return round2(cached);
+
+    return null;
+  };
+
+  const getFallbackCustomerUnitFromSupplierCost = (
+    supplierUnitCost: number,
+    settings: CheckoutSettingsSnapshot,
+    ctx: { productId: string; variantId: string | null }
+  ): number => {
+    const cfg = getMarginConfig(settings);
+    const marginPercent = resolveMarginPercentForItem(settings);
+
+    const percentMarginValue = round2(supplierUnitCost * (marginPercent / 100));
+    const actualMargin = Math.max(cfg.minMarginNGN, percentMarginValue);
+
+    const customerUnit = round2(supplierUnitCost + actualMargin);
+
+    if (!(customerUnit > 0)) {
+      throw new Error(
+        `Could not compute customer unit price for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
+        }.`
+      );
+    }
+
+    return customerUnit;
+  };
+
+  const assertClientCheckoutUnitReasonable = (
+    clientUnit: number,
+    supplierUnitCost: number,
+    settings: CheckoutSettingsSnapshot,
+    ctx: { productId: string; variantId: string | null }
+  ) => {
+    if (!(clientUnit > 0)) {
+      throw new Error(
+        `Invalid checkout unit price for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
+        }.`
+      );
+    }
+
+    if (clientUnit + 1 < supplierUnitCost) {
+      throw new Error(
+        `Checkout unit price is below supplier cost for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
+        }.`
+      );
+    }
+
+    const maxMarginPct = Math.max(0, Number(settings.maxMarginPct ?? 100));
+    const maxReasonable =
+      supplierUnitCost > 0
+        ? round2(
+          supplierUnitCost * (1 + maxMarginPct / 100) +
+          Math.max(0, settings.minMarginNGN)
+        )
+        : clientUnit;
+
+    if (supplierUnitCost > 0 && clientUnit - maxReasonable > 5) {
+      throw new Error(
+        `Checkout unit price is outside allowed margin bounds for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
+        }.`
+      );
+    }
   };
 
   try {
@@ -1937,21 +2080,23 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           let variantId: string | null =
             directVariantId ?? (variantFromOptions ? String(variantFromOptions) : null);
 
-          let explicitOffer: (CandidateOffer & { productId: string; variantId: string | null }) | null = null;
+          let explicitOffer:
+            | (CandidateOffer & { productId: string; variantId: string | null })
+            | null = null;
           let candidates: CandidateOffer[] = [];
 
           if (explicitOfferId) {
             explicitOffer = await fetchOneOfferByIdTx(tx, explicitOfferId);
 
-            if (
-              explicitOffer &&
-              String(explicitOffer.productId) !== String(productId)
-            ) {
-              console.warn("[create-order] explicit offer belongs to different product; ignoring", {
-                productId,
-                explicitOfferId,
-                explicitOfferProductId: explicitOffer.productId,
-              });
+            if (explicitOffer && String(explicitOffer.productId) !== String(productId)) {
+              console.warn(
+                "[create-order] explicit offer belongs to different product; ignoring",
+                {
+                  productId,
+                  explicitOfferId,
+                  explicitOfferProductId: explicitOffer.productId,
+                }
+              );
               explicitOffer = null;
             }
           }
@@ -1960,12 +2105,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             const explicitVariantId = String(explicitOffer.variantId);
 
             if (variantId && String(variantId) !== explicitVariantId) {
-              console.warn("[create-order] explicit offer variant differs from requested variant; using requested variant", {
-                productId,
-                explicitOfferId,
-                explicitVariantId,
-                requestedVariantId: variantId,
-              });
+              console.warn(
+                "[create-order] explicit offer variant differs from requested variant; using requested variant",
+                {
+                  productId,
+                  explicitOfferId,
+                  explicitVariantId,
+                  requestedVariantId: variantId,
+                }
+              );
             } else {
               variantId = explicitVariantId;
             }
@@ -1986,19 +2134,25 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 ...candidates.filter((c) => c.id !== explicitStillAvailable.id),
               ];
             } else {
-              console.warn("[create-order] explicit offer not in fresh candidate set; falling back to fresh candidates", {
-                productId,
-                variantId,
-                explicitOfferId: explicitOffer.id,
-                explicitOfferModel: explicitOffer.model,
-              });
+              console.warn(
+                "[create-order] explicit offer not in fresh candidate set; falling back to fresh candidates",
+                {
+                  productId,
+                  variantId,
+                  explicitOfferId: explicitOffer.id,
+                  explicitOfferModel: explicitOffer.model,
+                }
+              );
             }
           } else if (explicitOfferId) {
-            console.warn("[create-order] explicit offer not found; falling back to fresh candidates", {
-              productId,
-              variantId,
-              explicitOfferId,
-            });
+            console.warn(
+              "[create-order] explicit offer not found; falling back to fresh candidates",
+              {
+                productId,
+                variantId,
+                explicitOfferId,
+              }
+            );
           }
 
           const candidatesBefore = candidates.slice();
@@ -2071,26 +2225,21 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             need -= take;
           }
 
-          const clientUnit = toNumberLocal((line as any).unitPrice, NaN);
-          const expectedUnits: number[] = [];
+                    const checkoutUnit = getClientCheckoutUnitPrice(line);
+
+          if (!(Number.isFinite(checkoutUnit) && Number(checkoutUnit) > 0)) {
+            throw new Error(
+              `Missing checkout unit price for ${productTitle}${optionsLabel}.`
+            );
+          }
 
           for (const alloc of allocations) {
-            const retailUnit = await getCheckoutRetailUnitPriceTx(tx, {
-              productId,
-              variantId,
-            });
-
-            if (!Number.isFinite(retailUnit) || retailUnit <= 0) {
-              throw new Error(`Bad retail price for ${productTitle}${optionsLabel}.`);
+            const supplierUnitCost = round2(Number(alloc.supplierUnitCost || 0));
+            if (!(supplierUnitCost > 0)) {
+              throw new Error(
+                `Missing supplier unit cost for ${productTitle}${optionsLabel}.`
+              );
             }
-
-            const payout = computeSupplierPayoutFromRetail(settings, {
-              retailUnit,
-              productId,
-              variantId,
-            });
-
-            expectedUnits.push(retailUnit);
 
             await tx.orderItem.create({
               data: {
@@ -2102,29 +2251,39 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
                 chosenSupplierId: alloc.supplierId,
 
-                chosenSupplierUnitPrice: payout.supplierPayout,
+                // keep actual supplier allocation cost
+                chosenSupplierUnitPrice: supplierUnitCost,
 
                 title: productTitle,
 
-                unitPrice: retailUnit,
+                // customer-facing billed price must match checkout
+                unitPrice: round2(Number(checkoutUnit)),
                 quantity: alloc.qty,
-                lineTotal: round2(retailUnit * alloc.qty),
+                lineTotal: round2(Number(checkoutUnit) * alloc.qty),
 
                 selectedOptions: selectedOptions ?? null,
               },
             });
 
-            runningSubtotal += retailUnit * alloc.qty;
-          }
+            runningSubtotal += round2(Number(checkoutUnit) * alloc.qty);
 
-          if (Number.isFinite(clientUnit) && expectedUnits.length > 0) {
-            const uniq = new Set(expectedUnits.map((u) => u.toFixed(2)));
-            if (uniq.size === 1) {
-              assertClientUnitPriceMatches(expectedUnits[0], clientUnit, {
+            await logOrderActivityTx(
+              tx,
+              order.id,
+              "PRICING_SNAPSHOT" as any,
+              "Order item priced via CHECKOUT_PRICE",
+              {
                 productId,
                 variantId,
-              });
-            }
+                productTitle,
+                supplierId: alloc.supplierId,
+                qty: alloc.qty,
+                supplierUnitCost,
+                checkoutUnitSent: checkoutUnit,
+                finalCustomerUnit: round2(Number(checkoutUnit)),
+                pricingSource: "CHECKOUT_PRICE",
+              }
+            );
           }
 
           await syncProductInStockCacheTx(tx, productId);
@@ -2146,9 +2305,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         const svc = await computeServiceFeeForOrderTx(tx, settings, order.id, subtotal);
 
         const shippingFee = shippingEnabledTxVal ? shippingFeeFinal : 0;
-        const total = round2(
-          subtotal + vatAddOn + svc.serviceFeeTotal + shippingFee
-        );
+        const total = round2(subtotal + vatAddOn + svc.serviceFeeTotal + shippingFee);
 
         const updatedOrder = await tx.order.update({
           where: { id: order.id },
@@ -2278,7 +2435,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             vatAddOn: round2(vatAddOn),
             serviceFeeMeta: svc.meta,
             purchaseOrders,
-            pricing: { mode: "retail-equals-chosen-supplier-unit-price" },
+            pricing: {
+              mode: "retail-price-with-supplier-cost-allocation",
+            },
           },
         };
       },
@@ -3353,12 +3512,6 @@ function requireOtp(purpose: "PAY_ORDER" | "CANCEL_ORDER") {
   };
 }
 
-/* =========================================================
-   POST /api/orders/:orderId/cancel
-   - Shopper/admin cancel their order (OTP guarded via x-otp-token)
-   - Supplier cancel their own PO (OTP guarded via x-otp-token via cancel-otp endpoints)
-========================================================= */
-
 router.post(
   "/:orderId/cancel",
   requireAuth,
@@ -3387,29 +3540,35 @@ router.post(
         });
         if (!order) throw new Error("Order not found");
 
-        // permission:
         if (!adminOk && !supplierOk && String(order.userId) !== String(userId)) {
           throw new Error("Forbidden");
         }
 
-        // get POs
         const pos = await tx.purchaseOrder.findMany({
           where: { orderId },
           select: { id: true, supplierId: true, status: true },
         });
 
+        const hasPaid = await hasSuccessfulPaymentForOrderTx(tx, orderId);
+
         if (!pos.length) {
-          // if no POs exist, cancel order only
+          if (!hasPaid) {
+            await restoreOrderInventoryTx(tx, orderId);
+            await markPendingPaymentsCanceledTx(tx, orderId, "Order canceled before payment");
+          }
+
           await tx.order.update({
             where: { id: orderId },
-            data: { status: "CANCELED" },
+            data: { status: "CANCELED" as any },
           });
+
           await logOrderActivityTx(
             tx,
             orderId,
             ACT.STATUS_CHANGE as any,
             "Order canceled"
           );
+
           return {
             mode: "ORDER_ONLY",
             orderId,
@@ -3419,7 +3578,6 @@ router.post(
         }
 
         if (supplierOk && !adminOk) {
-          // supplier cancels only their own PO(s)
           const supplier = await tx.supplier.findFirst({
             where: { userId },
             select: { id: true, name: true },
@@ -3434,7 +3592,11 @@ router.post(
           for (const po of myPos) {
             await tx.purchaseOrder.update({
               where: { id: po.id },
-              data: { status: "CANCELED" as any },
+              data: {
+                status: "CANCELED" as any,
+                canceledAt: new Date(),
+                cancelReason: "SUPPLIER_CANCELED",
+              },
             });
 
             await logOrderActivityTx(
@@ -3444,7 +3606,6 @@ router.post(
               `Purchase order ${po.id} canceled by supplier`
             );
 
-            // ✅ notify this supplier (in case multiple supplier users / staff view notifications)
             await notifyOneSupplierForPoTx(
               tx,
               { orderId, purchaseOrderId: po.id, supplierId: supplier.id },
@@ -3456,19 +3617,30 @@ router.post(
             );
           }
 
-          // if ALL POs are now canceled, cancel the whole order
           const refreshed = await tx.purchaseOrder.findMany({
             where: { orderId },
             select: { status: true },
           });
-          const allCANCELED = refreshed.every(
+
+          const allCanceled = refreshed.every(
             (x: any) => String(x.status).toUpperCase() === "CANCELED"
           );
-          if (allCANCELED) {
+
+          if (allCanceled) {
+            if (!hasPaid) {
+              await restoreOrderInventoryTx(tx, orderId);
+              await markPendingPaymentsCanceledTx(
+                tx,
+                orderId,
+                "All supplier POs canceled before payment"
+              );
+            }
+
             await tx.order.update({
               where: { id: orderId },
               data: { status: "CANCELED" as any },
             });
+
             await logOrderActivityTx(
               tx,
               orderId,
@@ -3477,7 +3649,6 @@ router.post(
             );
           }
 
-          // notify shopper + admins about supplier cancellation
           try {
             await notifyUser(
               String(order.userId),
@@ -3511,14 +3682,23 @@ router.post(
           };
         }
 
-        // admin or shopper: cancel entire order + all POs
+        if (!hasPaid) {
+          await restoreOrderInventoryTx(tx, orderId);
+          await markPendingPaymentsCanceledTx(tx, orderId, "Order canceled before payment");
+        }
+
         await tx.order.update({
           where: { id: orderId },
           data: { status: "CANCELED" as any },
         });
+
         await tx.purchaseOrder.updateMany({
           where: { orderId },
-          data: { status: "CANCELED" as any },
+          data: {
+            status: "CANCELED" as any,
+            canceledAt: new Date(),
+            cancelReason: hasPaid ? "ORDER_CANCELED_AFTER_PAYMENT" : "ORDER_CANCELED_BEFORE_PAYMENT",
+          },
         });
 
         await logOrderActivityTx(
@@ -3528,14 +3708,12 @@ router.post(
           "Order canceled"
         );
 
-        // ✅ notify ALL suppliers on this order
         await notifySuppliersForOrderTx(tx, orderId, {
           type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
           title: "Order canceled",
           body: `Order ${orderId} was canceled.`,
         });
 
-        // notify shopper + admins
         try {
           await notifyUser(
             String(order.userId),

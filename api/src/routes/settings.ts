@@ -295,11 +295,6 @@ router.get("/checkout/service-fee", async (req, res) => {
     const serviceFeeGateway = round2(estimateGatewayFee(grossBeforeGateway));
     const serviceFeeTotal = round2(serviceFeeBase + serviceFeeComms + serviceFeeGateway);
 
-    console.log({
-      serviceFeeBase: serviceFeeBase, serviceFeeComms: serviceFeeComms, serviceFeeGateway: serviceFeeGateway,
-      serviceFeeTotal: serviceFeeTotal
-    });
-
     return res.json({
       unitFee,
       units,

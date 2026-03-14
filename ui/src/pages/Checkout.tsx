@@ -2,13 +2,13 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import api from "../api/client.js";
 import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
 import SiteLayout from "../layouts/SiteLayout.js";
 import { getAttribution } from "../utils/attribution.js";
-import { loadCartRaw, saveCartRaw } from "../utils/cartStorage.js";
+import { readCartLines, writeCartLines, toCartPageItems } from "../utils/cartModel";
 
 /* ----------------------------- Config ----------------------------- */
 const VERIFY_PATH = "/verify";
@@ -25,13 +25,13 @@ type SelectedOption = {
 };
 
 type CartLine = {
-  kind?: "BASE" | "VARIANT"; // ✅ preserve cart separation
+  kind?: "BASE" | "VARIANT";
 
   productId: string;
   title: string;
   qty: number;
 
-  offerId?: string; // ✅ chosen offer (if your cart stores it)
+  offerId?: string;
   unitPrice?: number;
   variantId?: string | null;
   selectedOptions?: SelectedOption[];
@@ -121,7 +121,7 @@ function optionsKey(sel?: SelectedOption[]) {
 }
 
 /**
- * ✅ Stable cart line key (must match Cart.tsx intent)
+ * ✅ Stable cart line key
  * - base product: productId::base
  * - variant by id: productId::v:<variantId>
  * - options-only fallback: productId::o:<optionsKey>
@@ -132,7 +132,11 @@ function lineKeyFor(item: Pick<CartLine, "productId" | "variantId" | "selectedOp
   const sel = normalizeSelectedOptions(item.selectedOptions);
 
   const kind: "BASE" | "VARIANT" =
-    item.kind === "BASE" || item.kind === "VARIANT" ? item.kind : item.variantId ? "VARIANT" : "BASE";
+    item.kind === "BASE" || item.kind === "VARIANT"
+      ? item.kind
+      : item.variantId
+        ? "VARIANT"
+        : "BASE";
 
   if (kind === "VARIANT") {
     if (vid) return `${pid}::v:${vid}`;
@@ -142,82 +146,117 @@ function lineKeyFor(item: Pick<CartLine, "productId" | "variantId" | "selectedOp
   return `${pid}::base`;
 }
 
-// Normalize whatever we find in localStorage to a consistent shape
+function normalizeCartLine(x: any): CartLine | null {
+  const productId = String(x?.productId ?? "").trim();
+  if (!productId) return null;
+
+  const qty = Math.max(1, num(x?.qty, 1));
+
+  // ✅ Be resilient to multiple storage shapes.
+  const directUnit = asMoney(x?.unitPrice, NaN);
+  const directPrice = asMoney(x?.price, NaN);
+  const fromTotal = qty > 0 ? asMoney(x?.totalPrice, NaN) / qty : NaN;
+
+  const firstFinite = [directUnit, directPrice, fromTotal].find((v) => Number.isFinite(v));
+  const unit = Number.isFinite(firstFinite as number) ? Number(firstFinite) : 0;
+
+  const rawKind = x?.kind === "BASE" || x?.kind === "VARIANT" ? x.kind : undefined;
+  const inferredKind: "BASE" | "VARIANT" = rawKind ?? (x?.variantId ? "VARIANT" : "BASE");
+
+  const selectedOptions = normalizeSelectedOptions(x?.selectedOptions);
+
+  return {
+    kind: inferredKind,
+    productId,
+    title: String(x?.title ?? ""),
+    qty,
+    unitPrice: unit,
+    price: unit,
+    variantId: x?.variantId ?? null,
+    selectedOptions,
+    totalPrice: Number.isFinite(asMoney(x?.totalPrice, NaN)) ? asMoney(x?.totalPrice, 0) : unit * qty,
+    image: x?.image ?? null,
+    supplierId: x?.supplierId ?? null,
+    offerId: x?.offerId ? String(x.offerId) : undefined,
+  };
+}
+
+// Normalize cartModel storage to a consistent checkout shape
 function readCart(): CartLine[] {
   try {
-    const raw = localStorage.getItem("cart");
-    const arr: any[] = raw ? JSON.parse(raw) : [];
+    const lines = readCartLines();
+    const mapped = toCartPageItems(lines, (img?: any) => img) as any[];
 
-    return arr.map((x) => {
-      const unit = num(x.unitPrice, num(x.price, 0));
-      const qty = Math.max(1, num(x.qty, 1));
-
-      const rawKind = x.kind === "BASE" || x.kind === "VARIANT" ? x.kind : undefined;
-      const inferredKind: "BASE" | "VARIANT" = rawKind ?? (x.variantId ? "VARIANT" : "BASE");
-
-      const selectedOptions = normalizeSelectedOptions(x.selectedOptions);
-
-      return {
-        kind: inferredKind,
-        productId: String(x.productId),
-        title: String(x.title ?? ""),
-        qty,
-        unitPrice: unit,
-        variantId: x.variantId ?? null,
-        selectedOptions,
-        totalPrice: num(x.totalPrice, unit * qty),
-        image: x.image ?? null,
-        supplierId: x.supplierId ?? null,
-        offerId: x.offerId ? String(x.offerId) : undefined,
-      };
-    });
+    return mapped
+      .map((x: any) =>
+        normalizeCartLine({
+          kind: x?.kind,
+          productId: x?.productId,
+          title: x?.title,
+          qty: x?.qty,
+          unitPrice: x?.unitPrice,
+          price: x?.unitPrice,
+          variantId: x?.variantId ?? null,
+          selectedOptions: x?.selectedOptions,
+          totalPrice: x?.totalPrice,
+          image: x?.image ?? null,
+          supplierId: x?.supplierId ?? null,
+          offerId: x?.offerId ?? undefined,
+        })
+      )
+      .filter(Boolean) as CartLine[];
   } catch {
     return [];
   }
 }
 
 function writeCart(lines: CartLine[]) {
-  const out = lines.map((l) => {
-    const unit = num(l.unitPrice, num(l.price, 0));
-    const qty = Math.max(1, num(l.qty, 1));
-    const total = unit * qty;
+  const normalized = lines
+    .map((l) => {
+      const unit = num(l.unitPrice, num(l.price, 0));
+      const qty = Math.max(1, num(l.qty, 1));
 
-    const rawKind = l.kind === "BASE" || l.kind === "VARIANT" ? l.kind : undefined;
-    const inferredKind: "BASE" | "VARIANT" = rawKind ?? (l.variantId ? "VARIANT" : "BASE");
+      const rawKind = l.kind === "BASE" || l.kind === "VARIANT" ? l.kind : undefined;
+      const inferredKind: "BASE" | "VARIANT" =
+        rawKind ?? (l.variantId ? "VARIANT" : "BASE");
 
-    const sel = normalizeSelectedOptions(l.selectedOptions);
+      const sel = normalizeSelectedOptions(l.selectedOptions);
 
-    return {
-      kind: inferredKind,
-      productId: l.productId,
-      title: l.title,
-      qty,
-      unitPrice: unit,
-      variantId: l.variantId ?? null,
-      selectedOptions: sel,
-      image: l.image ?? null,
-      supplierId: l.supplierId ?? null,
-      offerId: l.offerId ?? undefined,
-      totalPrice: total,
-    };
-  });
+      return {
+        productId: String(l.productId),
+        variantId: l.variantId ?? null,
+        kind: inferredKind,
+        optionsKey: "",
+        qty,
+        selectedOptions: sel,
+        titleSnapshot: l.title ?? null,
+        imageSnapshot: l.image ?? null,
+        unitPriceCache: unit,
+      };
+    })
+    .filter((x) => x.qty > 0);
 
-  localStorage.setItem("cart", JSON.stringify(out));
+  writeCartLines(normalized as any);
   window.dispatchEvent(new Event("cart:updated"));
 }
 
 function computeLineTotal(line: CartLine): number {
-  const unit = num(line.unitPrice, num(line.price, 0));
   const qty = Math.max(1, num(line.qty, 1));
+  const explicitTotal = asMoney(line.totalPrice, NaN);
+  const unit = num(line.unitPrice, num(line.price, 0));
+
+  if (Number.isFinite(explicitTotal) && explicitTotal > 0) {
+    if (!(unit > 0)) return explicitTotal;
+  }
+
   return unit * qty;
 }
-
 
 function removeCartLineByKey(lines: CartLine[], targetKey: string): CartLine[] {
   return lines.filter((line) => lineKeyFor(line) !== targetKey);
 }
 
-/* ---------------- Supplier-split pricing quote (authoritative) ---------------- */
+/* ---------------- Supplier-split pricing quote (authoritative for allocation only) ---------------- */
 
 type QuoteAllocation = {
   supplierId: string;
@@ -258,7 +297,10 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
   const currency = root.currency ?? root?.quote?.currency ?? null;
   const maybe = root.quote ?? root;
 
-  const subtotal = asMoney(maybe.subtotal ?? maybe.itemsSubtotal ?? maybe.totalItems ?? maybe.total ?? 0, 0);
+  const subtotal = asMoney(
+    maybe.subtotal ?? maybe.itemsSubtotal ?? maybe.totalItems ?? maybe.total ?? 0,
+    0
+  );
 
   const outLines: Record<string, QuoteLine> = {};
 
@@ -268,7 +310,8 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
 
     const pid = String(x?.productId ?? "");
     const vid = x?.variantId == null ? null : String(x.variantId);
-    const kind: "BASE" | "VARIANT" = x?.kind === "VARIANT" || (!!vid && x?.kind !== "BASE") ? "VARIANT" : "BASE";
+    const kind: "BASE" | "VARIANT" =
+      x?.kind === "VARIANT" || (!!vid && x?.kind !== "BASE") ? "VARIANT" : "BASE";
 
     if (!pid) return "";
     if (kind === "VARIANT") return vid ? `${pid}::v:${vid}` : `${pid}::v:unknown`;
@@ -297,21 +340,32 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
     const productId = String(x?.productId ?? "");
     const variantId = x?.variantId == null ? null : String(x.variantId);
     const kind: "BASE" | "VARIANT" =
-      x?.kind === "BASE" || x?.kind === "VARIANT" ? x.kind : variantId ? "VARIANT" : "BASE";
+      x?.kind === "BASE" || x?.kind === "VARIANT"
+        ? x.kind
+        : variantId
+          ? "VARIANT"
+          : "BASE";
 
     const qtyRequested = Math.max(1, asInt(x?.qtyRequested ?? x?.qty ?? x?.requestedQty ?? 1, 1));
 
     const allocsRaw = toArray<any>(x?.allocations ?? x?.splits ?? x?.items ?? x?.parts);
-    const allocations = allocsRaw.map(normalizeAlloc).filter((a) => a.qty > 0 && a.unitPrice >= 0);
+    const allocations = allocsRaw
+      .map(normalizeAlloc)
+      .filter((a) => a.qty > 0 && a.unitPrice >= 0);
 
     const lineTotal = asMoney(
       x?.lineTotal ?? x?.total ?? allocations.reduce((s, a) => s + asMoney(a.lineTotal, 0), 0),
       0
     );
 
-    const qtyPriced = Math.max(0, asInt(x?.qtyPriced ?? allocations.reduce((s, a) => s + asInt(a.qty, 0), 0), 0));
+    const qtyPriced = Math.max(
+      0,
+      asInt(x?.qtyPriced ?? allocations.reduce((s, a) => s + asInt(a.qty, 0), 0), 0)
+    );
 
-    const units = allocations.map((a) => asMoney(a.unitPrice, NaN)).filter((n) => Number.isFinite(n));
+    const units = allocations
+      .map((a) => asMoney(a.unitPrice, NaN))
+      .filter((n) => Number.isFinite(n));
     const minUnit = units.length ? Math.min(...(units as number[])) : 0;
     const maxUnit = units.length ? Math.max(...(units as number[])) : 0;
     const averageUnit = qtyRequested > 0 ? lineTotal / qtyRequested : 0;
@@ -386,7 +440,9 @@ async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload 
     productId: it.productId,
     variantId: it.variantId ?? null,
     qty: Math.max(1, asInt(it.qty, 1)),
-    selectedOptions: Array.isArray(it.selectedOptions) ? normalizeSelectedOptions(it.selectedOptions) : undefined,
+    selectedOptions: Array.isArray(it.selectedOptions)
+      ? normalizeSelectedOptions(it.selectedOptions)
+      : undefined,
     offerId: it.offerId || undefined,
     supplierId: it.supplierId || undefined,
     unitPriceCache: asMoney(it.unitPrice, asMoney(it.price, 0)),
@@ -408,12 +464,15 @@ async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload 
       const res =
         a.method === "post"
           ? await api.post(a.url, a.body, AXIOS_COOKIE_CFG)
-          : await api.get(a.url, { ...AXIOS_COOKIE_CFG, params: { items: JSON.stringify(items) } });
+          : await api.get(a.url, {
+            ...AXIOS_COOKIE_CFG,
+            params: { items: JSON.stringify(items) },
+          });
 
       const normalized = normalizeQuoteResponse(res, cart);
       if (normalized) return normalized;
     } catch {
-      /* try next */
+      //
     }
   }
 
@@ -448,7 +507,11 @@ function extractShippingEnabled(s: PublicSettings | null | undefined): boolean {
 }
 
 async function fetchPublicSettings(): Promise<PublicSettings | null> {
-  const attempts = ["/api/settings/public", "/api/settings/public?include=pricing", "/api/settings/public?scope=commerce"];
+  const attempts = [
+    "/api/settings/public",
+    "/api/settings/public?include=pricing",
+    "/api/settings/public?scope=commerce",
+  ];
 
   for (const url of attempts) {
     try {
@@ -456,7 +519,7 @@ async function fetchPublicSettings(): Promise<PublicSettings | null> {
       const root = data?.data ?? data ?? null;
       if (root) return root as PublicSettings;
     } catch {
-      /* try next */
+      //
     }
   }
   return null;
@@ -482,10 +545,11 @@ const normalizeStampPresent = (v: unknown) => {
 };
 
 function computeVerificationFlags(p?: ProfileMe) {
-  const emailOk = p?.emailVerified === true ? true : normalizeStampPresent(p?.emailVerifiedAt);
+  const emailOk =
+    p?.emailVerified === true ? true : normalizeStampPresent(p?.emailVerifiedAt);
 
-  let phoneOk: boolean;
-  phoneOk = p?.phoneVerified === true ? true : normalizeStampPresent(p?.phoneVerifiedAt);
+  const phoneOk =
+    p?.phoneVerified === true ? true : normalizeStampPresent(p?.phoneVerifiedAt);
 
   return { emailOk, phoneOk };
 }
@@ -507,15 +571,6 @@ async function fetchProfileMe(): Promise<ProfileMe> {
 }
 
 /* ----------------------------- Small UI bits ----------------------------- */
-const IconCart = (props: any) => (
-  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ""}`} {...props}>
-    <path d="M6 6h15l-1.5 9h-12L6 6Z" stroke="currentColor" strokeWidth="1.5" />
-    <circle cx="9" cy="20" r="1" fill="currentColor" />
-    <circle cx="18" cy="20" r="1" fill="currentColor" />
-    <path d="M6 6l-1-3H2" stroke="currentColor" strokeWidth="1.5" />
-  </svg>
-);
-
 const IconHome = (props: any) => (
   <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ""}`} {...props}>
     <path
@@ -597,12 +652,20 @@ function CardHeader({
           : "text-ink-soft";
 
   return (
-    <div className={`flex items-center justify-between px-4 py-3 md:p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
+    <div
+      className={`flex items-center justify-between px-4 py-3 md:p-4 border-b border-border bg-gradient-to-b ${toneBg}`}
+    >
       <div className="flex items-start gap-2.5 md:gap-3">
         {icon && <div className={`mt-[2px] ${toneIcon}`}>{icon}</div>}
         <div className="min-w-0">
-          <h3 className="font-semibold text-ink text-sm md:text-base leading-5 md:leading-6">{title}</h3>
-          {subtitle && <p className="text-[11px] md:text-xs text-ink-soft leading-4 md:leading-5">{subtitle}</p>}
+          <h3 className="font-semibold text-ink text-sm md:text-base leading-5 md:leading-6">
+            {title}
+          </h3>
+          {subtitle && (
+            <p className="text-[11px] md:text-xs text-ink-soft leading-4 md:leading-5">
+              {subtitle}
+            </p>
+          )}
         </div>
       </div>
       <div className="shrink-0">{action}</div>
@@ -644,7 +707,6 @@ export default function Checkout() {
 
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
-  const bootstrap = useAuthStore((s) => s.bootstrap);
 
   const meQ = useQuery({
     queryKey: ["auth", "me"],
@@ -673,39 +735,10 @@ export default function Checkout() {
   const [phoneOk, setPhoneOk] = useState<boolean>(false);
   const [showNotVerified, setShowNotVerified] = useState<boolean>(false);
 
-  const [cart, setCart] = useState<CartLine[]>(() => {
-    const raw = loadCartRaw();
-    try {
-      const arr: any[] = Array.isArray(raw) ? raw : [];
-      return arr.map((x) => {
-        const unit = num(x.unitPrice, num(x.price, 0));
-        const qty = Math.max(1, num(x.qty, 1));
-
-        const rawKind = x.kind === "BASE" || x.kind === "VARIANT" ? x.kind : undefined;
-        const inferredKind: "BASE" | "VARIANT" = rawKind ?? (x.variantId ? "VARIANT" : "BASE");
-        const selectedOptions = normalizeSelectedOptions(x.selectedOptions);
-
-        return {
-          kind: inferredKind,
-          productId: String(x.productId),
-          title: String(x.title ?? ""),
-          qty,
-          unitPrice: unit,
-          variantId: x.variantId ?? null,
-          selectedOptions,
-          totalPrice: num(x.totalPrice, unit * qty),
-          image: x.image ?? null,
-          supplierId: x.supplierId ?? null,
-          offerId: x.offerId ? String(x.offerId) : undefined,
-        } as CartLine;
-      });
-    } catch {
-      return [];
-    }
-  });
+  const [cart, setCart] = useState<CartLine[]>(() => readCart());
 
   useEffect(() => {
-    saveCartRaw(cart);
+    writeCart(cart);
   }, [cart]);
 
   const publicSettingsQ = useQuery({
@@ -715,7 +748,6 @@ export default function Checkout() {
     queryFn: fetchPublicSettings,
   });
 
-  // 🔹 shippingEnabled from public settings (admin toggle)
   const shippingEnabledFromSettings = useMemo(
     () => extractShippingEnabled(publicSettingsQ.data as PublicSettings | null),
     [publicSettingsQ.data]
@@ -725,38 +757,44 @@ export default function Checkout() {
     queryKey: [
       "checkout",
       "pricing-quote:v1",
-      cart
-        .map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`)
-        .sort()
-        .join(","),
+      cart.map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`).sort().join(","),
     ],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 10_000,
     queryFn: () => fetchPricingQuoteForCart(cart),
   });
+
   const quoteSubtotalSupplier = (pricingQ.data as QuotePayload | null)?.subtotal ?? 0;
 
-  // ✅ Customer-facing subtotal must come from the cart's retail/unit prices,
-  // not from supplier-side quote allocations.
-  const cartSubtotalFallback = useMemo(
-    () => round2(cart.reduce((s, it) => s + computeLineTotal(it), 0)),
-    [cart]
-  );
+  const cartSubtotal = useMemo(() => {
+    return round2(
+      cart.reduce((sum, line) => {
+        const qty = Math.max(1, num(line.qty, 1));
+        const unit =
+          asMoney(line.unitPrice, 0) > 0
+            ? asMoney(line.unitPrice, 0)
+            : qty > 0
+              ? asMoney(line.totalPrice, 0) / qty
+              : 0;
+
+        return sum + round2(Math.max(0, unit) * qty);
+      }, 0)
+    );
+  }, [cart]);
 
   const itemsSubtotal = useMemo(() => {
-    return cartSubtotalFallback;
-  }, [cartSubtotalFallback]);
+    if (cartSubtotal > 0) return cartSubtotal;
+    if (quoteSubtotalSupplier > 0) return round2(quoteSubtotalSupplier);
+    return 0;
+  }, [cartSubtotal, quoteSubtotalSupplier]);
 
   const units = useMemo(
     () => cart.reduce((s, it) => s + Math.max(1, num(it.qty, 1)), 0),
     [cart]
   );
 
-  const productIds = useMemo(
-    () => Array.from(new Set(cart.map((l) => l.productId))),
-    [cart]
-  );
+  const productIds = useMemo(() => Array.from(new Set(cart.map((l) => l.productId))), [cart]);
   const supplierIds = useMemo(
     () => Array.from(new Set(cart.map((l) => l.supplierId).filter(Boolean) as string[])),
     [cart]
@@ -784,6 +822,7 @@ export default function Checkout() {
 
   const [savingHome, setSavingHome] = useState(false);
   const [savingShip, setSavingShip] = useState(false);
+  const [redirectingOrderId, setRedirectingOrderId] = useState<string | null>(null);
 
   const serviceFeeQ = useQuery({
     queryKey: [
@@ -797,7 +836,7 @@ export default function Checkout() {
         shipTo: sameAsHome ? homeAddr : shipAddr,
       },
     ],
-    enabled: cart.length > 0,
+    enabled: cart.length > 0 && itemsSubtotal >= 0,
     queryFn: async () => {
       const qs = new URLSearchParams();
       qs.set("itemsSubtotal", String(itemsSubtotal));
@@ -805,7 +844,10 @@ export default function Checkout() {
       if (productIds.length) qs.set("productIds", productIds.join(","));
       if (supplierIds.length) qs.set("supplierIds", supplierIds.join(","));
 
-      const { data } = await api.get(`/api/settings/checkout/service-fee?${qs.toString()}`, AXIOS_COOKIE_CFG);
+      const { data } = await api.get(
+        `/api/settings/checkout/service-fee?${qs.toString()}`,
+        AXIOS_COOKIE_CFG
+      );
 
       return {
         unitFee: Number(data?.unitFee) || 0,
@@ -819,10 +861,8 @@ export default function Checkout() {
         serviceFeeGateway: Number(data?.serviceFeeGateway) || 0,
         serviceFeeTotal: Number(data?.serviceFeeTotal ?? data?.serviceFee) || 0,
 
-        // 🔹 NEW: backend flag for UI logic
         shippingEnabled: (data as any)?.shippingEnabled,
 
-        // optional extras if you still return them
         shippingMode: data?.shippingMode ? String(data.shippingMode) : undefined,
         shippingLabel: data?.shippingLabel ? String(data.shippingLabel) : undefined,
       };
@@ -833,12 +873,8 @@ export default function Checkout() {
 
   const fee = serviceFeeQ.data;
 
-  // ✅ raw from fee endpoint (may be undefined)
   const rawShippingEnabledFromFee = fee?.shippingEnabled;
 
-  // ✅ final shippingEnabled:
-  //   1) if fee explicitly returns a flag → use it
-  //   2) otherwise → fall back to admin public setting
   const shippingEnabled: boolean = useMemo(() => {
     if (rawShippingEnabledFromFee !== undefined && rawShippingEnabledFromFee !== null) {
       return coerceBool(rawShippingEnabledFromFee);
@@ -846,7 +882,6 @@ export default function Checkout() {
     return shippingEnabledFromSettings;
   }, [rawShippingEnabledFromFee, shippingEnabledFromSettings]);
 
-  // still useful to send a mode to backend, but it's just derived
   const shippingMode: "DELIVERY" | "PICKUP_ONLY" = shippingEnabled ? "DELIVERY" : "PICKUP_ONLY";
 
   const shippingAddressForQuote = sameAsHome ? homeAddr : shipAddr;
@@ -912,7 +947,10 @@ export default function Checkout() {
 
   const shippingFee = shippingEnabled ? (shippingQ.data?.shippingFee ?? 0) : 0;
 
-  const taxRate = useMemo(() => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0), [taxRatePct]);
+  const taxRate = useMemo(
+    () => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0),
+    [taxRatePct]
+  );
 
   const estimatedVATIncluded = useMemo(() => {
     if (taxMode !== "INCLUDED" || taxRate <= 0) return 0;
@@ -923,8 +961,12 @@ export default function Checkout() {
 
   const serviceFeeTotal = fee?.serviceFeeTotal ?? 0;
 
-  const payableTotal = itemsSubtotal + shippingFee + (taxMode === "ADDED" ? vatAddOn : 0) + serviceFeeTotal;
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const payableTotal = round2(
+    itemsSubtotal +
+    shippingFee +
+    (taxMode === "ADDED" ? vatAddOn : 0) +
+    serviceFeeTotal
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -981,18 +1023,30 @@ export default function Checkout() {
     return () => {
       mounted = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, user?.id]);
+  }, [hydrated, user?.id, nav]);
+
+  useEffect(() => {
+    const syncFromCart = () => {
+      setCart(readCart());
+    };
+
+    window.addEventListener("cart:updated", syncFromCart);
+    return () => {
+      window.removeEventListener("cart:updated", syncFromCart);
+    };
+  }, []);
 
   useEffect(() => {
     if (sameAsHome) setShipAddr((prev) => ({ ...prev, ...homeAddr }));
   }, [sameAsHome, homeAddr]);
 
   const onChangeHome =
-    (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement>) => setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
+    (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
 
   const onChangeShip =
-    (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement>) => setShipAddr((a) => ({ ...a, [k]: e.target.value }));
+    (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setShipAddr((a) => ({ ...a, [k]: e.target.value }));
 
   function validateAddress(a: Address, isShipping = false): string | null {
     const label = isShipping ? "Shipping" : "Home";
@@ -1016,7 +1070,9 @@ export default function Checkout() {
       return "One of your items is no longer available at the selected price. Please refresh your cart or remove and re-add that item.";
     }
 
-    if ((status === 400 || status === 422) && raw && !/internal server error/i.test(raw)) return raw;
+    if ((status === 400 || status === 422) && raw && !/internal server error/i.test(raw)) {
+      return raw;
+    }
     if (status >= 500 || /internal server error/i.test(raw)) return fallback;
 
     return raw || fallback;
@@ -1046,7 +1102,10 @@ export default function Checkout() {
       }
       openModal({
         title: "Checkout",
-        message: safeServerMessage(e, "Could not save your home address. Please check the fields and try again."),
+        message: safeServerMessage(
+          e,
+          "Could not save your home address. Please check the fields and try again."
+        ),
       });
     } finally {
       setSavingHome(false);
@@ -1071,7 +1130,10 @@ export default function Checkout() {
       }
       openModal({
         title: "Checkout",
-        message: safeServerMessage(e, "Could not save your shipping address. Please check the fields and try again."),
+        message: safeServerMessage(
+          e,
+          "Could not save your shipping address. Please check the fields and try again."
+        ),
       });
     } finally {
       setSavingShip(false);
@@ -1084,9 +1146,13 @@ export default function Checkout() {
       if (!emailOk) throw new Error("Your email is not verified.");
       if (cart.length === 0) throw new Error("Your cart is empty");
 
-      if (pricingQ.isLoading) throw new Error("Calculating best supplier prices… Please try again in a moment.");
+      if (pricingQ.isLoading) {
+        throw new Error("Calculating best supplier prices… Please try again in a moment.");
+      }
       if (pricingWarning) throw new Error(pricingWarning);
-      if (serviceFeeQ.isLoading || !fee) throw new Error("Calculating fees… Please try again in a moment.");
+      if (serviceFeeQ.isLoading || !fee) {
+        throw new Error("Calculating fees… Please try again in a moment.");
+      }
 
       if (shippingEnabled) {
         if (shippingQ.isLoading) {
@@ -1116,7 +1182,7 @@ export default function Checkout() {
         const invalidKey = lineKeyFor(invalidLine);
         const repaired = removeCartLineByKey(cart, invalidKey);
         setCart(repaired);
-        saveCartRaw(repaired);
+        writeCart(repaired);
 
         throw new Error(
           `"${invalidLine.title || "An item"}" is no longer available at checkout and has been removed from your cart. Please review your cart and try again.`
@@ -1128,9 +1194,12 @@ export default function Checkout() {
         const supplierLine = quote?.lines?.[key];
         const hasQuotedSupplierPrice = !!supplierLine && asMoney(supplierLine.lineTotal, 0) > 0;
         const cachedUnit = num(l.unitPrice, num(l.price, 0));
-        return cachedUnit <= 0 && !hasQuotedSupplierPrice;
+        const explicitTotal = asMoney(l.totalPrice, 0);
+        return cachedUnit <= 0 && explicitTotal <= 0 && !hasQuotedSupplierPrice;
       });
-      if (bad) throw new Error("One or more items have no price. Please remove and re-add them to cart.");
+      if (bad) {
+        throw new Error("One or more items have no price. Please remove and re-add them to cart.");
+      }
 
       const vaHome = validateAddress(homeAddr, false);
       if (vaHome) throw new Error(vaHome);
@@ -1162,9 +1231,10 @@ export default function Checkout() {
               ? it.variantId
               : undefined;
 
-        // ✅ Keep customer-facing cart/retail unit price as the cached unit price.
-        // Supplier quote is for allocation/offer selection only, not shopper subtotal display.
-        const retailUnit = asMoney(it.unitPrice, asMoney(it.price, 0));
+        const retailUnit = asMoney(
+          it.unitPrice,
+          asMoney(it.price, Math.max(0, asMoney(it.totalPrice, 0) / Math.max(1, num(it.qty, 1))))
+        );
 
         return {
           key,
@@ -1189,7 +1259,6 @@ export default function Checkout() {
         serviceFeeComms: fee.serviceFeeComms ?? 0,
         serviceFeeGateway: fee.serviceFeeGateway ?? 0,
         serviceFeeTotal: fee.serviceFeeTotal ?? 0,
-        serviceFee: fee.serviceFeeTotal ?? 0,
 
         shippingFee: shippingEnabled ? shippingFee : 0,
         shippingCurrency: shippingEnabled ? (shippingQ.data?.currency ?? "NGN") : "NGN",
@@ -1236,44 +1305,86 @@ export default function Checkout() {
     },
     onSuccess: (resp) => {
       const orderId = (resp as any)?.data?.id;
-      saveCartRaw([]);
 
-      nav(`/payment?orderId=${orderId}`, {
-        state: {
-          orderId,
-          total: payableTotal,
-          homeAddress: homeAddr,
-          shippingAddress: sameAsHome ? homeAddr : shipAddr,
-        },
-        replace: true,
-      });
+      if (!orderId) {
+        openModal({
+          title: "Checkout",
+          message: "Order was created, but we could not open payment. Please check your orders.",
+        });
+        nav("/orders", { replace: true });
+        return;
+      }
+
+      setRedirectingOrderId(orderId);
+
+      try {
+        sessionStorage.setItem(
+          "payment:init",
+          JSON.stringify({
+            orderId,
+            total: payableTotal,
+            serviceFeeTotal: fee?.serviceFeeTotal ?? 0,
+            homeAddress: homeAddr,
+            shippingAddress: sameAsHome ? homeAddr : shipAddr,
+            at: Date.now(),
+          })
+        );
+      } catch {
+        //
+      }
+
+      // clear cart before leaving checkout
+      writeCart([]);
+
+      // force a full page entry into Payment
+      window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
     },
   });
 
-  if (cart.length === 0) {
+   if (redirectingOrderId) {
     return (
-      <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
-        <div className="text-center space-y-3">
-          <h1 className="text-xl md:text-2xl font-semibold text-ink">Your cart is empty</h1>
-          <p className="text-sm text-ink-soft">Add some items to proceed to checkout.</p>
-          <button
-            onClick={() => nav("/")}
-            className="inline-flex items-center rounded-md bg-primary-600 px-4 py-2 text-white font-medium hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-200 transition text-sm"
-          >
-            Go to Catalogue
-          </button>
+      <SiteLayout>
+        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
+          <div className="text-center space-y-3">
+            <h1 className="text-xl md:text-2xl font-semibold text-ink">Redirecting to payment…</h1>
+            <p className="text-sm text-ink-soft">Please wait while we open your payment page.</p>
+          </div>
         </div>
-      </div>
+      </SiteLayout>
     );
+  }
+
+  if (meQ.isLoading) {
+    return (
+      <SiteLayout>
+        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
+          <div className="text-sm text-ink-soft">Checking session…</div>
+        </div>
+      </SiteLayout>
+    );
+  }
+
+  if (hydrated && !user?.id) {
+    return <Navigate to="/login" replace state={{ from: { pathname: "/checkout" } }} />;
+  }
+
+  if (cart.length === 0) {
+    return <Navigate to="/cart" replace state={{ from: "/checkout" }} />;
   }
 
   const NotVerifiedModal = () => {
     const title =
-      !emailOk && !phoneOk ? "Email and phone not verified" : !emailOk ? "Email not verified" : "Phone is not verified";
+      !emailOk && !phoneOk
+        ? "Email and phone not verified"
+        : !emailOk
+          ? "Email not verified"
+          : "Phone is not verified";
 
     const lines: string[] = [];
     if (!emailOk) lines.push("• Your email is not verified.");
-    if ((import.meta as any)?.env?.PHONE_VERIFY === "set" && !phoneOk) lines.push("• Your phone number is not verified.");
+    if ((import.meta as any)?.env?.PHONE_VERIFY === "set" && !phoneOk) {
+      lines.push("• Your phone number is not verified.");
+    }
     lines.push("Please fix this, then return to your cart/checkout.");
 
     const next = encodeURIComponent("/checkout");
@@ -1289,7 +1400,10 @@ export default function Checkout() {
         }}
         className="fixed inset-0 z-50 grid place-items-center bg-black/40 px-4"
       >
-        <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="w-full max-w-md rounded-2xl bg-white shadow-2xl border"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="px-4 py-3 md:px-5 md:py-4 border-b">
             <h2 className="text-base md:text-lg font-semibold">{title}</h2>
           </div>
@@ -1358,16 +1472,6 @@ export default function Checkout() {
 
   const showShippingIncludedRibbon = !publicSettingsQ.isLoading && !shippingEnabled;
 
-  if (meQ.isLoading) {
-    return (
-      <SiteLayout>
-        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
-          <div className="text-sm text-ink-soft">Checking session…</div>
-        </div>
-      </SiteLayout>
-    );
-  }
-
   return (
     <SiteLayout>
       <div className="bg-bg-soft bg-hero-radial">
@@ -1382,7 +1486,9 @@ export default function Checkout() {
               <span className="opacity-40">›</span>
               <span className="text-ink-soft">Payment</span>
             </nav>
-            <h1 className="mt-2 text-xl sm:text-2xl font-semibold text-ink leading-tight">Checkout</h1>
+            <h1 className="mt-2 text-xl sm:text-2xl font-semibold text-ink leading-tight">
+              Checkout
+            </h1>
 
             {profileErr && (
               <p className="mt-2 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
@@ -1418,28 +1524,62 @@ export default function Checkout() {
                   }
                 />
                 {loadingProfile ? (
-                  <div className="px-4 py-3 md:p-4 text-xs sm:text-sm text-ink-soft">Loading…</div>
+                  <div className="px-4 py-3 md:p-4 text-xs sm:text-sm text-ink-soft">
+                    Loading…
+                  </div>
                 ) : showHomeForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={homeAddr.houseNumber} onChange={onChangeHome("houseNumber")} placeholder="House No. *" />
-                      <Input value={homeAddr.postCode} onChange={onChangeHome("postCode")} placeholder="Post code *" />
+                      <Input
+                        value={homeAddr.houseNumber}
+                        onChange={onChangeHome("houseNumber")}
+                        placeholder="House No. *"
+                      />
+                      <Input
+                        value={homeAddr.postCode}
+                        onChange={onChangeHome("postCode")}
+                        placeholder="Post code *"
+                      />
                     </div>
 
-                    <Input value={homeAddr.streetName} onChange={onChangeHome("streetName")} placeholder="Street name *" />
+                    <Input
+                      value={homeAddr.streetName}
+                      onChange={onChangeHome("streetName")}
+                      placeholder="Street name *"
+                    />
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={homeAddr.town} onChange={onChangeHome("town")} placeholder="Town (optional)" />
-                      <Input value={homeAddr.lga || ""} onChange={onChangeHome("lga")} placeholder="LGA (optional)" />
+                      <Input
+                        value={homeAddr.town}
+                        onChange={onChangeHome("town")}
+                        placeholder="Town (optional)"
+                      />
+                      <Input
+                        value={homeAddr.lga || ""}
+                        onChange={onChangeHome("lga")}
+                        placeholder="LGA (optional)"
+                      />
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={homeAddr.city} onChange={onChangeHome("city")} placeholder="City *" />
-                      <Input value={homeAddr.state} onChange={onChangeHome("state")} placeholder="State *" />
+                      <Input
+                        value={homeAddr.city}
+                        onChange={onChangeHome("city")}
+                        placeholder="City *"
+                      />
+                      <Input
+                        value={homeAddr.state}
+                        onChange={onChangeHome("state")}
+                        placeholder="State *"
+                      />
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={homeAddr.country} onChange={onChangeHome("country")} placeholder="Country *" />
+                      <Input
+                        value={homeAddr.country}
+                        onChange={onChangeHome("country")}
+                        placeholder="Country *"
+                      />
                       <div />
                     </div>
 
@@ -1506,7 +1646,10 @@ export default function Checkout() {
                             } catch (err: any) {
                               const status = err?.response?.status;
                               if (status === 401) {
-                                nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
+                                nav("/login", {
+                                  state: { from: { pathname: "/checkout" } },
+                                  replace: true,
+                                });
                                 return;
                               }
                               openModal({
@@ -1532,28 +1675,62 @@ export default function Checkout() {
                     Using your Home address for shipping.
                   </div>
                 ) : loadingProfile ? (
-                  <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">Loading…</div>
+                  <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">
+                    Loading…
+                  </div>
                 ) : showShipForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={shipAddr.houseNumber} onChange={onChangeShip("houseNumber")} placeholder="House No. *" />
-                      <Input value={shipAddr.postCode} onChange={onChangeShip("postCode")} placeholder="Post code *" />
+                      <Input
+                        value={shipAddr.houseNumber}
+                        onChange={onChangeShip("houseNumber")}
+                        placeholder="House No. *"
+                      />
+                      <Input
+                        value={shipAddr.postCode}
+                        onChange={onChangeShip("postCode")}
+                        placeholder="Post code *"
+                      />
                     </div>
 
-                    <Input value={shipAddr.streetName} onChange={onChangeShip("streetName")} placeholder="Street name *" />
+                    <Input
+                      value={shipAddr.streetName}
+                      onChange={onChangeShip("streetName")}
+                      placeholder="Street name *"
+                    />
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={shipAddr.town} onChange={onChangeShip("town")} placeholder="Town (optional)" />
-                      <Input value={shipAddr.lga || ""} onChange={onChangeShip("lga")} placeholder="LGA (optional)" />
+                      <Input
+                        value={shipAddr.town}
+                        onChange={onChangeShip("town")}
+                        placeholder="Town (optional)"
+                      />
+                      <Input
+                        value={shipAddr.lga || ""}
+                        onChange={onChangeShip("lga")}
+                        placeholder="LGA (optional)"
+                      />
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={shipAddr.city} onChange={onChangeShip("city")} placeholder="City *" />
-                      <Input value={shipAddr.state} onChange={onChangeShip("state")} placeholder="State *" />
+                      <Input
+                        value={shipAddr.city}
+                        onChange={onChangeShip("city")}
+                        placeholder="City *"
+                      />
+                      <Input
+                        value={shipAddr.state}
+                        onChange={onChangeShip("state")}
+                        placeholder="State *"
+                      />
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={shipAddr.country} onChange={onChangeShip("country")} placeholder="Country *" />
+                      <Input
+                        value={shipAddr.country}
+                        onChange={onChangeShip("country")}
+                        placeholder="Country *"
+                      />
                       <div />
                     </div>
 
@@ -1644,19 +1821,21 @@ export default function Checkout() {
 
                   {showShippingIncludedRibbon && (
                     <div className="mt-1 text-[11px] sm:text-xs rounded-lg border border-dashed border-zinc-200 bg-zinc-50/90 px-3 py-2 text-ink-soft">
-                      No extra shipping fee: delivery cost is already included in item prices. We’ll still deliver to the
-                      shipping address you provide.
+                      No extra shipping fee: delivery cost is already included in item prices. We’ll
+                      still deliver to the shipping address you provide.
                     </div>
                   )}
 
                   {shippingEnabled && shippingQ.isError && (
-                    <div className="mt-1 text-[11px] sm:text-xs text-danger">Could not compute shipping yet</div>
+                    <div className="mt-1 text-[11px] sm:text-xs text-danger">
+                      Could not compute shipping yet
+                    </div>
                   )}
 
                   {shippingEnabled && shippingQ.data?.partial && (
                     <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
-                      Shipping was quoted for some suppliers only. Total may increase after remaining supplier zones/rates are
-                      configured.
+                      Shipping was quoted for some suppliers only. Total may increase after remaining
+                      supplier zones/rates are configured.
                     </div>
                   )}
 
@@ -1666,17 +1845,23 @@ export default function Checkout() {
                       <span className="font-semibold">{ngn.format(serviceFeeTotal)}</span>
                     </div>
                     {serviceFeeQ.isLoading && (
-                      <div className="mt-1 text-[11px] sm:text-xs text-ink-soft">Calculating fees…</div>
+                      <div className="mt-1 text-[11px] sm:text-xs text-ink-soft">
+                        Calculating fees…
+                      </div>
                     )}
                     {serviceFeeQ.isError && (
-                      <div className="mt-1 text-[11px] sm:text-xs text-danger">Failed to compute fees</div>
+                      <div className="mt-1 text-[11px] sm:text-xs text-danger">
+                        Failed to compute fees
+                      </div>
                     )}
                   </div>
                 </div>
 
                 <div className="mt-4 flex items-baseline justify-between text-ink">
                   <span className="font-semibold text-sm sm:text-base">Total</span>
-                  <span className="text-lg sm:text-xl font-semibold">{ngn.format(payableTotal)}</span>
+                  <span className="text-lg sm:text-xl font-semibold">
+                    {ngn.format(payableTotal)}
+                  </span>
                 </div>
 
                 {pricingWarning && (
@@ -1686,12 +1871,18 @@ export default function Checkout() {
                 )}
 
                 <button
-                  disabled={createOrder.isPending || serviceFeeQ.isLoading || pricingQ.isLoading || !!pricingWarning}
+                  disabled={
+                    createOrder.isPending || serviceFeeQ.isLoading || pricingQ.isLoading || !!pricingWarning
+                  }
                   onClick={() => createOrder.mutate()}
                   className="mt-4 sm:mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50 text-sm"
                   type="button"
                 >
-                  {createOrder.isPending ? "Processing…" : pricingQ.isLoading ? "Calculating prices…" : "Place order & Pay"}
+                  {createOrder.isPending
+                    ? "Processing…"
+                    : pricingQ.isLoading
+                      ? "Calculating prices…"
+                      : "Place order & Pay"}
                 </button>
 
                 {createOrder.isError && (
@@ -1709,7 +1900,8 @@ export default function Checkout() {
                 </button>
 
                 <p className="mt-3 text-[10px] sm:text-[11px] text-ink-soft text-center leading-4">
-                  Totals use live supplier offers. If an offer changes or stock reallocates, your pricing may update.
+                  Totals use live supplier offers. If an offer changes or stock reallocates, your
+                  pricing may update.
                 </p>
               </Card>
             </aside>

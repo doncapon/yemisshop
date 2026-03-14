@@ -12,6 +12,7 @@ import { ps, PAYSTACK_MODE, PAYSTACK_SECRET_KEY } from "../lib/paystack.js";
 import { Prisma } from "@prisma/client";
 import { notifyCustomerOrderCancelled, notifyCustomerOrderRefunded } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
+import { markPendingPaymentsCanceledTx, restoreOrderInventoryTx } from "../services/orderInventory.service.js";
 
 export const TRIAL_MODE =
   String(process.env.TRIAL_MODE || "").toLowerCase() === "true" ||
@@ -239,14 +240,10 @@ router.get("/:id/suppliers", requireSuperAdmin, async (req, res) => {
   });
 });
 
-/* =========================================================
-   POST /api/admin/orders/:orderId/cancel
-========================================================= */
 router.post("/:orderId/cancel", requireAdmin, async (req, res) => {
   const orderId = requiredString(req.params.orderId);
   const actorId = requiredString((req as any).user?.id ?? "");
 
-  // ✅ OTP REQUIRED HERE
   try {
     const otpToken = String(req.headers["x-otp-token"] ?? req.body?.otpToken ?? "").trim();
     await assertVerifiedOrderOtp(orderId, "CANCEL_ORDER", otpToken, actorId);
@@ -259,16 +256,6 @@ router.post("/:orderId/cancel", requireAdmin, async (req, res) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
         include: {
-          items: {
-            select: {
-              id: true,
-              productId: true,
-              variantId: true,
-              quantity: true,
-              chosenSupplierProductOfferId: true,
-              chosenSupplierVariantOfferId: true,
-            },
-          },
           payments: { select: { status: true } },
         },
       });
@@ -278,68 +265,40 @@ router.post("/:orderId/cancel", requireAdmin, async (req, res) => {
 
       const hasPaid = (order.payments || []).some((p: any) => {
         const s = String(p.status || "").toUpperCase();
-        return ["PAID", "SUCCESS", "SUCCESSFUL", "VERIFIED", "COMPLETED"].includes(s);
+        return s === "PAID";
       });
-      if (hasPaid || ["PAID", "COMPLETED"].includes(order.status)) {
+
+      if (hasPaid || ["PAID", "COMPLETED"].includes(String(order.status).toUpperCase())) {
         throw new Error("Cannot cancel an order that has been paid/completed.");
       }
 
-      for (const it of order.items) {
-        const qty = Number(it.quantity || 0);
-        if (!qty || qty <= 0) continue;
+      await restoreOrderInventoryTx(tx, orderId);
+      await markPendingPaymentsCanceledTx(tx, orderId, "Order canceled by admin before payment");
 
-        if (it.chosenSupplierVariantOfferId) {
-          const updatedOffer = await tx.supplierVariantOffer.update({
-            where: { id: it.chosenSupplierVariantOfferId },
-            data: { availableQty: { increment: qty } },
-            select: { id: true, availableQty: true, productId: true },
-          });
-
-          if (Number(updatedOffer.availableQty) > 0) {
-            await tx.supplierVariantOffer.update({
-              where: { id: updatedOffer.id },
-              data: { inStock: true },
-            });
-          }
-
-          if (updatedOffer.productId) {
-            await recomputeProductStockTx(tx, String(updatedOffer.productId));
-          }
-        } else if (it.chosenSupplierProductOfferId) {
-          const updatedOffer = await tx.supplierProductOffer.update({
-            where: { id: it.chosenSupplierProductOfferId },
-            data: { availableQty: { increment: qty } },
-            select: { id: true, availableQty: true, productId: true },
-          });
-
-          if (Number(updatedOffer.availableQty) > 0) {
-            await tx.supplierProductOffer.update({
-              where: { id: updatedOffer.id },
-              data: { inStock: true },
-            });
-          }
-
-          if (updatedOffer.productId) {
-            await recomputeProductStockTx(tx, String(updatedOffer.productId));
-          }
-        }
-
-        if (it.productId) {
-          await syncProductInStockCacheTx(tx, String(it.productId));
-        }
-      }
+      await tx.purchaseOrder.updateMany({
+        where: { orderId },
+        data: {
+          status: "CANCELED" as any,
+          canceledAt: new Date(),
+          cancelReason: "ADMIN_CANCELED",
+        },
+      });
 
       const canceled = await tx.order.update({
         where: { id: orderId },
-        data: { status: "CANCELED" },
+        data: { status: "CANCELED" as any },
       });
 
-      await logOrderActivityTx(tx, orderId, ACT.STATUS_CHANGE as any, "Order canceled by admin");
+      await logOrderActivityTx(
+        tx,
+        orderId,
+        ACT.STATUS_CHANGE as any,
+        "Order canceled by admin"
+      );
 
       return canceled;
     });
 
-    // 🔔 Customer notification: order cancelled
     try {
       await notifyCustomerOrderCancelled(orderId);
     } catch (e) {
