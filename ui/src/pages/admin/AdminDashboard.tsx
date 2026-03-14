@@ -488,7 +488,7 @@ export default function AdminDashboard() {
     enabled: !!canAdmin && tab === "refunds",
     queryFn: async () => {
       const { data } = await api.get<{ data: AdminRefundTop[] }>(
-        `/api/admin/refunds?q=${encodeURIComponent(
+        `/api/refunds?q=${encodeURIComponent(
           refundQ
         )}&status=${encodeURIComponent(refundStatus)}`,
         { withCredentials: true }
@@ -507,7 +507,7 @@ export default function AdminDashboard() {
     }) =>
       (
         await api.patch(
-          `/api/admin/refunds/${vars.id}/decision`,
+          `/api/refunds/${vars.id}/decision`,
           { decision: vars.decision, note: vars.note },
           { withCredentials: true }
         )
@@ -527,7 +527,7 @@ export default function AdminDashboard() {
     mutationFn: async (id: string) =>
       (
         await api.post(
-          `/api/admin/refunds/${id}/approve`,
+          `/api/refunds/${id}/approve`,
           {},
           { withCredentials: true }
         )
@@ -2520,7 +2520,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     enabled: !!canAdmin,
     queryFn: async () => {
       const { data } = await api.get(
-        `/api/admin/refunds?q=${encodeURIComponent(
+        `/api/refunds?q=${encodeURIComponent(
           q
         )}&status=${encodeURIComponent(
           status
@@ -2572,7 +2572,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     }) =>
       (
         await api.patch(
-          `/api/admin/refunds/${encodeURIComponent(vars.id)}/decision`,
+          `/api/refunds/${encodeURIComponent(vars.id)}/decision`,
           { decision: vars.decision, note: vars.note },
           { withCredentials: true }
         )
@@ -2597,7 +2597,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     mutationFn: async (id: string) =>
       (
         await api.post(
-          `/api/admin/refunds/${encodeURIComponent(id)}/approve`,
+          `/api/refunds/${encodeURIComponent(id)}/approve`,
           {},
           { withCredentials: true }
         )

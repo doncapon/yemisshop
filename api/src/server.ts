@@ -65,7 +65,6 @@ import adminPayouts from "./routes/adminPayouts.js";
 
 import refundsRouter from "./routes/refunds.js";
 import supplierRefundsRouter from "./routes/supplierRefunds.js";
-import adminRefundsRouter from "./routes/adminRefunds.js";
 import disputesRouter from "./routes/disputes.js";
 import notificationsRouter from "./routes/notifications.js";
 import ridersRouter from "./routes/riders.js";
@@ -364,7 +363,6 @@ app.use("/api/admin/variants", adminVariantsRouter);
 app.use("/api/admin", adminCatalogMeta);
 app.use("/api/admin/catalog-requests", adminCatalogRequests);
 app.use("/api/admin/payouts", adminPayouts);
-app.use("/api/admin/refunds", adminRefundsRouter);
 app.use("/api/admin", adminUsersRouter);
 
 /* ---------------- Supplier routes ---------------- */

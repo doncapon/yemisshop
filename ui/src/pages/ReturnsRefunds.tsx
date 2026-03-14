@@ -752,8 +752,8 @@ export default function ReturnsRefundsPage() {
     enabled: queriesEnabled,
     queryFn: async () => {
       const urls = isAdmin
-        ? ["/api/admin/refunds", "/api/refunds", "/api/refunds/all"]
-        : ["/api/refunds/mine", "/api/orders/refunds/mine"];
+        ? ["/api/refunds", "/api/refunds/all"]
+        : ["/api/orders/refunds/mine"];
 
       let lastErr: any = null;
 

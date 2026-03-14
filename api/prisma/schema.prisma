@@ -122,6 +122,11 @@ model Refund {
   events                  RefundEvent[]
   items                   RefundItem[]
 
+    // ✅ NEW
+  restockApproved         Boolean       @default(false)
+  stockRestoredAt         DateTime?
+  stockRestoredById       String?
+
   @@index([orderId])
   @@index([supplierId])
   @@index([status, createdAt])
