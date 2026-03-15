@@ -8,7 +8,7 @@ import {
   restoreOrderInventoryTx,
 } from "../services/orderInventory.service.js";
 
-const ORDER_PENDING_TTL_MIN = Number(process.env.ORDER_PENDING_TTL_MIN ?? 30);
+const ORDER_PENDING_TTL_MIN = Number(process.env.ORDER_PENDING_TTL_MIN ?? 60);
 const ORDER_EXPIRY_CRON = process.env.ORDER_EXPIRY_CRON || "*/10 * * * *";
 const ORDER_EXPIRY_ENABLED =
   String(process.env.ORDER_EXPIRY_ENABLED ?? "true").toLowerCase() === "true";

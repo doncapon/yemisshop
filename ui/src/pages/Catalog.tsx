@@ -1061,8 +1061,9 @@ const SuggestionItem = memo(function SuggestionItem({
           />
 
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">{p.title}</div>
-            <div className="truncate text-xs opacity-80">
+            <div className="truncate text-[11px] font-semibold md:text-sm">{p.title}</div>
+            <div className="truncate text-[10px] opacity-80 md:text-xs">
+
               {ngn.format(p._displayPrice || 0)}
               {p.categoryName ? ` • ${p.categoryName}` : ""}
               {p.brand?.name ? ` • ${p.brand.name}` : ""}
@@ -1217,15 +1218,16 @@ const ProductCard = memo(
               <button
                 type="button"
                 data-stop-card-nav="true"
-                className="inline-flex items-center rounded-full bg-black/40 px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-black/55 md:text-xs"
+                className="inline-flex items-center rounded-full bg-black/40 px-2.5 py-1 text-[10px] font-medium text-white transition hover:bg-black/55 md:px-3 md:py-1.5 md:text-xs"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   onGoToProduct(p.id);
                 }}
               >
-                Choose options
+                Preview
               </button>
+
             ) : (
               <div data-stop-card-nav="true">
                 {baseQtyInCart > 0 ? (
@@ -1277,7 +1279,7 @@ const ProductCard = memo(
                     type="button"
                     data-stop-card-nav="true"
                     disabled={!inStock}
-                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium shadow-sm transition md:text-xs ${inStock
+                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium shadow-sm transition md:px-3 md:py-1.5 md:text-xs ${inStock
                       ? "bg-black text-white hover:bg-black/90"
                       : "cursor-not-allowed bg-zinc-200 text-zinc-500"
                       }`}
@@ -1290,6 +1292,7 @@ const ProductCard = memo(
                   >
                     Add to cart
                   </button>
+
                 )}
               </div>
             )}
@@ -2601,21 +2604,13 @@ export default function Catalog() {
           </div>
         </div>
 
-        <div className="mb-2 flex items-center justify-between gap-2 md:hidden">
+        <div className="mb-2 md:hidden">
           <div className="min-w-0">
             <h1 className="text-lg font-semibold text-zinc-900">Products</h1>
             <p className="text-xs text-zinc-600">Search and filter quickly.</p>
           </div>
-
-          <button
-            type="button"
-            onClick={() => setRefineOpen(true)}
-            className="inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-zinc-800 shadow-sm transition hover:border-zinc-300 active:scale-[0.97]"
-          >
-            <SlidersHorizontal size={14} />
-            Filter categories & brands
-          </button>
         </div>
+
 
         {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700 md:hidden">
@@ -2657,7 +2652,7 @@ export default function Catalog() {
           </div>
         )}
 
-        <div className="mb-3 rounded-2xl border border-zinc-200 bg-white/90 p-3 shadow-sm md:hidden">
+        <div className="mb-1 rounded-lg border border-zinc-200 bg-white/95 p-2 shadow-sm md:hidden">
           <form
             className="relative"
             onSubmit={(e) => {
@@ -2665,7 +2660,11 @@ export default function Catalog() {
               submitSearch();
             }}
           >
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+            <Search
+              className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-400"
+              size={11}
+            />
+
             <input
               ref={mobileInputRef}
               value={query}
@@ -2675,120 +2674,68 @@ export default function Catalog() {
                 setActiveIdx(0);
               }}
               onFocus={() => setSearchFocused(true)}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown" && shouldShowSuggest && hasSuggestionResults) {
-                  e.preventDefault();
-                  setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                  return;
-                }
-
-                if (e.key === "ArrowUp" && shouldShowSuggest && hasSuggestionResults) {
-                  e.preventDefault();
-                  setActiveIdx((i) => Math.max(i - 1, 0));
-                  return;
-                }
-
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitSearch();
-                  return;
-                }
-
-                if (e.key === "Escape") {
-                  setSearchFocused(false);
-                  return;
-                }
-              }}
-              placeholder="Search products, brands, or categories…"
-              className="w-full rounded-2xl border border-zinc-200 bg-white py-2.5 pl-10 pr-24 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
+              placeholder="Search products..."
+              className="h-8 w-full rounded-lg border border-zinc-200 bg-white pl-7 pr-[4.5rem] text-[11px] placeholder:text-[10px] placeholder:text-zinc-400 focus:border-fuchsia-400 focus:ring-1 focus:ring-fuchsia-100"
               aria-label="Search products"
             />
 
             <button
               type="submit"
-              className="absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center rounded-full bg-zinc-900 px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-zinc-800"
+              className="absolute right-1 top-1/2 inline-flex h-6 -translate-y-1/2 items-center rounded-full bg-zinc-900 px-2.5 text-[10px] font-medium text-white transition hover:bg-zinc-800"
             >
               Search
             </button>
-
-            {shouldShowSuggest && (
-              <div
-                ref={mobileSuggestRef}
-                className="relative z-10 mt-2 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl"
-              >
-                {hasSuggestionResults ? (
-                  <ul className="max-h-[45vh] overflow-auto p-2">
-                    {suggestions.map((p, i) => (
-                      <SuggestionItem
-                        key={p.id}
-                        p={p}
-                        active={i === activeIdx}
-                        onClick={applySuggestionToFilter}
-                      />
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="p-3 text-sm text-zinc-500">No matching products found.</div>
-                )}
-              </div>
-            )}
           </form>
+          <div className="mt-1 flex items-center gap-2">
 
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div className="min-w-0">
-              <label className="mb-1 block text-[11px] font-medium text-zinc-700">Sort</label>
-              <select
-                value={sortKey}
-                onChange={(e) => {
-                  setSortKey(e.target.value as SortKey);
-                }}
-                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[12px]"
-              >
-                <option value="relevance">Relevance</option>
-                <option value="price-asc">Price: Low → High</option>
-                <option value="price-desc">Price: High → Low</option>
-              </select>
-            </div>
+            <select
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value as SortKey)}
+              className="h-7 flex-1 rounded-md border border-zinc-200 bg-white px-2 text-[11px] text-zinc-700"
+            >
+              <option value="relevance">Relevance</option>
+              <option value="price-asc">Low → High</option>
+              <option value="price-desc">High → Low</option>
+            </select>
 
-            <div className="min-w-0">
-              <label className="mb-1 block text-[11px] font-medium text-zinc-700">Per page</label>
-              <select
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value) as 8 | 12 | 16);
-                }}
-                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[12px]"
-              >
-                <option value={8}>8</option>
-                <option value={12}>12</option>
-                <option value={16}>16</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-3 flex items-center justify-between gap-3">
-            <label className="inline-flex select-none items-center gap-2 text-[12px] font-medium text-zinc-800">
-              <input
-                type="checkbox"
-                checked={inStockOnly}
-                onChange={(e) => {
-                  setInStockOnly(e.target.checked);
-                }}
-                className="h-4 w-4 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
-              />
-              In stock
-            </label>
+            <select
+              value={pageSize}
+              onChange={(e) =>
+                setPageSize(Number(e.target.value) as 8 | 12 | 16)
+              }
+              className="h-7 w-[64px] rounded-md border border-zinc-200 bg-white px-1 text-[11px] text-zinc-700"
+            >
+              <option value={8}>8</option>
+              <option value={12}>12</option>
+              <option value={16}>16</option>
+            </select>
 
             <button
               type="button"
               onClick={() => setRefineOpen(true)}
-              className="inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-medium text-zinc-800 shadow-sm hover:border-zinc-300"
+              className="inline-flex h-7 items-center gap-1 rounded-full border border-zinc-200 bg-white px-2 text-[11px] font-medium text-zinc-700 shadow-sm"
             >
-              <SlidersHorizontal size={14} />
-              Filter categories & brands
+              <SlidersHorizontal size={11} />
+              Filters
             </button>
+
           </div>
+
+          <div className="mt-1 flex items-center">
+            <label className="inline-flex items-center gap-1 text-[11px] text-zinc-700">
+              <input
+                type="checkbox"
+                checked={inStockOnly}
+                onChange={(e) => setInStockOnly(e.target.checked)}
+                className="h-3 w-3 accent-purple-600"
+              />
+              In stock
+            </label>
+          </div>
+
         </div>
+
+
 
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
           <aside className="hidden md:block">
@@ -2849,7 +2796,7 @@ export default function Catalog() {
                     onChange={(e) => {
                       setInStockOnly(e.target.checked);
                     }}
-                    className="h-4 w-4 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
+                    className="h-3 w-3 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
                   />
                   In stock
                 </label>
@@ -3158,46 +3105,55 @@ export default function Catalog() {
                   <div className="rounded-2xl border border-zinc-200 bg-white/85 p-3 shadow-sm backdrop-blur md:hidden">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
+                        <div className="text-[10px] font-semibold tracking-tight text-zinc-800">
                           Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
                           {sorted.length}
                         </div>
-                        <div className="text-[11px] text-zinc-500">
+                        <div className="text-[9px] text-zinc-500">
                           Page {currentPage} / {totalPages}
                         </div>
                       </div>
                     </div>
 
-                    <div className="mt-3 grid grid-cols-4 gap-2">
+                    <div className="mt-2 grid grid-cols-4 gap-1.5">
                       <button
                         type="button"
                         onClick={() => goTo(1)}
-                        className="h-9 rounded-xl border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        aria-label="First page"
+                        title="First page"
+                        className="h-8 rounded-lg border border-zinc-200 bg-white text-[12px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
-                        First
+                        «
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(currentPage - 1)}
-                        className="h-9 rounded-xl border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        aria-label="Previous page"
+                        title="Previous page"
+                        className="h-8 rounded-lg border border-zinc-200 bg-white text-[12px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
-                        Prev
+                        ‹
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(currentPage + 1)}
-                        className="h-9 rounded-xl border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        aria-label="Next page"
+                        title="Next page"
+                        className="h-8 rounded-lg border border-zinc-200 bg-white text-[12px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
-                        Next
+                        ›
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(totalPages)}
-                        className="h-9 rounded-xl border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        aria-label="Last page"
+                        title="Last page"
+                        className="h-8 rounded-lg border border-zinc-200 bg-white text-[12px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
-                        Last
+                        »
                       </button>
                     </div>
+
 
                     <form
                       className="mt-3 flex items-center gap-2"
@@ -3207,7 +3163,7 @@ export default function Catalog() {
                         if (Number.isFinite(n)) goTo(n);
                       }}
                     >
-                      <label className="shrink-0 text-[11px] font-semibold tracking-tight text-zinc-700">
+                      <label className="shrink-0 text-[9px] font-semibold tracking-tight text-zinc-700">
                         Go to
                       </label>
                       <input
@@ -3219,13 +3175,13 @@ export default function Catalog() {
                         value={jumpVal}
                         onChange={(e) => setJumpVal(e.target.value)}
                         placeholder={`${currentPage}`}
-                        className="h-9 w-full min-w-0 rounded-xl border border-zinc-200 bg-white px-3 text-[12px] font-semibold focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
+                        className="h-8 w-full min-w-0 rounded-xl border border-zinc-200 bg-white px-2.5 text-[10px] font-semibold focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
                         aria-label="Jump to page"
                       />
                       <button
                         type="submit"
                         disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
-                        className="h-9 shrink-0 rounded-xl bg-zinc-900 px-4 text-[12px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
+                        className="h-8 shrink-0 rounded-xl bg-zinc-900 px-3 text-[10px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
                       >
                         Go
                       </button>
