@@ -3102,16 +3102,13 @@ export default function Catalog() {
                 </div>
 
                 <div className="mt-5 md:mt-8">
-                  <div className="rounded-2xl border border-zinc-200 bg-white/85 p-3 shadow-sm backdrop-blur md:hidden">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-[10px] font-semibold tracking-tight text-zinc-800">
-                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
-                          {sorted.length}
-                        </div>
-                        <div className="text-[9px] text-zinc-500">
-                          Page {currentPage} / {totalPages}
-                        </div>
+                  <div className="rounded-xl border border-zinc-200 bg-white/85 p-2 shadow-sm backdrop-blur md:hidden">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 text-[10px] font-semibold tracking-tight text-zinc-800">
+                        Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                      </div>
+                      <div className="shrink-0 text-[9px] text-zinc-500">
+                        Page {currentPage} / {totalPages}
                       </div>
                     </div>
 
@@ -3121,7 +3118,7 @@ export default function Catalog() {
                         onClick={() => goTo(1)}
                         aria-label="First page"
                         title="First page"
-                        className="h-8 rounded-lg border border-zinc-200 bg-white text-[12px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
                         «
                       </button>
@@ -3130,7 +3127,7 @@ export default function Catalog() {
                         onClick={() => goTo(currentPage - 1)}
                         aria-label="Previous page"
                         title="Previous page"
-                        className="h-8 rounded-lg border border-zinc-200 bg-white text-[12px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
                         ‹
                       </button>
@@ -3139,7 +3136,7 @@ export default function Catalog() {
                         onClick={() => goTo(currentPage + 1)}
                         aria-label="Next page"
                         title="Next page"
-                        className="h-8 rounded-lg border border-zinc-200 bg-white text-[12px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
                         ›
                       </button>
@@ -3148,15 +3145,14 @@ export default function Catalog() {
                         onClick={() => goTo(totalPages)}
                         aria-label="Last page"
                         title="Last page"
-                        className="h-8 rounded-lg border border-zinc-200 bg-white text-[12px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
                         »
                       </button>
                     </div>
 
-
                     <form
-                      className="mt-3 flex items-center gap-2"
+                      className="mt-2 flex items-center gap-1.5"
                       onSubmit={(e) => {
                         e.preventDefault();
                         const n = Number(jumpVal);
@@ -3175,18 +3171,19 @@ export default function Catalog() {
                         value={jumpVal}
                         onChange={(e) => setJumpVal(e.target.value)}
                         placeholder={`${currentPage}`}
-                        className="h-8 w-full min-w-0 rounded-xl border border-zinc-200 bg-white px-2.5 text-[10px] font-semibold focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
+                        className="h-7 w-full min-w-0 rounded-md border border-zinc-200 bg-white px-2 text-[10px] font-semibold focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-100"
                         aria-label="Jump to page"
                       />
                       <button
                         type="submit"
                         disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
-                        className="h-8 shrink-0 rounded-xl bg-zinc-900 px-3 text-[10px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
+                        className="h-7 shrink-0 rounded-md bg-zinc-900 px-2.5 text-[10px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
                       >
                         Go
                       </button>
                     </form>
                   </div>
+
 
                   <div className="hidden flex-col gap-3 sm:flex-row sm:items-center sm:justify-between md:flex">
                     <div className="text-sm text-zinc-600">
