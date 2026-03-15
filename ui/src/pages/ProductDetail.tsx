@@ -1382,10 +1382,11 @@ export default function ProductDetail() {
 
     if (!purchaseMeta.disableAddToCart && qtyNow > 0) {
       return {
-        text: `In stock${Number.isFinite(qtyNow) ? ` • ${qtyNow}` : ""}`,
-        cls: "bg-emerald-600/10 text-emerald-700 border-emerald-600/20",
+        text: `In stock • ${qtyNow}`,
+        cls: "bg-purple-600 text-white border-purple-700 shadow-md",
       };
     }
+
 
     if (productAvailabilityMode === "NONE") {
       return { text: "Out of stock", cls: "bg-rose-600/10 text-rose-700 border-rose-600/20" };
@@ -1878,507 +1879,513 @@ export default function ProductDetail() {
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-zinc-50 to-white">
-        {/* Top bar */}
-        <div className="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
-          <div className="flex items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={goBack}
+        <div className="origin-top scale-[0.92] sm:scale-100">
 
-              className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-            >
-              ← Back
-            </button>
+          {/* Top bar */}
+          <div className="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={goBack}
 
-            <div className="text-xs text-zinc-500">
-              {product.brand?.name ? (
-                <span className="truncate max-w-[60vw] inline-block">
-                  {product.brand.name} / {product.title}
-                </span>
-              ) : (
-                <span className="truncate max-w-[60vw] inline-block">{product.title}</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* MAIN GRID */}
-        <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
-          {/* LEFT */}
-          <div className="space-y-3 md:space-y-5">
-            <div className="relative mx-auto w-full sm:max-w-[92%]">
-              <div
-                ref={imageStageRef}
-                className={`relative rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
-                style={{ aspectRatio: "1 / 1" }}
-                onMouseEnter={() => showMainImg && setIsZooming(true)}
-                onMouseLeave={() => setIsZooming(false)}
-                onMouseMove={handleZoomMove}
-                onTouchStart={() => showMainImg && setIsZooming(true)}
-                onTouchMove={handleTouchZoomMove}
-                onTouchEnd={() => setIsZooming(false)}
+                className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
               >
-                {showMainImg ? (
-                  <>
-                    <img
-                      src={currentSrc}
-                      alt={product.title || "Product image"}
-                      className="w-full h-full object-cover"
-                      loading="eager"
-                      onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
-                    />
+                ←
+              </button>
 
-                    {isZooming && (
-                      <div
-                        className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
-                        style={{
-                          left: `${zoomPos.x}%`,
-                          top: `${zoomPos.y}%`,
-                          transform: "translate(-50%, -50%)",
-                        }}
-                      />
-                    )}
-
-                    {isZooming && (
-                      <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
-                        <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
-                          <div
-                            className="h-full w-full"
-                            style={{
-                              backgroundImage: `url(${currentSrc})`,
-                              backgroundRepeat: "no-repeat",
-                              backgroundSize: "416%",
-                              backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white">
-                      Zoom
-                    </div>
-                  </>
+              <div className="text-xs text-zinc-500">
+                {product.brand?.name ? (
+                  <span className="truncate max-w-[60vw] inline-block">
+                    {product.brand.name} / {product.title}
+                  </span>
                 ) : (
-                  <NoImageBox className="bg-zinc-50" />
+                  <span className="truncate max-w-[60vw] inline-block">{product.title}</span>
                 )}
               </div>
+            </div>
+          </div>
 
-              <span
-                className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
-              >
-                {availabilityBadge.text}
-              </span>
+          {/* MAIN GRID */}
+          <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
+            {/* LEFT */}
+            <div className="space-y-3 md:space-y-5">
+              <div className="relative mx-auto w-full sm:max-w-[92%]">
+                <div
+                  ref={imageStageRef}
+                  className={`relative rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
+                  style={{ aspectRatio: "1 / 1" }}
+                  onMouseEnter={() => showMainImg && setIsZooming(true)}
+                  onMouseLeave={() => setIsZooming(false)}
+                  onMouseMove={handleZoomMove}
+                  onTouchStart={() => showMainImg && setIsZooming(true)}
+                  onTouchMove={handleTouchZoomMove}
+                  onTouchEnd={() => setIsZooming(false)}
+                >
+                  {showMainImg ? (
+                    <>
+                      <img
+                        src={currentSrc}
+                        alt={product.title || "Product image"}
+                        className="w-full h-full object-cover"
+                        loading="eager"
+                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
+                      />
+
+                      {isZooming && (
+                        <div
+                          className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
+                          style={{
+                            left: `${zoomPos.x}%`,
+                            top: `${zoomPos.y}%`,
+                            transform: "translate(-50%, -50%)",
+                          }}
+                        />
+                      )}
+
+                      {isZooming && (
+                        <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
+                          <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
+                            <div
+                              className="h-full w-full"
+                              style={{
+                                backgroundImage: `url(${currentSrc})`,
+                                backgroundRepeat: "no-repeat",
+                                backgroundSize: "416%",
+                                backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white">
+                        Zoom
+                      </div>
+                    </>
+                  ) : (
+                    <NoImageBox className="bg-zinc-50" />
+                  )}
+                </div>
+
+                <span
+                  className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
+                >
+                  {availabilityBadge.text}
+                </span>
+
+                {images.length > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                      className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
+                      aria-label="Previous image"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+                      className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
+                      aria-label="Next image"
+                    >
+                      ›
+                    </button>
+                  </>
+                )}
+              </div>
 
               {images.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                    className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
-                    aria-label="Previous image"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                    className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
-                    aria-label="Next image"
-                  >
-                    ›
-                  </button>
-                </>
+                <div className="grid grid-cols-5 gap-2 sm:gap-3">
+                  {images.map((src, idx) => {
+                    const broken = !!brokenByIndex[idx];
+                    if (!src || broken) return null;
+
+                    const active = idx === mainIndex;
+                    return (
+                      <button
+                        key={`${src}-${idx}`}
+                        type="button"
+                        onClick={() => setMainIndex(idx)}
+                        className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder
+                          } ${silverShadowSm}`}
+                        style={{ aspectRatio: "1 / 1" }}
+                        aria-label={`Show image ${idx + 1}`}
+                      >
+                        <img
+                          src={src}
+                          alt=""
+                          aria-hidden="true"
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                          onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
               )}
-            </div>
 
-            {images.length > 1 && (
-              <div className="grid grid-cols-5 gap-2 sm:gap-3">
-                {images.map((src, idx) => {
-                  const broken = !!brokenByIndex[idx];
-                  if (!src || broken) return null;
-
-                  const active = idx === mainIndex;
-                  return (
-                    <button
-                      key={`${src}-${idx}`}
-                      type="button"
-                      onClick={() => setMainIndex(idx)}
-                      className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder
-                        } ${silverShadowSm}`}
-                      style={{ aspectRatio: "1 / 1" }}
-                      aria-label={`Show image ${idx + 1}`}
-                    >
-                      <img
-                        src={src}
-                        alt=""
-                        aria-hidden="true"
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
-                      />
-                    </button>
-                  );
-                })}
+              {/* Description on desktop */}
+              <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
+                <h2 className="text-base font-semibold mb-1">Description</h2>
+                <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
               </div>
-            )}
-
-            {/* Description on desktop */}
-            <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
-              <h2 className="text-base font-semibold mb-1">Description</h2>
-              <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
             </div>
-          </div>
 
-          {/* RIGHT */}
-          <div className="space-y-4 md:space-y-5">
-            <div className={`${cardCls} p-4 md:p-5`}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">{product.title}</h1>
+            {/* RIGHT */}
+            <div className="space-y-4 md:space-y-5">
+              <div className={`${cardCls} p-4 md:p-5`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">{product.title}</h1>
 
-                  {product.brand?.name ? (
-                    <div className="mt-1 text-sm text-zinc-600">
-                      Brand: <span className="font-medium">{product.brand.name}</span>
-                    </div>
-                  ) : null}
-
-                  <div className="mt-2 text-2xl md:text-3xl font-bold text-zinc-900">{priceLabel}</div>
-
-                  <div className="mt-1 text-xs text-zinc-500">
-                    {computed.source === "VARIANT_OFFER"
-                      ? "Price from variant offer"
-                      : computed.source === "BASE_OFFER"
-                        ? "Price from base offer"
-                        : computed.source === "CHEAPEST_OFFER"
-                          ? "Price from cheapest available offer"
-                          : "Retail price"}
-                  </div>
-
-                  {ratingSummary.avg != null && (
-                    <div className="mt-2 flex items-center gap-2 text-sm text-zinc-700">
-                      <div className="flex items-center gap-0.5 text-amber-500 text-base">
-                        {Array.from({ length: 5 }).map((_, i) => (
-                          <span key={i}>{i < Math.round(ratingSummary.avg ?? 0) ? "★" : "☆"}</span>
-                        ))}
+                    {product.brand?.name ? (
+                      <div className="mt-1 text-sm text-zinc-600">
+                        Brand: <span className="font-medium">{product.brand.name}</span>
                       </div>
-                      <span className="font-semibold">{ratingSummary.avg.toFixed(1)}</span>
-                      {ratingSummary.count != null && (
-                        <span className="text-xs text-zinc-500">
-                          ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
-                        </span>
-                      )}
+                    ) : null}
+
+                    <div className="mt-2 text-2xl md:text-3xl font-bold text-zinc-900">{priceLabel}</div>
+
+                    <div className="mt-1 text-xs text-zinc-500">
+                      {computed.source === "VARIANT_OFFER"
+                        ? "Price from variant offer"
+                        : computed.source === "BASE_OFFER"
+                          ? "Price from base offer"
+                          : computed.source === "CHEAPEST_OFFER"
+                            ? "Price from cheapest available offer"
+                            : "Retail price"}
                     </div>
-                  )}
-                </div>
 
-                <div className="text-right">
-                  <div className="text-xs text-zinc-500">Total stock</div>
-                  <div className="text-sm font-semibold">{Math.max(0, totalStockQty)}</div>
-                </div>
-              </div>
+                    {ratingSummary.avg != null && (
+                      <div className="mt-2 flex items-center gap-2 text-sm text-zinc-700">
+                        <div className="flex items-center gap-0.5 text-amber-500 text-base">
+                          {Array.from({ length: 5 }).map((_, i) => (
+                            <span key={i}>{i < Math.round(ratingSummary.avg ?? 0) ? "★" : "☆"}</span>
+                          ))}
+                        </div>
+                        <span className="font-semibold">{ratingSummary.avg.toFixed(1)}</span>
+                        {ratingSummary.count != null && (
+                          <span className="text-xs text-zinc-500">
+                            ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
-              {purchaseMeta.helperNote ? (
-                <div className="mt-3 text-sm text-zinc-700">
-                  <span className="inline-flex rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
-                    {purchaseMeta.helperNote}
-                  </span>
-                </div>
-              ) : null}
-
-              {axes.length > 0 && (
-                <div className="mt-4 space-y-4">
-                  {axes.map((axis) => (
-                    <div key={axis.id} className="space-y-2">
-                      <div className="text-sm font-semibold text-zinc-800">{axis.name}</div>
-                      <VariantAxisPicker
-                        axis={axis}
-                        value={String(selected?.[axis.id] ?? "")}
-                        onChange={(next) => setSelected((prev) => ({ ...prev, [axis.id]: next }))}
-                      />
-                    </div>
-                  ))}
-                  {showInvalidCombo && (
-                    <div className="text-xs text-zinc-600">
-                      Tip: <span className="font-medium">dashed green</span> options can form an available combo.
-                    </div>
-                  )}
-
-                  {showInvalidCombo && (
-                    <VariantWarning message="This combination is not available. Try a different set of options." />
-                  )}
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelected(computeBaseSelection())}
-                      className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                    >
-                      Reset to base
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setSelected({})}
-                      className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                    >
-                      Clear selections
-                    </button>
+                  <div className="text-right">
+                    <div className="text-xs text-zinc-500">Total stock</div>
+                    <div className="text-sm font-semibold">{Math.max(0, totalStockQty)}</div>
                   </div>
                 </div>
-              )}
 
-              <div className="flex items-center gap-2 mt-4">
-                <span className="text-sm text-zinc-700">Qty</span>
+                {purchaseMeta.helperNote ? (
+                  <div className="mt-3 text-sm text-zinc-700">
+                    <span className="inline-flex rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
+                      {purchaseMeta.helperNote}
+                    </span>
+                  </div>
+                ) : null}
 
-                <button
-                  type="button"
-                  onClick={() => setQty((q) => Math.max(1, q - 1))}
-                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                >
-                  −
-                </button>
+                {axes.length > 0 && (
+                  <div className="mt-4 space-y-4">
+                    {axes.map((axis) => (
+                      <div key={axis.id} className="space-y-2">
+                        <div className="text-sm font-semibold text-zinc-800">{axis.name}</div>
+                        <VariantAxisPicker
+                          axis={axis}
+                          value={String(selected?.[axis.id] ?? "")}
+                          onChange={(next) => setSelected((prev) => ({ ...prev, [axis.id]: next }))}
+                        />
+                      </div>
+                    ))}
+                    {showInvalidCombo && (
+                      <div className="text-xs text-zinc-600">
+                        Tip: <span className="font-medium">dashed green</span> options can form an available combo.
+                      </div>
+                    )}
 
-                <input
-                  type="number"
-                  min={1}
-                  max={maxQty}
-                  value={qty === 0 ? "" : qty}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === "") {
-                      setQty(0);
-                      return;
-                    }
-                    const num = Number(v);
-                    if (!Number.isFinite(num)) return;
-                    const clamped = Math.min(maxQty, Math.max(1, num));
-                    setQty(clamped);
-                  }}
-                  onBlur={() => {
-                    if (!qty || qty < 1) setQty(1);
-                  }}
-                  className={`w-16 text-center rounded-xl border px-2 py-2 text-sm ${silverBorder}`}
-                />
-
-                <button
-                  type="button"
-                  onClick={() => setQty((q) => Math.min(maxQty, q + 1))}
-                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                >
-                  +
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isAdding) return;
-                    setQty((prev) => {
-                      const next = Math.max(1, maxQty);
-                      return prev === next ? prev : next;
-                    });
-                  }}
-                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""
-                    }`}
-                >
-                  Max
-                </button>
-              </div>
-
-              <div className="mt-5 flex flex-col sm:flex-row items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleAddToCart}
-                  disabled={purchaseMeta.disableAddToCart || isAdding}
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
-                    ? "bg-zinc-300 cursor-not-allowed"
-                    : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
-                    }`}
-                >
-                  {isAdding ? "Adding…" : "Add to cart"}
-                </button>
-
-                <Link
-                  to="/cart"
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                >
-                  View cart
-                </Link>
-              </div>
-
-              {computed.supplierName ? (
-                <div className="mt-3 text-xs text-zinc-500">
-                  Supplier: <span className="font-medium text-zinc-700">{computed.supplierName}</span>
-                </div>
-              ) : null}
-
-              {/* ⭐ Review form */}
-              <div className="mt-6 border-t border-zinc-200 pt-4">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold text-zinc-900">Rate this product</h2>
-                  {ratingSummary.avg != null && (
-                    <div className="flex items-center gap-1 text-xs text-zinc-500">
-                      <span>{ratingSummary.avg.toFixed(1)}★</span>
-                      {ratingSummary.count != null && (
-                        <span>
-                          ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {!user && (
-                  <p className="mt-2 text-xs text-zinc-600">
-                    <Link to="/login" className="font-medium text-fuchsia-600 hover:text-fuchsia-700">
-                      Sign in
-                    </Link>{" "}
-                    to write a review.
-                  </p>
-                )}
-
-                {user && (
-                  <form className="mt-3 space-y-3" onSubmit={handleSubmitReview}>
-                    <div className="flex items-center gap-1">
-                      {[1, 2, 3, 4, 5].map((star) => {
-                        const active = ratingInput >= star;
-                        return (
-                          <button
-                            key={star}
-                            type="button"
-                            onClick={() => setRatingInput(star)}
-                            className="p-0.5"
-                            aria-label={`${star} star${star === 1 ? "" : "s"}`}
-                          >
-                            <span className={`text-xl ${active ? "text-amber-500" : "text-zinc-300"}`}>
-                              {active ? "★" : "☆"}
-                            </span>
-                          </button>
-                        );
-                      })}
-                      <span className="ml-2 text-xs text-zinc-500">
-                        {ratingInput ? `${ratingInput} / 5` : "Tap a star to rate"}
-                      </span>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-zinc-700 mb-1">Comment (optional)</label>
-                      <textarea
-                        rows={3}
-                        value={commentInput}
-                        onChange={(e) => setCommentInput(e.target.value)}
-                        className={`w-full rounded-xl border text-sm px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-fuchsia-500 ${silverBorder}`}
-                        placeholder="Share your experience with this product…"
-                      />
-                    </div>
+                    {showInvalidCombo && (
+                      <VariantWarning message="This combination is not available. Try a different set of options." />
+                    )}
 
                     <div className="flex items-center gap-2">
                       <button
-                        type="submit"
-                        disabled={saveReviewMutation.isPending}
-                        className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${saveReviewMutation.isPending
-                          ? "bg-zinc-400 cursor-not-allowed"
-                          : "bg-fuchsia-600 hover:bg-fuchsia-700"
-                          }`}
+                        type="button"
+                        onClick={() => setSelected(computeBaseSelection())}
+                        className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                       >
-                        {saveReviewMutation.isPending ? "Saving…" : myReviewQ.data ? "Update review" : "Submit review"}
+                        Reset to base
                       </button>
 
-                      {myReviewQ.data && (
-                        <button
-                          type="button"
-                          onClick={handleResetReview}
-                          disabled={deleteReviewMutation.isPending}
-                          className={`px-3 py-2 rounded-xl text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                        >
-                          {deleteReviewMutation.isPending ? "Resetting…" : "Reset review"}
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => setSelected({})}
+                        className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                      >
+                        Clear selections
+                      </button>
                     </div>
-
-                    {saveReviewMutation.isError && (
-                      <div className="text-xs text-rose-600">
-                        {(saveReviewMutation.error as any)?.message || "Could not save review. Please try again."}
-                      </div>
-                    )}
-                    {deleteReviewMutation.isError && (
-                      <div className="text-xs text-rose-600">
-                        {(deleteReviewMutation.error as any)?.message || "Could not reset review. Please try again."}
-                      </div>
-                    )}
-                  </form>
+                  </div>
                 )}
-              </div>
-            </div>
 
-            {/* Description on mobile */}
-            <div className={`md:hidden ${cardCls} p-4`}>
-              <h2 className="text-base font-semibold mb-1">Description</h2>
-              <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
-            </div>
-          </div>
-        </div>
+                <div className="mt-4 space-y-2">
+                  <span className="block text-sm text-zinc-700">Qty</span>
 
-        {/* Similar products */}
-        {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
-          <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 pb-6">
-            <div className={`${cardCls} p-4 md:p-5`}>
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-base font-semibold">Similar products</h2>
-                <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-[44px_minmax(0,1fr)_44px_64px] gap-2 sm:flex sm:items-center">
+                    <button
+                      type="button"
+                      onClick={() => setQty((q) => Math.max(1, q - 1))}
+                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
+                    >
+                      −
+                    </button>
+
+                    <input
+                      type="number"
+                      min={1}
+                      max={maxQty}
+                      value={qty === 0 ? "" : qty}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "") {
+                          setQty(0);
+                          return;
+                        }
+                        const num = Number(v);
+                        if (!Number.isFinite(num)) return;
+                        const clamped = Math.min(maxQty, Math.max(1, num));
+                        setQty(clamped);
+                      }}
+                      onBlur={() => {
+                        if (!qty || qty < 1) setQty(1);
+                      }}
+                      className={`h-11 sm:h-10 min-w-0 text-center rounded-xl border px-2 text-sm ${silverBorder}`}
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => setQty((q) => Math.min(maxQty, q + 1))}
+                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
+                    >
+                      +
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isAdding) return;
+                        setQty((prev) => {
+                          const next = Math.max(1, maxQty);
+                          return prev === next ? prev : next;
+                        });
+                      }}
+                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 px-3 text-sm font-medium ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""
+                        }`}
+                    >
+                      Max
+                    </button>
+                  </div>
+                </div>
+
+
+                <div className="mt-5 flex flex-col sm:flex-row items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => scrollSimilarBy(-1)}
-                    className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    onClick={handleAddToCart}
+                    disabled={purchaseMeta.disableAddToCart || isAdding}
+                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
+                      ? "bg-zinc-300 cursor-not-allowed"
+                      : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
+                      }`}
                   >
-                    ‹
+                    {isAdding ? "Adding…" : "Add to cart"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => scrollSimilarBy(1)}
-                    className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+
+                  <Link
+                    to="/cart"
+                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                   >
-                    ›
-                  </button>
+                    View cart
+                  </Link>
+                </div>
+
+                {computed.supplierName ? (
+                  <div className="mt-3 text-xs text-zinc-500">
+                    Supplier: <span className="font-medium text-zinc-700">{computed.supplierName}</span>
+                  </div>
+                ) : null}
+
+                {/* ⭐ Review form */}
+                <div className="mt-6 border-t border-zinc-200 pt-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="text-sm font-semibold text-zinc-900">Rate this product</h2>
+                    {ratingSummary.avg != null && (
+                      <div className="flex items-center gap-1 text-xs text-zinc-500">
+                        <span>{ratingSummary.avg.toFixed(1)}★</span>
+                        {ratingSummary.count != null && (
+                          <span>
+                            ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {!user && (
+                    <p className="mt-2 text-xs text-zinc-600">
+                      <Link to="/login" className="font-medium text-fuchsia-600 hover:text-fuchsia-700">
+                        Sign in
+                      </Link>{" "}
+                      to write a review.
+                    </p>
+                  )}
+
+                  {user && (
+                    <form className="mt-3 space-y-3" onSubmit={handleSubmitReview}>
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 4, 5].map((star) => {
+                          const active = ratingInput >= star;
+                          return (
+                            <button
+                              key={star}
+                              type="button"
+                              onClick={() => setRatingInput(star)}
+                              className="p-0.5"
+                              aria-label={`${star} star${star === 1 ? "" : "s"}`}
+                            >
+                              <span className={`text-xl ${active ? "text-amber-500" : "text-zinc-300"}`}>
+                                {active ? "★" : "☆"}
+                              </span>
+                            </button>
+                          );
+                        })}
+                        <span className="ml-2 text-xs text-zinc-500">
+                          {ratingInput ? `${ratingInput} / 5` : "Tap a star to rate"}
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-700 mb-1">Comment (optional)</label>
+                        <textarea
+                          rows={3}
+                          value={commentInput}
+                          onChange={(e) => setCommentInput(e.target.value)}
+                          className={`w-full rounded-xl border text-sm px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-fuchsia-500 ${silverBorder}`}
+                          placeholder="Share your experience with this product…"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="submit"
+                          disabled={saveReviewMutation.isPending}
+                          className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${saveReviewMutation.isPending
+                            ? "bg-zinc-400 cursor-not-allowed"
+                            : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                            }`}
+                        >
+                          {saveReviewMutation.isPending ? "Saving…" : myReviewQ.data ? "Update review" : "Submit review"}
+                        </button>
+
+                        {myReviewQ.data && (
+                          <button
+                            type="button"
+                            onClick={handleResetReview}
+                            disabled={deleteReviewMutation.isPending}
+                            className={`px-3 py-2 rounded-xl text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                          >
+                            {deleteReviewMutation.isPending ? "Resetting…" : "Reset review"}
+                          </button>
+                        )}
+                      </div>
+
+                      {saveReviewMutation.isError && (
+                        <div className="text-xs text-rose-600">
+                          {(saveReviewMutation.error as any)?.message || "Could not save review. Please try again."}
+                        </div>
+                      )}
+                      {deleteReviewMutation.isError && (
+                        <div className="text-xs text-rose-600">
+                          {(deleteReviewMutation.error as any)?.message || "Could not reset review. Please try again."}
+                        </div>
+                      )}
+                    </form>
+                  )}
                 </div>
               </div>
 
-              <div
-                ref={similarRef}
-                className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
-                style={{ scrollbarWidth: "thin" as any }}
-              >
-                {similarQ.data.map((sp) => {
-                  const basePrice = sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice)) ? Number(sp.retailPrice) : null;
-                  const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
-                  const imgRaw = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
-                  const img = resolveImageUrl(imgRaw) || "";
-
-                  return (
-                    <Link
-                      key={sp.id}
-                      to={`/products/${sp.id}`}
-                      className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
-                    >
-                      <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
-                        {img ? (
-                          <img src={img} alt={sp.title} className="w-full h-full object-cover" loading="lazy" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">No image</div>
-                        )}
-                      </div>
-                      <div className="p-3">
-                        <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
-                        <div className="mt-1 text-sm font-bold">{showPrice}</div>
-                        <div className="mt-1 text-xs text-zinc-500">{sp.inStock === false ? "Out of stock" : "Available"}</div>
-                      </div>
-                    </Link>
-                  );
-                })}
+              {/* Description on mobile */}
+              <div className={`md:hidden ${cardCls} p-4`}>
+                <h2 className="text-base font-semibold mb-1">Description</h2>
+                <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
               </div>
             </div>
           </div>
-        )}
+
+          {/* Similar products */}
+          {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
+            <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 pb-6">
+              <div className={`${cardCls} p-4 md:p-5`}>
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-base font-semibold">Similar products</h2>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => scrollSimilarBy(-1)}
+                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => scrollSimilarBy(1)}
+                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  ref={similarRef}
+                  className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
+                  style={{ scrollbarWidth: "thin" as any }}
+                >
+                  {similarQ.data.map((sp) => {
+                    const basePrice = sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice)) ? Number(sp.retailPrice) : null;
+                    const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
+                    const imgRaw = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
+                    const img = resolveImageUrl(imgRaw) || "";
+
+                    return (
+                      <Link
+                        key={sp.id}
+                        to={`/products/${sp.id}`}
+                        className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
+                      >
+                        <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
+                          {img ? (
+                            <img src={img} alt={sp.title} className="w-full h-full object-cover" loading="lazy" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">No image</div>
+                          )}
+                        </div>
+                        <div className="p-3">
+                          <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
+                          <div className="mt-1 text-sm font-bold">{showPrice}</div>
+                          <div className="mt-1 text-xs text-zinc-500">{sp.inStock === false ? "Out of stock" : "Available"}</div>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </SiteLayout>
   );
