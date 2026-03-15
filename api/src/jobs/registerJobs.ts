@@ -1,4 +1,3 @@
-// src/jobs/registerJobs.ts
 import cron from "node-cron";
 import { prisma } from "../lib/prisma.js";
 import { releaseDueHeldPayoutsOnce } from "./payoutRelease.job.js";
@@ -216,7 +215,7 @@ export function registerJobs() {
 
   configRefreshTimer = setInterval(() => {
     void syncPayoutScheduler();
-  }, 60_000);
+  }, 5 * 60_000); // was 60_000
 
   if (typeof configRefreshTimer.unref === "function") {
     configRefreshTimer.unref();

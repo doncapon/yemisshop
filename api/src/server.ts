@@ -1,4 +1,3 @@
-// api/src/server.ts
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -6,8 +5,8 @@ import cookieParser from "cookie-parser";
 import path from "path";
 import helmet from "helmet";
 import * as fs from "fs";
+import { ZodError } from "zod";
 
-// ✅ Prisma (adjust path if yours differs)
 import { prisma } from "./lib/prisma.js";
 
 // Routers
@@ -19,9 +18,7 @@ import ordersRouter from "./routes/orders.js";
 import orderOtpRouter from "./routes/orderOtp.js";
 import purchaseOrdersRouter from "./routes/purchaseOrders.js";
 import purchaseOrderDeliveryOtpRouter from "./routes/purchaseOrderDeliveryOtp.js";
-
 import favoritesRouter from "./routes/favorites.js";
-
 import adminRouter from "./routes/admin.js";
 import adminCatalogRouter from "./routes/adminCatalog.js";
 import adminCategoriesRouter from "./routes/adminCategories.js";
@@ -37,7 +34,6 @@ import banks from "./routes/banks.js";
 import adminVariantsRouter from "./routes/adminVariants.js";
 import settings from "./routes/settings.js";
 import adminOrderComms from "./routes/adminOrderComms.js";
-
 import uploadsRouter from "./routes/uploads.js";
 import paymentsRouter from "./routes/payments.js";
 import cartRouter from "./routes/carts.js";
@@ -50,19 +46,14 @@ import supplierOrders from "./routes/supplierOrders.js";
 import supplierPayouts from "./routes/supplierPayouts.js";
 import categoriesRouter from "./routes/categories.js";
 import catalogRoutes from "./routes/catalog.js";
-
 import supplierProducts from "./routes/supplierProducts.js";
 import supplierCatalogRequests from "./routes/supplierCatalogRequests.js";
 import supplierDashboardRouter from "./routes/supplierDashboard.js";
-
 import adminCatalogRequests from "./routes/adminCatalogRequests.js";
 import adminCatalogMeta from "./routes/adminCatalogMeta.js";
-
 import deliveryOtpRouter from "./routes/deliveryOtp.js";
-
 import supplierPayoutsAction from "./routes/supplierPayoutsAction.js";
 import adminPayouts from "./routes/adminPayouts.js";
-
 import refundsRouter from "./routes/refunds.js";
 import supplierRefundsRouter from "./routes/supplierRefunds.js";
 import disputesRouter from "./routes/disputes.js";
@@ -74,7 +65,6 @@ import adminUsersRouter from "./routes/adminUsers.js";
 import checkoutShippingRouter from "./routes/checkoutShipping.js";
 import productReviewsRouter from "./routes/productReviews.js";
 import careersRoutes from "./routes/careers.js";
-
 import supportRoutes from "./routes/support.js";
 import adminCareersRoutes from "./routes/adminCareers.js";
 import adminEmployeesRouter from "./routes/adminEmployees.js";
@@ -86,10 +76,13 @@ import supplierDocumentsRouter from "./routes/supplierDocuments.js";
 import publicCountriesRouter from "./routes/publicCountries.js";
 import adminSupplierDocumentsRouter from "./routes/adminSupplierDocuments.js";
 
+import { registerJobs } from "./jobs/registerJobs.js";
+import { registerExpireUnpaidOrdersJob } from "./jobs/expireUnpaidOrders.job.js";
+
 const app = express();
 app.set("trust proxy", 1);
 
-/* -------------------- SEO helpers (bot HTML for /products/:id) -------------------- */
+/* -------------------- helpers -------------------- */
 
 const BOT_UA =
   /(googlebot|bingbot|duckduckbot|yandexbot|baiduspider|slurp|facebookexternalhit|twitterbot|linkedinbot|pinterest|whatsapp|telegrambot|discordbot)/i;
@@ -113,7 +106,6 @@ function normalizeWhitespace(s: string) {
 }
 
 function getSiteOrigin(req: express.Request) {
-  // Prefer your canonical domain if set
   const env = process.env.APP_URL || process.env.FRONTEND_URL || "https://dayspringhouse.com";
 
   if (/^https?:\/\//i.test(env)) return env.replace(/\/$/, "");
@@ -129,25 +121,26 @@ function getSiteOrigin(req: express.Request) {
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
-/**
- * ✅ IMPORTANT FIX FOR EXTERNAL IMAGES:
- * - DO NOT apply Helmet twice with defaults (it can re-introduce default CSP + COEP).
- * - Disable Cross-Origin-Embedder-Policy (COEP) so cross-origin <img> works (e.g. picsum.photos).
- */
+function isTruthy(v: unknown) {
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
+}
+
+function shouldLogRequests() {
+  return isTruthy(process.env.HTTP_LOG_ENABLED ?? (process.env.NODE_ENV !== "production" ? "true" : "false"));
+}
+
+function shouldRunScheduler() {
+  return isTruthy(process.env.RUN_SCHEDULER);
+}
+
 app.use(
   helmet({
-    // ✅ allows cross-origin <img> to render (picsum, cloudinary etc.)
     crossOriginEmbedderPolicy: false,
-
-    // ✅ IMPORTANT: don't apply global CSP to the SPA (Vite/React/admin UI can break subtly)
-    // You already apply strict CSP for /api routes below via `apiCsp`.
     contentSecurityPolicy: false,
-
-    // keep this if you want; it doesn't control outbound images
     crossOriginResourcePolicy: { policy: "same-site" },
   })
 );
-
 
 function resolveAbsoluteImage(req: express.Request, raw?: string | null): string {
   const s = String(raw ?? "").trim();
@@ -189,19 +182,17 @@ function buildProductHtml(params: {
     ...(brand ? { brand: { "@type": "Brand", name: params.brandName } } : {}),
     ...(price
       ? {
-        offers: {
-          "@type": "Offer",
-          priceCurrency: "NGN",
-          price,
-          availability,
-          url: params.canonical,
-        },
-      }
+          offers: {
+            "@type": "Offer",
+            priceCurrency: "NGN",
+            price,
+            availability,
+            url: params.canonical,
+          },
+        }
       : {}),
   };
 
-  // ✅ IMPORTANT: do NOT HTML-escape JSON-LD, or crawlers/tools can’t parse it properly.
-  // Only make it safe against accidental "</script>" issues by escaping "<".
   const jsonLdSafe = JSON.stringify(jsonLd).replace(/</g, "\\u003c");
 
   return `<!doctype html>
@@ -270,24 +261,19 @@ const corsOptions: cors.CorsOptions = {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
-/* ------------------------------ Webhook raw body (before json) ------------------------------ */
-// IMPORTANT: raw MUST be before express.json()
 app.post("/api/payments/webhook", express.raw({ type: "*/*" }), (req, res, next) => {
   return (paymentsRouter as any)(req, res, next);
 });
 
-/* ------------------------------ Common middleware ------------------------------ */
 app.use(cookieParser());
 
-// Request logger
-app.use((req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
-  next();
-});
+if (shouldLogRequests()) {
+  app.use((req, _res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+    next();
+  });
+}
 
-/**
- * ✅ Strict CSP ONLY for /api routes (so it doesn't break the SPA)
- */
 const apiCsp = helmet.contentSecurityPolicy({
   directives: {
     defaultSrc: ["'none'"],
@@ -307,7 +293,6 @@ app.use((req, res, next) => {
   return next();
 });
 
-// HSTS in production only
 if (process.env.NODE_ENV === "production") {
   app.use(
     helmet.hsts({
@@ -318,7 +303,6 @@ if (process.env.NODE_ENV === "production") {
   );
 }
 
-// Permissions-Policy
 const PERMISSIONS_POLICY =
   "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), " +
   "display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), " +
@@ -334,25 +318,19 @@ app.use((_, res, next) => {
 
 app.use(express.json({ limit: "2mb" }));
 
-/* -------------------------------- Health -------------------------------- */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-/* ------------------------------ Auth & profile ------------------------------ */
 app.use("/api/auth", authRouter);
 app.use("/api/auth", authSessionRouter);
 app.use("/api/profile", profileRouter);
 
-/* ------------------------------ Admin modules ------------------------------ */
 app.use("/api/admin", adminRouter);
 app.use("/api/admin/catalog", adminCatalogRouter);
 app.use("/api/admin/categories", adminCategoriesRouter);
 app.use("/api/admin/brands", adminBrandsRouter);
 app.use("/api/admin/attributes", adminAttributesRouter);
 app.use("/api/admin/products", adminProductsRouter);
-
-// ✅ mount supplier-offers in ONE canonical place
 app.use("/api/admin", adminSupplierOffersRouter);
-
 app.use("/api/admin/suppliers", adminSuppliers);
 app.use("/api/admin/order-activities", adminActivitiesRouter);
 app.use("/api/admin/orders", adminOrdersRouter);
@@ -365,7 +343,6 @@ app.use("/api/admin/catalog-requests", adminCatalogRequests);
 app.use("/api/admin/payouts", adminPayouts);
 app.use("/api/admin", adminUsersRouter);
 
-/* ---------------- Supplier routes ---------------- */
 app.use("/api/suppliers", suppliers);
 app.use("/api/supplier", suppliers);
 app.use("/api/supplier/payouts", supplierPayouts);
@@ -378,35 +355,30 @@ app.use("/api/supplier/refunds", supplierRefundsRouter);
 app.use("/api/supplier/catalog", supplierCatalogOffers);
 app.use("/api/supplier/documents", supplierDocumentsRouter);
 
-/* ---------------- Payments + public offers ---------------- */
 app.use("/api", publicProductOffers);
 app.use("/api/payments", paymentsRouter);
 app.use("/api/cart", cartRouter);
 
-/* ------------------------------ Other routes ------------------------------ */
 app.use("/api/purchase-orders", purchaseOrdersRouter);
 app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
-
 app.use("/api", availabiltyRouter);
 app.use("/api/banks", banks);
 app.use("/api/settings", settings);
 app.use("/api", deliveryOtpRouter);
 app.use("/api", supplierOffersList);
-
 app.use("/api/products", productsRouter);
 app.use("/api/orders", orderOtpRouter);
 app.use("/api/orders", ordersRouter);
 app.use("/api/favorites", favoritesRouter);
 app.use("/api/catalog", catalogRoutes);
 app.use("/api/categories", categoriesRouter);
-
 app.use("/api/refunds", refundsRouter);
 app.use("/api/disputes", disputesRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/riders", ridersRouter);
 app.use("/api/privacy", privacyRouter);
 app.use("/api/checkout", checkoutShippingRouter);
-/* ------------------------------ Uploads ------------------------------ */
+
 const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
@@ -420,11 +392,9 @@ app.use("/api/admin/employees", adminEmployeesRouter);
 app.use("/api/admin/careers/jobs", adminCareersJobsRouter);
 app.use("/api/admin/careers/settings", adminCareersSettingsRouter);
 app.use("/api/newsletter", newsletterRouter);
-app.use("/api/newsletter", newsletterRouter);
 app.use("/api/admin/newsletter", adminNewsletterRouter);
 app.use("/api/public", publicCountriesRouter);
 app.use("/api/admin/supplier-documents", adminSupplierDocumentsRouter);
-/* ------------------------------ Serve Frontend (SPA) + SEO endpoints ------------------------------ */
 
 const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
   for (const d of dirs) {
@@ -433,25 +403,19 @@ const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
     const indexFile = path.join(dir, "index.html");
     try {
       if (fs.existsSync(indexFile)) return dir;
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
   return null;
 };
 
-// Try env first, then common monorepo locations.
 const UI_DIST_DIR = pickFirstExistingDir([
-  process.env.UI_DIST_DIR, // ✅ recommended in prod
-  path.resolve(process.cwd(), "../ui/dist"), // monorepo: /api -> ../ui/dist
-  path.resolve(process.cwd(), "ui/dist"), // if ui is nested
-  path.resolve(process.cwd(), "dist"), // if you copy dist here
-  path.resolve(process.cwd(), "public"), // alternative
+  process.env.UI_DIST_DIR,
+  path.resolve(process.cwd(), "../ui/dist"),
+  path.resolve(process.cwd(), "ui/dist"),
+  path.resolve(process.cwd(), "dist"),
+  path.resolve(process.cwd(), "public"),
 ]);
 
-/* ------------------------------ robots.txt + sitemap.xml ALWAYS (not dependent on UI build) ------------------------------ */
-
-// robots.txt (serve from dist if present, else default)
 app.get("/robots.txt", (req, res) => {
   const origin = getSiteOrigin(req);
 
@@ -463,7 +427,6 @@ app.get("/robots.txt", (req, res) => {
   res.status(200).type("text/plain").send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
 });
 
-// sitemap.xml (dynamic)
 let sitemapCache: { xml: string; at: number } | null = null;
 const SITEMAP_TTL_MS = 10 * 60 * 1000;
 
@@ -512,28 +475,18 @@ app.get("/sitemap.xml", async (req, res) => {
   }
 });
 
-/**
- * ✅ Bot-friendly /products/:id HTML
- * - Bots OR __seo=1 get real title + JSON-LD Product
- * - Humans (no __seo=1) fall through to SPA when UI_DIST_DIR exists
- *
- * ✅ CRITICAL: Vary by User-Agent so caches never mix bot/human HTML
- */
 app.get("/products/:id", async (req, res, next) => {
-  // ✅ prevents CDN/proxy caching the SPA HTML for Googlebot (or vice versa)
   res.setHeader("Vary", "User-Agent");
 
   try {
     const forceSeo = String(req.query.__seo ?? "") === "1";
     const wantsSeo = forceSeo || isBot(req);
 
-    // Humans: let SPA handle it if UI is present
     if (!wantsSeo) {
       if (UI_DIST_DIR) return next();
       return res.status(404).type("text/plain").send("Not Found");
     }
 
-    // Bots: never cache (keeps titles fresh)
     res.setHeader("Cache-Control", "no-store");
 
     const origin = getSiteOrigin(req);
@@ -550,8 +503,6 @@ app.get("/products/:id", async (req, res, next) => {
         inStock: true,
         imagesJson: true,
         brand: { select: { name: true } },
-
-        // ✅ your Product -> variants relation field is ProductVariant (not "variants")
         ProductVariant: {
           select: { imagesJson: true, retailPrice: true },
           orderBy: { createdAt: "desc" },
@@ -616,7 +567,6 @@ app.get("/products/:id", async (req, res, next) => {
 if (UI_DIST_DIR) {
   console.log("Serving SPA from:", UI_DIST_DIR);
 
-  // Serve built assets
   app.use(
     express.static(UI_DIST_DIR, {
       index: false,
@@ -624,11 +574,9 @@ if (UI_DIST_DIR) {
     })
   );
 
-  // SPA fallback: any non-API route returns index.html
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
 
-    // ✅ protect product routes from cache poisoning (very important with UA-based SEO)
     if (req.path.startsWith("/products/")) {
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("Vary", "User-Agent");
@@ -640,19 +588,12 @@ if (UI_DIST_DIR) {
   console.warn("UI_DIST_DIR not found (no index.html). SPA routes like /products/:id will 404 unless served elsewhere.");
 }
 
-/* ------------------------------ 404 handler ------------------------------ */
 app.use((req, res) => {
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ error: "Not Found", path: req.originalUrl });
   }
   return res.status(404).send("Not Found");
 });
-
-/* ------------------------------ Error handler ------------------------------ */
-
-import { ZodError } from "zod";
-import { registerJobs } from "./jobs/registerJobs.js";
-import { registerExpireUnpaidOrdersJob } from "./jobs/expireUnpaidOrders.job.js";
 
 app.use((err: any, _req: any, res: any, _next: any) => {
   console.error(err);
@@ -675,6 +616,12 @@ const HOST = process.env.HOST || "0.0.0.0";
 
 app.listen(PORT, HOST, () => {
   console.log(`API on http://${HOST}:${PORT}`);
-  registerJobs();
-  registerExpireUnpaidOrdersJob();
+
+  if (shouldRunScheduler()) {
+    console.log("[cron] scheduler enabled on this instance");
+    registerJobs();
+    registerExpireUnpaidOrdersJob();
+  } else {
+    console.log("[cron] scheduler disabled on this instance");
+  }
 });
