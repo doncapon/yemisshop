@@ -11,7 +11,7 @@ type ZoneSeed = {
   name: string;
   states: string[];
   lgas?: string[];
-  priority?: number;
+  priority: number;
 };
 
 type PlatformRateSeed = {
@@ -98,380 +98,246 @@ const ZONES: ZoneSeed[] = [
   },
 ];
 
-const PLATFORM_ZONE_RATES: PlatformRateSeed[] = [
-  {
-    zoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 1800,
-    perKgFee: null,
-    fuelSurcharge: 150,
-    etaMinDays: 1,
-    etaMaxDays: 2,
-  },
-  {
-    zoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 2200,
-    perKgFee: 250,
-    fuelSurcharge: 180,
-    etaMinDays: 1,
-    etaMaxDays: 2,
-  },
-  {
-    zoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 5000,
-    maxWeightGrams: null,
-    baseFee: 3000,
-    perKgFee: 350,
-    fuelSurcharge: 220,
-    etaMinDays: 1,
-    etaMaxDays: 3,
-  },
-  {
-    zoneCode: "SW_NEAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 2600,
-    perKgFee: null,
-    fuelSurcharge: 180,
-    etaMinDays: 2,
-    etaMaxDays: 4,
-  },
-  {
-    zoneCode: "SW_NEAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 3000,
-    perKgFee: 300,
-    fuelSurcharge: 220,
-    etaMinDays: 2,
-    etaMaxDays: 4,
-  },
-  {
-    zoneCode: "SOUTH_SOUTH",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 3800,
-    perKgFee: null,
-    fuelSurcharge: 250,
-    remoteSurcharge: 250,
-    etaMinDays: 3,
-    etaMaxDays: 6,
-  },
-  {
-    zoneCode: "SOUTH_SOUTH",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 4300,
-    perKgFee: 420,
-    fuelSurcharge: 280,
-    remoteSurcharge: 250,
-    etaMinDays: 3,
-    etaMaxDays: 6,
-  },
-  {
-    zoneCode: "SE",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 3600,
-    perKgFee: null,
-    fuelSurcharge: 230,
-    etaMinDays: 3,
-    etaMaxDays: 5,
-  },
-  {
-    zoneCode: "SE",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 4100,
-    perKgFee: 380,
-    fuelSurcharge: 260,
-    etaMinDays: 3,
-    etaMaxDays: 5,
-  },
-  {
-    zoneCode: "NC",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 4200,
-    perKgFee: null,
-    fuelSurcharge: 280,
-    etaMinDays: 3,
-    etaMaxDays: 6,
-  },
-  {
-    zoneCode: "NC",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 4800,
-    perKgFee: 450,
-    fuelSurcharge: 300,
-    etaMinDays: 3,
-    etaMaxDays: 6,
-  },
-  {
-    zoneCode: "NORTH_FAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 5200,
-    perKgFee: null,
-    fuelSurcharge: 350,
-    remoteSurcharge: 400,
-    etaMinDays: 4,
-    etaMaxDays: 8,
-  },
-  {
-    zoneCode: "NORTH_FAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 5900,
-    perKgFee: 550,
-    fuelSurcharge: 380,
-    remoteSurcharge: 420,
-    etaMinDays: 4,
-    etaMaxDays: 8,
-  },
-  {
-    zoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "FRAGILE",
-    minWeightGrams: 0,
-    maxWeightGrams: 5000,
-    baseFee: 2400,
-    perKgFee: 300,
-    fuelSurcharge: 180,
-    handlingFee: 300,
-    etaMinDays: 1,
-    etaMaxDays: 3,
-  },
-  {
-    zoneCode: "SW_NEAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "FRAGILE",
-    minWeightGrams: 0,
-    maxWeightGrams: 5000,
-    baseFee: 3400,
-    perKgFee: 400,
-    fuelSurcharge: 240,
-    handlingFee: 350,
-    etaMinDays: 2,
-    etaMaxDays: 5,
-  },
-  {
-    zoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "BULKY",
-    minWeightGrams: 0,
-    maxWeightGrams: null,
-    baseFee: 3500,
-    perKgFee: 600,
-    fuelSurcharge: 280,
-    handlingFee: 650,
-    etaMinDays: 2,
-    etaMaxDays: 4,
-  },
-  {
-    zoneCode: "NORTH_FAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "BULKY",
-    minWeightGrams: 0,
-    maxWeightGrams: null,
-    baseFee: 7200,
-    perKgFee: 850,
-    fuelSurcharge: 450,
-    remoteSurcharge: 450,
-    handlingFee: 900,
-    etaMinDays: 5,
-    etaMaxDays: 10,
-  },
+const SERVICE_LEVEL: DeliveryServiceLevel = DeliveryServiceLevel.STANDARD;
+
+const WEIGHT_BANDS = [
+  { minWeightGrams: 0, maxWeightGrams: 1000, band: "LIGHT" as const },
+  { minWeightGrams: 1000, maxWeightGrams: 5000, band: "MEDIUM" as const },
+  { minWeightGrams: 5000, maxWeightGrams: null, band: "HEAVY" as const },
 ];
 
-const ROUTE_RATES: RouteRateSeed[] = [
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 1800,
-    perKgFee: null,
-    fuelSurcharge: 150,
-    etaMinDays: 1,
-    etaMaxDays: 2,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 2200,
-    perKgFee: 250,
-    fuelSurcharge: 180,
-    etaMinDays: 1,
-    etaMaxDays: 2,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "SW_NEAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 2600,
-    fuelSurcharge: 180,
-    etaMinDays: 2,
-    etaMaxDays: 4,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "SW_NEAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 3000,
-    perKgFee: 300,
-    fuelSurcharge: 220,
-    etaMinDays: 2,
-    etaMaxDays: 4,
-  },
-  {
-    originZoneCode: "SW_NEAR",
-    destinationZoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 2500,
-    fuelSurcharge: 180,
-    etaMinDays: 2,
-    etaMaxDays: 4,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "SOUTH_SOUTH",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 3800,
-    fuelSurcharge: 250,
-    remoteSurcharge: 250,
-    etaMinDays: 3,
-    etaMaxDays: 6,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "SOUTH_SOUTH",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 1000,
-    maxWeightGrams: 5000,
-    baseFee: 4300,
-    perKgFee: 420,
-    fuelSurcharge: 280,
-    remoteSurcharge: 250,
-    etaMinDays: 3,
-    etaMaxDays: 6,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "SE",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 3600,
-    fuelSurcharge: 230,
-    etaMinDays: 3,
-    etaMaxDays: 5,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "NC",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 4200,
-    fuelSurcharge: 280,
-    etaMinDays: 3,
-    etaMaxDays: 6,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "NORTH_FAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "STANDARD",
-    minWeightGrams: 0,
-    maxWeightGrams: 1000,
-    baseFee: 5200,
-    fuelSurcharge: 350,
-    remoteSurcharge: 400,
-    etaMinDays: 4,
-    etaMaxDays: 8,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "NORTH_FAR",
-    serviceLevel: "STANDARD",
-    parcelClass: "BULKY",
-    minWeightGrams: 0,
-    maxWeightGrams: null,
-    baseFee: 7200,
-    perKgFee: 850,
-    fuelSurcharge: 450,
-    remoteSurcharge: 450,
-    handlingFee: 900,
-    etaMinDays: 5,
-    etaMaxDays: 10,
-  },
-  {
-    originZoneCode: "LAGOS_LOCAL",
-    destinationZoneCode: "LAGOS_LOCAL",
-    serviceLevel: "STANDARD",
-    parcelClass: "FRAGILE",
-    minWeightGrams: 0,
-    maxWeightGrams: 5000,
-    baseFee: 2400,
-    perKgFee: 300,
-    fuelSurcharge: 180,
-    handlingFee: 300,
-    etaMinDays: 1,
-    etaMaxDays: 3,
-  },
+const PARCEL_CLASSES: ShippingParcelClass[] = [
+  ShippingParcelClass.STANDARD,
+  ShippingParcelClass.FRAGILE,
+  ShippingParcelClass.BULKY,
 ];
+
+const zoneByCode = new Map(ZONES.map((z) => [z.code, z]));
+const zonePriorityByCode = new Map(ZONES.map((z) => [z.code, z.priority]));
+
+/* -------------------------------------------------------------------------- */
+/*                                   helpers                                  */
+/* -------------------------------------------------------------------------- */
+
+function priorityOf(zoneCode: string): number {
+  return zonePriorityByCode.get(zoneCode) ?? 999;
+}
+
+function roundMoney(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+function classMultiplier(parcelClass: ShippingParcelClass): number {
+  switch (parcelClass) {
+    case ShippingParcelClass.FRAGILE:
+      return 1.18;
+    case ShippingParcelClass.BULKY:
+      return 1.32;
+    default:
+      return 1;
+  }
+}
+
+function classHandlingFee(parcelClass: ShippingParcelClass, band: "LIGHT" | "MEDIUM" | "HEAVY"): number {
+  if (parcelClass === ShippingParcelClass.FRAGILE) {
+    if (band === "LIGHT") return 300;
+    if (band === "MEDIUM") return 450;
+    return 650;
+  }
+
+  if (parcelClass === ShippingParcelClass.BULKY) {
+    if (band === "LIGHT") return 500;
+    if (band === "MEDIUM") return 700;
+    return 950;
+  }
+
+  if (band === "HEAVY") return 180;
+  return 0;
+}
+
+function bandPerKgFee(band: "LIGHT" | "MEDIUM" | "HEAVY"): number | null {
+  if (band === "LIGHT") return null;
+  if (band === "MEDIUM") return 1;
+  return 1;
+}
+
+function zoneBaseFee(destinationZoneCode: string, band: "LIGHT" | "MEDIUM" | "HEAVY"): number {
+  const p = priorityOf(destinationZoneCode);
+
+  // base by destination zone and band
+  // tuned to stay close to the pricing direction you already started with
+  if (band === "LIGHT") return 1800 + (p - 1) * 700;
+  if (band === "MEDIUM") return 2200 + (p - 1) * 850;
+  return 3000 + (p - 1) * 1000;
+}
+
+function zonePerKgFee(destinationZoneCode: string, band: "LIGHT" | "MEDIUM" | "HEAVY"): number | null {
+  const p = priorityOf(destinationZoneCode);
+
+  if (band === "LIGHT") return null;
+  if (band === "MEDIUM") return 250 + (p - 1) * 55;
+  return 350 + (p - 1) * 70;
+}
+
+function zoneFuelSurcharge(destinationZoneCode: string, band: "LIGHT" | "MEDIUM" | "HEAVY"): number {
+  const p = priorityOf(destinationZoneCode);
+
+  if (band === "LIGHT") return 150 + (p - 1) * 40;
+  if (band === "MEDIUM") return 180 + (p - 1) * 40;
+  return 220 + (p - 1) * 45;
+}
+
+function zoneRemoteSurcharge(destinationZoneCode: string, band: "LIGHT" | "MEDIUM" | "HEAVY"): number {
+  const p = priorityOf(destinationZoneCode);
+  if (p <= 2) return 0;
+  if (band === "LIGHT") return 120 + (p - 3) * 70;
+  if (band === "MEDIUM") return 160 + (p - 3) * 80;
+  return 220 + (p - 3) * 95;
+}
+
+function zoneEta(destinationZoneCode: string, band: "LIGHT" | "MEDIUM" | "HEAVY") {
+  const p = priorityOf(destinationZoneCode);
+  const baseMin = p === 1 ? 1 : p <= 2 ? 2 : p <= 4 ? 3 : 4;
+  const baseMax = p === 1 ? 2 : p <= 2 ? 4 : p <= 4 ? 6 : 8;
+
+  if (band === "HEAVY") {
+    return { etaMinDays: baseMin + 1, etaMaxDays: baseMax + 2 };
+  }
+
+  return { etaMinDays: baseMin, etaMaxDays: baseMax };
+}
+
+function buildPlatformRate(
+  zoneCode: string,
+  parcelClass: ShippingParcelClass,
+  band: (typeof WEIGHT_BANDS)[number]
+): PlatformRateSeed {
+  const base = zoneBaseFee(zoneCode, band.band);
+  const perKg = zonePerKgFee(zoneCode, band.band);
+  const fuel = zoneFuelSurcharge(zoneCode, band.band);
+  const remote = zoneRemoteSurcharge(zoneCode, band.band);
+  const handling = classHandlingFee(parcelClass, band.band);
+  const mult = classMultiplier(parcelClass);
+  const eta = zoneEta(zoneCode, band.band);
+
+  return {
+    zoneCode,
+    serviceLevel: SERVICE_LEVEL,
+    parcelClass,
+    minWeightGrams: band.minWeightGrams,
+    maxWeightGrams: band.maxWeightGrams,
+    baseFee: roundMoney(base * mult),
+    perKgFee: perKg == null ? null : roundMoney(perKg * mult),
+    remoteSurcharge: remote > 0 ? roundMoney(remote * (parcelClass === ShippingParcelClass.BULKY ? 1.1 : 1)) : null,
+    fuelSurcharge: roundMoney(fuel * (parcelClass === ShippingParcelClass.BULKY ? 1.08 : 1)),
+    handlingFee: handling > 0 ? handling : null,
+    etaMinDays: eta.etaMinDays,
+    etaMaxDays: eta.etaMaxDays,
+  };
+}
+
+function routeDistanceFactor(originZoneCode: string, destinationZoneCode: string): number {
+  const originP = priorityOf(originZoneCode);
+  const destP = priorityOf(destinationZoneCode);
+
+  if (originZoneCode === destinationZoneCode) return 0.92;
+
+  const gap = Math.abs(originP - destP);
+
+  if (gap === 0) return 1.0;
+  if (gap === 1) return 1.05;
+  if (gap === 2) return 1.12;
+  if (gap === 3) return 1.2;
+  return 1.3;
+}
+
+function routeFuelExtra(originZoneCode: string, destinationZoneCode: string): number {
+  if (originZoneCode === destinationZoneCode) return 0;
+
+  const gap = Math.abs(priorityOf(originZoneCode) - priorityOf(destinationZoneCode));
+  return gap * 20;
+}
+
+function routeRemoteExtra(originZoneCode: string, destinationZoneCode: string): number {
+  const destP = priorityOf(destinationZoneCode);
+  const gap = Math.abs(priorityOf(originZoneCode) - destP);
+
+  if (destP <= 2) return 0;
+  return gap >= 2 ? 80 + (gap - 2) * 40 : 0;
+}
+
+function routeEta(
+  originZoneCode: string,
+  destinationZoneCode: string,
+  band: "LIGHT" | "MEDIUM" | "HEAVY"
+) {
+  const dest = zoneEta(destinationZoneCode, band);
+  const gap = Math.abs(priorityOf(originZoneCode) - priorityOf(destinationZoneCode));
+
+  return {
+    etaMinDays: dest.etaMinDays + (gap >= 3 ? 1 : 0),
+    etaMaxDays: dest.etaMaxDays + (gap >= 2 ? 1 : 0),
+  };
+}
+
+function buildRouteRate(
+  originZoneCode: string,
+  destinationZoneCode: string,
+  parcelClass: ShippingParcelClass,
+  band: (typeof WEIGHT_BANDS)[number]
+): RouteRateSeed {
+  const platform = buildPlatformRate(destinationZoneCode, parcelClass, band);
+  const factor = routeDistanceFactor(originZoneCode, destinationZoneCode);
+  const eta = routeEta(originZoneCode, destinationZoneCode, band.band);
+
+  const baseFee = roundMoney(platform.baseFee * factor);
+  const perKgFee =
+    platform.perKgFee == null ? null : roundMoney(platform.perKgFee * factor);
+
+  const fuelSurcharge = roundMoney((platform.fuelSurcharge ?? 0) + routeFuelExtra(originZoneCode, destinationZoneCode));
+  const remoteBase = platform.remoteSurcharge ?? 0;
+  const remoteSurcharge = roundMoney(remoteBase + routeRemoteExtra(originZoneCode, destinationZoneCode));
+
+  return {
+    originZoneCode,
+    destinationZoneCode,
+    serviceLevel: SERVICE_LEVEL,
+    parcelClass,
+    minWeightGrams: band.minWeightGrams,
+    maxWeightGrams: band.maxWeightGrams,
+    baseFee,
+    perKgFee,
+    remoteSurcharge: remoteSurcharge > 0 ? remoteSurcharge : null,
+    fuelSurcharge,
+    handlingFee: platform.handlingFee ?? null,
+    etaMinDays: eta.etaMinDays,
+    etaMaxDays: eta.etaMaxDays,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                           generate full coverage                           */
+/* -------------------------------------------------------------------------- */
+
+const PLATFORM_ZONE_RATES: PlatformRateSeed[] = ZONES.flatMap((zone) =>
+  PARCEL_CLASSES.flatMap((parcelClass) =>
+    WEIGHT_BANDS.map((band) => buildPlatformRate(zone.code, parcelClass, band))
+  )
+);
+
+const ROUTE_RATES: RouteRateSeed[] = ZONES.flatMap((origin) =>
+  ZONES.flatMap((destination) =>
+    PARCEL_CLASSES.flatMap((parcelClass) =>
+      WEIGHT_BANDS.map((band) =>
+        buildRouteRate(origin.code, destination.code, parcelClass, band)
+      )
+    )
+  )
+);
+
+/* -------------------------------------------------------------------------- */
+/*                                  seed ops                                  */
+/* -------------------------------------------------------------------------- */
 
 async function upsertZones() {
   for (const z of ZONES) {
@@ -483,7 +349,7 @@ async function upsertZones() {
         statesJson: z.states,
         lgasJson: z.lgas ?? [],
         isActive: true,
-        priority: z.priority ?? 0,
+        priority: z.priority,
       },
       create: {
         code: z.code,
@@ -492,7 +358,7 @@ async function upsertZones() {
         statesJson: z.states,
         lgasJson: z.lgas ?? [],
         isActive: true,
-        priority: z.priority ?? 0,
+        priority: z.priority,
       },
     });
   }
@@ -566,7 +432,9 @@ async function main() {
   await replacePlatformZoneRates();
   await replaceRouteRates();
 
-  console.log("✅ seed-shipping completed: zones + platform zone rates + route rates");
+  console.log(
+    `✅ seed-shipping completed: ${ZONES.length} zones, ${PLATFORM_ZONE_RATES.length} platform cards, ${ROUTE_RATES.length} route cards`
+  );
 }
 
 main()
