@@ -495,7 +495,23 @@ export default function Navbar() {
                     />
                   )}
 
-                  {isAdmin && <IconNavLink to="/admin" end icon={<Shield size={18} />} label="Admin" />}
+                  {isAdmin && (
+                    <IconNavLink
+                      to="/admin/shipping"
+                      end
+                      icon={<Truck size={18} />}
+                      label="Shipping"
+                    />
+                  )}
+
+                  {isAdmin && (
+                    <IconNavLink
+                      to="/admin"
+                      end
+                      icon={<Shield size={18} />}
+                      label="Admin"
+                    />
+                  )}
                 </>
               )}
             </nav>
@@ -513,8 +529,8 @@ export default function Navbar() {
                     type="button"
                     onClick={() => hardGo("/register-supplier")}
                     className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isSupplierRegisterPage
-                        ? "bg-zinc-900 text-white border-zinc-900"
-                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      ? "bg-zinc-900 text-white border-zinc-900"
+                      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
                     title="Become a supplier"
                   >
@@ -530,8 +546,8 @@ export default function Navbar() {
                       hardGo(`/login?from=${qp}`);
                     }}
                     className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isLoginPage
-                        ? "bg-zinc-900 text-white border-zinc-900"
-                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      ? "bg-zinc-900 text-white border-zinc-900"
+                      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
                     title="Login"
                   >
@@ -543,8 +559,8 @@ export default function Navbar() {
                     type="button"
                     onClick={() => hardGo("/register")}
                     className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isRegisterPage
-                        ? "bg-zinc-900 text-white border-zinc-900"
-                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      ? "bg-zinc-900 text-white border-zinc-900"
+                      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
                     title="Register"
                   >
@@ -826,13 +842,18 @@ export default function Navbar() {
                           />
 
                           <MobileMenuButton
+                            icon={<Truck size={18} />}
+                            label="Shipping"
+                            onClick={() => hardGo("/admin/shipping")}
+                          />
+
+                          <MobileMenuButton
                             icon={<Shield size={18} />}
                             label="Admin"
                             onClick={() => hardGo("/admin")}
                           />
                         </>
                       )}
-
                       <div className="h-px bg-zinc-100 my-2" />
 
                       {!isLoggedIn ? (

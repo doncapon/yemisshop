@@ -84,6 +84,7 @@ import SupplierOnboardingDocuments from "./pages/supplier/SupplierOnboardingDocu
 
 import api from "./api/client";
 import AdminSupplierDocuments from "./pages/admin/AdminSupplierDocuments";
+import AdminShipping from "./pages/admin/AdminShipping";
 
 /* -----------------------------
    Role normalization + aliases
@@ -189,11 +190,11 @@ function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
     String(addr.houseNumber ?? "").trim() ||
-      String(addr.streetName ?? "").trim() ||
-      String(addr.city ?? "").trim() ||
-      String(addr.state ?? "").trim() ||
-      String(addr.country ?? "").trim() ||
-      String(addr.postCode ?? "").trim()
+    String(addr.streetName ?? "").trim() ||
+    String(addr.city ?? "").trim() ||
+    String(addr.state ?? "").trim() ||
+    String(addr.country ?? "").trim() ||
+    String(addr.postCode ?? "").trim()
   );
 }
 
@@ -304,12 +305,12 @@ function useSupplierStageState(): SupplierStageState {
           Boolean(
             String(
               supplierMe?.legalName ??
-                supplierMe?.businessName ??
-                supplierMe?.name ??
-                ""
+              supplierMe?.businessName ??
+              supplierMe?.name ??
+              ""
             ).trim() &&
-              String(supplierMe?.registrationType ?? "").trim() &&
-              String(supplierMe?.registrationCountryCode ?? "").trim()
+            String(supplierMe?.registrationType ?? "").trim() &&
+            String(supplierMe?.registrationCountryCode ?? "").trim()
           );
 
         const addressDone =
@@ -331,11 +332,11 @@ function useSupplierStageState(): SupplierStageState {
         const nextPath = supplierApproved
           ? null
           : getSupplierNextPath({
-              contactDone,
-              businessDone,
-              addressDone,
-              docsDone,
-            });
+            contactDone,
+            businessDone,
+            addressDone,
+            docsDone,
+          });
 
         if (!alive) return;
 
@@ -520,7 +521,7 @@ export default function App() {
   useEffect(() => {
     try {
       toast.dismiss();
-    } catch {}
+    } catch { }
 
     const b = document.body;
     const h = document.documentElement;
@@ -541,7 +542,7 @@ export default function App() {
 
     try {
       (document.activeElement as any)?.blur?.();
-    } catch {}
+    } catch { }
   }, [loc.key]);
 
   useEffect(() => {
@@ -568,7 +569,7 @@ export default function App() {
           "auth:timedOutReturnTo",
           previousPath.startsWith("/checkout") ? "/cart" : previousPath
         );
-      } catch {}
+      } catch { }
     }
 
     prevAuthedRef.current = false;
@@ -612,7 +613,7 @@ export default function App() {
 
     try {
       sessionStorage.setItem("auth:returnTo", returnTarget);
-    } catch {}
+    } catch { }
 
     const qp = encodeURIComponent(returnTarget);
     nav(`/login?from=${qp}`, { replace: true, state: { from: returnTarget } });
@@ -624,7 +625,7 @@ export default function App() {
       if (saved && saved.startsWith("/checkout")) {
         sessionStorage.setItem("auth:returnTo", "/cart");
       }
-    } catch {}
+    } catch { }
   }, [loc.pathname]);
 
   useEffect(() => {
@@ -641,7 +642,7 @@ export default function App() {
       timedOutUserKey = sessionStorage.getItem("auth:timedOutUserKey") || "";
       timedOutReturnTo = sessionStorage.getItem("auth:timedOutReturnTo") || "";
       genericReturnTo = sessionStorage.getItem("auth:returnTo") || "";
-    } catch {}
+    } catch { }
 
     const sameTimedOutUser =
       !!currentUserKey &&
@@ -656,7 +657,7 @@ export default function App() {
       sessionStorage.removeItem("auth:returnTo");
       sessionStorage.removeItem("auth:timedOutReturnTo");
       sessionStorage.removeItem("auth:timedOutUserKey");
-    } catch {}
+    } catch { }
 
     nav(target, { replace: true });
   }, [hydrated, isAuthed, user, loc.pathname, nav]);
@@ -1024,6 +1025,7 @@ export default function App() {
                 <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
                 <Route path="newsletter" element={<AdminNewsletterPage />} />
                 <Route path="dashboard" element={<Navigate to="/admin" replace />} />
+                <Route path="shipping" element={<AdminShipping />} />
                 <Route path="products" element={<Navigate to="/admin?tab=products&pTab=manage" replace />} />
                 <Route
                   path="products/moderation"

@@ -53,17 +53,13 @@ function resolveServiceFeeTotal(order: any): number {
   const legacy = toNum(order.serviceFee);
   const legacyCommsTotal = toNum(order.commsTotal ?? order.comms);
 
-  // 1) Prefer explicit total from snapshot
   if (explicitTotal > 0) return explicitTotal;
 
-  // 2) If any components exist, sum them
   const componentsSum = base + comms + gateway;
   if (componentsSum > 0) return componentsSum;
 
-  // 3) Fallback to legacy single serviceFee
   if (legacy > 0) return legacy;
 
-  // 4) Fallback to legacy comms fields
   if (legacyCommsTotal > 0) return legacyCommsTotal;
 
   return 0;
@@ -72,16 +68,6 @@ function resolveServiceFeeTotal(order: any): number {
 /* -------------------------------------------------------------------------- */
 /* Shipping for RECEIPT DISPLAY                                               */
 /* -------------------------------------------------------------------------- */
-/**
- * We want the shipping number on the receipt to match checkout:
- *   Shipping (displayed) = customer-facing shipping INCLUDING VAT.
- *
- * Given your schema, a safe strategy:
- *   shippingDisplay = total - subtotal - serviceFee
- * (because VAT is already "included" in those amounts).
- *
- * We also try to honour any shippingBreakdownJson snapshot if present.
- */
 function resolveShippingDisplay(order: any): number {
   if (!order) return 0;
 
@@ -91,13 +77,11 @@ function resolveShippingDisplay(order: any): number {
 
   let best = 0;
 
-  // 1) Derive from totals (preferred – matches checkout behaviour)
   if (subtotal > 0 && total > 0) {
     const fromTotals = total - subtotal - serviceFee;
     if (fromTotals > 0) best = fromTotals;
   }
 
-  // 2) Check any structured breakdown snapshot
   const rawBreakdown =
     order.shippingBreakdownJson ??
     order.shippingBreakdown ??
@@ -129,23 +113,32 @@ function resolveShippingDisplay(order: any): number {
       if (v > best) best = v;
     }
 
-    // Some snapshots might store base + VAT separately
     const base =
       toNum(breakdown.shippingFee ?? breakdown.baseFee ?? breakdown.fee);
     const vat =
       toNum(breakdown.tax ?? breakdown.vat ?? breakdown.vatAmount ?? 0);
+
     if (base > 0 && base + vat > best) {
       best = base + vat;
     }
   }
 
-  // 3) Fallbacks: legacy order.shipping / order.shippingFee
   if (!best) {
     const direct = toNum(order.shipping ?? order.shippingFee);
     if (direct > 0) best = direct;
   }
 
   return best > 0 ? best : 0;
+}
+
+function formatAddressLines(address: any): string[] {
+  if (!address) return [];
+
+  const line1 = [address.houseNumber, address.streetName].filter(Boolean).join(" ").trim();
+  const line2 = [address.town, address.city].filter(Boolean).join(", ").trim();
+  const line3 = [address.state, address.country].filter(Boolean).join(", ").trim();
+
+  return [line1, line2, line3].filter(Boolean);
 }
 
 /* ========================================================================== */
@@ -156,13 +149,10 @@ export default function ReceiptPage() {
   const q = useQuery({
     queryKey: ["receipt", paymentId],
     enabled: !!paymentId,
-    // ✅ cookie auth: no token gating
     queryFn: async () =>
-      (await api.get<ReceiptResp>(`/api/payments/${encodeURIComponent(paymentId)}/receipt`))
-        .data,
+      (await api.get<ReceiptResp>(`/api/payments/${encodeURIComponent(paymentId)}/receipt`)).data,
   });
 
-  // 🔹 Public settings (to know if shipping is enabled)
   const settingsQ = useQuery({
     queryKey: ["settings-public"],
     queryFn: async () =>
@@ -188,7 +178,11 @@ export default function ReceiptPage() {
   if (q.isLoading) {
     return (
       <SiteLayout>
-        <div className="p-6">Loading…</div>
+        <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6">
+          <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-6 text-sm text-zinc-600 shadow-sm sm:px-6">
+            Loading…
+          </div>
+        </div>
       </SiteLayout>
     );
   }
@@ -196,18 +190,22 @@ export default function ReceiptPage() {
   if (q.error || !q.data?.ok) {
     return (
       <SiteLayout>
-        <div className="p-6 text-rose-600">Receipt not available.</div>
+        <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6">
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-6 text-sm text-rose-700 shadow-sm sm:px-6">
+            Receipt not available.
+          </div>
+        </div>
       </SiteLayout>
     );
   }
 
   const r = q.data.data || {};
   const order = r.order || {};
-  const items = order.items || [];
+  const items = Array.isArray(order.items) ? order.items : [];
 
-  // Normalized service fee + shipping for display
   const serviceFee = resolveServiceFeeTotal(order);
   const shippingDisplay = shippingEnabled ? resolveShippingDisplay(order) : 0;
+  const shipToLines = formatAddressLines(order.shippingAddress);
 
   const downloadReceipt = async (key: string) => {
     try {
@@ -234,226 +232,314 @@ export default function ReceiptPage() {
 
   return (
     <SiteLayout>
-      <div className="max-w-3xl mx-auto p-6">
-        {/* Header */}
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <h1 className="text-xl font-semibold">
-              {r.merchant?.name || "Receipt"}
-            </h1>
-            <div className="text-sm text-zinc-600">
-              {r.merchant?.addressLine1}
-              {r.merchant?.addressLine2
-                ? `, ${r.merchant.addressLine2}`
-                : ""}
-            </div>
-            {r.merchant?.supportEmail && (
-              <div className="text-sm text-zinc-600">
-                Support: {r.merchant.supportEmail}
+      <div className="mx-auto w-full max-w-4xl px-4 py-4 sm:px-6 sm:py-6">
+        <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
+          {/* Top header */}
+          <div className="border-b border-zinc-200 px-4 py-5 sm:px-6">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl">
+                  {r.merchant?.name || "Receipt"}
+                </h1>
+
+                {(r.merchant?.addressLine1 || r.merchant?.addressLine2 || r.merchant?.supportEmail) && (
+                  <div className="mt-3 space-y-1 text-sm leading-6 text-zinc-600">
+                    {r.merchant?.addressLine1 && (
+                      <div className="break-words">{r.merchant.addressLine1}</div>
+                    )}
+                    {r.merchant?.addressLine2 && (
+                      <div className="break-words">{r.merchant.addressLine2}</div>
+                    )}
+                    {r.merchant?.supportEmail && (
+                      <div className="break-all">Support: {r.merchant.supportEmail}</div>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
+
+              <div className="w-full rounded-2xl bg-zinc-50 p-4 sm:w-[300px] sm:shrink-0">
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                      Receipt No
+                    </div>
+                    <div className="mt-1 break-words text-base font-semibold text-zinc-900">
+                      {q.data.receiptNo}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                      Reference
+                    </div>
+                    <div className="mt-1 break-all font-mono text-sm text-zinc-900">
+                      {r.reference || "—"}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                      Paid At
+                    </div>
+                    <div className="mt-1 text-sm text-zinc-900">
+                      {r.paidAt ? new Date(r.paidAt).toLocaleString() : "—"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div className="text-right">
-            <div className="text-sm">Receipt No</div>
-            <div className="font-semibold">{q.data.receiptNo}</div>
-
-            <div className="text-sm mt-2">Reference</div>
-            <div className="font-mono break-all">{r.reference}</div>
-
-            <div className="text-sm mt-2">Paid At</div>
-            <div>
-              {r.paidAt ? new Date(r.paidAt).toLocaleString() : "—"}
-            </div>
-          </div>
-        </div>
-
-        {/* Addresses */}
-        <div className="grid sm:grid-cols-2 gap-4 border rounded-xl bg-white p-4 mb-4">
-          <div>
-            <div className="text-sm text-zinc-600">Billed To</div>
-            <div className="font-medium">
-              {r.customer?.name || "—"}
-            </div>
-            <div className="text-sm">{r.customer?.email || "—"}</div>
-            {r.customer?.phone && (
-              <div className="text-sm">{r.customer.phone}</div>
-            )}
-          </div>
-
-          {shippingEnabled && (
-            <div>
-              <div className="text-sm text-zinc-600">Ship To</div>
-              <div className="text-sm">
-                {[
-                  order.shippingAddress?.houseNumber,
-                  order.shippingAddress?.streetName,
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
+          {/* Addresses */}
+          <div className="border-b border-zinc-200 px-4 py-5 sm:px-6">
+            <div className={`grid gap-4 ${shippingEnabled ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Billed To
+                </div>
+                <div className="mt-2 text-lg font-semibold text-zinc-900">
+                  {r.customer?.name || "—"}
+                </div>
+                <div className="mt-1 break-all text-sm text-zinc-700">
+                  {r.customer?.email || "—"}
+                </div>
+                {r.customer?.phone && (
+                  <div className="mt-1 text-sm text-zinc-700">{r.customer.phone}</div>
+                )}
               </div>
-              <div className="text-sm">
-                {[
-                  order.shippingAddress?.town,
-                  order.shippingAddress?.city,
-                ]
-                  .filter(Boolean)
-                  .join(", ")}
-              </div>
-              <div className="text-sm">
-                {[
-                  order.shippingAddress?.state,
-                  order.shippingAddress?.country,
-                ]
-                  .filter(Boolean)
-                  .join(", ")}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Line items */}
-        <div className="rounded-xl border bg-white overflow-hidden">
-          <table className="min-w-full text-sm">
-            <thead className="bg-zinc-50">
-              <tr>
-                <th className="text-left px-3 py-2">Item</th>
-                <th className="text-right px-3 py-2">Qty</th>
-                <th className="text-right px-3 py-2">Unit</th>
-                <th className="text-right px-3 py-2">Line Total</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {items.map((it: any) => {
-                const qty = Number(it.quantity || 1);
-                const unit = Number(it.unitPrice || 0);
-                const line = Number(it.lineTotal) || unit * qty;
-
-                return (
-                  <tr key={it.id}>
-                    <td className="px-3 py-2">
-                      <div className="font-medium">{it.title}</div>
-                      {Array.isArray(it.selectedOptions) &&
-                        it.selectedOptions.length > 0 && (
-                          <div className="text-xs text-zinc-600">
-                            {it.selectedOptions
-                              .map(
-                                (o: any) => `${o.attribute}: ${o.value}`
-                              )
-                              .join(" • ")}
-                          </div>
-                        )}
-                      {it.variantSku && (
-                        <div className="text-xs text-zinc-600">
-                          SKU: {it.variantSku}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right">{qty}</td>
-                    <td className="px-3 py-2 text-right">
-                      {ngn.format(unit)}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {ngn.format(line)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-
-            <tfoot>
-              <tr className="bg-zinc-50">
-                <td
-                  className="px-3 py-2 font-medium text-right"
-                  colSpan={3}
-                >
-                  Subtotal
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {ngn.format(toNum(order.subtotal || 0))}
-                </td>
-              </tr>
-
-              <tr className="bg-zinc-50">
-                <td
-                  className="px-3 py-2 font-medium text-right"
-                  colSpan={3}
-                >
-                  Tax (Included)
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {ngn.format(toNum(order.tax || 0))}
-                </td>
-              </tr>
 
               {shippingEnabled && (
-                <tr className="bg-zinc-50">
-                  <td
-                    className="px-3 py-2 font-medium text-right"
-                    colSpan={3}
-                  >
-                    Shipping
-                  </td>
-                  <td className="px-3 py-2 text-right">
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                  <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Ship To
+                  </div>
+                  <div className="mt-2 space-y-1 text-sm text-zinc-700">
+                    {shipToLines.length > 0 ? (
+                      shipToLines.map((line, idx) => (
+                        <div key={idx} className="break-words">
+                          {line}
+                        </div>
+                      ))
+                    ) : (
+                      <div>—</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Items - desktop table */}
+          <div className="hidden md:block">
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-zinc-50">
+                  <tr className="border-b border-zinc-200">
+                    <th className="px-6 py-3 text-left font-semibold text-zinc-700">Item</th>
+                    <th className="px-6 py-3 text-right font-semibold text-zinc-700">Qty</th>
+                    <th className="px-6 py-3 text-right font-semibold text-zinc-700">Unit</th>
+                    <th className="px-6 py-3 text-right font-semibold text-zinc-700">Line Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-200">
+                  {items.map((it: any) => {
+                    const qty = Number(it.quantity || 1);
+                    const unit = Number(it.unitPrice || 0);
+                    const line = Number(it.lineTotal) || unit * qty;
+
+                    return (
+                      <tr key={it.id}>
+                        <td className="px-6 py-4 align-top">
+                          <div className="font-medium text-zinc-900">{it.title}</div>
+
+                          {Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0 && (
+                            <div className="mt-1 text-xs text-zinc-600">
+                              {it.selectedOptions
+                                .map((o: any) => `${o.attribute}: ${o.value}`)
+                                .join(" • ")}
+                            </div>
+                          )}
+
+                          {it.variantSku && (
+                            <div className="mt-1 text-xs text-zinc-600">
+                              SKU: {it.variantSku}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-right text-zinc-800">{qty}</td>
+                        <td className="px-6 py-4 text-right text-zinc-800">{ngn.format(unit)}</td>
+                        <td className="px-6 py-4 text-right font-medium text-zinc-900">
+                          {ngn.format(line)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Items - mobile cards */}
+          <div className="space-y-3 px-4 py-4 md:hidden">
+            <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+              Items
+            </div>
+
+            {items.map((it: any) => {
+              const qty = Number(it.quantity || 1);
+              const unit = Number(it.unitPrice || 0);
+              const line = Number(it.lineTotal) || unit * qty;
+
+              return (
+                <div
+                  key={it.id}
+                  className="rounded-2xl border border-zinc-200 bg-white p-4"
+                >
+                  <div className="font-medium text-zinc-900">{it.title}</div>
+
+                  {Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0 && (
+                    <div className="mt-1 text-xs leading-5 text-zinc-600">
+                      {it.selectedOptions
+                        .map((o: any) => `${o.attribute}: ${o.value}`)
+                        .join(" • ")}
+                    </div>
+                  )}
+
+                  {it.variantSku && (
+                    <div className="mt-1 text-xs text-zinc-600">
+                      SKU: {it.variantSku}
+                    </div>
+                  )}
+
+                  <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+                    <div className="rounded-xl bg-zinc-50 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-zinc-500">
+                        Qty
+                      </div>
+                      <div className="mt-1 font-medium text-zinc-900">{qty}</div>
+                    </div>
+                    <div className="rounded-xl bg-zinc-50 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-zinc-500">
+                        Unit
+                      </div>
+                      <div className="mt-1 font-medium text-zinc-900">{ngn.format(unit)}</div>
+                    </div>
+                    <div className="rounded-xl bg-zinc-50 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-zinc-500">
+                        Total
+                      </div>
+                      <div className="mt-1 font-semibold text-zinc-900">{ngn.format(line)}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Totals */}
+          <div className="border-t border-zinc-200 bg-zinc-50 px-4 py-5 sm:px-6">
+            <div className="ml-auto w-full max-w-md space-y-3">
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <span className="text-zinc-600">Subtotal</span>
+                <span className="font-medium text-zinc-900">
+                  {ngn.format(toNum(order.subtotal || 0))}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <span className="text-zinc-600">Tax (Included)</span>
+                <span className="font-medium text-zinc-900">
+                  {ngn.format(toNum(order.tax || 0))}
+                </span>
+              </div>
+
+              {shippingEnabled && (
+                <div className="flex items-center justify-between gap-4 text-sm">
+                  <span className="text-zinc-600">Shipping</span>
+                  <span className="font-medium text-zinc-900">
                     {ngn.format(shippingDisplay)}
-                  </td>
-                </tr>
+                  </span>
+                </div>
               )}
 
               {serviceFee > 0 && (
-                <tr className="bg-zinc-50">
-                  <td
-                    className="px-3 py-2 font-medium text-right"
-                    colSpan={3}
-                  >
-                    Service fee
-                  </td>
-                  <td className="px-3 py-2 text-right">
+                <div className="flex items-center justify-between gap-4 text-sm">
+                  <span className="text-zinc-600">Service fee</span>
+                  <span className="font-medium text-zinc-900">
                     {ngn.format(serviceFee)}
-                  </td>
-                </tr>
+                  </span>
+                </div>
               )}
 
-              <tr className="bg-zinc-50">
-                <td
-                  className="px-3 py-2 font-semibold text-right"
-                  colSpan={3}
-                >
-                  Total
-                </td>
-                <td className="px-3 py-2 font-semibold text-right">
-                  {ngn.format(toNum(order.total || 0))}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+              <div className="border-t border-zinc-200 pt-3">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-base font-semibold text-zinc-900">Total</span>
+                  <span className="text-base font-semibold text-zinc-900">
+                    {ngn.format(toNum(order.total || 0))}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
 
-        {/* Actions */}
-        <div className="mt-4 flex gap-2">
-          <button
-            className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-1.5 hover:bg-black/5"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (paymentId) downloadReceipt(paymentId);
-            }}
-          >
-            Download PDF
-          </button>
+          {/* Actions */}
+          <div className="px-4 py-4 sm:px-6">
+            {/* Mobile: simple links */}
+            <div className="flex flex-col gap-3 sm:hidden">
+              <button
+                type="button"
+                className="text-left text-sm font-medium text-zinc-700 underline underline-offset-4"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (paymentId) downloadReceipt(paymentId);
+                }}
+              >
+                Download PDF
+              </button>
 
-          <button
-            onClick={() => window.print()}
-            className="rounded-lg border bg-white px-3 py-2 text-sm hover:bg-black/5"
-          >
-            Print
-          </button>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="text-left text-sm font-medium text-zinc-700 underline underline-offset-4"
+              >
+                Print receipt
+              </button>
 
-          <Link
-            to="/orders"
-            className="ml-auto rounded-lg border bg-white px-3 py-2 text-sm hover:bg-black/5"
-          >
-            Back to orders
-          </Link>
+              <Link
+                to="/orders"
+                className="text-sm font-medium text-zinc-700 underline underline-offset-4"
+              >
+                Back to orders
+              </Link>
+            </div>
+
+            {/* Desktop: keep buttons */}
+            <div className="hidden sm:flex sm:flex-wrap sm:items-center sm:gap-2">
+              <button
+                className="inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition hover:bg-zinc-50"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (paymentId) downloadReceipt(paymentId);
+                }}
+              >
+                Download PDF
+              </button>
+
+              <button
+                onClick={() => window.print()}
+                className="inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition hover:bg-zinc-50"
+              >
+                Print
+              </button>
+
+              <Link
+                to="/orders"
+                className="ml-auto inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition hover:bg-zinc-50"
+              >
+                Back to orders
+              </Link>
+            </div>
+          </div>
         </div>
       </div>
     </SiteLayout>

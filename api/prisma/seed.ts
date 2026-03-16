@@ -239,17 +239,29 @@ async function ensureCoreSettings() {
       data: [
         { key: "taxMode", value: "INCLUDED", isPublic: true },
         { key: "taxRatePct", value: "7.5", isPublic: true },
-        { key: "commsUnitCostNGN", value: "100", isPublic: false },
+
+        // pricing inputs used by retail-price computation
+        { key: "baseServiceFeeNGN", value: "1000", isPublic: true },
+        { key: "commsUnitCostNGN", value: "100", isPublic: true },
+        { key: "gatewayFeePercent", value: "1.5", isPublic: true },
+        { key: "gatewayFixedFeeNGN", value: "100", isPublic: true },
+        { key: "gatewayFeeCapNGN", value: "2000", isPublic: true },
+
+        // keep if still used elsewhere in your app
         { key: "profitMode", value: "accurate", isPublic: false },
-        { key: "serviceFeeBaseNGN", value: "1000", isPublic: false },
         { key: "marginPercent", value: "10", isPublic: true },
+
+        // scheduler
         { key: "payoutReleaseSchedulerEnabled", value: "true", isPublic: true },
         { key: "payoutReleaseIntervalHours", value: "6", isPublic: true },
         { key: "payoutReleaseSchedulerTimezone", value: "UTC", isPublic: true },
-        { key: "shippingEnabled", value: "false", isPublic: true },
+
+        // shipping
+        { key: "shippingEnabled", value: "true", isPublic: true },
       ],
       skipDuplicates: true,
     });
+
     log("Core settings ensured.");
   } catch {
     log("Skipping settings (table may not exist yet).");

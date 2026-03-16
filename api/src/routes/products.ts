@@ -201,6 +201,123 @@ function pickBestRating(ratings: Array<{ ratingAvg: number; ratingCount: number 
   return best ? { ratingAvg: best.ratingAvg, ratingCount: best.ratingCount } : null;
 }
 
+async function readSettingValue(key: string): Promise<string | null> {
+  try {
+    const row = await prisma.setting.findUnique({ where: { key } as any });
+    if (row?.value != null) return String(row.value);
+  } catch {
+    //
+  }
+
+  try {
+    const row = await prisma.setting.findFirst({ where: { key } as any });
+    if (row?.value != null) return String(row.value);
+  } catch {
+    //
+  }
+
+  return null;
+}
+
+async function getPublicPricingSettings() {
+  const [
+    baseServiceFeeNGNRaw,
+    commsUnitCostNGNRaw,
+    gatewayFeePercentRaw,
+    gatewayFixedFeeNGNRaw,
+    gatewayFeeCapNGNRaw,
+  ] = await Promise.all([
+    readSettingValue("baseServiceFeeNGN"),
+    readSettingValue("commsUnitCostNGN"),
+    readSettingValue("gatewayFeePercent"),
+    readSettingValue("gatewayFixedFeeNGN"),
+    readSettingValue("gatewayFeeCapNGN"),
+  ]);
+
+  return {
+    baseServiceFeeNGN: toNumber(baseServiceFeeNGNRaw ?? 0),
+    commsUnitCostNGN: toNumber(commsUnitCostNGNRaw ?? 0),
+    gatewayFeePercent: toNumber(gatewayFeePercentRaw ?? 1.5),
+    gatewayFixedFeeNGN: toNumber(gatewayFixedFeeNGNRaw ?? 100),
+    gatewayFeeCapNGN: toNumber(gatewayFeeCapNGNRaw ?? 2000),
+  };
+}
+
+function estimateGatewayFeeFromSettings(args: {
+  amountNaira: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const amount = Number(args.amountNaira);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+
+  const percentFee = amount * (Number(args.gatewayFeePercent || 0) / 100);
+  const gross = percentFee + Number(args.gatewayFixedFeeNGN || 0);
+  const cap = Number(args.gatewayFeeCapNGN || 0);
+
+  if (cap > 0) return Math.min(gross, cap);
+  return gross;
+}
+
+function computeRetailPriceFromSupplierPrice(args: {
+  supplierPrice: number;
+  baseServiceFeeNGN: number;
+  commsUnitCostNGN: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const supplierPrice = Number(args.supplierPrice);
+  if (!Number.isFinite(supplierPrice) || supplierPrice <= 0) return null;
+
+  const gatewayFeeNGN = estimateGatewayFeeFromSettings({
+    amountNaira: supplierPrice,
+    gatewayFeePercent: args.gatewayFeePercent,
+    gatewayFixedFeeNGN: args.gatewayFixedFeeNGN,
+    gatewayFeeCapNGN: args.gatewayFeeCapNGN,
+  });
+
+  const extras =
+    Number(args.baseServiceFeeNGN || 0) +
+    Number(args.commsUnitCostNGN || 0) +
+    Number(gatewayFeeNGN || 0);
+
+  const out = Math.round(supplierPrice + extras);
+  return Number.isFinite(out) && out > 0 ? out : null;
+}
+
+function computePublicDisplayPriceRetailOnly(
+  p: any,
+  pricing: {
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }
+) {
+  const retail = p?.retailPrice != null ? toNum(p.retailPrice) : null;
+  if (retail != null && retail > 0) return retail;
+
+  const auto = p?.autoPrice != null ? toNum(p.autoPrice) : null;
+  if (auto != null && auto > 0) return auto;
+
+  const displayBase = p?.displayBasePrice != null ? toNum(p.displayBasePrice) : null;
+  if (displayBase != null && displayBase > 0) {
+    return computeRetailPriceFromSupplierPrice({
+      supplierPrice: displayBase,
+      baseServiceFeeNGN: pricing.baseServiceFeeNGN,
+      commsUnitCostNGN: pricing.commsUnitCostNGN,
+      gatewayFeePercent: pricing.gatewayFeePercent,
+      gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
+      gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
+    });
+  }
+
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Query schema & price helpers                                               */
 /* -------------------------------------------------------------------------- */
@@ -212,20 +329,6 @@ const QSchema = z.object({
   skip: z.coerce.number().optional(),
   include: z.string().optional(),
 });
-
-function computePublicDisplayPriceRetailOnly(p: any) {
-  const mode = String(p?.priceMode ?? "AUTO").toUpperCase();
-  const retail = p?.retailPrice != null ? toNum(p.retailPrice) : null;
-  const auto = p?.autoPrice != null ? toNum(p.autoPrice) : null;
-
-  if (mode === "ADMIN") {
-    return retail != null && retail > 0 ? retail : null;
-  }
-
-  if (auto != null && auto > 0) return auto;
-  if (retail != null && retail > 0) return retail;
-  return null;
-}
 
 /* -------------------------------------------------------------------------- */
 /* LIST: GET /api/products                                                    */
@@ -258,6 +361,7 @@ router.get(
     const wantOffers = includeParam.includes("offers");
 
     const needOffers = wantOffers || statusRaw === "LIVE";
+    const pricing = await getPublicPricingSettings();
 
     if (!isAny && !isLive && !isDb) {
       return res.status(400).json({ error: `Invalid status "${statusRaw}"` });
@@ -735,17 +839,6 @@ router.get(
 
     res.setHeader("Cache-Control", "no-store");
 
-    const computeRetailFromOfferAndMargin = (offerPrice: number | null, commissionPctInt: any) => {
-      const op = offerPrice != null ? Number(offerPrice) : NaN;
-      if (!Number.isFinite(op) || op <= 0) return null;
-
-      const m = Number(commissionPctInt);
-      const pct = Number.isFinite(m) && m > 0 ? m : 0;
-
-      const out = op * (1 + pct / 100);
-      return Number.isFinite(out) && out > 0 ? out : null;
-    };
-
     const data = items.map((p: any) => {
       const pid = String(p.id);
 
@@ -768,8 +861,27 @@ router.get(
               : Number(p.retailPrice ?? p.autoPrice ?? 0) || 0;
 
       const offersFrom = needOffers ? offersFromByProduct.get(pid) ?? null : null;
-      const offerRetail = computeRetailFromOfferAndMargin(offersFrom, p.commissionPctInt);
-      const retailOnly = computePublicDisplayPriceRetailOnly(p);
+
+      const offerRetail =
+        offersFrom != null && Number(offersFrom) > 0
+          ? computeRetailPriceFromSupplierPrice({
+            supplierPrice: Number(offersFrom),
+            baseServiceFeeNGN: pricing.baseServiceFeeNGN,
+            commsUnitCostNGN: pricing.commsUnitCostNGN,
+            gatewayFeePercent: pricing.gatewayFeePercent,
+            gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
+            gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
+          })
+          : null;
+
+      const retailOnly = computePublicDisplayPriceRetailOnly(
+        {
+          ...p,
+          displayBaseSupplierPrice: supplierDisplayBase > 0 ? supplierDisplayBase : null,
+        },
+        pricing
+      );
+
       const displayPrice = offerRetail != null ? offerRetail : retailOnly;
 
       const rawRetail = p.retailPrice != null ? toNum(p.retailPrice) : null;
@@ -913,6 +1025,7 @@ router.get(
 
     const nonNullBaseOffer = offerNonNullSupplierIdWhere(BASE_OFFER_MODEL);
     const nonNullVarOffer = offerNonNullSupplierIdWhere(VAR_OFFER_MODEL);
+    const pricing = await getPublicPricingSettings();
 
     const me = await prisma.product.findFirst({
       where: { id, status: "LIVE" as any, ...(productActiveWhere() as any) },
@@ -1076,17 +1189,6 @@ router.get(
         (qtyByProduct[String(r.productId)] ?? 0) + Number(r._sum?.availableQty ?? 0);
     }
 
-    const computeRetailFromOfferAndMargin = (offerPrice: number | null, commissionPctInt: any) => {
-      const op = offerPrice != null ? Number(offerPrice) : NaN;
-      if (!Number.isFinite(op) || op <= 0) return null;
-
-      const m = Number(commissionPctInt);
-      const pct = Number.isFinite(m) && m > 0 ? m : 0;
-
-      const out = op * (1 + pct / 100);
-      return Number.isFinite(out) && out > 0 ? out : null;
-    };
-
     const data = items
       .map((p: any) => {
         const pid = String(p.id);
@@ -1103,13 +1205,26 @@ router.get(
                 ? variantOfferPrice
                 : null;
 
-        const computedRetail = computeRetailFromOfferAndMargin(offersFrom, p.commissionPctInt);
-        const fallbackRetail =
-          p.retailPrice != null
-            ? toNum(p.retailPrice)
-            : p.autoPrice != null
-              ? toNum(p.autoPrice)
-              : null;
+        const computedRetail =
+          offersFrom != null && Number(offersFrom) > 0
+            ? computeRetailPriceFromSupplierPrice({
+              supplierPrice: Number(offersFrom),
+              baseServiceFeeNGN: pricing.baseServiceFeeNGN,
+              commsUnitCostNGN: pricing.commsUnitCostNGN,
+              gatewayFeePercent: pricing.gatewayFeePercent,
+              gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
+              gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
+            })
+            : null;
+
+        const fallbackRetail = computePublicDisplayPriceRetailOnly(
+          {
+            retailPrice: p.retailPrice,
+            autoPrice: p.autoPrice,
+            displayBasePrice: offersFrom,
+          },
+          pricing
+        );
 
         const availableQty = qtyByProduct[pid] ?? 0;
         const inStock = availableQty > 0 || p.inStock === true;

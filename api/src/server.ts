@@ -78,6 +78,8 @@ import adminSupplierDocumentsRouter from "./routes/adminSupplierDocuments.js";
 
 import { registerJobs } from "./jobs/registerJobs.js";
 import { registerExpireUnpaidOrdersJob } from "./jobs/expireUnpaidOrders.job.js";
+import adminShippingRouter from "./routes/adminShipping.js";
+
 
 const app = express();
 app.set("trust proxy", 1);
@@ -395,6 +397,7 @@ app.use("/api/newsletter", newsletterRouter);
 app.use("/api/admin/newsletter", adminNewsletterRouter);
 app.use("/api/public", publicCountriesRouter);
 app.use("/api/admin/supplier-documents", adminSupplierDocumentsRouter);
+app.use("/api/admin/shipping", adminShippingRouter);
 
 const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
   for (const d of dirs) {

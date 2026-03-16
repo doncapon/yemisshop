@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client.js";
 import { useAuthStore } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout.js";
 import StatusDot from "../components/StatusDot.js";
 import { useModal } from "../components/ModalProvider";
+import { upsertCartLine } from "../utils/cartModel";
+
 
 /* ---------------- “Silver” UI helpers ---------------- */
 const SILVER_BORDER = "border border-zinc-200/80";
@@ -105,6 +107,9 @@ type OrderRow = {
   tax?: number | string | null;
   subtotal?: number | string | null;
   serviceFeeTotal?: number | string | null;
+  gatewayFeeTotal?: number | string | null;
+  commsCostTotal?: number | string | null;
+  commissionTotal?: number | string | null;
   createdAt?: string;
   items?: OrderItem[];
   payment?: PaymentRow | null; // for /mine
@@ -114,6 +119,14 @@ type OrderRow = {
     revenue?: number | string | null;
     cogs?: number | string | null;
     profit?: number | string | null;
+    gatewayFee?: number | string | null;
+    gatewayFees?: number | string | null;
+    comms?: number | string | null;
+    commsCost?: number | string | null;
+    serviceFee?: number | string | null;
+    serviceFeeTotal?: number | string | null;
+    commission?: number | string | null;
+    commissionTotal?: number | string | null;
   };
 
   user?: { email?: string | null } | null;
@@ -125,17 +138,17 @@ type OtpPurpose = "PAY_ORDER" | "CANCEL_ORDER" | "REFUND_ORDER";
 type OtpState =
   | { open: false }
   | {
-      open: true;
-      orderId: string;
-      purpose: OtpPurpose;
-      requestId: string;
-      expiresAt: number;
-      channelHint?: string | null;
-      otp: string;
-      busy: boolean;
-      error?: string | null;
-      onSuccess: (otpToken: string) => Promise<void> | void;
-    };
+    open: true;
+    orderId: string;
+    purpose: OtpPurpose;
+    requestId: string;
+    expiresAt: number;
+    channelHint?: string | null;
+    otp: string;
+    busy: boolean;
+    error?: string | null;
+    onSuccess: (otpToken: string) => Promise<void> | void;
+  };
 
 type RefundReason =
   | "NOT_RECEIVED"
@@ -206,31 +219,31 @@ function normalizeRefund(r: any): RefundRow {
     supplier: r?.supplier ? { id: String(r.supplier.id ?? ""), name: r.supplier.name ?? null } : null,
     purchaseOrder: r?.purchaseOrder
       ? {
-          id: String(r.purchaseOrder.id ?? ""),
-          status: r.purchaseOrder.status ?? null,
-          payoutStatus: r.purchaseOrder.payoutStatus ?? null,
-        }
+        id: String(r.purchaseOrder.id ?? ""),
+        status: r.purchaseOrder.status ?? null,
+        payoutStatus: r.purchaseOrder.payoutStatus ?? null,
+      }
       : null,
     events: Array.isArray(r?.events)
       ? r.events.map((e: any) => ({
-          id: String(e?.id ?? ""),
-          type: e?.type ?? null,
-          message: e?.message ?? null,
-          createdAt: e?.createdAt ?? null,
-        }))
+        id: String(e?.id ?? ""),
+        type: e?.type ?? null,
+        message: e?.message ?? null,
+        createdAt: e?.createdAt ?? null,
+      }))
       : [],
     items: Array.isArray(r?.items)
       ? r.items.map((it: any) => ({
-          id: String(it?.id ?? ""),
-          orderItem: it?.orderItem
-            ? {
-                id: String(it.orderItem.id ?? ""),
-                title: it.orderItem.title ?? null,
-                quantity: it.orderItem.quantity ?? null,
-                unitPrice: it.orderItem.unitPrice ?? null,
-              }
-            : null,
-        }))
+        id: String(it?.id ?? ""),
+        orderItem: it?.orderItem
+          ? {
+            id: String(it.orderItem.id ?? ""),
+            title: it.orderItem.title ?? null,
+            quantity: it.orderItem.quantity ?? null,
+            unitPrice: it.orderItem.unitPrice ?? null,
+          }
+          : null,
+      }))
       : [],
   };
 }
@@ -264,12 +277,12 @@ const fmtDate = (s?: string | null) => {
   return Number.isNaN(+d)
     ? String(s)
     : d.toLocaleString(undefined, {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 };
 
 const todayYMD = () => {
@@ -283,6 +296,37 @@ const todayYMD = () => {
 const toYMD = (s?: string) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "");
 
 /* ---------------- Shared helpers ---------------- */
+function getProductHref(it: OrderItem): string {
+  const productId = String(it.productId || "").trim();
+  return productId ? `/products/${encodeURIComponent(productId)}` : "";
+}
+
+function buildBuyAgainCartLine(it: OrderItem) {
+  const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
+  const unitPrice = fmtN(it.unitPrice ?? it.price);
+  const title = (it.title || it.product?.title || "Product").toString();
+
+  const selectedOptions = normalizeSelectedOptionsForDisplay(
+    it.selectedOptions ?? it.options ?? it.selectedOptionsJson
+  );
+
+  const variantId = it.variant?.id ? String(it.variant.id) : undefined;
+  const variantSku = it.variant?.sku ?? undefined;
+
+  return {
+    kind: variantId ? ("VARIANT" as const) : ("BASE" as const),
+    productId: String(it.productId || ""),
+    title,
+    qty,
+    unitPrice,
+    variantId,
+    variantSku,
+    selectedOptions,
+  };
+}
+
+
+
 function isPaidStatus(status?: string | null): boolean {
   const s = String(status || "").toUpperCase();
   return ["PAID", "VERIFIED", "SUCCESS", "SUCCESSFUL", "COMPLETED"].includes(s);
@@ -377,10 +421,10 @@ function normalizeItem(it: any): OrderItem {
     selectedOptions,
     variant: variant
       ? {
-          id: String(variant?.id ?? ""),
-          sku: variant?.sku ?? null,
-          imagesJson: variant?.imagesJson ?? variant?.images ?? null,
-        }
+        id: String(variant?.id ?? ""),
+        sku: variant?.sku ?? null,
+        imagesJson: variant?.imagesJson ?? variant?.images ?? null,
+      }
       : null,
   };
 }
@@ -427,6 +471,40 @@ function normalizeOrder(raw: any): OrderRow {
       raw?.service_fee_total ??
       raw?.serviceFeeTotalNGN ??
       raw?.service_fee ??
+      raw?.checkoutServiceFee ??
+      raw?.checkout_service_fee ??
+      payment?.serviceFeeTotal ??
+      payment?.service_fee_total ??
+      null,
+    gatewayFeeTotal:
+      raw?.gatewayFeeTotal ??
+      raw?.gateway_fee_total ??
+      raw?.gatewayFee ??
+      raw?.gateway_fee ??
+      payment?.gatewayFeeTotal ??
+      payment?.gateway_fee_total ??
+      payment?.gatewayFee ??
+      payment?.gateway_fee ??
+      null,
+    commsCostTotal:
+      raw?.commsCostTotal ??
+      raw?.comms_cost_total ??
+      raw?.commsTotal ??
+      raw?.comms_total ??
+      raw?.commsCost ??
+      raw?.comms_cost ??
+      raw?.comms ??
+      null,
+    commissionTotal:
+      raw?.commissionTotal ??
+      raw?.commission_total ??
+      raw?.platformFeeTotal ??
+      raw?.platform_fee_total ??
+      raw?.platformFee ??
+      raw?.platform_fee ??
+      raw?.marginTotal ??
+      raw?.margin_total ??
+      raw?.margin ??
       null,
     subtotal: raw?.subtotal ?? raw?.subTotal ?? raw?.itemsSubtotal ?? null,
     tax: raw?.tax ?? raw?.vat ?? null,
@@ -434,33 +512,33 @@ function normalizeOrder(raw: any): OrderRow {
     items,
     payments: payments.length
       ? payments.map((p) => ({
-          id: String(p?.id ?? ""),
-          status: String(p?.status ?? ""),
-          provider: p?.provider ?? null,
-          reference: p?.reference ?? p?.ref ?? null,
-          amount: p?.amount ?? null,
-          createdAt: p?.createdAt ?? p?.created_at ?? null,
-          allocations: Array.isArray(p?.allocations)
-            ? p.allocations.map((a: any) => ({
-                id: String(a?.id ?? ""),
-                supplierId: String(a?.supplierId ?? ""),
-                supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
-                amount: a?.amount ?? null,
-                status: a?.status ?? null,
-                purchaseOrderId: a?.purchaseOrderId ?? null,
-              }))
-            : [],
-        }))
+        id: String(p?.id ?? ""),
+        status: String(p?.status ?? ""),
+        provider: p?.provider ?? null,
+        reference: p?.reference ?? p?.ref ?? null,
+        amount: p?.amount ?? null,
+        createdAt: p?.createdAt ?? p?.created_at ?? null,
+        allocations: Array.isArray(p?.allocations)
+          ? p.allocations.map((a: any) => ({
+            id: String(a?.id ?? ""),
+            supplierId: String(a?.supplierId ?? ""),
+            supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+            amount: a?.amount ?? null,
+            status: a?.status ?? null,
+            purchaseOrderId: a?.purchaseOrderId ?? null,
+          }))
+          : [],
+      }))
       : undefined,
     payment: payment
       ? {
-          id: String(payment?.id ?? ""),
-          status: String(payment?.status ?? ""),
-          provider: payment?.provider ?? null,
-          reference: payment?.reference ?? payment?.ref ?? null,
-          amount: payment?.amount ?? null,
-          createdAt: payment?.createdAt ?? payment?.created_at ?? null,
-        }
+        id: String(payment?.id ?? ""),
+        status: String(payment?.status ?? ""),
+        provider: payment?.provider ?? null,
+        reference: payment?.reference ?? payment?.ref ?? null,
+        amount: payment?.amount ?? null,
+        createdAt: payment?.createdAt ?? payment?.created_at ?? null,
+      }
       : null,
     paidAmount: raw?.paidAmount ?? raw?.paid_amount ?? null,
     metrics: raw?.metrics ?? null,
@@ -478,26 +556,124 @@ function normalizeOrders(payload: any): OrderRow[] {
   return list.map(normalizeOrder);
 }
 
-function orderServiceFee(o: OrderRow): number {
+
+function orderServiceRevenue(o: OrderRow): number {
   const candidates = [
-    (o as any).serviceFeeTotal,
+    o.serviceFeeTotal,
     (o as any).serviceFee,
     (o as any).service_fee_total,
     (o as any).service_fee,
-    (o as any).commsTotal,
-    (o as any).comms,
+    (o as any).checkoutServiceFee,
+    (o as any).checkout_service_fee,
+    o.metrics?.serviceFee,
+    o.metrics?.serviceFeeTotal,
+  ];
 
-    // ✅ add common “profit/margin/fee” names
-    (o as any).platformFee,
-    (o as any).platformFeeTotal,
-    (o as any).platform_fee,
-    (o as any).platform_fee_total,
-    (o as any).margin,
-    (o as any).marginTotal,
-    (o as any).margin_total,
-    (o as any).commission,
-    (o as any).commissionTotal,
-    (o as any).commission_total,
+  for (const v of candidates) {
+    const n = fmtN(v);
+    if (n !== 0) return n;
+  }
+  return 0;
+}
+
+function orderSupplierBasePriceTotal(o: OrderRow): number {
+  const fromItems = (o.items || []).reduce((sum, it) => {
+    const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
+    const supplierBaseUnit = fmtN(it.chosenSupplierUnitPrice);
+    return sum + supplierBaseUnit * qty;
+  }, 0);
+
+  if (fromItems > 0) return fromItems;
+
+  const fromPurchaseOrders = (o.purchaseOrders || []).reduce((sum, po) => {
+    return sum + fmtN(po.subtotal);
+  }, 0);
+
+  return fromPurchaseOrders;
+}
+
+function orderSupplierPayoutTotal(o: OrderRow, marginPercent: number): number {
+  const supplierBaseTotal = orderSupplierBasePriceTotal(o);
+  if (supplierBaseTotal <= 0) return 0;
+  return supplierBaseTotal * (1 - marginPercent / 100);
+}
+
+function orderCommissionRevenue(o: OrderRow, marginPercent: number): number {
+  const supplierBaseTotal = orderSupplierBasePriceTotal(o);
+  if (supplierBaseTotal <= 0) return 0;
+  return supplierBaseTotal * (marginPercent / 100);
+}
+
+function computeOrderPlatformProfit(o: OrderRow, marginPercent: number): number {
+  const commission = orderCommissionRevenue(o, marginPercent);
+  const serviceFee = orderServiceRevenue(o);
+  return commission + serviceFee;
+}
+
+
+
+
+function orderItemsSubtotal(o: OrderRow): number {
+  const subtotal = fmtN(o.subtotal);
+  if (subtotal > 0) return subtotal;
+
+  return (o.items || []).reduce((sum, it) => {
+    const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
+    const line =
+      it.lineTotal != null || it.total != null || it.subtotal != null
+        ? fmtN(it.lineTotal ?? it.total ?? it.subtotal)
+        : fmtN(it.unitPrice ?? it.price) * qty;
+    return sum + line;
+  }, 0);
+}
+
+function supplierPayoutTotal(o: OrderRow): number {
+  const poSupplierAmount = (o.purchaseOrders || []).reduce((sum, po) => {
+    return sum + fmtN(po.supplierAmount);
+  }, 0);
+  if (poSupplierAmount > 0) return poSupplierAmount;
+
+  const allocationAmount = (o.payments || [])
+    .flatMap((p) => p.allocations || [])
+    .reduce((sum, a) => sum + fmtN(a.amount), 0);
+  if (allocationAmount > 0) return allocationAmount;
+
+  const itemSupplierAmount = (o.items || []).reduce((sum, it) => {
+    const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
+    const supplierUnit = fmtN(it.chosenSupplierUnitPrice);
+    return sum + supplierUnit * qty;
+  }, 0);
+  if (itemSupplierAmount > 0) return itemSupplierAmount;
+
+  return 0;
+}
+
+function orderGatewayCost(o: OrderRow): number {
+  const candidates = [
+    o.gatewayFeeTotal,
+    (o as any).gatewayFee,
+    (o as any).gateway_fee_total,
+    (o as any).gateway_fee,
+    o.metrics?.gatewayFee,
+    o.metrics?.gatewayFees,
+  ];
+
+  for (const v of candidates) {
+    const n = fmtN(v);
+    if (n !== 0) return n;
+  }
+  return 0;
+}
+
+function orderCommsCost(o: OrderRow): number {
+  const candidates = [
+    o.commsCostTotal,
+    (o as any).commsCost,
+    (o as any).comms_cost_total,
+    (o as any).comms_total,
+    (o as any).comms,
+    o.metrics?.comms,
+    o.metrics?.commsCost,
   ];
 
   for (const v of candidates) {
@@ -594,9 +770,8 @@ function Pagination({
         <>
           <button
             onClick={() => go(1)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-              page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-            }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+              }`}
           >
             1
           </button>
@@ -608,9 +783,8 @@ function Pagination({
         <button
           key={p}
           onClick={() => go(p)}
-          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-            p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-          }`}
+          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+            }`}
         >
           {p}
         </button>
@@ -621,9 +795,8 @@ function Pagination({
           {end < totalPages - 1 && <span className={`px-1 ${T_XS} text-ink-soft`}>…</span>}
           <button
             onClick={() => go(totalPages)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-              page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-            }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+              }`}
           >
             {totalPages}
           </button>
@@ -706,8 +879,9 @@ export default function OrdersPage() {
   const authReady = meQ.isSuccess || meQ.isError; // cookie check has resolved
   const role: Role = (storeRole || meQ.data?.role || "SHOPPER") as Role;
 
-  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
-  const isMetricsRole = isAdmin;
+  const isSuperAdmin = role === "SUPER_ADMIN";
+  const isAdmin = role === "ADMIN" || isSuperAdmin;
+  const isMetricsRole = isSuperAdmin;
   const isSupplier = String(role || "").toUpperCase() === "SUPPLIER";
 
   // If cookie session is invalid -> force login
@@ -781,6 +955,24 @@ export default function OrdersPage() {
     setExpandedId(oid);
   }, [orders, searchParams, setSearchParams, queriesEnabled]);
 
+
+  const onBuyAgain = (it: OrderItem) => {
+    const productId = String(it.productId || "").trim();
+
+    if (!productId) {
+      showErrorModal("Unavailable", "This item no longer has a product link, so it cannot be bought again.");
+      return;
+    }
+
+    try {
+      upsertCartLine(buildBuyAgainCartLine(it) as any);
+      nav("/checkout");
+    } catch (e: any) {
+      showErrorModal("Could not add item", e?.message || "Could not prepare this item for checkout.");
+    }
+  };
+
+
   const orderDetailQ = useQuery({
     queryKey: ["order-detail", expandedId, isAdmin],
     enabled: queriesEnabled && !!expandedId,
@@ -847,6 +1039,29 @@ export default function OrdersPage() {
     key: "date",
     dir: "desc",
   });
+
+  const pricingSettingsQ = useQuery({
+    queryKey: ["admin", "settings", "pricing-public-orders"],
+    enabled: queriesEnabled && isMetricsRole,
+    queryFn: async () => {
+      const { data } = await api.get("/api/settings/public", AXIOS_COOKIE_CFG);
+      return {
+        marginPercent:
+          Number(
+            data?.marginPercent ??
+            data?.pricingMarkupPercent ??
+            data?.platformMarginPercent ??
+            0
+          ) || 0,
+      };
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
+  const marginPercent = Number(pricingSettingsQ.data?.marginPercent ?? 0) || 0;
+
 
   const toggleSort = (key: SortKey) => {
     setSort((prev) =>
@@ -1053,9 +1268,8 @@ export default function OrdersPage() {
           type="button"
           aria-pressed={isTodayActive}
           onClick={toggleToday}
-          className={`rounded-lg px-3 py-2 ${BTN} border transition ${
-            isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
-          }`}
+          className={`rounded-lg px-3 py-2 ${BTN} border transition ${isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
+            }`}
         >
           Today
         </button>
@@ -1111,74 +1325,52 @@ export default function OrdersPage() {
 
     let revenuePaid = 0;
     let refundsAmt = 0;
-
-    for (const o of filteredSorted) {
-      const metricsRevenue = fmtN(o.metrics?.revenue);
-      const paidAmount = fmtN(o.paidAmount);
-      if (metricsRevenue > 0) revenuePaid += metricsRevenue;
-      else if (paidAmount > 0) revenuePaid += paidAmount;
-    }
-
-    const revenueNet = revenuePaid - refundsAmt;
-    return { revenuePaid, refunds: refundsAmt, revenueNet };
-  }, [filteredSorted, isMetricsRole]);
-
-  const grossProfit = useMemo(() => {
-    if (!isMetricsRole) return 0;
-
-    // ✅ If API has a real (non-zero) number, use it.
-    const apiRes: any = profitRangeQ.data;
-    if (apiRes) {
-      const raw = fmtN(apiRes.grossProfit);
-      const safe = fmtN(apiRes.grossProfitSafe);
-      const apiVal = raw !== 0 ? raw : safe !== 0 ? safe : 0;
-      if (apiVal !== 0) return apiVal;
-    }
-
-    // ✅ Client-side fallback: try multiple ways to infer profit
-    let acc = 0;
+    let supplierBaseRevenue = 0;
+    let supplierPayouts = 0;
+    let commissionRevenue = 0;
+    let serviceRevenue = 0;
 
     for (const o of filteredSorted) {
       const realized = isPaidStatus(o.status) || fmtN(o.paidAmount) > 0;
       if (!realized) continue;
 
-      // 1) Prefer explicit metrics if present
-      const m: any = o.metrics || {};
-      const directProfit = fmtN(m.profit ?? m.grossProfit);
-      if (directProfit !== 0) {
-        acc += directProfit;
-        continue;
-      }
+      const metricsRevenue = fmtN(o.metrics?.revenue);
+      const paidAmount = fmtN(o.paidAmount);
 
-      // 2) Revenue - COGS if present
-      const rev = fmtN(m.revenue);
-      const cogs = fmtN(m.cogs);
-      if (rev !== 0 && cogs !== 0) {
-        acc += rev - cogs;
-        continue;
-      }
+      if (metricsRevenue > 0) revenuePaid += metricsRevenue;
+      else if (paidAmount > 0) revenuePaid += paidAmount;
+      else revenuePaid += fmtN(o.total);
 
-      // 3) Service/platform fee as “profit”
-      const fee = orderServiceFee(o);
-      if (fee !== 0) {
-        acc += fee;
-        continue;
-      }
+      const supplierBase = orderSupplierBasePriceTotal(o);
+      const payout = orderSupplierPayoutTotal(o, marginPercent);
+      const commission = orderCommissionRevenue(o, marginPercent);
+      const serviceFee = orderServiceRevenue(o);
 
-      // 4) If you have purchaseOrders supplier amounts, estimate profit = total - supplierAmounts
-      const total = fmtN(o.total);
-      const supplierTotals = (o.purchaseOrders || []).reduce((s, po) => {
-        return s + fmtN((po as any).supplierAmount ?? (po as any).subtotal);
-      }, 0);
-
-      if (total !== 0 && supplierTotals !== 0) {
-        acc += total - supplierTotals;
-        continue;
-      }
+      supplierBaseRevenue += supplierBase;
+      supplierPayouts += payout;
+      commissionRevenue += commission;
+      serviceRevenue += serviceFee;
     }
 
-    return acc;
-  }, [isMetricsRole, profitRangeQ.data, filteredSorted]);
+    const revenueNet = revenuePaid - refundsAmt;
+    const grossProfit = commissionRevenue + serviceRevenue;
+
+    return {
+      revenuePaid,
+      refunds: refundsAmt,
+      revenueNet,
+      supplierBaseRevenue,
+      supplierPayouts,
+      commissionRevenue,
+      serviceRevenue,
+      grossProfit,
+    };
+  }, [filteredSorted, isMetricsRole, marginPercent]);
+
+  const grossProfit = useMemo(() => {
+    if (!isMetricsRole) return 0;
+    return aggregates?.grossProfit ?? 0;
+  }, [isMetricsRole, aggregates]);
 
   /* ---------------- Actions ---------------- */
   const onToggle = (id: string) => setExpandedId((curr) => (curr === id ? null : id));
@@ -1471,18 +1663,16 @@ export default function OrdersPage() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
-                    draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                  }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                    }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "ALL" }))}
                 >
                   All items
                 </button>
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
-                    draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                  }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                    }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "SOME" }))}
                 >
                   Select items
@@ -1612,7 +1802,7 @@ export default function OrdersPage() {
           try {
             w.focus();
             w.print();
-          } catch {}
+          } catch { }
         };
         w.addEventListener("load", onLoad, { once: true });
       }
@@ -1694,7 +1884,7 @@ export default function OrdersPage() {
         )}
 
         {isMetricsRole && aggregates && (
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className={`${CARD_XL} p-3`}>
               <div className={`${T_SM} text-ink-soft`}>Revenue (net)</div>
               <div className="font-semibold">{ngn.format(aggregates.revenueNet)}</div>
@@ -1702,9 +1892,29 @@ export default function OrdersPage() {
                 Paid {ngn.format(aggregates.revenuePaid)} • Refunds {ngn.format(aggregates.refunds)}
               </div>
             </div>
+
             <div className={`${CARD_XL} p-3`}>
-              <div className={`${T_SM} text-ink-soft`}>Gross Profit</div>
+              <div className={`${T_SM} text-ink-soft`}>Commission Revenue</div>
+              <div className="font-semibold">{ngn.format(aggregates.commissionRevenue)}</div>
+              <div className={`${T_XS} text-ink-soft`}>
+                Margin {marginPercent.toFixed(2)}% • Supplier payouts {ngn.format(aggregates.supplierPayouts)}
+              </div>
+            </div>
+
+            <div className={`${CARD_XL} p-3`}>
+              <div className={`${T_SM} text-ink-soft`}>Service Fee Revenue</div>
+              <div className="font-semibold">{ngn.format(aggregates.serviceRevenue)}</div>
+              <div className={`${T_XS} text-ink-soft`}>
+                Counted as platform profit
+              </div>
+            </div>
+
+            <div className={`${CARD_XL} p-3`}>
+              <div className={`${T_SM} text-ink-soft`}>Platform Profit</div>
               <div className="font-semibold">{ngn.format(grossProfit)}</div>
+              <div className={`${T_XS} text-ink-soft`}>
+                Commission + service fee
+              </div>
             </div>
           </div>
         )}
@@ -1827,13 +2037,12 @@ export default function OrdersPage() {
 
                           <td className="px-3 py-3">
                             <button
-                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${
-                                isPaidEffective
-                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
-                                  : isPendingOrCreated
-                                    ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
-                                    : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
-                              }`}
+                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${isPaidEffective
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                                : isPendingOrCreated
+                                  ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+                                  : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
+                                }`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onToggle(o.id);
@@ -1867,6 +2076,19 @@ export default function OrdersPage() {
                                           </>
                                         )}
                                         {latestPayment.amount != null && <> • {ngn.format(fmtN(latestPayment.amount))}</>}
+                                      </div>
+                                    )}
+
+                                    {isMetricsRole && (
+                                      <div className="rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+                                        <div className="font-semibold text-zinc-900 mb-1">Platform profit</div>
+                                        <div>Supplier base: {ngn.format(orderSupplierBasePriceTotal(details))}</div>
+                                        <div>Supplier payout: {ngn.format(orderSupplierPayoutTotal(details, marginPercent))}</div>
+                                        <div>Commission: {ngn.format(orderCommissionRevenue(details, marginPercent))}</div>
+                                        <div>Service fee: {ngn.format(orderServiceRevenue(details))}</div>
+                                        <div className="font-semibold text-zinc-900">
+                                          Profit: {ngn.format(computeOrderPlatformProfit(details, marginPercent))}
+                                        </div>
                                       </div>
                                     )}
                                   </div>
@@ -1991,8 +2213,32 @@ export default function OrdersPage() {
                                       return (
                                         <div key={it.id} className="px-4 py-4">
                                           <div className="flex items-start justify-between gap-4">
-                                            <div className="min-w-0">
-                                              <div className="font-medium text-ink break-words">{itemTitle}</div>
+                                            <div className="min-w-0 flex-1">
+                                              {it.productId ? (
+                                                <Link
+                                                  to={getProductHref(it)}
+                                                  onClick={(e) => e.stopPropagation()}
+                                                  className="inline-flex items-center gap-1.5 font-semibold text-blue-600 break-words underline decoration-blue-400 underline-offset-2 hover:text-blue-700 hover:decoration-blue-600 transition"
+                                                >
+                                                  {itemTitle}
+
+                                                  {/* link icon */}
+                                                  <svg
+                                                    xmlns="http://www.w3.org/2000/svg"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="2"
+                                                    className="w-3.5 h-3.5 opacity-70"
+                                                  >
+                                                    <path d="M7 17L17 7" />
+                                                    <path d="M7 7h10v10" />
+                                                  </svg>
+                                                </Link>
+                                              ) : (
+                                                <div className="font-medium text-ink break-words">{itemTitle}</div>
+                                              )}
+
 
                                               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
                                                 <span>Qty: {qty}</span>
@@ -2028,12 +2274,25 @@ export default function OrdersPage() {
                                               )}
                                             </div>
 
-                                            <div className="shrink-0 text-right">
+                                            <div className="shrink-0 text-right min-w-[132px]">
                                               <div className="text-xs text-ink-soft">Line total</div>
                                               <div className="font-semibold text-ink">{ngn.format(total)}</div>
+
+                                              {it.productId && (
+                                                <button
+                                                  className="mt-2 inline-flex items-center justify-center rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-xs hover:bg-black/5 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onBuyAgain(it);
+                                                  }}
+                                                >
+                                                  Buy Again
+                                                </button>
+                                              )}
                                             </div>
                                           </div>
                                         </div>
+
                                       );
                                     })}
                                   </div>
@@ -2112,7 +2371,7 @@ export default function OrdersPage() {
                       <div className={`${T_SM} text-ink-soft truncate`}>
                         {firstItemTitle
                           ? firstItemTitle.toString().slice(0, 44) +
-                            (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
+                          (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
                           : isOpen && orderDetailQ.isFetching
                             ? "Loading items…"
                             : `${details.items?.length || 0} item(s)`}
@@ -2162,6 +2421,19 @@ export default function OrdersPage() {
                     </button>
                   </div>
 
+                  {isMetricsRole && (
+                    <div className="rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+                      <div className="font-semibold text-zinc-900 mb-1">Platform profit</div>
+                      <div>Commission: {ngn.format(orderCommissionRevenue(details, marginPercent))}</div>
+                      <div>Service fee: {ngn.format(orderServiceRevenue(details))}</div>
+                      <div>Gateway: {ngn.format(orderGatewayCost(details))}</div>
+                      <div>Comms: {ngn.format(orderCommsCost(details))}</div>
+                      <div className="font-semibold text-zinc-900">
+                        Profit: {ngn.format(computeOrderPlatformProfit(details, marginPercent))}
+                      </div>
+                    </div>
+                  )}
+
                   {isOpen && (
                     <div className="mt-1.5 border-t border-zinc-200/70 pt-2 space-y-1.5">
                       {(details.items || []).map((it) => {
@@ -2176,14 +2448,41 @@ export default function OrdersPage() {
                         );
 
                         return (
-                          <div key={it.id} className="rounded-xl border border-zinc-200/70 bg-zinc-50/60 px-3 py-2">
+                          <div className="min-w-0 flex-1 bg-blue-50/40 rounded-md px-2 py-1">
+
                             <div className="flex justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="font-medium text-ink text-[11px] sm:text-xs break-words">{itemTitle}</div>
+                              <div className="min-w-0 flex-1">
+                                {it.productId ? (
+                                  <Link
+                                    to={getProductHref(it)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="inline-flex items-center gap-1.5 font-semibold text-blue-600 text-[12px] sm:text-xs break-words underline decoration-blue-400 underline-offset-2 active:scale-[0.98] transition"
+                                  >
+                                    {itemTitle}
+
+                                    {/* link icon */}
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="2"
+                                      className="w-3 h-3 opacity-70"
+                                    >
+                                      <path d="M7 17L17 7" />
+                                      <path d="M7 7h10v10" />
+                                    </svg>
+                                  </Link>
+                                ) : (
+
+                                  <div className="font-medium text-ink text-[11px] sm:text-xs break-words">{itemTitle}</div>
+                                )}
+
                                 <div className={`${T_XS} text-ink-soft mt-0.5`}>
                                   Qty {qty} • {ngn.format(fmtN(it.unitPrice ?? it.price))}
                                 </div>
                               </div>
+
                               <div className="shrink-0 text-right">
                                 <div className={`${T_XS} text-ink-soft`}>Total</div>
                                 <div className="font-semibold text-[11px] sm:text-xs">{ngn.format(total)}</div>
@@ -2204,7 +2503,22 @@ export default function OrdersPage() {
                                 ))}
                               </div>
                             )}
+
+                            {it.productId && (
+                              <div className="mt-2 flex justify-end">
+                                <button
+                                  className={`rounded-lg ${SILVER_BORDER} px-3 py-1.5 ${BTN_XS} bg-white hover:bg-black/5`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onBuyAgain(it);
+                                  }}
+                                >
+                                  Buy Again
+                                </button>
+                              </div>
+                            )}
                           </div>
+
                         );
                       })}
 
@@ -2284,10 +2598,10 @@ export default function OrdersPage() {
                         !s.open
                           ? s
                           : {
-                              ...s,
-                              busy: false,
-                              error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
-                            }
+                            ...s,
+                            busy: false,
+                            error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
+                          }
                       );
                     }
                   }}
@@ -2308,13 +2622,13 @@ export default function OrdersPage() {
                         !s.open
                           ? s
                           : {
-                              ...s,
-                              busy: false,
-                              requestId: r.requestId,
-                              expiresAt: r.expiresAt,
-                              channelHint: r.channelHint,
-                              otp: "",
-                            }
+                            ...s,
+                            busy: false,
+                            requestId: r.requestId,
+                            expiresAt: r.expiresAt,
+                            channelHint: r.channelHint,
+                            otp: "",
+                          }
                       );
                     } catch (e: any) {
                       setOtpModal((s) =>

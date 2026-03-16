@@ -38,30 +38,31 @@ export type AdminPayment = {
   createdAt?: Date | string;
 };
 
+async function loadPlatformMarginPercent(prismaClient: PrismaClient): Promise<number> {
+  const rows = await prismaClient.setting.findMany({
+    where: {
+      key: {
+        in: ["platformMarginPercent", "marginPercent", "pricingMarkupPercent"],
+      },
+    },
+    select: { key: true, value: true },
+  });
+
+  const map = new Map(rows.map((r: any) => [String(r.key), String(r.value ?? "")]));
+
+  const raw =
+    map.get("platformMarginPercent") ??
+    map.get("marginPercent") ??
+    map.get("pricingMarkupPercent") ??
+    "0";
+
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 // ----------------------------------------------------------------------------
 
 const N = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-
-type ProfitBreakdown = {
-  revenuePaid: number;
-  refunds: number;
-  revenueNet: number;
-
-  // costs
-  gatewayFees: number;
-
-  // informational
-  taxCollected: number;
-
-  // platform fee revenue (excluding gateway fee)
-  commsNet: number;
-
-  // ✅ NEW: product margin net (retail - supplier) pro-rated for refunds
-  marginNet: number;
-
-  // ✅ FIXED: platform gross profit (margin + platform fees - gateway fees)
-  grossProfit: number;
-};
 
 export async function computeProfitForWindow(
   prismaClient: PrismaClient,
@@ -71,9 +72,6 @@ export async function computeProfitForWindow(
 ): Promise<ProfitBreakdown> {
   const N = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
-  // ----------------------------
-  // window scoping
-  // ----------------------------
   let scopedOrderIds: string[] | null = null;
 
   if (mode === "sales") {
@@ -81,24 +79,25 @@ export async function computeProfitForWindow(
       where: { createdAt: { gte: from, lte: to } },
       select: { id: true },
     });
-    scopedOrderIds = ordersInWindow.map((o: any) => o.id);
-    if (!scopedOrderIds!.length) {
+
+    scopedOrderIds = ordersInWindow.map((o: any) => String(o.id));
+
+    if (!scopedOrderIds.length) {
       return {
         revenuePaid: 0,
         refunds: 0,
         revenueNet: 0,
         gatewayFees: 0,
         taxCollected: 0,
-        commsNet: 0,
-        marginNet: 0,
+        commissionRevenue: 0,
+        serviceFeeBaseRevenue: 0,
         grossProfit: 0,
       };
     }
   }
 
-  // ----------------------------
-  // PAYMENTS: revenue/refunds/fees
-  // ----------------------------
+  const marginPercent = await loadPlatformMarginPercent(prismaClient);
+
   const payments = await prismaClient.payment.findMany({
     where: {
       status: { in: [$Enums.PaymentStatus.PAID, $Enums.PaymentStatus.REFUNDED] },
@@ -123,7 +122,12 @@ export async function computeProfitForWindow(
           ],
         }),
     },
-    select: { status: true, amount: true, feeAmount: true, orderId: true },
+    select: {
+      status: true,
+      amount: true,
+      feeAmount: true,
+      orderId: true,
+    },
   });
 
   let revenuePaid = 0;
@@ -136,14 +140,15 @@ export async function computeProfitForWindow(
   for (const p of payments) {
     const amt = N(p.amount);
     const fee = N(p.feeAmount);
+    const oid = String(p.orderId || "");
 
     if (p.status === $Enums.PaymentStatus.PAID) {
       revenuePaid += amt;
       gatewayFees += fee;
-      if (p.orderId) paidByOrder.set(p.orderId, N(paidByOrder.get(p.orderId)) + amt);
-    } else {
+      if (oid) paidByOrder.set(oid, N(paidByOrder.get(oid)) + amt);
+    } else if (p.status === $Enums.PaymentStatus.REFUNDED) {
       refunds += amt;
-      if (p.orderId) refundedByOrder.set(p.orderId, N(refundedByOrder.get(p.orderId)) + amt);
+      if (oid) refundedByOrder.set(oid, N(refundedByOrder.get(oid)) + amt);
     }
   }
 
@@ -151,165 +156,74 @@ export async function computeProfitForWindow(
 
   const orderIds = Array.from(new Set([...paidByOrder.keys(), ...refundedByOrder.keys()]));
 
+  if (!orderIds.length) {
+    return {
+      revenuePaid,
+      refunds,
+      revenueNet,
+      gatewayFees,
+      taxCollected: 0,
+      commissionRevenue: 0,
+      serviceFeeBaseRevenue: 0,
+      grossProfit: 0,
+    };
+  }
+
+  const orders = await prismaClient.order.findMany({
+    where: { id: { in: orderIds } },
+    select: {
+      id: true,
+      total: true,
+      tax: true,
+      serviceFeeBase: true,
+      items: {
+        select: {
+          quantity: true,
+          chosenSupplierUnitPrice: true,
+        },
+      },
+    } as any,
+  });
+
   const effectiveFactorFor = (orderTotal: number, orderId: string) => {
     const paid = N(paidByOrder.get(orderId));
     const refunded = N(refundedByOrder.get(orderId));
     if (orderTotal <= 0) return 0;
+
     const ratio = (paid - refunded) / orderTotal;
     return Math.max(0, Math.min(1, ratio));
   };
 
-  // ----------------------------
-  // TAX (informational)
-  // ----------------------------
   let taxCollected = 0;
-  if (orderIds.length) {
-    const orders = await prismaClient.order.findMany({
-      where: { id: { in: orderIds } },
-      select: { id: true, tax: true, total: true },
-    });
+  let commissionRevenue = 0;
+  let serviceFeeBaseRevenue = 0;
 
-    for (const o of orders) {
-      const f = effectiveFactorFor(N(o.total), o.id);
-      taxCollected += N(o.tax) * f;
-    }
-  }
+  for (const o of orders as any[]) {
+    const orderId = String(o.id);
+    const orderTotal = N(o.total);
+    const factor = effectiveFactorFor(orderTotal, orderId);
 
-  // ----------------------------
-  // COMMS (platform fee revenue, exclude gateway)
-  // ✅ single-source: orderComms if it exists, else fallback to serviceFeeBase+serviceFeeComms
-  // ----------------------------
-  let commsNet = 0;
+    if (factor <= 0) continue;
 
-  // Try orderComms first
-  let commsRows: Array<{ amount: any; orderId?: string | null }> = [];
-  try {
-    commsRows = await prismaClient.orderComms.findMany({
-      where: {
-        ...(mode === "sales"
-          ? { orderId: { in: scopedOrderIds! } }
-          : { createdAt: { gte: from, lte: to } }),
+    taxCollected += N(o.tax) * factor;
+
+    const supplierBaseTotal = (Array.isArray(o.items) ? o.items : []).reduce(
+      (sum: number, it: any) => {
+        const qty = Math.max(0, N(it.quantity));
+        const supplierBaseUnit = N(it.chosenSupplierUnitPrice);
+        return sum + supplierBaseUnit * qty;
       },
-      select: { amount: true, orderId: true },
-    });
-  } catch {
-    commsRows = [];
+      0
+    );
+
+    const commission = supplierBaseTotal * (marginPercent / 100);
+    const serviceBase = N(o.serviceFeeBase);
+
+    commissionRevenue += commission * factor;
+    serviceFeeBaseRevenue += serviceBase * factor;
   }
 
-  if (commsRows.length) {
-    // If refunds exist, pro-rate per order using effective factor (only if orderId present)
-    if (refunds > 0 && orderIds.length) {
-      // build order totals map once
-      const totals = await prismaClient.order.findMany({
-        where: { id: { in: orderIds } },
-        select: { id: true, total: true },
-      });
-      const totalById = new Map(totals.map((o: any) => [o.id, N(o.total)]));
-
-      for (const r of commsRows) {
-        const oid = String(r.orderId || "");
-        if (!oid) continue;
-        const f = effectiveFactorFor(N(totalById.get(oid)), oid);
-        commsNet += N(r.amount) * f;
-      }
-    } else {
-      // no refunds -> just sum
-      commsNet = commsRows.reduce((s, r) => s + N(r.amount), 0);
-    }
-  } else if (orderIds.length) {
-    // fallback: serviceFeeBase + serviceFeeComms pro-rated
-    const svcOrders = await prismaClient.order.findMany({
-      where: { id: { in: orderIds } },
-      select: {
-        id: true,
-        total: true,
-        serviceFeeBase: true,
-        serviceFeeComms: true,
-        serviceFeeGateway: true,
-        serviceFeeTotal: true,
-      } as any,
-    });
-
-    for (const o of svcOrders as any[]) {
-      const f = effectiveFactorFor(N(o.total), String(o.id));
-      if (f <= 0) continue;
-
-      const base = N(o.serviceFeeBase);
-      const comms = N(o.serviceFeeComms);
-
-      if (base !== 0 || comms !== 0) {
-        commsNet += (base + comms) * f;
-      } else {
-        const totalFee = N(o.serviceFeeTotal);
-        const gw = N(o.serviceFeeGateway);
-        if (totalFee !== 0) commsNet += Math.max(0, totalFee - Math.max(0, gw)) * f;
-      }
-    }
-  }
-
-  // ----------------------------
-  // MARGIN (retail - supplier cost)
-  // ✅ retail: item.unitPrice (what customer paid per unit)
-  // ✅ cost: chosenSupplierUnitPrice ONLY IF > 0 else treat as unknown => 0 contribution (not negative)
-  // ----------------------------
-  let marginNet = 0;
-
-  if (orderIds.length) {
-    const ordersWithItems = await prismaClient.order.findMany({
-      where: { id: { in: orderIds } },
-      select: {
-        id: true,
-        total: true,
-        items: {
-          select: {
-            quantity: true,
-            unitPrice: true,
-            chosenSupplierUnitPrice: true,
-          },
-        },
-      } as any,
-    });
-
-    for (const o of ordersWithItems as any[]) {
-      const oid = String(o.id);
-      const f = effectiveFactorFor(N(o.total), oid);
-      if (f <= 0) continue;
-
-      const items: any[] = Array.isArray(o.items) ? o.items : [];
-
-      for (const it of items) {
-        const qty = Math.max(0, N(it.quantity ?? 1));
-        if (qty <= 0) continue;
-
-        const retail = N(it.unitPrice);
-        const supplierCost = N(it.chosenSupplierUnitPrice);
-
-        // if cost is missing/0, we cannot compute margin reliably -> skip
-        if (supplierCost <= 0 || retail <= 0) continue;
-
-        const perUnitMargin = retail - supplierCost;
-
-        // log genuine negative margins for data inspection
-        if (perUnitMargin < 0) {
-          console.warn("NEG_MARGIN_ITEM", {
-            orderId: oid,
-            qty,
-            retail,
-            supplierCost,
-            perUnitMargin,
-            loss: perUnitMargin * qty,
-          });
-        }
-
-        marginNet += perUnitMargin * qty * f;
-      }
-    }
-  }
-
-  // ----------------------------
-  // PROFIT
-  // ----------------------------
-  const grossProfit = marginNet + commsNet - gatewayFees;
+  const grossProfit = commissionRevenue + serviceFeeBaseRevenue;
 
   return {
     revenuePaid,
@@ -317,14 +231,43 @@ export async function computeProfitForWindow(
     revenueNet,
     gatewayFees,
     taxCollected,
-    commsNet,
-    marginNet,
+    commissionRevenue,
+    serviceFeeBaseRevenue,
     grossProfit,
   };
 }
 
 
-export async function getOverview(): Promise<Overview> {
+type ProfitBreakdown = {
+  revenuePaid: number;
+  refunds: number;
+  revenueNet: number;
+
+  // informational only
+  gatewayFees: number;
+  taxCollected: number;
+
+  // ✅ aligned with Orders page
+  commissionRevenue: number;
+  serviceFeeBaseRevenue: number;
+
+  // ✅ business profit
+  grossProfit: number;
+};
+
+function safeTimeZone(tz?: string): string {
+  const candidate = String(tz || "").trim();
+  if (!candidate) return "UTC";
+
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: candidate });
+    return candidate;
+  } catch {
+    return "UTC";
+  }
+}
+
+export async function getOverview(timeZone = "UTC"): Promise<Overview> {
   const [
     productsTotal,
     productsPending,
@@ -393,10 +336,10 @@ export async function getOverview(): Promise<Overview> {
   ]);
 
   // ✅ Use same timezone boundaries as /admin/metrics/profit-summary
-  const TZ = "Africa/Lagos";
-  const nowLagos = DateTime.now().setZone(TZ);
-  const todayStartUtc = nowLagos.startOf("day").toUTC().toJSDate();
-  const todayEndUtc = nowLagos.endOf("day").toUTC().toJSDate();
+  const TZ = safeTimeZone(timeZone);
+  const nowInTz = DateTime.now().setZone(TZ);
+  const todayStartUtc = nowInTz.startOf("day").toUTC().toJSDate();
+  const todayEndUtc = nowInTz.endOf("day").toUTC().toJSDate();
 
   // Orders today (use same UTC bounds derived from Lagos day)
   const ordersToday = await prisma.order.count({
@@ -411,17 +354,28 @@ export async function getOverview(): Promise<Overview> {
   const sparklineProfit7d: number[] = [];
 
   for (let i = 6; i >= 0; i--) {
-    const dayLagos = nowLagos.minus({ days: i });
-    const fromUtc = dayLagos.startOf("day").toUTC().toJSDate();
-    const toUtc = dayLagos.endOf("day").toUTC().toJSDate();
+    const dayInTz = nowInTz.minus({ days: i });
+    const fromUtc = dayInTz.startOf("day").toUTC().toJSDate();
+    const toUtc = dayInTz.endOf("day").toUTC().toJSDate();
 
-    const { revenueNet: rev, grossProfit: gp } = await computeProfitForWindow(prisma, fromUtc, toUtc);
+    const { revenueNet: rev, grossProfit: gp } = await computeProfitForWindow(
+      prisma,
+      fromUtc,
+      toUtc,
+      "sales"
+    );
+
     sparklineRevenue7d.push(rev);
     sparklineProfit7d.push(gp);
   }
 
   // ✅ RevenueToday + ProfitToday from the SAME function
-  const todayBreakdown = await computeProfitForWindow(prisma, todayStartUtc, todayEndUtc);
+  const todayBreakdown = await computeProfitForWindow(
+  prisma,
+  todayStartUtc,
+  todayEndUtc,
+  "sales"
+);
 
   // If your dashboard “Revenue Today” means net revenue, use revenueNet.
   // If you want gross paid revenue, use revenuePaid.
@@ -822,8 +776,11 @@ export async function opsSnapshot(): Promise<{
 
   try {
     const settings = await prisma.setting?.findMany?.({
-      where: { key: { in: ['paymentProvider', 'backupsEnabled'] } },
-      select: { key: true, value: true },
+      where: {
+        key: {
+          in: ['paymentProvider', 'backupsEnabled', 'commsUnitCost', 'taxRatePct'],
+        },
+      }, select: { key: true, value: true },
     });
 
     if (Array.isArray(settings)) {

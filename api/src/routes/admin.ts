@@ -1,6 +1,6 @@
 // api/src/routes/admin.ts
 import express, { Router } from 'express';
-import { requireAuth, requireAdmin , requireSuperAdmin} from '../middleware/auth.js';
+import { requireAuth, requireAdmin, requireSuperAdmin } from '../middleware/auth.js';
 import { z } from 'zod';
 
 
@@ -9,7 +9,7 @@ import {
   findUsers,
   suspendUser,
   reactivateUser,
-  
+
   markPaymentPaid,
   markPaymentRefunded,
 
@@ -26,8 +26,9 @@ const r = Router();
 r.use(requireAuth, requireAdmin);
 
 /* Overview */
-r.get('/overview', async (_req, res) => {
-  res.json(await getOverview());
+r.get('/overview', async (req, res) => {
+  const tz = String(req.query.tz || '').trim() || undefined;
+  res.json(await getOverview(tz));
 });
 
 /* Users & roles */
@@ -36,11 +37,11 @@ r.get('/users', async (req, res) => {
   res.json({ data: await findUsers(q) });
 });
 
-r.post('/users/:userId/deactivate',  requireSuperAdmin, async (req, res) => {
+r.post('/users/:userId/deactivate', requireSuperAdmin, async (req, res) => {
   res.json(await suspendUser(requiredString(req.params.userId)));
 });
 
-r.post('/users/:userId/reactivate',  requireSuperAdmin, async (req, res) => {
+r.post('/users/:userId/reactivate', requireSuperAdmin, async (req, res) => {
   res.json(await reactivateUser(requiredString(req.params.userId)));
 });
 
@@ -104,7 +105,7 @@ r.get('/payments', async (req, res) => {
   const q = String(req.query.q || '');
   res.json({ data: await listPaymentsSvc(q) });
 });
-r.post('/payments/:paymentId/verify',  requireSuperAdmin, async (req, res) => {
+r.post('/payments/:paymentId/verify', requireSuperAdmin, async (req, res) => {
   res.json(await markPaymentPaid(requiredString(req.params.paymentId)));
 });
 r.post('/payments/:paymentId/refund', requireSuperAdmin, async (req, res) => {

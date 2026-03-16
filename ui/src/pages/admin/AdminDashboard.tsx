@@ -46,9 +46,9 @@ type Me = {
 
 type Overview = {
   ordersToday: number;
-  profitToday: number;
+  profitToday: number; // platform profit = commission + serviceFeeBase
   revenueToday: number;
-  sparklineProfit7d: number[];
+  sparklineProfit7d: number[]; // platform profit history
   sparklineRevenue7d: number[];
   users: {
     totalUsers: number;
@@ -384,6 +384,10 @@ export default function AdminDashboard() {
     refetchOnWindowFocus: false,
   });
 
+  const role = me.data?.role ?? "";
+  const isSuperAdmin = role === "SUPER_ADMIN";
+  const canAdmin = role === "ADMIN" || isSuperAdmin;
+
   // Redirect to login if unauthenticated (cookie missing/expired)
   useEffect(() => {
     if (!me.isFetched) return;
@@ -396,9 +400,6 @@ export default function AdminDashboard() {
     }
   }, [me.isFetched, me.isError, me.error, nav]);
 
-  const role = me.data?.role ?? "";
-  const canAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
-
   useEffect(() => {
     if (me.isFetched && !me.isError && !canAdmin) {
       nav("/", { replace: true });
@@ -406,12 +407,21 @@ export default function AdminDashboard() {
   }, [me.isFetched, me.isError, canAdmin, nav]);
 
   /* -------- Overview -------- */
+  const browserTz =
+    typeof Intl !== "undefined"
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone
+      : "UTC";
+
   const overview = useQuery<Overview>({
-    queryKey: ["admin", "overview"],
+    queryKey: ["admin", "overview", browserTz],
     enabled: !!canAdmin,
     queryFn: async () =>
-      (await api.get<Overview>("/api/admin/overview", { withCredentials: true }))
-        .data,
+      (
+        await api.get<Overview>("/api/admin/overview", {
+          withCredentials: true,
+          params: { tz: browserTz },
+        })
+      ).data,
     staleTime: staleTimeMs,
     refetchOnWindowFocus: false,
   });
@@ -1707,11 +1717,11 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
               }
             />
 
-            {role === "SUPER_ADMIN" && (
+            {isSuperAdmin && (
               <KpiCard
-                title="Profit Today"
+                title="Platform Profit Today"
                 value={ngn.format(fmtN(overview.data?.profitToday))}
-                hint="Last 7 days"
+                hint="Commission + base service fee"
                 Icon={BarChart3}
                 chart={
                   <Sparkline points={overview.data?.sparklineProfit7d || []} />

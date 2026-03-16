@@ -12,8 +12,6 @@ import { readCartLines, writeCartLines, toCartPageItems } from "../utils/cartMod
 
 /* ----------------------------- Config ----------------------------- */
 const VERIFY_PATH = "/verify";
-
-// ✅ Cookie-mode: always send cookies
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 /* ----------------------------- Types ----------------------------- */
@@ -53,6 +51,81 @@ type Address = {
   state: string;
   country: string;
   lga?: string;
+};
+
+type QuoteAllocation = {
+  supplierId: string;
+  supplierName?: string | null;
+  qty: number;
+  unitPrice: number;
+  offerId?: string | null;
+  lineTotal?: number;
+};
+
+type QuoteLine = {
+  key: string;
+  productId: string;
+  variantId?: string | null;
+  kind: "BASE" | "VARIANT";
+  qtyRequested: number;
+  qtyPriced: number;
+  allocations: QuoteAllocation[];
+  lineTotal: number;
+  minUnit: number;
+  maxUnit: number;
+  averageUnit: number;
+  currency?: string | null;
+  warnings?: string[];
+};
+
+type QuotePayload = {
+  currency?: string | null;
+  subtotal: number;
+  lines: Record<string, QuoteLine>;
+  raw?: any;
+};
+
+type ShippingQuoteLite = {
+  shippingQuoteId: string;
+  supplierId: string;
+  supplierName?: string | null;
+  totalFee: number;
+  shippingFee: number;
+  remoteSurcharge: number;
+  fuelSurcharge: number;
+  handlingFee: number;
+  insuranceFee: number;
+  currency: string;
+  serviceLevel: string;
+  zoneCode?: string | null;
+  zoneName?: string | null;
+  etaMinDays?: number | null;
+  etaMaxDays?: number | null;
+  rateSource?: string | null;
+  error?: string | null;
+};
+
+type ShippingQuoteResponse = {
+  currency: string;
+  totalFee: number;
+  quotes: ShippingQuoteLite[];
+  partial: boolean;
+  error: string | null;
+  raw?: any;
+};
+
+type PublicSettings = {
+  shippingEnabled?: boolean | string | number | null;
+};
+
+type ProfileMe = {
+  emailVerifiedAt?: unknown;
+  phoneVerifiedAt?: unknown;
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
+  address?: Partial<Address> | null;
+  shippingAddress?: Partial<Address> | null;
+  shipping_address?: Partial<Address> | null;
 };
 
 const EMPTY_ADDR: Address = {
@@ -152,7 +225,6 @@ function normalizeCartLine(x: any): CartLine | null {
 
   const qty = Math.max(1, num(x?.qty, 1));
 
-  // ✅ Be resilient to multiple storage shapes.
   const directUnit = asMoney(x?.unitPrice, NaN);
   const directPrice = asMoney(x?.price, NaN);
   const fromTotal = qty > 0 ? asMoney(x?.totalPrice, NaN) / qty : NaN;
@@ -181,7 +253,6 @@ function normalizeCartLine(x: any): CartLine | null {
   };
 }
 
-// Normalize cartModel storage to a consistent checkout shape
 function readCart(): CartLine[] {
   try {
     const lines = readCartLines();
@@ -240,55 +311,11 @@ function writeCart(lines: CartLine[]) {
   window.dispatchEvent(new Event("cart:updated"));
 }
 
-function computeLineTotal(line: CartLine): number {
-  const qty = Math.max(1, num(line.qty, 1));
-  const explicitTotal = asMoney(line.totalPrice, NaN);
-  const unit = num(line.unitPrice, num(line.price, 0));
-
-  if (Number.isFinite(explicitTotal) && explicitTotal > 0) {
-    if (!(unit > 0)) return explicitTotal;
-  }
-
-  return unit * qty;
-}
-
 function removeCartLineByKey(lines: CartLine[], targetKey: string): CartLine[] {
   return lines.filter((line) => lineKeyFor(line) !== targetKey);
 }
 
-/* ---------------- Supplier-split pricing quote (authoritative for allocation only) ---------------- */
-
-type QuoteAllocation = {
-  supplierId: string;
-  supplierName?: string | null;
-  qty: number;
-  unitPrice: number;
-  offerId?: string | null;
-  lineTotal?: number;
-};
-
-type QuoteLine = {
-  key: string;
-  productId: string;
-  variantId?: string | null;
-  kind: "BASE" | "VARIANT";
-  qtyRequested: number;
-  qtyPriced: number;
-  allocations: QuoteAllocation[];
-  lineTotal: number;
-  minUnit: number;
-  maxUnit: number;
-  averageUnit: number;
-  currency?: string | null;
-  warnings?: string[];
-};
-
-type QuotePayload = {
-  currency?: string | null;
-  subtotal: number;
-  lines: Record<string, QuoteLine>;
-  raw?: any;
-};
+/* ---------------- Supplier split pricing quote ---------------- */
 
 function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null {
   const root = raw?.data?.data ?? raw?.data ?? raw ?? null;
@@ -453,7 +480,6 @@ async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload 
     { method: "post", url: "/api/cart/quote", body: { items } },
     { method: "post", url: "/api/checkout/quote", body: { items } },
     { method: "post", url: "/api/orders/quote", body: { items } },
-
     { method: "post", url: "/api/catalog/pricing", body: { items } },
     { method: "post", url: "/api/cart/pricing", body: { items } },
     { method: "post", url: "/api/checkout/pricing", body: { items } },
@@ -479,11 +505,292 @@ async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload 
   return null;
 }
 
-/* ---------------- Public settings ---------------- */
+/* ---------------- Shipping quote helpers ---------------- */
 
-type PublicSettings = {
-  shippingEnabled?: boolean | string | number | null;
-};
+function normalizeShippingQuoteResponse(raw: any): ShippingQuoteResponse | null {
+  const root = raw?.data?.data ?? raw?.data ?? raw ?? null;
+  if (!root) return null;
+
+  const pickMoney = (...vals: any[]) => {
+    for (const v of vals) {
+      const n = Number(v);
+      if (Number.isFinite(n)) return round2(n);
+    }
+    return 0;
+  };
+
+  const quotesRaw = toArray<any>(
+    root.quotes ??
+    root.shippingQuotes ??
+    root.data?.quotes ??
+    root.data?.shippingQuotes
+  );
+
+  if (quotesRaw.length) {
+    const quotes = quotesRaw
+      .map((q) => {
+        const shippingQuoteId = String(
+          q.shippingQuoteId ?? q.id ?? q.quoteId ?? ""
+        ).trim();
+        const supplierId = String(
+          q.supplierId ?? q.supplier?.id ?? q.vendorId ?? ""
+        ).trim();
+
+        if (!supplierId) return null;
+
+        const breakdown = q.breakdown ?? {};
+        const components =
+          q.components ??
+          breakdown.components ??
+          {};
+
+        const shippingFee = pickMoney(
+          q.shippingFee,
+          breakdown.shippingFee,
+          components.shippingFee
+        );
+
+        const remoteSurcharge = pickMoney(
+          q.remoteSurcharge,
+          breakdown.remoteSurcharge,
+          components.remoteSurcharge
+        );
+
+        const fuelSurcharge = pickMoney(
+          q.fuelSurcharge,
+          breakdown.fuelSurcharge,
+          components.fuelSurcharge
+        );
+
+        const handlingFee = pickMoney(
+          q.handlingFee,
+          breakdown.handlingFee,
+          components.handlingFee
+        );
+
+        const insuranceFee = pickMoney(
+          q.insuranceFee,
+          breakdown.insuranceFee,
+          components.insuranceFee
+        );
+
+        const totalFee = pickMoney(
+          q.totalFee,
+          breakdown.totalFee,
+          q.amount,
+          shippingFee + remoteSurcharge + fuelSurcharge + handlingFee + insuranceFee
+        );
+
+        return {
+          shippingQuoteId,
+          supplierId,
+          supplierName:
+            q.supplierName ??
+            q.supplier?.name ??
+            q.vendorName ??
+            breakdown.supplierName ??
+            null,
+          totalFee,
+          shippingFee,
+          remoteSurcharge,
+          fuelSurcharge,
+          handlingFee,
+          insuranceFee,
+          currency: String(q.currency ?? root.currency ?? "NGN"),
+          serviceLevel: String(q.serviceLevel ?? breakdown.serviceLevel ?? "STANDARD"),
+          zoneCode: q.zoneCode ?? breakdown.zoneCode ?? null,
+          zoneName: q.zoneName ?? breakdown.zoneName ?? null,
+          etaMinDays:
+            q.etaMinDays == null
+              ? breakdown.etaMinDays == null
+                ? null
+                : Number(breakdown.etaMinDays)
+              : Number(q.etaMinDays),
+          etaMaxDays:
+            q.etaMaxDays == null
+              ? breakdown.etaMaxDays == null
+                ? null
+                : Number(breakdown.etaMaxDays)
+              : Number(q.etaMaxDays),
+          rateSource: q.rateSource ?? breakdown.rateSource ?? null,
+          error: q.error ? String(q.error) : null,
+        } as ShippingQuoteLite;
+      })
+      .filter(Boolean) as ShippingQuoteLite[];
+
+    const totalFee = round2(
+      quotes.reduce((s, q) => s + asMoney(q.totalFee, 0), 0)
+    );
+
+    return {
+      currency: String(root.currency ?? quotes[0]?.currency ?? "NGN"),
+      totalFee,
+      quotes,
+      partial: !!root.partial || quotes.some((q) => !!q.error),
+      error: root.error ? String(root.error) : null,
+      raw,
+    };
+  }
+
+if ("shippingFee" in root || "suppliers" in root) {
+  const suppliers = toArray<any>(root.suppliers);
+  const quotes = suppliers
+    .map((s) => {
+      const supplierId = String(s?.supplierId ?? s?.supplier?.id ?? "").trim();
+      if (!supplierId) return null;
+
+      const breakdown = s?.breakdown ?? {};
+      const components = s?.components ?? breakdown.components ?? {};
+      const totals = s?.totals ?? breakdown.totals ?? {};
+
+      const shippingFee = pickMoney(
+        s?.shippingFee,
+        totals.shippingFee,
+        breakdown.shippingFee,
+        components.shippingFee
+      );
+
+      const remoteSurcharge = pickMoney(
+        s?.remoteSurcharge,
+        totals.remoteSurcharge,
+        breakdown.remoteSurcharge,
+        components.remoteSurcharge
+      );
+
+      const fuelSurcharge = pickMoney(
+        s?.fuelSurcharge,
+        totals.fuelSurcharge,
+        breakdown.fuelSurcharge,
+        components.fuelSurcharge
+      );
+
+      const handlingFee = pickMoney(
+        s?.handlingFee,
+        totals.handlingFee,
+        breakdown.handlingFee,
+        components.handlingFee
+      );
+
+      const insuranceFee = pickMoney(
+        s?.insuranceFee,
+        totals.insuranceFee,
+        breakdown.insuranceFee,
+        components.insuranceFee
+      );
+
+      const totalFee = pickMoney(
+        s?.totalFee,
+        totals.totalFee,
+        breakdown.totalFee,
+        shippingFee + remoteSurcharge + fuelSurcharge + handlingFee + insuranceFee
+      );
+
+      return {
+        shippingQuoteId: String(s?.shippingQuoteId ?? s?.quoteId ?? "").trim(),
+        supplierId,
+        supplierName: s?.supplierName ?? s?.supplier?.name ?? null,
+        totalFee,
+        shippingFee,
+        remoteSurcharge,
+        fuelSurcharge,
+        handlingFee,
+        insuranceFee,
+        currency: String(s?.currency ?? root.currency ?? "NGN"),
+        serviceLevel: String(s?.serviceLevel ?? breakdown.serviceLevel ?? "STANDARD"),
+        zoneCode: s?.zoneCode ?? breakdown.zoneCode ?? null,
+        zoneName: s?.zoneName ?? breakdown.zoneName ?? null,
+        etaMinDays:
+          s?.etaMinDays != null
+            ? Number(s.etaMinDays)
+            : s?.eta?.minDays != null
+              ? Number(s.eta.minDays)
+              : null,
+        etaMaxDays:
+          s?.etaMaxDays != null
+            ? Number(s.etaMaxDays)
+            : s?.eta?.maxDays != null
+              ? Number(s.eta.maxDays)
+              : null,
+        rateSource: s?.rateSource ?? breakdown.rateSource ?? "FALLBACK_ZONE",
+        error: s?.error ? String(s.error) : null,
+      } as ShippingQuoteLite;
+    })
+    .filter(Boolean) as ShippingQuoteLite[];
+
+  return {
+    currency: String(root.currency ?? "NGN"),
+    totalFee: round2(
+      quotes.length
+        ? quotes.reduce((sum, q) => sum + asMoney(q.totalFee, 0), 0)
+        : asMoney(root.shippingFee ?? 0, 0)
+    ),
+    quotes,
+    partial: !!root.partial || quotes.some((q) => !!q.error),
+    error: root.error ? String(root.error) : null,
+    raw,
+  };
+}
+
+  return null;
+}
+
+async function fetchShippingQuotesForCart(args: {
+  cart: CartLine[];
+  address: Address;
+}): Promise<ShippingQuoteResponse | null> {
+  const { cart, address } = args;
+  if (!cart.length) return null;
+
+  const items = cart.map((it) => ({
+    productId: it.productId,
+    variantId: it.variantId ?? null,
+    qty: Math.max(1, asInt(it.qty, 1)),
+    kind: it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
+    selectedOptions: Array.isArray(it.selectedOptions)
+      ? normalizeSelectedOptions(it.selectedOptions)
+      : undefined,
+    offerId: it.offerId || undefined,
+  }));
+
+  const shippingAddress = {
+    ...address,
+    lga: address.lga ?? address.town ?? "",
+  };
+
+  const attempts: Array<{ url: string; body: any }> = [
+    {
+      url: "/api/checkout/shipping-quotes",
+      body: { items, shippingAddress, serviceLevel: "STANDARD" },
+    },
+    {
+      url: "/api/shipping/quotes/cart",
+      body: { items, shippingAddress, serviceLevel: "STANDARD" },
+    },
+    {
+      url: "/api/shipping/quote-cart",
+      body: { items, shippingAddress, serviceLevel: "STANDARD" },
+    },
+    // legacy fallback
+    {
+      url: "/api/checkout/shipping-fee-local",
+      body: { items, shippingAddress, serviceLevel: "STANDARD" },
+    },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const res = await api.post(attempt.url, attempt.body, AXIOS_COOKIE_CFG);
+      const normalized = normalizeShippingQuoteResponse(res);
+      if (normalized) return normalized;
+    } catch {
+      //
+    }
+  }
+
+  return null;
+}
+
+/* ---------------- Public settings ---------------- */
 
 const coerceBool = (v: any): boolean => {
   if (typeof v === "boolean") return v;
@@ -526,16 +833,6 @@ async function fetchPublicSettings(): Promise<PublicSettings | null> {
 }
 
 /* -------- Verification helpers -------- */
-type ProfileMe = {
-  emailVerifiedAt?: unknown;
-  phoneVerifiedAt?: unknown;
-  emailVerified?: boolean;
-  phoneVerified?: boolean;
-  address?: Partial<Address> | null;
-  shippingAddress?: Partial<Address> | null;
-  shipping_address?: Partial<Address> | null;
-};
-
 const normalizeStampPresent = (v: unknown) => {
   if (v === undefined || v === null) return false;
   if (typeof v === "boolean") return v;
@@ -677,8 +974,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""
-        }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
     />
   );
 }
@@ -698,7 +994,46 @@ function AddressPreview({ a }: { a: Address }) {
       </div>
     </div>
   );
+} function buildSupplierNameMap(quote: QuotePayload | null, shipping: ShippingQuoteResponse | null) {
+  const map = new Map<string, string>();
+
+  const pricingLines = Object.values(quote?.lines ?? {});
+  for (const line of pricingLines) {
+    for (const alloc of line.allocations ?? []) {
+      const sid = String(alloc?.supplierId ?? "").trim();
+      const sname = String(alloc?.supplierName ?? "").trim();
+      if (sid && sname && !map.has(sid)) {
+        map.set(sid, sname);
+      }
+    }
+  }
+
+  for (const q of shipping?.quotes ?? []) {
+    const sid = String(q?.supplierId ?? "").trim();
+    const sname = String(q?.supplierName ?? "").trim();
+    if (sid && sname && !map.has(sid)) {
+      map.set(sid, sname);
+    }
+  }
+
+  return map;
 }
+
+function displaySupplierName(
+  supplierId: string,
+  supplierNameMap: Map<string, string>,
+  explicitName?: string | null
+) {
+  const direct = String(explicitName ?? "").trim();
+  if (direct) return direct;
+
+  const mapped = supplierNameMap.get(String(supplierId).trim());
+  if (mapped) return mapped;
+
+  return `Supplier ${String(supplierId).slice(0, 8)}`;
+}
+
+
 
 /* ----------------------------- Component ----------------------------- */
 export default function Checkout() {
@@ -731,15 +1066,11 @@ export default function Checkout() {
   }, [hydrated, meQ.isLoading, meQ.data, meQ.error, nav]);
 
   const [checkingVerification, setCheckingVerification] = useState(true);
-  const [emailOk, setEmailOk] = useState<boolean>(false);
-  const [phoneOk, setPhoneOk] = useState<boolean>(false);
-  const [showNotVerified, setShowNotVerified] = useState<boolean>(false);
+  const [emailOk, setEmailOk] = useState(false);
+  const [phoneOk, setPhoneOk] = useState(false);
+  const [showNotVerified, setShowNotVerified] = useState(false);
 
   const [cart, setCart] = useState<CartLine[]>(() => readCart());
-
-  useEffect(() => {
-    writeCart(cart);
-  }, [cart]);
 
   const publicSettingsQ = useQuery({
     queryKey: ["settings", "public:v1"],
@@ -789,17 +1120,6 @@ export default function Checkout() {
     return 0;
   }, [cartSubtotal, quoteSubtotalSupplier]);
 
-  const units = useMemo(
-    () => cart.reduce((s, it) => s + Math.max(1, num(it.qty, 1)), 0),
-    [cart]
-  );
-
-  const productIds = useMemo(() => Array.from(new Set(cart.map((l) => l.productId))), [cart]);
-  const supplierIds = useMemo(
-    () => Array.from(new Set(cart.map((l) => l.supplierId).filter(Boolean) as string[])),
-    [cart]
-  );
-
   const pricingWarning = useMemo(() => {
     const q = pricingQ.data as QuotePayload | null;
     if (!q) return null;
@@ -824,64 +1144,7 @@ export default function Checkout() {
   const [savingShip, setSavingShip] = useState(false);
   const [redirectingOrderId, setRedirectingOrderId] = useState<string | null>(null);
 
-  const serviceFeeQ = useQuery({
-    queryKey: [
-      "checkout",
-      "service-fee",
-      {
-        itemsSubtotal,
-        units,
-        productIds,
-        supplierIds,
-        shipTo: sameAsHome ? homeAddr : shipAddr,
-      },
-    ],
-    enabled: cart.length > 0 && itemsSubtotal >= 0,
-    queryFn: async () => {
-      const qs = new URLSearchParams();
-      qs.set("itemsSubtotal", String(itemsSubtotal));
-      qs.set("units", String(units));
-      if (productIds.length) qs.set("productIds", productIds.join(","));
-      if (supplierIds.length) qs.set("supplierIds", supplierIds.join(","));
-
-      const { data } = await api.get(
-        `/api/settings/checkout/service-fee?${qs.toString()}`,
-        AXIOS_COOKIE_CFG
-      );
-
-      return {
-        unitFee: Number(data?.unitFee) || 0,
-        units: Number(data?.units) || 0,
-
-        taxMode: String(data?.taxMode || "INCLUDED") as "INCLUDED" | "ADDED" | "NONE",
-        taxRatePct: Number(data?.taxRatePct) || 0,
-        vatAddOn: Number(data?.vatAddOn) || 0,
-        serviceFeeBase: Number(data?.serviceFeeBase) || 0,
-        serviceFeeComms: Number(data?.serviceFeeComms) || 0,
-        serviceFeeGateway: Number(data?.serviceFeeGateway) || 0,
-        serviceFeeTotal: Number(data?.serviceFeeTotal ?? data?.serviceFee) || 0,
-
-        shippingEnabled: (data as any)?.shippingEnabled,
-
-        shippingMode: data?.shippingMode ? String(data.shippingMode) : undefined,
-        shippingLabel: data?.shippingLabel ? String(data.shippingLabel) : undefined,
-      };
-    },
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
-  });
-
-  const fee = serviceFeeQ.data;
-
-  const rawShippingEnabledFromFee = fee?.shippingEnabled;
-
-  const shippingEnabled: boolean = useMemo(() => {
-    if (rawShippingEnabledFromFee !== undefined && rawShippingEnabledFromFee !== null) {
-      return coerceBool(rawShippingEnabledFromFee);
-    }
-    return shippingEnabledFromSettings;
-  }, [rawShippingEnabledFromFee, shippingEnabledFromSettings]);
-
+  const shippingEnabled = useMemo(() => shippingEnabledFromSettings, [shippingEnabledFromSettings]);
   const shippingMode: "DELIVERY" | "PICKUP_ONLY" = shippingEnabled ? "DELIVERY" : "PICKUP_ONLY";
 
   const shippingAddressForQuote = sameAsHome ? homeAddr : shipAddr;
@@ -889,7 +1152,7 @@ export default function Checkout() {
   const shippingQ = useQuery({
     queryKey: [
       "checkout",
-      "shipping-fee-local:v1",
+      "shipping-quotes:v2",
       user?.id,
       sameAsHome ? "home" : "ship",
       JSON.stringify({
@@ -909,64 +1172,39 @@ export default function Checkout() {
     refetchOnWindowFocus: false,
     staleTime: 15_000,
     retry: false,
-    queryFn: async () => {
-      const items = cart.map((it) => ({
-        productId: it.productId,
-        variantId: it.variantId ?? null,
-        qty: Math.max(1, asInt(it.qty, 1)),
-      }));
-
-      const payloadAddress = {
-        ...shippingAddressForQuote,
-        lga: (shippingAddressForQuote as any).lga ?? shippingAddressForQuote.town ?? "",
-      };
-
-      const { data } = await api.post(
-        "/api/checkout/shipping-fee-local",
-        {
-          items,
-          shippingAddress: payloadAddress,
-          serviceLevel: "STANDARD",
+    queryFn: async () =>
+      fetchShippingQuotesForCart({
+        cart,
+        address: {
+          ...shippingAddressForQuote,
+          lga: (shippingAddressForQuote as any).lga ?? shippingAddressForQuote.town ?? "",
         },
-        AXIOS_COOKIE_CFG
-      );
-
-      return {
-        shippingFee: Number(data?.shippingFee) || 0,
-        currency: String(data?.currency || "NGN"),
-        suppliers: Array.isArray(data?.suppliers) ? data.suppliers : [],
-        partial: !!data?.partial,
-        error: data?.error ? String(data.error) : null,
-      };
-    },
+      }),
   });
 
-  const taxMode = fee?.taxMode ?? "INCLUDED";
-  const taxRatePct = fee?.taxRatePct ?? 0;
-  const vatAddOn = fee?.vatAddOn ?? 0;
-
-  const shippingFee = shippingEnabled ? (shippingQ.data?.shippingFee ?? 0) : 0;
-
-  const taxRate = useMemo(
-    () => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0),
-    [taxRatePct]
+  const shippingFee = shippingEnabled ? round2(shippingQ.data?.totalFee ?? 0) : 0;
+  const shippingQuoteIds = useMemo(
+    () =>
+      shippingEnabled
+        ? (shippingQ.data?.quotes ?? [])
+          .map((q) => q.shippingQuoteId)
+          .filter((id) => !!String(id || "").trim())
+        : [],
+    [shippingEnabled, shippingQ.data]
   );
 
-  const estimatedVATIncluded = useMemo(() => {
-    if (taxMode !== "INCLUDED" || taxRate <= 0) return 0;
-    const gross = itemsSubtotal;
-    const vat = gross - gross / (1 + taxRate);
-    return round2(vat);
-  }, [itemsSubtotal, taxMode, taxRate]);
+  const payableTotal = round2(itemsSubtotal + shippingFee);
 
-  const serviceFeeTotal = fee?.serviceFeeTotal ?? 0;
 
-  const payableTotal = round2(
-    itemsSubtotal +
-    shippingFee +
-    (taxMode === "ADDED" ? vatAddOn : 0) +
-    serviceFeeTotal
+  const supplierNameMap = useMemo(
+    () =>
+      buildSupplierNameMap(
+        (pricingQ.data as QuotePayload | null) ?? null,
+        (shippingQ.data as ShippingQuoteResponse | null) ?? null
+      ),
+    [pricingQ.data, shippingQ.data]
   );
+
 
   useEffect(() => {
     let mounted = true;
@@ -1025,15 +1263,20 @@ export default function Checkout() {
     };
   }, [hydrated, user?.id, nav]);
 
-  useEffect(() => {
-    const syncFromCart = () => {
-      setCart(readCart());
-    };
+  const didHydrateCartRef = React.useRef(false);
 
+  useEffect(() => {
+    if (!didHydrateCartRef.current) {
+      didHydrateCartRef.current = true;
+      return;
+    }
+    writeCart(cart);
+  }, [cart]);
+
+  useEffect(() => {
+    const syncFromCart = () => setCart(readCart());
     window.addEventListener("cart:updated", syncFromCart);
-    return () => {
-      window.removeEventListener("cart:updated", syncFromCart);
-    };
+    return () => window.removeEventListener("cart:updated", syncFromCart);
   }, []);
 
   useEffect(() => {
@@ -1150,20 +1393,17 @@ export default function Checkout() {
         throw new Error("Calculating best supplier prices… Please try again in a moment.");
       }
       if (pricingWarning) throw new Error(pricingWarning);
-      if (serviceFeeQ.isLoading || !fee) {
-        throw new Error("Calculating fees… Please try again in a moment.");
-      }
 
       if (shippingEnabled) {
         if (shippingQ.isLoading) {
           throw new Error("Calculating shipping… Please try again in a moment.");
         }
 
-        if (shippingQ.isError) {
+        if (shippingQ.isError || !shippingQ.data) {
           throw new Error("Could not calculate shipping yet. Please check your address and try again.");
         }
 
-        if (shippingQ.data?.error) {
+        if (shippingQ.data.error) {
           throw new Error(shippingQ.data.error);
         }
       }
@@ -1174,7 +1414,6 @@ export default function Checkout() {
         const key = lineKeyFor(it);
         const qLine = quote?.lines?.[key];
         const firstAlloc = qLine?.allocations?.[0];
-
         return !qLine || !firstAlloc || !firstAlloc.offerId;
       });
 
@@ -1233,7 +1472,10 @@ export default function Checkout() {
 
         const retailUnit = asMoney(
           it.unitPrice,
-          asMoney(it.price, Math.max(0, asMoney(it.totalPrice, 0) / Math.max(1, num(it.qty, 1))))
+          asMoney(
+            it.price,
+            Math.max(0, asMoney(it.totalPrice, 0) / Math.max(1, num(it.qty, 1)))
+          )
         );
 
         return {
@@ -1242,9 +1484,12 @@ export default function Checkout() {
           variantId: variantId || undefined,
           qty: Math.max(1, num(it.qty, 1)),
           kind,
-          selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
+          selectedOptions: Array.isArray(it.selectedOptions)
+            ? normalizeSelectedOptions(it.selectedOptions)
+            : undefined,
           supplierId: firstAlloc?.supplierId || it.supplierId || undefined,
           offerId: firstAlloc?.offerId || undefined,
+          unitPrice: retailUnit,
           unitPriceCache: retailUnit,
         };
       });
@@ -1255,33 +1500,54 @@ export default function Checkout() {
         shippingAddress: finalShip,
         attribution: at,
 
-        serviceFeeBase: fee.serviceFeeBase ?? 0,
-        serviceFeeComms: fee.serviceFeeComms ?? 0,
-        serviceFeeGateway: fee.serviceFeeGateway ?? 0,
-        serviceFeeTotal: fee.serviceFeeTotal ?? 0,
+        // ✅ new flow
+        shippingQuoteIds: shippingEnabled ? shippingQuoteIds : [],
 
+        // legacy-safe fallbacks
         shippingFee: shippingEnabled ? shippingFee : 0,
         shippingCurrency: shippingEnabled ? (shippingQ.data?.currency ?? "NGN") : "NGN",
-        shippingRateSource: shippingEnabled ? "FALLBACK_ZONE" : "DISABLED",
+        shippingRateSource:
+          shippingEnabled
+            ? shippingQuoteIds.length
+              ? shippingQ.data?.quotes?.length === 1
+                ? shippingQ.data?.quotes?.[0]?.rateSource ?? "FALLBACK_ZONE"
+                : "MANUAL"
+              : "FALLBACK_ZONE"
+            : "DISABLED",
         shippingBreakdownJson:
           shippingEnabled && shippingQ.data
             ? {
-              total: shippingFee,
               currency: shippingQ.data.currency,
-              suppliers: shippingQ.data.suppliers,
+              totalFee: shippingQ.data.totalFee,
+              quoteIds: shippingQuoteIds,
+              suppliers: shippingQ.data.quotes.map((q) => ({
+                supplierId: q.supplierId,
+                quoteId: q.shippingQuoteId || null,
+                serviceLevel: q.serviceLevel,
+                zoneCode: q.zoneCode ?? null,
+                zoneName: q.zoneName ?? null,
+                rateSource: q.rateSource ?? null,
+                components: {
+                  shippingFee: q.shippingFee,
+                  remoteSurcharge: q.remoteSurcharge,
+                  fuelSurcharge: q.fuelSurcharge,
+                  handlingFee: q.handlingFee,
+                  insuranceFee: q.insuranceFee,
+                },
+                totalFee: q.totalFee,
+                etaMinDays: q.etaMinDays ?? null,
+                etaMaxDays: q.etaMaxDays ?? null,
+                error: q.error ?? null,
+              })),
               partial: shippingQ.data.partial,
             }
             : null,
         shippingMode,
 
         itemsSubtotal,
-        taxMode: fee.taxMode,
-        taxRatePct: fee.taxRatePct,
-        vatAddOn: fee.vatAddOn,
         total: payableTotal,
 
         marginPercent: 0,
-
         quoteSubtotalSupplier: asMoney(quoteSubtotalSupplier, 0),
         quoteCurrency: (pricingQ.data as QuotePayload | null)?.currency ?? null,
       };
@@ -1296,11 +1562,12 @@ export default function Checkout() {
           throw new Error("Please login again.");
         }
 
-        const friendly = safeServerMessage(
-          e,
-          "We couldn’t place your order. Please review your address details and try again."
+        throw new Error(
+          safeServerMessage(
+            e,
+            "We couldn’t place your order. Please review your address details and try again."
+          )
         );
-        throw new Error(friendly);
       }
     },
     onSuccess: (resp) => {
@@ -1323,7 +1590,6 @@ export default function Checkout() {
           JSON.stringify({
             orderId,
             total: payableTotal,
-            serviceFeeTotal: fee?.serviceFeeTotal ?? 0,
             homeAddress: homeAddr,
             shippingAddress: sameAsHome ? homeAddr : shipAddr,
             at: Date.now(),
@@ -1333,15 +1599,12 @@ export default function Checkout() {
         //
       }
 
-      // clear cart before leaving checkout
       writeCart([]);
-
-      // force a full page entry into Payment
       window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
     },
   });
 
-   if (redirectingOrderId) {
+  if (redirectingOrderId) {
     return (
       <SiteLayout>
         <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
@@ -1446,11 +1709,13 @@ export default function Checkout() {
 
           <div className="px-4 py-3 md:px-5 md:py-4 border-t flex items-center justify-between gap-2">
             <button
-              className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 text-sm"
               onClick={() => {
-                setShowNotVerified(false);
+                const latest = readCart();
+                setCart(latest);
+                window.dispatchEvent(new Event("cart:updated"));
                 nav("/cart");
               }}
+              className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition text-sm"
               type="button"
             >
               Back to cart
@@ -1792,20 +2057,6 @@ export default function Checkout() {
                     <span className="font-medium">{ngn.format(itemsSubtotal)}</span>
                   </div>
 
-                  {taxMode === "INCLUDED" && estimatedVATIncluded > 0 && (
-                    <div className="flex items-center justify-between text-[11px] sm:text-xs">
-                      <span className="text-ink-soft">VAT (included)</span>
-                      <span className="text-ink-soft">{ngn.format(estimatedVATIncluded)}</span>
-                    </div>
-                  )}
-
-                  {taxMode === "ADDED" && vatAddOn > 0 && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-ink-soft">VAT</span>
-                      <span className="font-medium">{ngn.format(vatAddOn)}</span>
-                    </div>
-                  )}
-
                   <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Shipping</span>
                     <span className="font-medium">
@@ -1832,29 +2083,59 @@ export default function Checkout() {
                     </div>
                   )}
 
+                  {shippingEnabled && shippingQ.data?.quotes?.length ? (
+                    <div className="mt-2 space-y-2">
+                      {shippingQ.data.quotes.map((q) => (
+                        <div
+                          key={`${q.supplierId}:${q.shippingQuoteId || "legacy"}`}
+                          className="rounded-lg border border-border bg-surface px-3 py-2"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-[11px] sm:text-xs font-medium text-ink">
+                                {displaySupplierName(q.supplierId, supplierNameMap, q.supplierName)}
+                              </div>
+
+                              <div className="text-[10px] sm:text-[11px] text-ink-soft">
+                                {q.zoneName || q.zoneCode || "Zone pending"}
+                                {q.serviceLevel ? ` • ${q.serviceLevel}` : ""}
+                                {q.shippingQuoteId ? " • quote saved" : " • fallback"}
+                              </div>
+
+                              {(q.etaMinDays != null || q.etaMaxDays != null) && (
+                                <div className="text-[10px] sm:text-[11px] text-ink-soft">
+                                  ETA: {q.etaMinDays ?? "?"}–{q.etaMaxDays ?? "?"} days
+                                </div>
+                              )}
+
+                              <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] sm:text-[11px] text-ink-soft">
+                                <div>Base: {ngn.format(q.shippingFee)}</div>
+                                <div>Remote: {ngn.format(q.remoteSurcharge)}</div>
+                                <div>Fuel: {ngn.format(q.fuelSurcharge)}</div>
+                                <div>Handling: {ngn.format(q.handlingFee)}</div>
+                                <div>Insurance: {ngn.format(q.insuranceFee)}</div>
+                              </div>
+
+                              {q.error && (
+                                <div className="text-[10px] sm:text-[11px] text-danger mt-1">{q.error}</div>
+                              )}
+                            </div>
+
+                            <div className="shrink-0 text-[11px] sm:text-xs font-medium text-ink">
+                              {ngn.format(q.totalFee)}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
                   {shippingEnabled && shippingQ.data?.partial && (
                     <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
-                      Shipping was quoted for some suppliers only. Total may increase after remaining
+                      Shipping was quoted for some suppliers only. Total may change after remaining
                       supplier zones/rates are configured.
                     </div>
                   )}
-
-                  <div className="mt-3 pt-3 border-t border-border">
-                    <div className="flex items-center justify-between">
-                      <span className="text-ink">Service fee</span>
-                      <span className="font-semibold">{ngn.format(serviceFeeTotal)}</span>
-                    </div>
-                    {serviceFeeQ.isLoading && (
-                      <div className="mt-1 text-[11px] sm:text-xs text-ink-soft">
-                        Calculating fees…
-                      </div>
-                    )}
-                    {serviceFeeQ.isError && (
-                      <div className="mt-1 text-[11px] sm:text-xs text-danger">
-                        Failed to compute fees
-                      </div>
-                    )}
-                  </div>
                 </div>
 
                 <div className="mt-4 flex items-baseline justify-between text-ink">
@@ -1871,9 +2152,7 @@ export default function Checkout() {
                 )}
 
                 <button
-                  disabled={
-                    createOrder.isPending || serviceFeeQ.isLoading || pricingQ.isLoading || !!pricingWarning
-                  }
+                  disabled={createOrder.isPending || pricingQ.isLoading || !!pricingWarning}
                   onClick={() => createOrder.mutate()}
                   className="mt-4 sm:mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50 text-sm"
                   type="button"
@@ -1892,7 +2171,12 @@ export default function Checkout() {
                 )}
 
                 <button
-                  onClick={() => nav("/cart")}
+                  onClick={() => {
+                    const latest = readCart();
+                    setCart(latest);
+                    window.dispatchEvent(new Event("cart:updated"));
+                    nav("/cart");
+                  }}
                   className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition text-sm"
                   type="button"
                 >
@@ -1900,8 +2184,8 @@ export default function Checkout() {
                 </button>
 
                 <p className="mt-3 text-[10px] sm:text-[11px] text-ink-soft text-center leading-4">
-                  Totals use live supplier offers. If an offer changes or stock reallocates, your
-                  pricing may update.
+                  Totals use live supplier offers and supplier shipping quotes. If an offer or quote
+                  expires, your pricing may update.
                 </p>
               </Card>
             </aside>

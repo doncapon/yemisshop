@@ -122,10 +122,10 @@ model Refund {
   events                  RefundEvent[]
   items                   RefundItem[]
 
-    // ✅ NEW
-  restockApproved         Boolean       @default(false)
-  stockRestoredAt         DateTime?
-  stockRestoredById       String?
+  // ✅ NEW
+  restockApproved   Boolean   @default(false)
+  stockRestoredAt   DateTime?
+  stockRestoredById String?
 
   @@index([orderId])
   @@index([supplierId])
@@ -155,7 +155,6 @@ model RefundItem {
   @@unique([refundId, orderItemId])
   @@index([refundId])
 }
-
 
 model UserSession {
   id            String    @id @default(cuid())
@@ -584,52 +583,50 @@ model AnalyticsEvent {
   @@index([orderId, createdAt])
 }
 
-
 model Supplier {
-  id                          String                 @id @default(cuid())
-  name                        String                 @unique
-  contactEmail                String?
-  whatsappPhone               String?
-  type                        SupplierType
-  status                      String                 @default("PENDING_VERIFICATION")
-  apiBaseUrl                  String?
-  apiAuthType                 String?
-  apiKey                      String?
-  userId                      String?                @unique
+  id            String       @id @default(cuid())
+  name          String       @unique
+  contactEmail  String?
+  whatsappPhone String?
+  type          SupplierType
+  status        String       @default("PENDING_VERIFICATION")
+  apiBaseUrl    String?
+  apiAuthType   String?
+  apiKey        String?
+  userId        String?      @unique
 
-  payoutMethod                String?
-  bankCountry                 String?
-  bankCode                    String?
-  bankName                    String?
-  accountNumber               String?
-  accountName                 String?
-  paystackRecipientCode       String?
-  paystackSubaccountCode      String?
-  isPayoutEnabled             Boolean                @default(false)
+  payoutMethod           String?
+  bankCountry            String?
+  bankCode               String?
+  bankName               String?
+  accountNumber          String?
+  accountName            String?
+  paystackRecipientCode  String?
+  paystackSubaccountCode String?
+  isPayoutEnabled        Boolean @default(false)
 
-  createdAt                   DateTime               @default(now())
-  updatedAt                   DateTime               @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  legalName                   String?
+  legalName               String?
+  registrationNumber      String?
+  registeredBusinessName  String?
+  registrationType        String?
+  registrationDate        DateTime?
+  registrationCountryCode String?
+  registryAuthorityId     String?
+  registryAuthority       RegistryAuthority? @relation(fields: [registryAuthorityId], references: [id])
 
-  registrationNumber          String?
-  registeredBusinessName      String?
-  registrationType            String?
-  registrationDate            DateTime?
-  registrationCountryCode     String?
-  registryAuthorityId String?
-  registryAuthority   RegistryAuthority? @relation(fields: [registryAuthorityId], references: [id])
+  natureOfBusiness String?
 
-  natureOfBusiness            String?
+  registeredAddressId String?
+  pickupAddressId     String?
 
-  registeredAddressId         String?
-  pickupAddressId             String?
-
-  kycStatus                   String                 @default("PENDING")
-  kycApprovedAt               DateTime?
-  kycCheckedAt                DateTime?
-  kycRejectedAt               DateTime?
-  kycRejectionReason          String?
+  kycStatus          String    @default("PENDING")
+  kycApprovedAt      DateTime?
+  kycCheckedAt       DateTime?
+  kycRejectedAt      DateTime?
+  kycRejectionReason String?
 
   bankVerificationNote        String?
   bankVerificationRequestedAt DateTime?
@@ -637,44 +634,49 @@ model Supplier {
   bankVerifiedAt              DateTime?
   bankVerifiedById            String?
 
-  ratingAvg                   Decimal?               @default(0) @db.Decimal(3, 2)
-  ratingCount                 Int                    @default(0)
-  defaultLeadDays             Int?
-  handlingFee                 Decimal?               @db.Decimal(10, 2)
+  ratingAvg       Decimal? @default(0) @db.Decimal(3, 2)
+  ratingCount     Int      @default(0)
+  defaultLeadDays Int?
+  handlingFee     Decimal? @db.Decimal(10, 2)
 
-  pickupContactName           String?
-  pickupContactPhone          String?
-  pickupInstructions          String?
-  sameDayCutoffHour           Int?
-  shippingEnabled             Boolean                @default(true)
-  shipsNationwide             Boolean                @default(true)
-  supportsDoorDelivery        Boolean                @default(true)
-  supportsPickupPoint         Boolean                @default(false)
+  pickupContactName    String?
+  pickupContactPhone   String?
+  pickupInstructions   String?
+  sameDayCutoffHour    Int?
+  shippingEnabled      Boolean @default(true)
+  shipsNationwide      Boolean @default(true)
+  supportsDoorDelivery Boolean @default(true)
+  supportsPickupPoint  Boolean @default(false)
 
-  registeredAddress           Address?               @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
-  pickupAddress               Address?               @relation("SupplierPickupAddress", fields: [pickupAddressId], references: [id])
-  user                        User?                  @relation(fields: [userId], references: [id])
+  registeredAddress Address? @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
+  pickupAddress     Address? @relation("SupplierPickupAddress", fields: [pickupAddressId], references: [id])
+  user              User?    @relation(fields: [userId], references: [id])
 
-  documents                   SupplierDocument[]
-  catalogRequests             CatalogRequest[]
-  disputeCases                DisputeCase[]
-  comms                       OrderComms[]                 @relation("SupplierToComms")
-  chosenOrderItems            OrderItem[]                  @relation("OrderItemChosenSupplier")
-  payments                    Payment[]                    @relation("SupplierPayments")
-  products                    Product[]                    @relation("ProductSupplier")
-  productChangeRequests       ProductChangeRequest[]       @relation("Supplier_ProductChangeRequests")
-  purchaseOrders              PurchaseOrder[]
-  refunds                     Refund[]
-  refundRequests              RefundRequest[]
-  shippingQuotes              ShippingQuote[]
-  ledgerEntries               SupplierLedgerEntry[]        @relation("SupplierToLedger")
-  offerChangeRequests         SupplierOfferChangeRequest[] @relation("Supplier_OfferChangeRequests")
-  allocations                 SupplierPaymentAllocation[]
-  supplierProductOffers       SupplierProductOffer[]
-  reviews                     SupplierReview[]
-  riders                      SupplierRider[]
-  variantOffers               SupplierVariantOffer[]       @relation("SupplierToVariantOffers")
-  isDeleted                   Boolean                      @default(false)
+  defaultServiceLevel DeliveryServiceLevel?       @default(STANDARD)
+  shippingProfileMode SupplierShippingProfileMode @default(DEFAULT_PLATFORM)
+  shippingProfile     SupplierShippingProfile?
+  shippingRateCards   ShippingRateCard[]
+
+  documents             SupplierDocument[]
+  catalogRequests       CatalogRequest[]
+  disputeCases          DisputeCase[]
+  comms                 OrderComms[]                 @relation("SupplierToComms")
+  chosenOrderItems      OrderItem[]                  @relation("OrderItemChosenSupplier")
+  payments              Payment[]                    @relation("SupplierPayments")
+  products              Product[]                    @relation("ProductSupplier")
+  productChangeRequests ProductChangeRequest[]       @relation("Supplier_ProductChangeRequests")
+  purchaseOrders        PurchaseOrder[]
+  refunds               Refund[]
+  refundRequests        RefundRequest[]
+  shippingQuotes        ShippingQuote[]
+  ledgerEntries         SupplierLedgerEntry[]        @relation("SupplierToLedger")
+  offerChangeRequests   SupplierOfferChangeRequest[] @relation("Supplier_OfferChangeRequests")
+  allocations           SupplierPaymentAllocation[]
+  supplierProductOffers SupplierProductOffer[]
+  reviews               SupplierReview[]
+  riders                SupplierRider[]
+  variantOffers         SupplierVariantOffer[]       @relation("SupplierToVariantOffers")
+  isDeleted             Boolean                      @default(false)
 
   @@index([status])
   @@index([isPayoutEnabled])
@@ -699,10 +701,67 @@ model SupplierDocument {
   reviewedAt       DateTime?
   reviewedByUserId String?
 
-  supplier         Supplier             @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
 
   @@index([supplierId, kind])
   @@index([supplierId, status])
+}
+
+model SupplierShippingProfile {
+  id         String   @id @default(cuid())
+  supplierId String   @unique
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  originZoneCode     String?
+  fulfillmentMode    SupplierFulfillmentMode @default(SUPPLIER_SELF_SHIP)
+  preferredCarrier   String?
+  localFlatFee       Decimal?                @db.Decimal(10, 2)
+  nearbyFlatFee      Decimal?                @db.Decimal(10, 2)
+  nationwideBaseFee  Decimal?                @db.Decimal(10, 2)
+  defaultHandlingFee Decimal?                @db.Decimal(10, 2)
+  isActive           Boolean                 @default(true)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  @@index([originZoneCode, isActive])
+}
+
+model ShippingRouteRateCard {
+  id                  String               @id @default(cuid())
+  originZoneCode      String
+  destinationZoneCode String
+  serviceLevel        DeliveryServiceLevel
+  parcelClass         ShippingParcelClass
+  minWeightGrams      Int
+  maxWeightGrams      Int?
+  baseFee             Decimal              @db.Decimal(10, 2)
+  perKgFee            Decimal?             @db.Decimal(10, 2)
+  remoteSurcharge     Decimal?             @db.Decimal(10, 2)
+  fuelSurcharge       Decimal?             @db.Decimal(10, 2)
+  handlingFee         Decimal?             @db.Decimal(10, 2)
+  etaMinDays          Int?
+  etaMaxDays          Int?
+  isActive            Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@unique([originZoneCode, destinationZoneCode, serviceLevel, parcelClass, minWeightGrams, maxWeightGrams], name: "shipping_route_rate_unique")
+  @@index([originZoneCode, destinationZoneCode, isActive])
+  @@index([serviceLevel, parcelClass, isActive])
+  @@index([minWeightGrams, maxWeightGrams])
+}
+
+enum SupplierFulfillmentMode {
+  SUPPLIER_SELF_SHIP
+  COURIER_DROPOFF
+  PLATFORM_LABEL
+  MANUAL_QUOTE
+}
+
+enum SupplierShippingProfileMode {
+  DEFAULT_PLATFORM
+  SUPPLIER_OVERRIDDEN
+  MANUAL_QUOTE
 }
 
 enum SupplierDocumentKind {
@@ -721,16 +780,16 @@ enum SupplierDocStatus {
 }
 
 model RegistryAuthority {
-  id          String     @id @default(cuid())
+  id          String   @id @default(cuid())
   countryCode String
   code        String
   name        String
   websiteUrl  String?
-  isActive    Boolean    @default(true)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  suppliers   Supplier[]
+  suppliers Supplier[]
 
   @@unique([countryCode, code])
   @@index([countryCode, isActive])
@@ -753,7 +812,10 @@ model ShippingZone {
 }
 
 model ShippingRateCard {
-  id                String               @id @default(cuid())
+  id         String    @id @default(cuid())
+  supplierId String?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
   zoneId            String
   serviceLevel      DeliveryServiceLevel @default(STANDARD)
   parcelClass       ShippingParcelClass  @default(STANDARD)
@@ -778,7 +840,7 @@ model ShippingRateCard {
   updatedAt         DateTime             @updatedAt
   zone              ShippingZone         @relation(fields: [zoneId], references: [id], onDelete: Cascade)
 
-  @@index([zoneId, isActive])
+  @@index([supplierId, zoneId, isActive])
   @@index([serviceLevel, parcelClass, isActive])
   @@index([minWeightGrams, maxWeightGrams])
 }
@@ -786,7 +848,7 @@ model ShippingRateCard {
 model ShippingQuote {
   id                         String               @id @default(cuid())
   userId                     String?
-  orderId                    String?              @unique
+  orderId                    String?
   supplierId                 String
   pickupAddressId            String?
   destinationAddressId       String?
@@ -817,6 +879,7 @@ model ShippingQuote {
   pricingMetaJson            Json?
   createdAt                  DateTime             @default(now())
   updatedAt                  DateTime             @updatedAt
+
   destinationAddress         Address?             @relation("ShippingQuoteDestinationAddress", fields: [destinationAddressId], references: [id])
   order                      Order?               @relation(fields: [orderId], references: [id])
   pickupAddress              Address?             @relation("ShippingQuotePickupAddress", fields: [pickupAddressId], references: [id])
@@ -824,6 +887,7 @@ model ShippingQuote {
   user                       User?                @relation(fields: [userId], references: [id])
   items                      ShippingQuoteItem[]
 
+  @@index([orderId])
   @@index([supplierId, createdAt])
   @@index([userId, createdAt])
   @@index([status, createdAt])
@@ -900,7 +964,7 @@ model Order {
   deliveryOtps          PurchaseOrderDeliveryOtp[]
   refunds               Refund[]
   refundRequests        RefundRequest[]
-  shippingQuote         ShippingQuote?
+  shippingQuotes ShippingQuote[]
   allocations           SupplierPaymentAllocation[] @relation("OrderAllocations")
 
   @@index([createdAt])
@@ -1376,8 +1440,8 @@ model CartItem {
   product         Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
   variant         ProductVariant? @relation(fields: [variantId], references: [id])
 
-@@unique([cartId, productId, kind, optionsKey], name: "cart_line_base_unique")
-@@unique([cartId, productId, variantId, kind, optionsKey], name: "cart_line_variant_unique", map: "cart_line_variant_unique")
+  @@unique([cartId, productId, kind, optionsKey], name: "cart_line_base_unique")
+  @@unique([cartId, productId, variantId, kind, optionsKey], name: "cart_line_variant_unique", map: "cart_line_variant_unique")
   @@index([cartId])
   @@index([productId])
   @@index([variantId])
@@ -1697,7 +1761,6 @@ enum SupplierType {
   PHYSICAL
   ONLINE
 }
-
 
 enum PaymentStatus {
   PENDING

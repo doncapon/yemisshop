@@ -152,11 +152,7 @@ type FilterPreset =
 
 type VariantRow = {
   id: string;
-  selections: Record<string, string>; // attributeId -> valueId
-
-  // ✅ schema-aligned: ProductVariant.retailPrice (mapped to "price" in DB)
-  retailPrice: string;
-
+  selections: Record<string, string>;
   inStock?: boolean;
   availableQty?: number;
   imagesJson?: string[];
@@ -287,14 +283,6 @@ function friendlyErrorMessage(e: any, fallback: string) {
   return detail || fallback;
 }
 
-
-/** pick the cheapest positive number from candidates */
-function minPositive(...nums: Array<number | null | undefined>) {
-  const arr = nums.map((n) => Number(n ?? 0)).filter((n) => Number.isFinite(n) && n > 0);
-  if (!arr.length) return 0;
-  return arr.reduce((m, v) => (v < m ? v : m), Number.POSITIVE_INFINITY);
-}
-
 /** Extracts supplier-side "cost/price" from an offer row across DTO variants. */
 function offerUnitCost(o: any): number | null {
   if (!o) return null;
@@ -321,16 +309,51 @@ function offerUnitCost(o: any): number | null {
   return null;
 }
 
-/**
- * New pricing rule:
- * retail price = supplier price directly
- * no markup added in admin manage products
- */
-function useSupplierPriceDirect(cost: number) {
-  const c = Number(cost);
-  if (!Number.isFinite(c) || c <= 0) return 0;
-  return Math.round(c);
+
+function computeRetailPriceFromSupplierPrice(args: {
+  supplierPrice: number;
+  baseServiceFeeNGN: number;
+  commsUnitCostNGN: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const supplierPrice = Number(args.supplierPrice);
+  if (!Number.isFinite(supplierPrice) || supplierPrice <= 0) return 0;
+
+  const gatewayFeeNGN = estimateGatewayFeeFromSettings({
+    amountNaira: supplierPrice,
+    gatewayFeePercent: args.gatewayFeePercent,
+    gatewayFixedFeeNGN: args.gatewayFixedFeeNGN,
+    gatewayFeeCapNGN: args.gatewayFeeCapNGN,
+  });
+
+  const extras =
+    Number(args.baseServiceFeeNGN || 0) +
+    Number(args.commsUnitCostNGN || 0) +
+    Number(gatewayFeeNGN || 0);
+
+  return Math.round(supplierPrice + extras);
 }
+
+
+function estimateGatewayFeeFromSettings(args: {
+  amountNaira: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const amount = Number(args.amountNaira);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+
+  const percentFee = amount * (Number(args.gatewayFeePercent || 0) / 100);
+  const gross = percentFee + Number(args.gatewayFixedFeeNGN || 0);
+  const cap = Number(args.gatewayFeeCapNGN || 0);
+
+  if (cap > 0) return Math.min(gross, cap);
+  return gross;
+}
+
 
 async function fetchSupplierOffersForProduct(productId: string) {
   const attempts = [
@@ -363,10 +386,14 @@ function extractProductVariants(p: any): any[] {
 
 const rowKey = (row: VariantRow, index: number) => String(row?.id ?? index);
 
-function buildComboKey(row: VariantRow, attrs: AttrDef[]): string {
-  const parts = attrs.map((a) => `${a.id}:${String(row?.selections?.[a.id] ?? "").trim()}`);
+function serializeComboSelections(selections: Record<string, string>, attrs: AttrDef[]): string {
+  const parts = attrs.map((a) => `${a.id}:${String(selections?.[a.id] ?? "").trim()}`);
   const allEmpty = parts.every((p) => p.endsWith(":"));
   return allEmpty ? "" : parts.join("|");
+}
+
+function buildComboKey(row: VariantRow, attrs: AttrDef[]): string {
+  return serializeComboSelections(row?.selections || {}, attrs);
 }
 
 function findDuplicateCombos(rows: VariantRow[], attrs: AttrDef[]): Record<string, string> {
@@ -500,32 +527,39 @@ export function ManageProducts({
 
   /* ---------------- Pricing Markup Setting ---------------- */
 
-  const DEFAULT_MARKUP_PERCENT = 10;
+  type PricingSettings = {
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  };
 
-  const markupQ = useQuery<number>({
-    queryKey: ["admin", "settings", "pricingMarkupPercent"],
+  const pricingSettingsQ = useQuery<PricingSettings>({
+    queryKey: ["admin", "settings", "pricing-public"],
     enabled: role === "SUPER_ADMIN" || role === "ADMIN",
     queryFn: async () => {
-      const { data } = await api.get("/api/settings", cookieOpts);
+      const { data } = await api.get("/api/settings/public", cookieOpts);
 
-      const arr = Array.isArray(data) ? data : Array.isArray((data as any)?.data) ? (data as any).data : [];
-      const row = arr.find((r: any) => {
-        const k = String(r?.key || "").trim();
-        return k === "pricingMarkupPercent" || k === "marginPercent";
-      });
-
-      const n = toNumberLoose(row?.value);
-      return n != null && Number.isFinite(n) && n > 0 ? n : DEFAULT_MARKUP_PERCENT;
+      return {
+        baseServiceFeeNGN: Number(data?.baseServiceFeeNGN ?? 0) || 0,
+        commsUnitCostNGN: Number(data?.commsUnitCostNGN ?? 0) || 0,
+        gatewayFeePercent: Number(data?.gatewayFeePercent ?? 1.5) || 1.5,
+        gatewayFixedFeeNGN: Number(data?.gatewayFixedFeeNGN ?? 100) || 100,
+        gatewayFeeCapNGN: Number(data?.gatewayFeeCapNGN ?? 2000) || 2000,
+      };
     },
     staleTime: 0,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     refetchOnMount: "always",
-
   });
 
-  const pricingMarkupPercent =
-    Number.isFinite(Number(markupQ.data)) && Number(markupQ.data) > 0 ? Number(markupQ.data) : DEFAULT_MARKUP_PERCENT;
+  const baseServiceFeeNGN = Number(pricingSettingsQ.data?.baseServiceFeeNGN ?? 0) || 0;
+  const commsUnitCostNGN = Number(pricingSettingsQ.data?.commsUnitCostNGN ?? 0) || 0;
+  const gatewayFeePercent = Number(pricingSettingsQ.data?.gatewayFeePercent ?? 1.5) || 1.5;
+  const gatewayFixedFeeNGN = Number(pricingSettingsQ.data?.gatewayFixedFeeNGN ?? 100) || 100;
+  const gatewayFeeCapNGN = Number(pricingSettingsQ.data?.gatewayFeeCapNGN ?? 2000) || 2000;
 
   /* ---------------- Tabs / Filters ---------------- */
   const [searchParams, setSearchParams] = useSearchParams();
@@ -569,6 +603,8 @@ export function ManageProducts({
     return normalizeNullableId(o?.supplierId?.id ?? o?.supplier?.id ?? o?.supplierId);
   }
 
+
+
   /**
    * Robust variantId extraction, supports compat IDs like "variant:<id>"
    */
@@ -593,7 +629,7 @@ export function ManageProducts({
 
   const statusParam = statusFromPreset(preset);
 
-    const getSupplierName = (p: any) => {
+  const getSupplierName = (p: any) => {
     const direct =
       p?.supplierName ||
       p?.supplier?.name ||
@@ -692,7 +728,7 @@ export function ManageProducts({
       const { data } = await api.get(`/api/admin/supplier-offers?${qs}`, cookieOpts);
 
       const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
-      const offers = (arr as SupplierOfferLite[]).filter((o) => !!(o as any));
+      const offers = (arr as SupplierOfferLite[]).filter((o) => !!o);
 
       const byProduct: Record<
         string,
@@ -707,8 +743,10 @@ export function ManageProducts({
           inStock: boolean;
           perSupplier: Array<{ supplierId: string; supplierName?: string; availableQty: number }>;
 
-          minBaseSupplierPrice: number;
-          minVariantSupplierPrice: number;
+          // ✅ no "min" logic anymore
+          baseSupplierPrice: number;
+          variantSupplierPrices: Record<string, number>;
+          firstVariantSupplierPrice: number;
         }
       > = {};
 
@@ -722,7 +760,6 @@ export function ManageProducts({
         const isActive = coerceBool((o as any).isActive, true);
         const isInStock = coerceBool((o as any).inStock, true);
         const availableQty = availOf(o) || toInt((o as any).availableQty, 0) || 0;
-
         const qtyKnown = hasExplicitQty(o);
 
         if (!byProduct[pid]) {
@@ -737,48 +774,46 @@ export function ManageProducts({
             perSupplier: [],
             inStock: false,
 
-            minBaseSupplierPrice: Number.POSITIVE_INFINITY,
-            minVariantSupplierPrice: Number.POSITIVE_INFINITY,
+            baseSupplierPrice: 0,
+            variantSupplierPrices: {},
+            firstVariantSupplierPrice: 0,
           };
         }
 
-        byProduct[pid].offerCountTotal += 1;
-        if (isActive) byProduct[pid].activeOfferCount += 1;
+        const s = byProduct[pid];
+        s.offerCountTotal += 1;
+        if (isActive) s.activeOfferCount += 1;
 
+        const purchasable = isActive && isInStock && (availableQty > 0 || !qtyKnown);
+
+        if (purchasable) {
+          s.totalAvailable += availableQty;
+          if (vid) s.variantAvailable += availableQty;
+          else s.baseAvailable += availableQty;
+
+          s.perSupplier.push({
+            supplierId,
+            supplierName: (o as any).supplierName,
+            availableQty,
+          });
+        }
+
+        const cost = offerUnitCost(o);
+        if (cost == null || !Number.isFinite(cost) || cost <= 0) continue;
+        if (!purchasable) continue;
+
+        // ✅ product has only one supplier, so we keep the actual valid row price
         if (!vid) {
-          const cost = offerUnitCost(o);
-          const ok =
-            isActive &&
-            isInStock &&
-            cost != null &&
-            Number.isFinite(cost) &&
-            cost > 0 &&
-            (availableQty > 0 || !qtyKnown);
-          if (ok && cost < byProduct[pid].minBaseSupplierPrice) {
-            byProduct[pid].minBaseSupplierPrice = cost;
+          if (!(s.baseSupplierPrice > 0)) {
+            s.baseSupplierPrice = cost;
           }
-        }
-
-        if (vid) {
-          const cost = offerUnitCost(o);
-          const ok =
-            isActive &&
-            isInStock &&
-            cost != null &&
-            Number.isFinite(cost) &&
-            cost > 0 &&
-            (availableQty > 0 || !qtyKnown);
-          if (ok && cost < byProduct[pid].minVariantSupplierPrice) {
-            byProduct[pid].minVariantSupplierPrice = cost;
+        } else {
+          if (!(s.variantSupplierPrices[vid] > 0)) {
+            s.variantSupplierPrices[vid] = cost;
           }
-        }
-
-        if (isActive && isInStock && availableQty > 0) {
-          byProduct[pid].totalAvailable += availableQty;
-          if (vid) byProduct[pid].variantAvailable += availableQty;
-          else byProduct[pid].baseAvailable += availableQty;
-
-          byProduct[pid].perSupplier.push({ supplierId, supplierName: (o as any).supplierName, availableQty });
+          if (!(s.firstVariantSupplierPrice > 0)) {
+            s.firstVariantSupplierPrice = cost;
+          }
         }
       }
 
@@ -786,15 +821,10 @@ export function ManageProducts({
         s.inStock = s.totalAvailable > 0;
       });
 
-      for (const pid of Object.keys(byProduct)) {
-        const s = byProduct[pid];
-        if (!Number.isFinite(s.minBaseSupplierPrice)) s.minBaseSupplierPrice = 0;
-        if (!Number.isFinite(s.minVariantSupplierPrice)) s.minVariantSupplierPrice = 0;
-      }
-
       return byProduct;
     },
   });
+
 
 
 
@@ -904,11 +934,27 @@ export function ManageProducts({
 
       const inStock = finalAvail > 0;
 
-      const bestBaseSupplier = Number(s?.minBaseSupplierPrice ?? 0) || 0;
-      const bestVariantSupplier = Number(s?.minVariantSupplierPrice ?? 0) || 0;
+      // ✅ no minPositive anymore
+      const baseSupplierPrice = Number(s?.baseSupplierPrice ?? 0) || 0;
+      const firstVariantSupplierPrice = Number(s?.firstVariantSupplierPrice ?? 0) || 0;
 
-      const fromSupplierCost = minPositive(bestBaseSupplier, bestVariantSupplier);
-      const computedRetailFrom = fromSupplierCost > 0 ? useSupplierPriceDirect(fromSupplierCost) : 0;
+      // For product list display:
+      // - use base offer price if product has one
+      // - otherwise use first variant offer price
+      const sourceSupplierPrice =
+        baseSupplierPrice > 0 ? baseSupplierPrice : firstVariantSupplierPrice > 0 ? firstVariantSupplierPrice : 0;
+
+      const computedRetailFrom =
+        sourceSupplierPrice > 0
+          ? computeRetailPriceFromSupplierPrice({
+            supplierPrice: sourceSupplierPrice,
+            baseServiceFeeNGN,
+            commsUnitCostNGN,
+            gatewayFeePercent,
+            gatewayFixedFeeNGN,
+            gatewayFeeCapNGN,
+          })
+          : 0;
 
       return {
         ...p,
@@ -918,12 +964,23 @@ export function ManageProducts({
         __offerQty: offerQty,
         __offerCount: offerCount,
 
-        __bestBaseSupplierPrice: bestBaseSupplier > 0 ? bestBaseSupplier : undefined,
-        __bestVariantSupplierPrice: bestVariantSupplier > 0 ? bestVariantSupplier : undefined,
+        // ✅ keep fields for debugging / UI
+        __bestBaseSupplierPrice: baseSupplierPrice > 0 ? baseSupplierPrice : undefined,
+        __bestVariantSupplierPrice: firstVariantSupplierPrice > 0 ? firstVariantSupplierPrice : undefined,
         __computedRetailFrom: computedRetailFrom > 0 ? computedRetailFrom : undefined,
       } as any;
     });
-  }, [rows, offersSummaryQ.data, pricingMarkupPercent]);
+  }, [
+    rows,
+    offersSummaryQ.data,
+    baseServiceFeeNGN,
+    commsUnitCostNGN,
+    gatewayFeePercent,
+    gatewayFixedFeeNGN,
+    gatewayFeeCapNGN,
+  ]);
+
+
 
   /* ---------------- Status helpers ---------------- */
 
@@ -1177,7 +1234,8 @@ export function ManageProducts({
 
   const defaultPending = {
     title: "",
-    retailPrice: "",
+    supplierPrice: "",   // ✅ editable on create
+    retailPrice: "",     // ✅ readonly computed/display
     status: "PENDING",
     categoryId: "",
     brandId: "",
@@ -1187,6 +1245,7 @@ export function ManageProducts({
     imageUrls: "",
     description: "",
   };
+
 
   const [offersProductId, setOffersProductId] = useState<string | null>(null);
   const [pending, setPending] = useState(defaultPending);
@@ -1338,77 +1397,73 @@ export function ManageProducts({
   }
 
   const offerPriceCapsQ = useQuery<{
-    minBase: number;
-    minVariantByVariant: Record<string, number>;
-    minVariantOverall: number;
+    basePrice: number;
+    variantPriceByVariant: Record<string, number>;
+    firstVariantPrice: number;
   }>({
-    queryKey: ["admin", "products", "offer-price-caps", { productId: editingId, supplierId: pending.supplierId }], enabled: !!role && !!editingId,
+    queryKey: ["admin", "products", "offer-price-caps", { productId: editingId, supplierId: pending.supplierId }],
+    enabled: !!role && !!editingId,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
     queryFn: async () => {
       const supplierId = (pending.supplierId || "").trim();
       if (!editingId || !supplierId) {
-        return { minBase: 0, minVariantByVariant: {}, minVariantOverall: 0 };
+        return { basePrice: 0, variantPriceByVariant: {}, firstVariantPrice: 0 };
       }
 
       const offers = await fetchSupplierOffersForProduct(editingId);
 
-      let minBase = 0; // base offer for THIS supplier (optional)
-      const minVariantByVariant: Record<string, number> = {};
+      let basePrice = 0;
+      const variantPriceByVariant: Record<string, number> = {};
+      let firstVariantPrice = 0;
 
       for (const o of offers ?? []) {
         const pid = extractOfferProductId(o);
         if (pid && String(pid) !== String(editingId)) continue;
 
         const sid = extractOfferSupplierId(o);
-        if (!sid || String(sid) !== String(supplierId)) continue; // ✅ ONLY owning supplier
+        if (!sid || String(sid) !== String(supplierId)) continue;
 
         const isActive = coerceBool((o as any).isActive, true);
         const isInStock = coerceBool((o as any).inStock, true);
         const qty = availOf(o) || 0;
         const qtyKnown = hasExplicitQty(o);
-
-        // ✅ only count purchasable offers (active + inStock + qty>0 unless qty unknown)
         const purchasable = isActive && isInStock && (qty > 0 || !qtyKnown);
         if (!purchasable) continue;
 
         const variantId = extractOfferVariantId(o);
+        const cost = offerVariantPrice(o);
+        if (cost == null || !Number.isFinite(cost) || cost <= 0) continue;
 
         if (!variantId) {
-          // BASE offer for this supplier+product
-          const baseCost = offerUnitCost(o);
-          if (baseCost != null && Number.isFinite(baseCost) && baseCost > 0) {
-            minBase = baseCost;
+          if (!(basePrice > 0)) {
+            basePrice = cost;
           }
           continue;
         }
 
-        // VARIANT offer for this supplier+variant
-        const vCost = offerVariantPrice(o);
-        if (vCost == null || !Number.isFinite(vCost) || vCost <= 0) continue;
+        if (!(variantPriceByVariant[variantId] > 0)) {
+          variantPriceByVariant[variantId] = cost;
+        }
 
-        const prev = minVariantByVariant[variantId];
-        if (!prev || vCost < prev) minVariantByVariant[variantId] = vCost;
+        if (!(firstVariantPrice > 0)) {
+          firstVariantPrice = cost;
+        }
       }
 
-      const minVariantOverall = Object.values(minVariantByVariant).reduce(
-        (m, v) => (v > 0 && v < m ? v : m),
-        Number.POSITIVE_INFINITY
-      );
-
       return {
-        minBase: minBase > 0 ? minBase : 0,
-        minVariantByVariant,
-        minVariantOverall: Number.isFinite(minVariantOverall) ? minVariantOverall : 0,
+        basePrice,
+        variantPriceByVariant,
+        firstVariantPrice,
       };
     },
   });
 
   const offerPriceCaps =
     offerPriceCapsQ.data ?? {
-      minBase: 0,
-      minVariantByVariant: {} as Record<string, number>,
-      minVariantOverall: 0,
+      basePrice: 0,
+      variantPriceByVariant: {} as Record<string, number>,
+      firstVariantPrice: 0,
     };
 
   const baseComboKey = useMemo(() => {
@@ -1431,25 +1486,92 @@ export function ManageProducts({
     return { ...dup, ...baseConf };
   }, [visibleVariantRows, enabledSelectableAttrs, baseComboKey]);
 
+  const baseComboConflictMessage = useMemo(() => {
+    if (!baseComboKey) return "";
+
+    const attrs = enabledSelectableAttrs ?? [];
+    const hasConflict = (visibleVariantRows ?? []).some((r) => {
+      const ck = buildComboKey(r, attrs);
+      return !!ck && ck === baseComboKey;
+    });
+
+    return hasConflict
+      ? "A variant already uses this same base attribute combination. Change the base defaults or change the duplicate variant."
+      : "";
+  }, [baseComboKey, visibleVariantRows, enabledSelectableAttrs]);
+
   const hasDuplicateCombos = Object.keys(comboErrors).length > 0;
   const emptyRowErrors = useMemo(() => findEmptyRowErrors(visibleVariantRows ?? []), [visibleVariantRows]);
+
+  const computedRetailFromCreateInput = useMemo(() => {
+    if (editingId) return null;
+
+    const supplierPrice = Number(pending.supplierPrice) || 0;
+    if (supplierPrice <= 0) return null;
+
+    return computeRetailPriceFromSupplierPrice({
+      supplierPrice,
+      baseServiceFeeNGN,
+      commsUnitCostNGN,
+      gatewayFeePercent,
+      gatewayFixedFeeNGN,
+      gatewayFeeCapNGN,
+    });
+  }, [
+    editingId,
+    pending.supplierPrice,
+    baseServiceFeeNGN,
+    commsUnitCostNGN,
+    gatewayFeePercent,
+    gatewayFixedFeeNGN,
+    gatewayFeeCapNGN,
+  ]);
+
 
   const computedRetailFromEditing = useMemo(() => {
     if (!editingId) return null;
 
-    const baseCost = Number(offerPriceCaps?.minBase ?? 0) || 0;
-    const variantCost = Number(offerPriceCaps?.minVariantOverall ?? 0) || 0;
+    const basePrice = Number(offerPriceCaps?.basePrice ?? 0) || 0;
+    const firstVariantPrice = Number(offerPriceCaps?.firstVariantPrice ?? 0) || 0;
 
-    const fromCost = minPositive(baseCost, variantCost);
-    if (fromCost <= 0) return null;
-    return useSupplierPriceDirect(fromCost);
-  }, [editingId, offerPriceCaps?.minBase, offerPriceCaps?.minVariantOverall]);
+    const sourceSupplierPrice =
+      basePrice > 0 ? basePrice : firstVariantPrice > 0 ? firstVariantPrice : 0;
+
+    if (sourceSupplierPrice <= 0) return null;
+
+    return computeRetailPriceFromSupplierPrice({
+      supplierPrice: sourceSupplierPrice,
+      baseServiceFeeNGN,
+      commsUnitCostNGN,
+      gatewayFeePercent,
+      gatewayFixedFeeNGN,
+      gatewayFeeCapNGN,
+    });
+  }, [
+    editingId,
+    offerPriceCaps?.basePrice,
+    offerPriceCaps?.firstVariantPrice,
+    baseServiceFeeNGN,
+    commsUnitCostNGN,
+    gatewayFeePercent,
+    gatewayFixedFeeNGN,
+    gatewayFeeCapNGN,
+  ]);
 
   useEffect(() => {
-    if (!editingId) return;
-    if (computedRetailFromEditing == null) return;
-    setPending((p) => ({ ...p, retailPrice: String(computedRetailFromEditing) }));
-  }, [editingId, computedRetailFromEditing]);
+    if (editingId) {
+      if (computedRetailFromEditing == null) return;
+      setPending((p) => ({ ...p, retailPrice: String(computedRetailFromEditing) }));
+      return;
+    }
+
+    if (computedRetailFromCreateInput == null) {
+      setPending((p) => ({ ...p, retailPrice: "" }));
+      return;
+    }
+
+    setPending((p) => ({ ...p, retailPrice: String(computedRetailFromCreateInput) }));
+  }, [editingId, computedRetailFromEditing, computedRetailFromCreateInput]);
 
   const parseUrlList = (s: string) =>
     s
@@ -1524,7 +1646,7 @@ export function ManageProducts({
     setIsRefreshingProduct(true);
     try {
       await Promise.all([
-        qc.invalidateQueries({ queryKey: ["admin", "settings", "pricingMarkupPercent"] }),
+        qc.invalidateQueries({ queryKey: ["admin", "settings", "pricing-public"] }),
         qc.invalidateQueries({ queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }] }),
         qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] }),
         qc.invalidateQueries({ queryKey: ["admin", "products", "offer-price-caps", { productId: pid }] }),
@@ -1656,7 +1778,6 @@ export function ManageProducts({
     const row: VariantRow = {
       id: makeTempRowId(),
       selections: makeEmptySelections(),
-      retailPrice: "",
       inStock: true,
       availableQty: 0,
       imagesJson: [],
@@ -1708,35 +1829,47 @@ export function ManageProducts({
     touchVariants();
   }
 
-  function setVariantRowRetailPrice(rowId: string, retail: string) {
-    const rid = String(rowId || "").trim();
-    if (!rid) return;
-
-    setVariantRows((prev) => {
-      const rows = Array.isArray(prev) ? prev : [];
-      return rows.map((r) => (String(r?.id) === rid ? { ...r, retailPrice: retail } : r));
-    });
-
-    touchVariants();
-  }
   function computedVariantRetail(row: VariantRow) {
     const vid = String(row?.id ?? "").trim();
 
-    const supplierVariantCost =
-      vid && isRealVariantId(vid) ? Number(offerPriceCaps.minVariantByVariant?.[vid] ?? 0) || 0 : 0;
+    const supplierVariantPrice =
+      vid && isRealVariantId(vid)
+        ? Number(offerPriceCaps.variantPriceByVariant?.[vid] ?? 0) || 0
+        : 0;
 
     if (editingId) {
-      // ✅ edit mode: only show computed when offer exists (but we already filtered rows)
-      const retail = supplierVariantCost > 0 ? useSupplierPriceDirect(supplierVariantCost) : -1;
-      return { variantRetail: retail, supplierVariantCost, hasComputed: supplierVariantCost > 0 };
+      if (supplierVariantPrice > 0) {
+        const retail = computeRetailPriceFromSupplierPrice({
+          supplierPrice: supplierVariantPrice,
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        });
+
+        return {
+          variantRetail: retail,
+          supplierVariantCost: supplierVariantPrice,
+          hasComputed: true,
+        };
+      }
+
+      return {
+        variantRetail: -1,
+        supplierVariantCost: 0,
+        hasComputed: false,
+      };
     }
 
-    // create mode: keep your existing behaviour
-    const fromInput = toNumberLoose(row?.retailPrice);
-    const baseFallback = Number(pending.retailPrice) || 0;
-    return { variantRetail: fromInput != null ? fromInput : baseFallback, supplierVariantCost: 0, hasComputed: false };
+    // ✅ create mode: variant retail is not entered here.
+    // It will come later from SupplierOfferManager variant offers.
+    return {
+      variantRetail: -1,
+      supplierVariantCost: 0,
+      hasComputed: false,
+    };
   }
-
 
   function buildBaseComboKeyFromSelectedAttrs(
     selectedAttrs: Record<string, string | string[]>,
@@ -1747,26 +1880,19 @@ export function ManageProducts({
     for (const a of attrs || []) {
       const raw = selectedAttrs?.[a.id];
 
-      const vids = Array.isArray(raw)
-        ? raw
-        : raw != null
-          ? [raw]
-          : [];
+      // Variants only support one SELECT value per attribute,
+      // so only compare against a single selected value.
+      const valueId = Array.isArray(raw)
+        ? String(raw[0] ?? "").trim()
+        : String(raw ?? "").trim();
 
-      const cleanVids = vids
-        .map((v) => String(v ?? "").trim())
-        .filter(Boolean);
+      if (!valueId) continue;
 
-      if (!cleanVids.length) continue;
-
-      // ✅ attributeId-vid1-vid2-vid3
-      parts.push([a.id, ...cleanVids].join("-"));
+      // ✅ Use EXACT same format as buildComboKey()
+      parts.push(`${a.id}:${valueId}`);
     }
 
-    // If nothing selected, treat as "no base combo"
     if (!parts.length) return "";
-
-    // ✅ if multiple attrs: aid1-vid1 | aid2-vid2-vid3
     return parts.join("|");
   }
 
@@ -1898,8 +2024,6 @@ export function ManageProducts({
         if (attrId && valueId) selections[String(attrId)] = String(valueId);
       }
 
-      const retail = toNumberLoose(v?.retailPrice ?? v?.price ?? v?.retailPrice?.amount ?? v?.price?.amount) ?? null;
-
       const hasAnyPick = Object.values(selections).some((x) => !!String(x || "").trim());
       if (!hasAnyPick) continue;
 
@@ -1909,7 +2033,6 @@ export function ManageProducts({
       vr.push({
         id: String(id),
         selections,
-        retailPrice: retail != null ? String(retail) : "",
         inStock: coerceBool(v?.inStock, true),
         availableQty: toInt(v?.availableQty ?? v?.available ?? v?.qty ?? v?.stock, 0),
         imagesJson: Array.isArray(v?.imagesJson) ? v.imagesJson : [],
@@ -1943,9 +2066,44 @@ export function ManageProducts({
   function validateRetailAboveSupplierPrices(args: {
     baseRetail: number;
     variantRows: VariantRow[];
-    caps: { minBase: number; minVariantByVariant: Record<string, number>; minVariantOverall: number };
+    caps: {
+      basePrice: number;
+      variantPriceByVariant: Record<string, number>;
+      firstVariantPrice: number;
+    };
   }) {
-    return { ok: true, errors: [] as string[] };
+    const errors: string[] = [];
+
+    const computedBaseRetail =
+      args.caps.basePrice > 0
+        ? computeRetailPriceFromSupplierPrice({
+          supplierPrice: args.caps.basePrice,
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        })
+        : 0;
+
+    if (
+      args.caps.basePrice > 0 &&
+      Number(args.baseRetail || 0) > 0 &&
+      Number(args.baseRetail) < computedBaseRetail
+    ) {
+      errors.push(
+        `Base retail (₦${Number(args.baseRetail).toLocaleString()}) cannot be below computed retail from supplier base price (₦${computedBaseRetail.toLocaleString()}).`
+      );
+    }
+
+    // ✅ Variant retail is no longer entered in ManageProducts.
+    // It is derived later from SupplierOfferManager variant offers,
+    // so no variant-level manual validation is needed here.
+
+    return {
+      ok: errors.length === 0,
+      errors,
+    };
   }
 
   function dedupeVariantRowsByCombo(rows: VariantRow[], attrs: AttrDef[]) {
@@ -2068,8 +2226,6 @@ export function ManageProducts({
     const enabledAttributeIds: string[] = [];
     const attributeSelections: any[] = [];
 
-    // ✅ BASE PRODUCT DEFAULTS
-    // These are the default/base values for the product itself.
     for (const a of attrsAll) {
       if (!(a.id in selectedAttrs)) continue;
 
@@ -2077,7 +2233,6 @@ export function ManageProducts({
 
       const sel = selectedAttrs[a.id];
 
-      // enabled but no default/base value picked
       if (
         sel == null ||
         (typeof sel === "string" && sel.trim() === "") ||
@@ -2125,8 +2280,6 @@ export function ManageProducts({
     payload.enabledAttributeIds = Array.from(new Set(enabledAttributeIds));
     payload.attributeSelections = attributeSelections;
 
-    // ✅ VARIANTS ONLY
-    // Do NOT create any fake "base" variant here.
     const selectable = (attrsAll || []).filter((a) => a.type === "SELECT" && a.isActive);
     const selectableById = new Map(selectable.map((a) => [String(a.id), a]));
 
@@ -2148,25 +2301,27 @@ export function ManageProducts({
         }))
         .filter((x) => !!x.valueId);
 
-      // skip empty rows
       if (!picks.length) continue;
 
       let retailPriceToSend: number | null = null;
 
+      // ✅ Base product retail is already computed from base supplier price.
       const baseRetailFallback =
         typeof base.retailPrice === "number" && Number.isFinite(base.retailPrice) && base.retailPrice > 0
           ? base.retailPrice
           : toNumberLoose((base as any).retailPrice) ?? null;
 
       if (editingId) {
+        // ✅ only saved/editing variants with actual supplier offers get computed retail
         const computed = computedVariantRetail(row);
         retailPriceToSend =
           computed.hasComputed && computed.variantRetail > 0
             ? computed.variantRetail
-            : baseRetailFallback;
+            : null;
       } else {
-        const rowRetail = toNumberLoose(row?.retailPrice);
-        retailPriceToSend = rowRetail != null && rowRetail > 0 ? rowRetail : baseRetailFallback;
+        // ✅ create mode: do NOT invent per-variant retail here.
+        // Variant pricing will come later from SupplierOfferManager.
+        retailPriceToSend = null;
       }
 
       const options = picks.map((o) => ({
@@ -2247,10 +2402,15 @@ export function ManageProducts({
     if (!pending.supplierId) nextFieldErrors.supplierId = "Supplier is required.";
     if (!pending.brandId) nextFieldErrors.brandId = "Brand is required.";
 
+    if (!editingId) {
+      const supplierPriceNum = Number((pending as any).supplierPrice) || 0;
+      if (supplierPriceNum <= 0) nextFieldErrors.supplierPrice = "Supplier price is required.";
+    }
+
     if (Object.keys(nextFieldErrors).length) {
       setFieldErrors(nextFieldErrors);
       setSaveBanner("Please fix the highlighted fields.");
-      restoreSnapshot(); // safe even if nothing changed
+      restoreSnapshot();
       return;
     }
 
@@ -2265,6 +2425,12 @@ export function ManageProducts({
       return;
     }
 
+    if (baseComboConflictMessage) {
+      setSaveBanner("Base product defaults cannot match an existing variant combination.");
+      restoreSnapshot();
+      return;
+    }
+
     const emptyRowErrorsNow = findEmptyRowErrors(variantsForSave ?? []);
     if (Object.keys(emptyRowErrorsNow).length > 0) {
       setSaveBanner("One or more variant rows have no selections. Pick at least 1 option or remove the row.");
@@ -2272,9 +2438,52 @@ export function ManageProducts({
       return;
     }
 
-    const priceNumCreate = Number(pending.retailPrice) || 0;
-    const priceNumEdit = computedRetailFromEditing != null ? computedRetailFromEditing : Number(pending.retailPrice) || 0;
-    const retailBase = editingId ? priceNumEdit : priceNumCreate;
+    const supplierQty = toInt((pending as any).supplierAvailableQty, 0);
+    const urlList = parseUrlList(pending.imageUrls);
+
+    let retailBase = 0;
+
+    if (editingId) {
+      const computedBase =
+        computedRetailFromEditing != null
+          ? Number(computedRetailFromEditing) || 0
+          : 0;
+
+      const manualFallback = Number(pending.retailPrice) || 0;
+      retailBase = computedBase > 0 ? computedBase : manualFallback;
+
+      if (retailBase <= 0) {
+        openModal({
+          title: "Missing supplier price",
+          message: "This product needs a valid supplier base or variant price before retail can be computed.",
+        });
+        return;
+      }
+    } else {
+      const supplierPriceNum = Number((pending as any).supplierPrice) || 0;
+
+      retailBase =
+        supplierPriceNum > 0
+          ? computeRetailPriceFromSupplierPrice({
+            supplierPrice: supplierPriceNum,
+            baseServiceFeeNGN,
+            commsUnitCostNGN,
+            gatewayFeePercent,
+            gatewayFixedFeeNGN,
+            gatewayFeeCapNGN,
+          })
+          : 0;
+
+      if (retailBase <= 0) {
+        setFieldErrors((prev) => ({
+          ...prev,
+          supplierPrice: "Supplier price is required.",
+        }));
+        setSaveBanner("Enter a valid supplier price before creating the product.");
+        restoreSnapshot();
+        return;
+      }
+    }
 
     const check = validateRetailAboveSupplierPrices({
       baseRetail: retailBase,
@@ -2289,9 +2498,6 @@ export function ManageProducts({
       });
       return;
     }
-
-    const supplierQty = toInt((pending as any).supplierAvailableQty, 0);
-    const urlList = parseUrlList(pending.imageUrls);
 
     const base: any = {
       title,
@@ -2324,7 +2530,9 @@ export function ManageProducts({
       delete (fullPayload as any).userId;
     }
 
-    const variants = Array.isArray((fullPayload as any).variants) ? (fullPayload as any).variants : [];
+    const variants = Array.isArray((fullPayload as any).variants)
+      ? (fullPayload as any).variants
+      : [];
 
     if (editingId) {
       const {
@@ -2352,8 +2560,6 @@ export function ManageProducts({
           return;
         }
       }
-
-
 
       updateM.mutate(
         { id: editingId, ...payloadForPatch },
@@ -2427,92 +2633,6 @@ export function ManageProducts({
       return;
     }
 
-
-    if (editingId) {
-      const { variants: _variants, variantOptions: _variantOptions, ...payloadForPatch } = fullPayload as any;
-      const userTouchedVariants = variantsDirty || clearAllVariantsIntent;
-
-      if (userTouchedVariants) {
-        const submittedIds = new Set((variants || []).map((v: any) => normalizeNullableId(v?.id)).filter(Boolean) as string[]);
-        const missingLocked = Array.from(lockedVariantIds).filter((id) => !submittedIds.has(id));
-        if (missingLocked.length > 0) {
-          openModal({
-            title: "Cannot remove variants in use",
-            message: `You tried to remove ${missingLocked.length} variant(s) that are linked to supplier offers. Remove/disable the supplier offers first, or keep those variants.`,
-          });
-          return;
-        }
-      }
-
-      updateM.mutate(
-        { id: editingId, ...payloadForPatch },
-        {
-          onSuccess: async () => {
-            const pid = editingId;
-            const touched = variantsDirty || clearAllVariantsIntent;
-
-            if (pid && touched) {
-              try {
-                const replaceFlag = shouldReplaceVariants({
-                  variantRows: variants || [],
-                  initialVariantIds: initialVariantIdsRef.current,
-                  clearAllVariantsIntent,
-                });
-
-                await persistVariantsStrict(pid, variants || [], { replace: replaceFlag });
-
-                setVariantsDirty(false);
-                setClearAllVariantsIntent(false);
-
-                qc.invalidateQueries({
-                  queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }],
-                });
-              }
-              catch (e) {
-                console.error("Failed to persist variants on update", e);
-                setSaveBanner(friendlyErrorMessage(e, "Failed to save variants"));
-                restoreSnapshot();
-                openModal({ title: "Products", message: friendlyErrorMessage(e, "Failed to save variants") });
-                return;
-              }
-            }
-
-            try {
-              if (pid) {
-                const refreshed = await fetchProductFull(pid);
-                const nextRowsRaw = buildVariantRowsFromServerVariants(refreshed.variants || []);
-                const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, enabledSelectableAttrs);
-
-                setVariantRows(nextRows);
-                initialVariantIdsRef.current = new Set(nextRows.map((r) => r.id).filter((id) => isRealVariantId(id)));
-                setOfferVariants(refreshed.variants || []);
-
-                qc.invalidateQueries({
-                  queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }],
-                });
-              }
-            } catch (e) {
-              // eslint-disable-next-line no-console
-              console.warn("Product saved but refresh failed", e);
-            }
-
-            await Promise.all([
-              qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] }),
-              qc.invalidateQueries({ queryKey: ["admin", "overview"] }),
-              qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] }),
-              qc.invalidateQueries({ queryKey: ["admin", "products", "offer-price-caps"] }),
-              pid ? qc.invalidateQueries({ queryKey: ["admin", "product", pid, "variants"] }) : Promise.resolve(),
-              pid ? qc.invalidateQueries({ queryKey: ["admin", "products", pid, "supplier-offers"] }) : Promise.resolve(),
-            ]);
-
-            alert("Product changes saved.");
-          },
-        }
-      );
-
-      return;
-    }
-
     const {
       variants: _variants,
       variantOptions: _variantOptions,
@@ -2534,16 +2654,22 @@ export function ManageProducts({
             const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, enabledSelectableAttrs);
 
             setVariantRows(nextRows);
-            initialVariantIdsRef.current = new Set(nextRows.map((r) => r.id).filter((id) => isRealVariantId(id)));
+            initialVariantIdsRef.current = new Set(
+              nextRows.map((r) => r.id).filter((id) => isRealVariantId(id))
+            );
             setOfferVariants(refreshed.variants || []);
 
-            qc.invalidateQueries({ queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }] });
-          }
-          catch (e) {
-            console.error("Failed to persist variants on update", e);
+            qc.invalidateQueries({
+              queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }],
+            });
+          } catch (e) {
+            console.error("Failed to persist variants on create", e);
             setSaveBanner(friendlyErrorMessage(e, "Failed to save variants"));
             restoreSnapshot();
-            openModal({ title: "Products", message: friendlyErrorMessage(e, "Failed to save variants") });
+            openModal({
+              title: "Products",
+              message: friendlyErrorMessage(e, "Failed to save variants"),
+            });
             return;
           }
         }
@@ -2903,6 +3029,7 @@ export function ManageProducts({
 
       const nextPending = {
         title: full.title || "",
+        supplierPrice: "",
         retailPrice: String(full.retailPrice ?? ""),
         status: full.status === "PUBLISHED" || full.status === "LIVE" ? full.status : "PENDING",
         categoryId: full.categoryId || "",
@@ -2913,6 +3040,7 @@ export function ManageProducts({
         imageUrls: (extractImageUrls(full) || []).join("\n"),
         description: full.description ?? "",
       };
+
 
       const nextSel: Record<string, string | string[]> = {};
 
@@ -3035,7 +3163,7 @@ export function ManageProducts({
 
           {editingId && (
             <div className="rounded-xl border bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              Retail pricing uses the cheapest purchasable supplier price directly.
+              Retail price = supplier price + base service fee + comms fee + gateway fee.
             </div>
           )}
 
@@ -3062,8 +3190,9 @@ export function ManageProducts({
                 <div className="text-lg font-semibold">{editingId ? "Edit product" : "Create product (Admin)"}</div>
                 <div className="text-sm text-slate-500">
                   {editingId
-                    ? "Retail prices are computed directly from the cheapest purchasable supplier prices."
-                    : "Admin can create and edit products on behalf of any supplier."}
+                    ? "Retail prices are computed as supplier price + service fees + gateway fee."
+                    : "Enter the supplier price and the retail price will be auto-calculated."}
+
                 </div>
               </div>
 
@@ -3104,20 +3233,58 @@ export function ManageProducts({
 
                   </div>
 
-                  <div>
-                    <label className="text-sm font-medium text-slate-700">
-                      {editingId ? "Retail Price (NGN) (computed FROM)" : "Price (NGN)"}
-                    </label>
-                    <input
-                      value={pending.retailPrice}
-                      onChange={(e) => setPending((p) => ({ ...p, retailPrice: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
-                      placeholder="0"
-                      inputMode="decimal"
-                      disabled={!!editingId}
-                      title={editingId ? "Computed as the cheapest purchasable price (base OR variant) + markup" : ""}
-                    />
-                  </div>
+                  {!editingId ? (
+                    <>
+                      <div>
+                        <label className="text-sm font-medium text-slate-700">
+                          Supplier Price (NGN) <span className="text-rose-600">*</span>
+                        </label>
+                        <input
+                          value={(pending as any).supplierPrice}
+                          onChange={(e) => setPending((p) => ({ ...p, supplierPrice: e.target.value }))}
+                          className={`mt-1 w-full rounded-xl border px-3 py-2 ${fieldErrors.supplierPrice ? "border-rose-300" : ""}`}
+                          placeholder="0"
+                          inputMode="decimal"
+                        />
+                        {fieldErrors.supplierPrice && (
+                          <div className="mt-1 text-[11px] text-rose-600">{fieldErrors.supplierPrice}</div>
+                        )}
+                        <div className="mt-1 text-[11px] text-slate-500">
+                          This is the supplier/base cost for the new product.
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-sm font-medium text-slate-700">Retail Price (NGN) (auto)</label>
+                        <input
+                          value={pending.retailPrice}
+                          readOnly
+                          className="mt-1 w-full rounded-xl border px-3 py-2 bg-slate-50 text-slate-700"
+                          placeholder="0"
+                          inputMode="decimal"
+                          title="Computed as supplier price + base service fee + comms fee + gateway fee"
+                        />
+                        <div className="mt-1 text-[11px] text-slate-500">
+                          Auto-calculated from supplier price + service fee + comms fee + gateway fee.
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      <label className="text-sm font-medium text-slate-700">
+                        Retail Price (NGN) (computed FROM)
+                      </label>
+                      <input
+                        value={pending.retailPrice}
+                        readOnly
+                        className="mt-1 w-full rounded-xl border px-3 py-2 bg-slate-50 text-slate-700"
+                        placeholder="0"
+                        inputMode="decimal"
+                        title="Computed as supplier/base or variant supplier price + base service fee + comms fee + gateway fee"
+                      />
+                    </div>
+                  )}
+
 
                   <div>
                     <label className="text-sm font-medium text-slate-700">Status</label>
@@ -3223,22 +3390,39 @@ export function ManageProducts({
                 {editingId && (
                   <div className="text-xs text-slate-500">
                     {(() => {
-                      const cheapest = minPositive(offerPriceCaps.minBase, offerPriceCaps.minVariantOverall);
-                      if (cheapest > 0) {
+                      const basePrice = Number(offerPriceCaps.basePrice ?? 0) || 0;
+                      const firstVariantPrice = Number(offerPriceCaps.firstVariantPrice ?? 0) || 0;
+
+                      const sourceSupplierPrice =
+                        basePrice > 0 ? basePrice : firstVariantPrice > 0 ? firstVariantPrice : 0;
+
+                      if (sourceSupplierPrice > 0) {
+                        const computedRetail = computeRetailPriceFromSupplierPrice({
+                          supplierPrice: sourceSupplierPrice,
+                          baseServiceFeeNGN,
+                          commsUnitCostNGN,
+                          gatewayFeePercent,
+                          gatewayFixedFeeNGN,
+                          gatewayFeeCapNGN,
+                        });
+
                         return (
                           <span>
-                            Supplier cheapest purchasable price: ₦{cheapest.toLocaleString()} → retail ₦
-                            {useSupplierPriceDirect(cheapest).toLocaleString()}
+                            Supplier price: ₦{sourceSupplierPrice.toLocaleString()} → retail ₦
+                            {computedRetail.toLocaleString()}
                           </span>
                         );
                       }
-                      return <span>Supplier cheapest prices → —</span>;
+
+                      return <span>Supplier price → —</span>;
                     })()}
-                    {Object.keys(offerPriceCaps.minVariantByVariant || {}).length > 0 && (
-                      <span className="ml-2">• variants tracked: {Object.keys(offerPriceCaps.minVariantByVariant || {}).length}</span>
+                    {Object.keys(offerPriceCaps.variantPriceByVariant || {}).length > 0 && (
+                      <span className="ml-2">• variants tracked: {Object.keys(offerPriceCaps.variantPriceByVariant || {}).length}</span>
                     )}
                   </div>
                 )}
+
+
 
                 {/* Images */}
                 <div className="rounded-xl border p-3">
@@ -3440,7 +3624,10 @@ export function ManageProducts({
               </div>
             </div>
 
-            <div className="mt-4 rounded-xl border p-3 bg-slate-50">
+            <div
+              className={`mt-4 rounded-xl border p-3 ${baseComboConflictMessage ? "border-rose-300 bg-rose-50" : "bg-slate-50"
+                }`}
+            >
               <div className="text-sm font-semibold text-slate-800">Base product defaults</div>
               <div className="text-xs text-slate-500">
                 These default attribute values represent the base product. They are not a variant row.
@@ -3451,7 +3638,10 @@ export function ManageProducts({
                   {baseDefaultsSummary.map((item) => (
                     <div
                       key={item.attributeId}
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700"
+                      className={`rounded-full border px-3 py-1.5 text-xs ${baseComboConflictMessage
+                        ? "border-rose-200 bg-white text-rose-700"
+                        : "border-slate-200 bg-white text-slate-700"
+                        }`}
                     >
                       <span className="font-medium">{item.label}:</span> {item.value}
                     </div>
@@ -3460,6 +3650,12 @@ export function ManageProducts({
               ) : (
                 <div className="mt-2 text-sm text-slate-500">
                   No base/default attribute values selected yet.
+                </div>
+              )}
+
+              {baseComboConflictMessage && (
+                <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                  {baseComboConflictMessage}
                 </div>
               )}
             </div>
@@ -3534,10 +3730,9 @@ export function ManageProducts({
                         const computed = computedVariantRetail(r);
 
                         const retailLabel =
-                          editingId && computed.variantRetail === -1
+                          computed.variantRetail === -1
                             ? "—"
-                            : `₦${Number((editingId ? computed.variantRetail : toNumberLoose(r.retailPrice) ?? 0) || 0).toLocaleString()}`;
-
+                            : `₦${Number(computed.variantRetail || 0).toLocaleString()}`;
                         return (
                           <tr key={rk} className="border-t">
                             {enabledSelectableAttrs.map((a) => {
@@ -3560,20 +3755,18 @@ export function ManageProducts({
                                 </td>
                               );
                             })}
-
                             <td className="p-2 align-top min-w-[130px] w-[130px]">
-                              {editingId ? (
-                                <div className="text-sm">{retailLabel}</div>
-                              ) : (
-                                <input
-                                  value={r.retailPrice}
-                                  onChange={(e) => setVariantRowRetailPrice(r.id, e.target.value)}
-                                  className="w-full min-w-[120px] rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm"
-                                  placeholder="(optional)"
-                                  inputMode="decimal"
-                                />
+                              <div className="text-sm">{retailLabel}</div>
+
+                              {!editingId && (
+                                <div className="mt-1 text-[11px] text-slate-500">
+                                  Variant retail comes from Supplier Offers after product creation.
+                                </div>
                               )}
-                              {(dupErr || emptyErr) && <div className="mt-1 text-[11px] text-rose-600">{dupErr || emptyErr}</div>}
+
+                              {(dupErr || emptyErr) && (
+                                <div className="mt-1 text-[11px] text-rose-600">{dupErr || emptyErr}</div>
+                              )}
                             </td>
 
                             <td className="p-2 align-top min-w-[130px] w-[130px]">
@@ -3762,8 +3955,8 @@ export function ManageProducts({
               {/* Stats */}
               <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                 <div className="rounded-xl bg-slate-50 border px-2.5 py-2">
-                  <div className="text-[11px] text-slate- reminder:
-ove-500">Offers</div>
+                  <div className="text-[11px] text-slate-500">Offers</div>
+
                   <div className="mt-0.5 font-semibold text-slate-800 tabular-nums">
                     {Number((p as any).__offerCount ?? 0).toLocaleString()}
                   </div>
@@ -3877,16 +4070,23 @@ ove-500">Offers</div>
                       <div className="text-xs text-slate-500 font-mono">{p.sku || p.id}</div>
 
                       {p.__bestVariantSupplierPrice ? (
-                        <div className="text-[11px] text-slate-500 mt-1">best supplier variant: ₦{Number(p.__bestVariantSupplierPrice).toLocaleString()}</div>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          variant supplier price: ₦{Number(p.__bestVariantSupplierPrice).toLocaleString()}
+                        </div>
                       ) : null}
 
                       {p.__bestBaseSupplierPrice ? (
-                        <div className="text-[11px] text-slate-500 mt-1">best supplier base: ₦{Number(p.__bestBaseSupplierPrice).toLocaleString()}</div>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          base supplier price: ₦{Number(p.__bestBaseSupplierPrice).toLocaleString()}
+                        </div>
                       ) : null}
 
                       {(p.__bestBaseSupplierPrice || p.__bestVariantSupplierPrice) && (
-                        <div className="text-[11px] text-slate-500 mt-1">computed FROM uses cheapest purchasable supplier price</div>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          computed retail uses this product’s supplier price + service fee + comms fee + gateway fee
+                        </div>
                       )}
+
                     </td>
 
                     <td className="p-3">₦{Number(price || 0).toLocaleString()}</td>

@@ -140,12 +140,47 @@ const toNum = (n: unknown, d = 0) => {
   const v = Number(n);
   return Number.isFinite(v) ? v : d;
 };
+function estimateGatewayFeeFromSettings(args: {
+  amountNaira: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const amount = Number(args.amountNaira);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+  const percentFee = amount * (Number(args.gatewayFeePercent || 0) / 100);
+  const gross = percentFee + Number(args.gatewayFixedFeeNGN || 0);
+  const cap = Number(args.gatewayFeeCapNGN || 0);
 
-function applyMargin(supplierPrice: number, marginPercent: number) {
-  const m = Math.max(0, Number(marginPercent) || 0);
-  return round2(supplierPrice * (1 + m / 100));
+  if (cap > 0) return Math.min(gross, cap);
+  return gross;
+}
+
+function computeRetailPriceFromSupplierPrice(args: {
+  supplierPrice: number;
+  baseServiceFeeNGN: number;
+  commsUnitCostNGN: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const supplierPrice = Number(args.supplierPrice);
+  if (!Number.isFinite(supplierPrice) || supplierPrice <= 0) return 0;
+
+  const gatewayFeeNGN = estimateGatewayFeeFromSettings({
+    amountNaira: supplierPrice,
+    gatewayFeePercent: args.gatewayFeePercent,
+    gatewayFixedFeeNGN: args.gatewayFixedFeeNGN,
+    gatewayFeeCapNGN: args.gatewayFeeCapNGN,
+  });
+
+  const extras =
+    Number(args.baseServiceFeeNGN || 0) +
+    Number(args.commsUnitCostNGN || 0) +
+    Number(gatewayFeeNGN || 0);
+
+  return Math.round(supplierPrice + extras);
 }
 
 function getApiOrigin(): string {
@@ -422,34 +457,21 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
 function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
   const out: Record<string, string> = {};
 
-  const explicit =
-    (Array.isArray(p?.attributeSelections) && p.attributeSelections) ||
-    (Array.isArray(p?.baseAttributeSelections) && p.baseAttributeSelections) ||
-    (Array.isArray(p?.defaultAttributes) && p.defaultAttributes) ||
-    (Array.isArray(p?.productAttributeSelections) && p.productAttributeSelections) ||
-    null;
+  // Only explicit "selected/default/base" sources.
+  // Do NOT fall back to generic option pools like attributes.options / attributeOptions.
+  const explicitSources = [
+    Array.isArray(p?.baseAttributeSelections) ? p.baseAttributeSelections : null,
+    Array.isArray(p?.defaultAttributes) ? p.defaultAttributes : null,
+    Array.isArray(p?.productAttributeSelections) ? p.productAttributeSelections : null,
+    Array.isArray(p?.attributeSelections) ? p.attributeSelections : null,
+  ].filter(Boolean) as any[][];
 
-  if (explicit) {
-    for (const row of explicit) {
+  for (const rows of explicitSources) {
+    for (const row of rows) {
       const a = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
       const v = String(row?.valueId ?? row?.value?.id ?? "").trim();
-      if (a && v && !out[a]) out[a] = v;
+      if (a && v) out[a] = v;
     }
-    if (Object.keys(out).length) return out;
-  }
-
-  const opts: any[] = Array.isArray(p?.attributes?.options)
-    ? p.attributes.options
-    : Array.isArray(p?.attributeOptions)
-      ? p.attributeOptions
-      : Array.isArray(p?.ProductAttributeOption)
-        ? p.ProductAttributeOption
-        : [];
-
-  for (const row of opts) {
-    const a = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
-    const v = String(row?.valueId ?? row?.value?.id ?? "").trim();
-    if (a && v && !out[a]) out[a] = v;
   }
 
   return out;
@@ -683,25 +705,36 @@ export default function ProductDetail() {
   }, []);
 
   /* ---------------- Settings ---------------- */
-  const settingsQ = useQuery<number>({
-    queryKey: ["settings", "public", "marginPercent"],
+  /* ---------------- Settings ---------------- */
+  const settingsQ = useQuery<{
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }>({
+    queryKey: ["settings", "public", "pricing"],
     staleTime: 60_000,
     retry: 0,
     queryFn: async () => {
       const { data } = await api.get("/api/settings/public");
-      const s = (data as any) ?? {};
+      const s = (data as any)?.data ?? data ?? {};
 
-      const v = Number.isFinite(Number(s?.marginPercent))
-        ? Number(s.marginPercent)
-        : Number.isFinite(Number(s?.pricingMarkupPercent))
-          ? Number(s.pricingMarkupPercent)
-          : NaN;
-
-      return Math.max(0, Number.isFinite(v) ? v : 0);
+      return {
+        baseServiceFeeNGN: Number(s?.baseServiceFeeNGN ?? 0) || 0,
+        commsUnitCostNGN: Number(s?.commsUnitCostNGN ?? 0) || 0,
+        gatewayFeePercent: Number(s?.gatewayFeePercent ?? 1.5) || 1.5,
+        gatewayFixedFeeNGN: Number(s?.gatewayFixedFeeNGN ?? 100) || 100,
+        gatewayFeeCapNGN: Number(s?.gatewayFeeCapNGN ?? 2000) || 2000,
+      };
     },
   });
 
-  const marginPercent = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
+  const baseServiceFeeNGN = Number(settingsQ.data?.baseServiceFeeNGN ?? 0) || 0;
+  const commsUnitCostNGN = Number(settingsQ.data?.commsUnitCostNGN ?? 0) || 0;
+  const gatewayFeePercent = Number(settingsQ.data?.gatewayFeePercent ?? 1.5) || 1.5;
+  const gatewayFixedFeeNGN = Number(settingsQ.data?.gatewayFixedFeeNGN ?? 100) || 100;
+  const gatewayFeeCapNGN = Number(settingsQ.data?.gatewayFeeCapNGN ?? 2000) || 2000;
 
   /* ---------------- Product ---------------- */
   const productQ = useQuery<ProductQueryData>({
@@ -737,21 +770,24 @@ export default function ProductDetail() {
         baseQtyBySupplier[o.supplierId] = (baseQtyBySupplier[o.supplierId] ?? 0) + qty;
       }
 
-      for (const o of offers) {
-        if (o.model !== "VARIANT") continue;
-        if (!o.variantId) continue;
-        if (!o.isActive || !o.inStock) continue;
+      for (const v of variants) {
+        const vid = String(v.id);
 
-        const baseQty = baseQtyBySupplier[o.supplierId] ?? 0;
-        const vQtyRaw = Number(o.availableQty ?? 0) || 0;
+        const variantOffers = offers.filter(
+          (o) =>
+            o.model === "VARIANT" &&
+            String(o.variantId ?? "") === vid &&
+            o.isActive &&
+            o.inStock &&
+            (o.availableQty ?? 0) > 0
+        );
 
-        let effective = 0;
-        if (vQtyRaw > 0 && baseQty > 0) effective = Math.min(baseQty, vQtyRaw);
-        else if (vQtyRaw > 0) effective = vQtyRaw;
-        else if (baseQty > 0) effective = baseQty;
-
-        if (effective <= 0) continue;
-        stockByVariantId[o.variantId] = (stockByVariantId[o.variantId] ?? 0) + effective;
+        if (variantOffers.length) {
+          stockByVariantId[vid] = variantOffers.reduce(
+            (acc, o) => acc + (o.availableQty ?? 0),
+            0
+          );
+        }
       }
 
       const variantStockQty = Object.values(stockByVariantId).reduce((acc, n) => acc + (n ?? 0), 0);
@@ -1047,19 +1083,51 @@ export default function ProductDetail() {
   const [selected, setSelected] = React.useState<Record<string, string>>({});
   const [qty, setQty] = React.useState<number>(1);
 
+  const hasExplicitBaseDefaults = React.useMemo(() => {
+    return Object.keys(baseDefaults).length > 0 &&
+      Object.values(baseDefaults).some((v) => !!String(v ?? "").trim());
+  }, [baseDefaults]);
+
   const computeBaseSelection = React.useCallback(() => {
     if (!axes.length) return {};
-    return { ...baseDefaults };
-  }, [axes.length, baseDefaults]);
+
+    // If base attrs were explicitly configured, use them.
+    if (hasExplicitBaseDefaults) {
+      const out: Record<string, string> = {};
+      for (const ax of axes) {
+        const v = String(baseDefaults?.[ax.id] ?? "").trim();
+        if (v) out[ax.id] = v;
+      }
+      return out;
+    }
+
+    // Base exists but no base attrs configured => NOTHING selected.
+    return {};
+  }, [axes, hasExplicitBaseDefaults, hasBaseOffer, baseDefaults]);
 
   const computeInitialSelection = React.useCallback(() => {
     if (!axes.length) return {};
 
+    // Base attributes configured → always apply
+    if (hasExplicitBaseDefaults) {
+      const out: Record<string, string> = {};
+      for (const ax of axes) {
+        const v = String(baseDefaults?.[ax.id] ?? "").trim();
+        if (v) out[ax.id] = v;
+      }
+      return out;
+    }
+
+    // Base exists but no defaults configured
+    if (hasBaseOffer) {
+      return {};
+    }
+
+    // No base → preview cheapest variant
     if (cheapestOverallOffer?.model === "VARIANT" && cheapestOverallOffer.variantId) {
       const v = allVariants.find((x) => x.id === cheapestOverallOffer.variantId);
       if (v) {
         const out: Record<string, string> = {};
-        for (const ax of axes) out[ax.id] = "";
         for (const o of v.options || []) {
           const aId = String(o.attributeId ?? "").trim();
           const vId = String(o.valueId ?? "").trim();
@@ -1069,8 +1137,15 @@ export default function ProductDetail() {
       }
     }
 
-    return { ...baseDefaults };
-  }, [axes, baseDefaults, cheapestOverallOffer, allVariants]);
+    return {};
+  }, [
+    axes,
+    hasExplicitBaseDefaults,
+    hasBaseOffer,
+    baseDefaults,
+    cheapestOverallOffer,
+    allVariants,
+  ]);
 
   React.useEffect(() => {
     if (!product || !axes.length) {
@@ -1158,87 +1233,248 @@ export default function ProductDetail() {
     const offers = product?.offers ?? [];
     const retailFallbackProduct = toNum(product?.retailPrice, 0);
 
-    if (axes.length > 0 && isAtBaseDefaults(selected)) {
-      const baseBest = pickBestOffer({ offers, kind: "BASE" });
-      const chosenSupplier = baseStockQty > 0 ? baseBest?.unitPrice ?? null : null;
+    const hasFullSelection =
+      axes.length > 0 &&
+      axisIds.length > 0 &&
+      axisIds.every((aid) => !!String(selected?.[aid] ?? "").trim());
 
-      const retailFromSupplier = chosenSupplier != null ? applyMargin(chosenSupplier, marginPercent) : null;
+    const baseBest = pickBestOffer({ offers, kind: "BASE" });
+    const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
+
+    // 1) VALID MATCHED VARIANT ALWAYS WINS
+    if (matchedVariant && hasFullSelection) {
+      const bestVariant = pickBestOffer({
+        offers,
+        kind: "VARIANT",
+        variantId: matchedVariant.id,
+        sellableVariantIds,
+      });
+
+      const supplierVariantPrice =
+        bestVariant?.unitPrice != null && Number(bestVariant.unitPrice) > 0
+          ? Number(bestVariant.unitPrice)
+          : null;
+
+      // 3) PARTIAL / NO MATCH
+      // If base offer exists, base price should always win until
+      // a full variant combination is selected.
+
+      if (baseBest) {
+        const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+          supplierPrice: Number(baseBest.unitPrice ?? 0),
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        });
+
+        return {
+          mode: "BASE" as const,
+          supplierPrice: baseBest.unitPrice ?? null,
+          supplierId: baseBest.supplierId ?? product?.supplier?.id ?? null,
+          supplierName: baseBest.supplierName ?? product?.supplier?.name ?? null,
+          offerId: baseBest.offerId ?? null,
+          final: retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+          matchedVariant: null as VariantWire | null,
+          exactMatch: false,
+          exactSellable: false,
+          source: "BASE_OFFER",
+        };
+      }
+
+      // Only fall back to variant when NO base offer exists
+      const retailFromSupplier =
+        bestAny?.unitPrice != null
+          ? computeRetailPriceFromSupplierPrice({
+            supplierPrice: bestAny.unitPrice,
+            baseServiceFeeNGN,
+            commsUnitCostNGN,
+            gatewayFeePercent,
+            gatewayFixedFeeNGN,
+            gatewayFeeCapNGN,
+          })
+          : null;
+
+      return {
+        mode: "VARIANT" as const,
+        supplierPrice: bestAny?.unitPrice ?? null,
+        supplierId: bestAny?.supplierId ?? null,
+        supplierName: bestAny?.supplierName ?? null,
+        offerId: bestAny?.offerId ?? null,
+        final:
+          retailFromSupplier != null && retailFromSupplier > 0
+            ? retailFromSupplier
+            : retailFallbackProduct,
+        matchedVariant: null as VariantWire | null,
+        exactMatch: !!matchedVariant,
+        exactSellable,
+        source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
+      };
+    }
+
+    // 2) TRUE BASE MODE
+    if (axes.length > 0 && isAtBaseDefaults(selected)) {
+      // CASE A:
+      // Base attributes are NOT configured.
+      // Reset-to-base or base view should show base retailPrice,
+      // not auto-pick a variant.
+      if (!hasExplicitBaseDefaults) {
+        if (baseBest) {
+          const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+            supplierPrice: Number(baseBest.unitPrice ?? 0),
+            baseServiceFeeNGN,
+            commsUnitCostNGN,
+            gatewayFeePercent,
+            gatewayFixedFeeNGN,
+            gatewayFeeCapNGN,
+          });
+
+          return {
+            mode: "BASE" as const,
+            supplierPrice: baseBest.unitPrice ?? null,
+            supplierId: baseBest.supplierId ?? product?.supplier?.id ?? null,
+            supplierName: baseBest.supplierName ?? product?.supplier?.name ?? null,
+            offerId: baseBest.offerId ?? null,
+            final: retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+            matchedVariant: null as VariantWire | null,
+            exactMatch: false,
+            exactSellable: false,
+            source: "BASE_OFFER",
+          };
+        }
+
+        if (bestAny) {
+          const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+            supplierPrice: Number(bestAny.unitPrice),
+            baseServiceFeeNGN,
+            commsUnitCostNGN,
+            gatewayFeePercent,
+            gatewayFixedFeeNGN,
+            gatewayFeeCapNGN,
+          });
+
+          return {
+            mode: "VARIANT" as const,
+            supplierPrice: bestAny.unitPrice,
+            supplierId: bestAny.supplierId ?? null,
+            supplierName: bestAny.supplierName ?? null,
+            offerId: bestAny.offerId ?? null,
+            final: retailFromSupplier,
+            matchedVariant: null as VariantWire | null,
+            exactMatch: false,
+            exactSellable: false,
+            source: "CHEAPEST_OFFER",
+          };
+        }
+
+        return {
+          mode: "BASE" as const,
+          supplierPrice: null,
+          supplierId: product?.supplier?.id ?? null,
+          supplierName: product?.supplier?.name ?? null,
+          offerId: null,
+          final: retailFallbackProduct,
+          matchedVariant: null as VariantWire | null,
+          exactMatch: false,
+          exactSellable: false,
+          source: "PRODUCT_RETAIL",
+        };
+      }
+
+      // CASE B:
+      // Base attributes ARE configured, so base state should use those.
+      if (baseBest) {
+        const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+          supplierPrice: Number(baseBest.unitPrice ?? 0),
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        });
+
+        return {
+          mode: "BASE" as const,
+          supplierPrice: baseBest.unitPrice ?? null,
+          final: retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+          supplierId: baseBest.supplierId ?? product?.supplier?.id ?? null,
+          supplierName: baseBest.supplierName ?? product?.supplier?.name ?? null,
+          offerId: baseBest.offerId ?? null,
+          matchedVariant: null as VariantWire | null,
+          exactMatch: false,
+          exactSellable: false,
+          source: "BASE_OFFER",
+        };
+      }
+
+      // Base defaults exist, but there is no active base offer:
+      // only now fall back to cheapest sellable variant.
+      if (bestAny) {
+        const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+          supplierPrice: Number(bestAny.unitPrice),
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        });
+
+        return {
+          mode: "VARIANT" as const,
+          supplierPrice: bestAny.unitPrice,
+          supplierId: bestAny.supplierId ?? null,
+          supplierName: bestAny.supplierName ?? null,
+          offerId: bestAny.offerId ?? null,
+          final: retailFromSupplier,
+          matchedVariant: null as VariantWire | null,
+          exactMatch: false,
+          exactSellable: false,
+          source: "CHEAPEST_OFFER",
+        };
+      }
 
       return {
         mode: "BASE" as const,
-        supplierPrice: chosenSupplier,
-        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+        supplierPrice: null,
+        final: retailFallbackProduct,
         supplierId: product?.supplier?.id ?? null,
         supplierName: product?.supplier?.name ?? null,
-        offerId: baseBest?.offerId ?? null,
+        offerId: null,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
         exactSellable: false,
-        source: chosenSupplier != null ? "BASE_OFFER" : "PRODUCT_RETAIL",
+        source: "PRODUCT_RETAIL",
       };
     }
 
-    const pickedPairs = selectionPairsOf(selected);
-    if (!pickedPairs.length) {
-      const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
-      const retailFromSupplier = bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
-
-      return {
-        mode: "VARIANT" as const,
-        supplierPrice: bestAny?.unitPrice ?? null,
-        supplierId: bestAny?.supplierId ?? null,
-        supplierName: bestAny?.supplierName ?? null,
-        offerId: bestAny?.offerId ?? null,
-        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
-        matchedVariant: null as VariantWire | null,
-        exactMatch: false,
-        exactSellable: false,
-        source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
-      };
-    }
-
-    if (!matchedVariant) {
-      const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
-      const retailFromSupplier = bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
-
-      return {
-        mode: "VARIANT" as const,
-        supplierPrice: bestAny?.unitPrice ?? null,
-        supplierId: bestAny?.supplierId ?? null,
-        supplierName: bestAny?.supplierName ?? null,
-        offerId: bestAny?.offerId ?? null,
-        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
-        matchedVariant: null as VariantWire | null,
-        exactMatch: false,
-        exactSellable: false,
-        source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
-      };
-    }
-
-    const bestVariant = pickBestOffer({
-      offers,
-      kind: "VARIANT",
-      variantId: matchedVariant.id,
-      sellableVariantIds,
-    });
-
-    const chosen = bestVariant;
-    const retailFromSupplier = chosen?.unitPrice != null ? applyMargin(chosen.unitPrice, marginPercent) : null;
-
-    const fallbackVariantRetail = toNum(matchedVariant.retailPrice, 0);
-    const fallbackRetail = fallbackVariantRetail > 0 ? fallbackVariantRetail : retailFallbackProduct;
+    // 3) PARTIAL / NO MATCH => CHEAPEST AVAILABLE PREVIEW PRICE
+    const retailFromSupplier =
+      bestAny?.unitPrice != null
+        ? computeRetailPriceFromSupplierPrice({
+          supplierPrice: bestAny.unitPrice,
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        })
+        : null;
 
     return {
       mode: "VARIANT" as const,
-      supplierPrice: chosen?.unitPrice ?? null,
-      supplierId: chosen?.supplierId ?? product?.supplier?.id ?? null,
-      supplierName: chosen?.supplierName ?? product?.supplier?.name ?? null,
-      offerId: chosen?.offerId ?? null,
-      final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
-      matchedVariant,
-      exactMatch: true,
+      supplierPrice: bestAny?.unitPrice ?? null,
+      supplierId: bestAny?.supplierId ?? null,
+      supplierName: bestAny?.supplierName ?? null,
+      offerId: bestAny?.offerId ?? null,
+      final:
+        retailFromSupplier != null && retailFromSupplier > 0
+          ? retailFromSupplier
+          : retailFallbackProduct,
+      matchedVariant: null as VariantWire | null,
+      exactMatch: !!matchedVariant,
       exactSellable,
-      source: bestVariant != null ? "VARIANT_OFFER" : "RETAIL_FALLBACK",
+      source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
     };
   }, [
     product?.offers,
@@ -1246,32 +1482,98 @@ export default function ProductDetail() {
     product?.supplier?.id,
     product?.supplier?.name,
     axes.length,
+    axisIds,
     selected,
     isAtBaseDefaults,
     matchedVariant,
     exactSellable,
     sellableVariantIds,
-    marginPercent,
-    baseStockQty,
+    hasExplicitBaseDefaults,
+    baseServiceFeeNGN,
+    commsUnitCostNGN,
+    gatewayFeePercent,
+    gatewayFixedFeeNGN,
+    gatewayFeeCapNGN,
   ]);
 
   const purchaseMeta = React.useMemo(() => {
     const hasVariantAxes = axes.length > 0;
+    const hasAnySelection = axisIds.some((aid) => !!String(selected?.[aid] ?? "").trim());
+    const hasFullSelection =
+      hasVariantAxes &&
+      axisIds.length > 0 &&
+      axisIds.every((aid) => !!String(selected?.[aid] ?? "").trim());
 
     if (!hasVariantAxes) {
-      if (canBuyBase) return { disableAddToCart: false, helperNote: null, mode: "BASE" as const, variantId: null as string | null };
-      return { disableAddToCart: true, helperNote: "Out of stock.", mode: "BASE" as const, variantId: null as string | null };
-    }
+      if (canBuyBase) {
+        return {
+          disableAddToCart: false,
+          helperNote: null,
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
+      }
 
-    if (axisIds.every((aid) => !String(selected?.[aid] ?? "").trim())) {
       return {
         disableAddToCart: true,
-        helperNote: "Choose base option, or select a valid variant combination.",
-        mode: "VARIANT" as const,
+        helperNote: "Out of stock.",
+        mode: "BASE" as const,
         variantId: null as string | null,
       };
     }
 
+    // VALID MATCHED VARIANT ALWAYS WINS
+    if (matchedVariantId && hasFullSelection) {
+      const stock = stockByVariantId[matchedVariantId] ?? 0;
+
+      if (stock > 0) {
+        return {
+          disableAddToCart: false,
+          helperNote: null,
+          mode: "VARIANT" as const,
+          variantId: matchedVariantId,
+        };
+      }
+
+      return {
+        disableAddToCart: true,
+        helperNote:
+          "This variant combo is out of stock (no active supplier offer). Try another combination.",
+        mode: "VARIANT" as const,
+        variantId: matchedVariantId,
+      };
+    }
+
+    // No selections yet
+    if (!hasAnySelection) {
+      if (canBuyBase) {
+        return {
+          disableAddToCart: false,
+          helperNote: "Base product selected. Choose options to buy a specific variant.",
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
+      }
+
+      if (variantStockQty > 0) {
+        return {
+          disableAddToCart: true,
+          helperNote:
+            "This product is available as variants only — please select options.",
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
+      }
+
+      return {
+        disableAddToCart: true,
+        helperNote: "Out of stock.",
+        mode: "BASE" as const,
+        variantId: null as string | null,
+      };
+    }
+
+    // Explicit base/default state
     if (isAtBaseDefaults(selected)) {
       if (canBuyBase) {
         return {
@@ -1281,18 +1583,27 @@ export default function ProductDetail() {
           variantId: null as string | null,
         };
       }
+
       if (variantStockQty > 0) {
         return {
           disableAddToCart: true,
-          helperNote: "Base offer is not available. This product is available as variants only — please select options.",
+          helperNote:
+            "Base offer is not available. This product is available as variants only — please select options.",
           mode: "BASE" as const,
           variantId: null as string | null,
         };
       }
-      return { disableAddToCart: true, helperNote: "Out of stock.", mode: "BASE" as const, variantId: null as string | null };
+
+      return {
+        disableAddToCart: true,
+        helperNote: "Out of stock.",
+        mode: "BASE" as const,
+        variantId: null as string | null,
+      };
     }
 
-    if (!matchedVariantId) {
+    // Full selection but invalid combo
+    if (hasFullSelection && !matchedVariantId) {
       return {
         disableAddToCart: true,
         helperNote: "This combination is not available. Try a different set of options.",
@@ -1301,18 +1612,23 @@ export default function ProductDetail() {
       };
     }
 
-    const stock = stockByVariantId[matchedVariantId] ?? 0;
-    if (stock <= 0) {
-      return {
-        disableAddToCart: true,
-        helperNote: "This variant combo is out of stock (no active supplier offer). Try another combination.",
-        mode: "VARIANT" as const,
-        variantId: matchedVariantId,
-      };
-    }
-
-    return { disableAddToCart: false, helperNote: null, mode: "VARIANT" as const, variantId: matchedVariantId };
-  }, [axes.length, axisIds, canBuyBase, selected, isAtBaseDefaults, variantStockQty, matchedVariantId, stockByVariantId]);
+    // Partial selection
+    return {
+      disableAddToCart: true,
+      helperNote: "Select the remaining options to choose a valid variant combination.",
+      mode: "VARIANT" as const,
+      variantId: null as string | null,
+    };
+  }, [
+    axes.length,
+    axisIds,
+    canBuyBase,
+    selected,
+    isAtBaseDefaults,
+    variantStockQty,
+    matchedVariantId,
+    stockByVariantId,
+  ]);
 
   const selectedCount = React.useMemo(() => {
     return axisIds.filter((aid) => !!String(selected?.[aid] ?? "").trim()).length;
@@ -1320,13 +1636,14 @@ export default function ProductDetail() {
 
   const allAxesSelected = axes.length > 0 && selectedCount === axisIds.length;
 
-  const showInvalidCombo = !!axes.length && !isAtBaseDefaults(selected) && allAxesSelected && !matchedVariantId;
+  const showInvalidCombo =
+    !!axes.length &&
+    allAxesSelected &&
+    !matchedVariantId;
+
+  const shouldWarnInvalidCombo = showInvalidCombo && !canBuyBase;
 
   /* ---------------- Images ---------------- */
-  function isUrlish(s?: string) {
-    return !!resolveImageUrl(s);
-  }
-
   const images = React.useMemo(() => {
     const variantImgs =
       matchedVariant?.imagesJson?.map((u) => resolveImageUrl(u)).filter(Boolean as any) ?? [];
@@ -1689,12 +2006,20 @@ export default function ProductDetail() {
             const isAvailable = partialSelectionMatchesAnySellable(candidate);
             const disabled = !active && hasAnyPicked && !isAvailable;
 
-            const availableCls =
-              "border-emerald-300/80 bg-emerald-50/30 hover:bg-emerald-50/60 text-zinc-900";
-            const unavailableCls =
-              "opacity-45 border-zinc-200 bg-zinc-50 text-zinc-500 cursor-not-allowed";
-            const selectedOkCls = "ring-2 ring-fuchsia-500 border-fuchsia-500";
-            const selectedWarnCls = "ring-2 ring-amber-400 border-amber-400";
+            const baseCls =
+              "px-2.5 py-1.5 rounded-xl text-sm md:text-base transition flex items-center gap-2 bg-white";
+
+            const availableIdleCls =
+              "border-transparent text-zinc-900 hover:bg-zinc-50 shadow-none";
+
+            const disabledCls =
+              "border border-zinc-200 bg-zinc-50 text-zinc-400 cursor-not-allowed opacity-60";
+
+            const selectedOkCls =
+              "border border-fuchsia-500 ring-2 ring-fuchsia-500 text-zinc-900";
+
+            const selectedWarnCls =
+              "border border-amber-400 ring-2 ring-amber-400 text-zinc-900";
 
             return (
               <button
@@ -1706,23 +2031,19 @@ export default function ProductDetail() {
                   onChange(active ? "" : opt.id);
                 }}
                 className={[
-                  "px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2",
-                  silverBorder,
-                  silverShadowSm,
+                  baseCls,
                   active
-                    ? showInvalidCombo
+                    ? shouldWarnInvalidCombo
                       ? selectedWarnCls
                       : selectedOkCls
                     : disabled
-                      ? unavailableCls
-                      : isAvailable
-                        ? "border-dashed " + availableCls
-                        : "bg-white hover:bg-zinc-50",
+                      ? disabledCls
+                      : availableIdleCls,
                 ].join(" ")}
                 title={disabled ? "Not available with current selections" : ""}
               >
                 {!active && !disabled && isAvailable && (
-                  <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                  <span className="inline-block size-2 rounded-full bg-emerald-500" />
                 )}
                 <span>{opt.name}</span>
               </button>
@@ -1744,15 +2065,24 @@ export default function ProductDetail() {
           {axis.values.map((opt) => {
             const active = value === opt.id;
             const candidate = { ...selected, [axis.id]: opt.id };
+            const hasAnyPicked = axisIds.some((aid) => !!String(selected?.[aid] ?? "").trim());
             const isAvailable = partialSelectionMatchesAnySellable(candidate);
-            const disabled = !active && !isAvailable;
+            const disabled = !active && hasAnyPicked && !isAvailable;
 
-            const availableCls =
-              "border-emerald-300/80 bg-emerald-50/30 hover:bg-emerald-50/60 text-zinc-900";
-            const unavailableCls =
-              "opacity-45 border-zinc-200 bg-zinc-50 text-zinc-500 cursor-not-allowed";
-            const selectedOkCls = "ring-2 ring-fuchsia-500 border-fuchsia-500";
-            const selectedWarnCls = "ring-2 ring-amber-400 border-amber-400";
+            const baseCls =
+              "w-full text-left px-2.5 py-1.5 rounded-xl text-sm md:text-base transition flex items-center gap-2 bg-white";
+
+            const availableIdleCls =
+              "border-transparent text-zinc-900 hover:bg-zinc-50 shadow-none";
+
+            const disabledCls =
+              "border border-zinc-200 bg-zinc-50 text-zinc-400 cursor-not-allowed opacity-60";
+
+            const selectedOkCls =
+              "border border-fuchsia-500 ring-2 ring-fuchsia-500 text-zinc-900";
+
+            const selectedWarnCls =
+              "border border-amber-400 ring-2 ring-amber-400 text-zinc-900";
 
             return (
               <button
@@ -1764,21 +2094,19 @@ export default function ProductDetail() {
                   onChange(active ? "" : opt.id);
                 }}
                 className={[
-                  "px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2",
-                  silverBorder,
-                  silverShadowSm,
+                  baseCls,
                   active
                     ? showInvalidCombo
                       ? selectedWarnCls
                       : selectedOkCls
                     : disabled
-                      ? unavailableCls
-                      : "border-dashed " + availableCls,
+                      ? disabledCls
+                      : availableIdleCls,
                 ].join(" ")}
                 title={disabled ? "Not available with current selections" : active ? "Click again to deselect" : ""}
               >
-                {!active && !disabled && (
-                  <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                {!active && !disabled && isAvailable && (
+                  <span className="inline-block size-2 rounded-full bg-emerald-500" />
                 )}
                 <span>{opt.name}</span>
               </button>
@@ -2101,13 +2429,13 @@ export default function ProductDetail() {
                         />
                       </div>
                     ))}
-                    {showInvalidCombo && (
+                    {shouldWarnInvalidCombo && (
                       <div className="text-xs text-zinc-600">
-                        Tip: <span className="font-medium">dashed green</span> options can form an available combo.
+                        Tip: <span className="font-medium">green dot</span> means the option can form an available combo.
                       </div>
                     )}
 
-                    {showInvalidCombo && (
+                    {shouldWarnInvalidCombo && (
                       <VariantWarning message="This combination is not available. Try a different set of options." />
                     )}
 
@@ -2356,7 +2684,20 @@ export default function ProductDetail() {
                 >
                   {similarQ.data.map((sp) => {
                     const basePrice = sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice)) ? Number(sp.retailPrice) : null;
-                    const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
+                    const showPrice =
+                      basePrice != null
+                        ? NGN.format(
+                          computeRetailPriceFromSupplierPrice({
+                            supplierPrice: basePrice,
+                            baseServiceFeeNGN,
+                            commsUnitCostNGN,
+
+                            gatewayFeePercent,
+                            gatewayFixedFeeNGN,
+                            gatewayFeeCapNGN,
+                          })
+                        )
+                        : "—";
                     const imgRaw = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
                     const img = resolveImageUrl(imgRaw) || "";
 

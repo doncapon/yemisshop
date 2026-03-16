@@ -109,7 +109,12 @@ type ProductView = Product & {
 };
 
 type PublicSettings = {
-  marginPercent?: number;
+  baseServiceFeeNGN?: number;
+  commsUnitCostNGN?: number;
+  gatewayFeePercent?: number;
+  gatewayFixedFeeNGN?: number;
+  gatewayFeeCapNGN?: number;
+  marginPercent?: number; // keep optional only for backward compatibility
 };
 
 type CategoryNode = {
@@ -406,120 +411,205 @@ function availableNow(p: Product): boolean {
 }
 
 /* =========================================================
-   Pricing
+   Pricing — aligned with admin
+   retail = supplierPrice + baseServiceFeeNGN + commsUnitCostNGN + gatewayFee
 ========================================================= */
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+function estimateGatewayFeeFromSettings(args: {
+  amountNaira: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const amount = Number(args.amountNaira);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
 
-function applyMargin(raw: number | null | undefined, marginPercent: number): number | null {
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const m = Math.max(0, Number(marginPercent) || 0);
-  const out = round2(n * (1 + m / 100));
-  return Number.isFinite(out) && out > 0 ? out : null;
+  const percentFee = amount * (Number(args.gatewayFeePercent || 0) / 100);
+  const gross = percentFee + Number(args.gatewayFixedFeeNGN || 0);
+  const cap = Number(args.gatewayFeeCapNGN || 0);
+
+  if (cap > 0) return Math.min(gross, cap);
+  return gross;
 }
 
-function cheapestActiveBaseOfferPrice(p: Product): number | null {
+function computeRetailPriceFromSupplierPrice(args: {
+  supplierPrice: number;
+  baseServiceFeeNGN: number;
+  commsUnitCostNGN: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const supplierPrice = Number(args.supplierPrice);
+  if (!Number.isFinite(supplierPrice) || supplierPrice <= 0) return 0;
+
+  const gatewayFeeNGN = estimateGatewayFeeFromSettings({
+    amountNaira: supplierPrice,
+    gatewayFeePercent: args.gatewayFeePercent,
+    gatewayFixedFeeNGN: args.gatewayFixedFeeNGN,
+    gatewayFeeCapNGN: args.gatewayFeeCapNGN,
+  });
+
+  const extras =
+    Number(args.baseServiceFeeNGN || 0) +
+    Number(args.commsUnitCostNGN || 0) +
+    Number(gatewayFeeNGN || 0);
+
+  return Math.round(supplierPrice + extras);
+}
+
+function getOfferSupplierPrice(o?: SupplierOfferLite | null): number | null {
+  if (!o || o.isActive === false || !offerStockOk(o)) return null;
+
+  const n = Number(o.unitPrice ?? o.basePrice ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return null;
+
+  return n;
+}
+
+function firstActiveBaseOfferSupplierPrice(p: Product): number | null {
   const offers = Array.isArray(p.supplierProductOffers) ? p.supplierProductOffers : [];
-  let best: number | null = null;
 
   for (const o of offers) {
-    if (!o || o.isActive === false || !offerStockOk(o)) continue;
-    const raw = o.basePrice ?? o.unitPrice ?? null;
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) continue;
-    if (best == null || n < best) best = n;
+    const price = getOfferSupplierPrice(o);
+    if (price != null) return price;
   }
 
-  return best;
+  return null;
 }
 
-function cheapestActiveVariantOfferPrice(p: Product): number | null {
-  let best: number | null = null;
-
+function firstActiveVariantOfferSupplierPrice(p: Product): number | null {
   const variants = Array.isArray(p.variants) ? p.variants : [];
+
   for (const v of variants) {
     const offers = Array.isArray(v.offers) ? v.offers : [];
     for (const o of offers) {
-      if (!o || o.isActive === false || !offerStockOk(o)) continue;
-      const raw = o.unitPrice ?? o.basePrice ?? null;
-      const n = Number(raw);
-      if (!Number.isFinite(n) || n <= 0) continue;
-      if (best == null || n < best) best = n;
+      const price = getOfferSupplierPrice(o);
+      if (price != null) return price;
     }
   }
 
-  return best;
+  return null;
 }
 
-function cheapestActiveAnyOfferPrice(p: Product): number | null {
+function firstActiveAnyOfferSupplierPrice(p: Product): number | null {
   const offers = collectAllOffers(p);
-  let best: number | null = null;
 
   for (const o of offers) {
-    if (!o || o.isActive === false || !offerStockOk(o)) continue;
-    const raw = o.unitPrice ?? o.basePrice ?? null;
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) continue;
-    if (best == null || n < best) best = n;
+    const price = getOfferSupplierPrice(o);
+    if (price != null) return price;
   }
 
-  return best;
+  return null;
 }
 
-function getDisplayRetailPrice(p: Product, marginPercent: number): number {
-  const apiComputed = Number(p.computedRetailPrice);
-  if (Number.isFinite(apiComputed) && apiComputed > 0) return apiComputed;
+function getDisplayRetailPrice(
+  p: Product,
+  pricing: {
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }
+): number {
+  // 1) Prefer raw supplier-side price sources, then compute retail locally
+  const offersFromPrice =
+    Number.isFinite(Number(p.offersFrom)) && Number(p.offersFrom) > 0
+      ? Number(p.offersFrom)
+      : null;
+
+  const displayBaseSupplierPrice =
+    Number.isFinite(Number(p.displayBasePrice)) && Number(p.displayBasePrice) > 0
+      ? Number(p.displayBasePrice)
+      : null;
 
   const hasOptions = Array.isArray(p.variants) && p.variants.length > 0;
 
-  if (hasOptions) {
-    const baseRaw = cheapestActiveBaseOfferPrice(p);
-    const baseRetail = applyMargin(baseRaw, marginPercent);
-    if (baseRetail != null) return baseRetail;
+  let sourceSupplierPrice: number | null = null;
 
-    const varRaw = cheapestActiveVariantOfferPrice(p);
-    const varRetail = applyMargin(varRaw, marginPercent);
-    if (varRetail != null) return varRetail;
+  if (offersFromPrice != null) {
+    sourceSupplierPrice = offersFromPrice;
+  } else if (hasOptions) {
+    const baseSupplierPrice = firstActiveBaseOfferSupplierPrice(p);
+    const variantSupplierPrice = firstActiveVariantOfferSupplierPrice(p);
+
+    if (baseSupplierPrice != null && variantSupplierPrice != null) {
+      sourceSupplierPrice = Math.min(baseSupplierPrice, variantSupplierPrice);
+    } else if (baseSupplierPrice != null) {
+      sourceSupplierPrice = baseSupplierPrice;
+    } else if (variantSupplierPrice != null) {
+      sourceSupplierPrice = variantSupplierPrice;
+    } else if (displayBaseSupplierPrice != null) {
+      sourceSupplierPrice = displayBaseSupplierPrice;
+    }
   } else {
-    const anyRaw = cheapestActiveAnyOfferPrice(p);
-    const anyRetail = applyMargin(anyRaw, marginPercent);
-    if (anyRetail != null) return anyRetail;
+    sourceSupplierPrice =
+      firstActiveAnyOfferSupplierPrice(p) ??
+      displayBaseSupplierPrice ??
+      null;
   }
 
-  const offersFromRetail = applyMargin(p.offersFrom, marginPercent);
-  if (offersFromRetail != null) return offersFromRetail;
+  if (sourceSupplierPrice != null && sourceSupplierPrice > 0) {
+    return computeRetailPriceFromSupplierPrice({
+      supplierPrice: sourceSupplierPrice,
+      baseServiceFeeNGN: pricing.baseServiceFeeNGN,
+      commsUnitCostNGN: pricing.commsUnitCostNGN,
+      gatewayFeePercent: pricing.gatewayFeePercent,
+      gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
+      gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
+    });
+  }
+
+  // 2) Only fallback to already-computed retail from API when we do NOT have supplier price
+  const apiComputed = Number(p.computedRetailPrice);
+  if (Number.isFinite(apiComputed) && apiComputed > 0) return apiComputed;
 
   const raw =
     Number(p.retailPrice) > 0
       ? Number(p.retailPrice)
       : Number(p.autoPrice) > 0
         ? Number(p.autoPrice)
-        : Number(p.displayBasePrice) > 0
-          ? Number(p.displayBasePrice)
-          : 0;
+        : 0;
 
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
 
-function priceForFiltering(p: Product, marginPercent: number): number {
-  return getDisplayRetailPrice(p, marginPercent);
+function priceForFiltering(
+  p: Product,
+  pricing: {
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }
+): number {
+  return getDisplayRetailPrice(p, pricing);
 }
 
 /* =========================================================
    Sellable flag
 ========================================================= */
 
-function productSellable(p: Product, marginPercent: number): boolean {
+function productSellable(
+  p: Product,
+  pricing: {
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }
+): boolean {
   if (!isLive(p)) return false;
 
   const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
 
   if (!hasVariants && !getActiveBaseOffer(p)) return false;
-
   if (!availableNow(p)) return false;
 
-  const price = getDisplayRetailPrice(p, marginPercent);
+  const price = getDisplayRetailPrice(p, pricing);
   return Number.isFinite(price) && price > 0;
 }
 
@@ -1280,7 +1370,7 @@ const ProductCard = memo(
                     data-stop-card-nav="true"
                     disabled={!inStock}
                     className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium shadow-sm transition md:px-3 md:py-1.5 md:text-xs ${inStock
-                      ? "bg-black text-white hover:bg-black/90"
+                      ? "bg-zinc-700 text-white hover:bg-black/90"
                       : "cursor-not-allowed bg-zinc-200 text-zinc-500"
                       }`}
                     onClick={(e) => {
@@ -1407,20 +1497,39 @@ export default function Catalog() {
   }, []);
 
   /* ---------------- Settings ---------------- */
-  const settingsQ = useQuery<number>({
-    queryKey: ["settings", "public", "marginPercent"],
+  /* ---------------- Settings ---------------- */
+  const settingsQ = useQuery<{
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }>({
+    queryKey: ["settings", "public", "pricing"],
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: 0,
     queryFn: async () => {
       const { data } = await api.get<PublicSettings>("/api/settings/public");
-      const v = Number((data as any)?.marginPercent);
-      return Math.max(0, Number.isFinite(v) ? v : 0);
+
+      const root = (data as any)?.data ?? data ?? {};
+
+      return {
+        baseServiceFeeNGN: Number(root?.baseServiceFeeNGN ?? 0) || 0,
+        commsUnitCostNGN: Number(root?.commsUnitCostNGN ?? 0) || 0,
+        gatewayFeePercent: Number(root?.gatewayFeePercent ?? 1.5) || 1.5,
+        gatewayFixedFeeNGN: Number(root?.gatewayFixedFeeNGN ?? 100) || 100,
+        gatewayFeeCapNGN: Number(root?.gatewayFeeCapNGN ?? 2000) || 2000,
+      };
     },
   });
 
-  const marginPercent = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
+  const baseServiceFeeNGN = Number(settingsQ.data?.baseServiceFeeNGN ?? 0) || 0;
+  const commsUnitCostNGN = Number(settingsQ.data?.commsUnitCostNGN ?? 0) || 0;
+  const gatewayFeePercent = Number(settingsQ.data?.gatewayFeePercent ?? 1.5) || 1.5;
+  const gatewayFixedFeeNGN = Number(settingsQ.data?.gatewayFixedFeeNGN ?? 100) || 100;
+  const gatewayFeeCapNGN = Number(settingsQ.data?.gatewayFeeCapNGN ?? 2000) || 2000;
 
   /* ---------------- UI state ---------------- */
 
@@ -1435,7 +1544,7 @@ export default function Catalog() {
   );
   const [sortKey, setSortKey] = useState<SortKey>(initialPersisted?.sortKey ?? "relevance");
 
-  const [query, setQuery] = useState(initialPersisted?.query ?? "");
+  const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
@@ -1478,7 +1587,7 @@ export default function Catalog() {
       selectedBucketIdxs,
       selectedBrands,
       sortKey,
-      query,
+      query: "",
       inStockOnly,
       expandedCats,
       page,
@@ -1499,11 +1608,13 @@ export default function Catalog() {
 
   const goToProduct = useCallback(
     (productId: string) => {
+      setQuery("");
       persistSnapshot();
       setCatalogReturning(true);
 
       setRefineOpen(false);
       setSearchFocused(false);
+      setActiveIdx(0);
       setTouchStartX(null);
 
       nav(`/products/${productId}`, {
@@ -1514,7 +1625,6 @@ export default function Catalog() {
     },
     [persistSnapshot, nav, locationStateFrom]
   );
-
   const closeRefine = useCallback(() => {
     setRefineOpen(false);
     setSearchFocused(false);
@@ -1550,10 +1660,30 @@ export default function Catalog() {
     };
   }, [refineOpen]);
 
+
+  useEffect(() => {
+    const clearSearchUi = () => {
+      setQuery("");
+      setSearchFocused(false);
+      setActiveIdx(0);
+    };
+
+    clearSearchUi();
+
+    const onPageShow = () => {
+      clearSearchUi();
+    };
+
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
   useEffect(() => {
     const resetUiOnly = () => {
       setRefineOpen(false);
       setSearchFocused(false);
+      setActiveIdx(0);
+      setQuery("");
       setTouchStartX(null);
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
@@ -1586,7 +1716,7 @@ export default function Catalog() {
         selectedBucketIdxs,
         selectedBrands,
         sortKey,
-        query,
+        query: "",
         inStockOnly,
         expandedCats,
         page,
@@ -1822,16 +1952,23 @@ export default function Catalog() {
   const productViews = useMemo<ProductView[]>(() => {
     const out: ProductView[] = new Array(products.length);
 
+    const pricing = {
+      baseServiceFeeNGN,
+      commsUnitCostNGN,
+      gatewayFeePercent,
+      gatewayFixedFeeNGN,
+      gatewayFeeCapNGN,
+    };
+
     for (let i = 0; i < products.length; i++) {
       const p = products[i];
       const imageCandidates = getProductImageCandidates(p);
 
       const brandName = cleanText(p.brand?.name);
       const categoryLabel = cleanText(p.categoryName) || "Uncategorized";
-      const displayPrice = priceForFiltering(p, marginPercent);
+      const displayPrice = priceForFiltering(p, pricing);
       const available = availableNow(p);
-
-      const sellable = productSellable(p, marginPercent);
+      const sellable = productSellable(p, pricing);
 
       out[i] = {
         ...p,
@@ -1850,8 +1987,14 @@ export default function Catalog() {
     }
 
     return out;
-  }, [products, marginPercent]);
-
+  }, [
+    products,
+    baseServiceFeeNGN,
+    commsUnitCostNGN,
+    gatewayFeePercent,
+    gatewayFixedFeeNGN,
+    gatewayFeeCapNGN,
+  ]);
   /* ---------------- Categories ---------------- */
 
   const categoriesTreeQ = useQuery<CategoryNode[]>({
@@ -3053,7 +3196,7 @@ export default function Catalog() {
 
                 <button
                   type="submit"
-                  className="absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center rounded-full bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-800"
+                  className="absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center rounded-full bg-zinc-400 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-800"
                 >
                   Search
                 </button>

@@ -488,7 +488,7 @@ async function recomputeProfitForPayment(paymentId: string) {
 
   const baseServiceFee =
     Number(
-      (await readSetting("serviceFeeBaseNGN")) ??
+      (await readSetting("baseServiceFeeNGN")) ??
       (await readSetting("platformBaseFeeNGN")) ??
       0
     ) || 0;
