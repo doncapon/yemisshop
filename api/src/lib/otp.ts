@@ -1,18 +1,23 @@
-// api/src/lib/otp.ts
-import bcrypt from 'bcryptjs';
-import { prisma } from '../lib/prisma.js';
-import { sendSmsOtp, sendWhatsappOtp } from './sms.js';
+import bcrypt from "bcryptjs";
+import { prisma } from "../lib/prisma.js";
+import { sendOtpEmail } from "./email.js";
+import {
+  normalizeToTermiiPhone,
+  sendOtpSmsViaTermii,
+  sendOtpWhatsappViaTermii,
+} from "./termii.js";
 
 const OTP_TTL_MIN = Number(process.env.OTP_TTL_MIN || 10);
 const OTP_LEN = Number(process.env.OTP_LEN || 6);
 const MAX_PER_15M = Number(process.env.OTP_MAX_PER_15M || 3);
 const MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
 
+type OtpChannel = "whatsapp" | "sms" | "email";
+
 function genCode(len = OTP_LEN) {
-  return Array.from({ length: len }, () => Math.floor(Math.random() * 10)).join('');
+  return Array.from({ length: len }, () => Math.floor(Math.random() * 10)).join("");
 }
 
-/** Rate-limit sends per identifier (email/userId/etc.) */
 async function canSend(identifier: string) {
   const since = new Date(Date.now() - 15 * 60 * 1000);
   const sent = await prisma.otp.count({
@@ -21,27 +26,47 @@ async function canSend(identifier: string) {
   return sent < MAX_PER_15M;
 }
 
-/**
- * Issue an OTP and send via WhatsApp (default) with SMS fallback.
- * IMPORTANT: `identifier` must be the SAME value you’ll verify with later (e.g. userId).
- */
-export async function issueOtp(opts: {
+type IssueOtpOpts = {
   identifier: string;
   userId?: string | null;
-  phoneE164?: string;                 // "+2348…"
-  channelPref?: 'whatsapp' | 'sms' | 'email';
-}) {
-  const { identifier, userId = null, phoneE164, channelPref = 'whatsapp' } = opts;
+
+  phone?: string | null;
+  whatsappPhone?: string | null;
+  email?: string | null;
+
+  channelPref?: OtpChannel;
+
+  brand?: string;
+  purposeLabel?: string;
+  expiresMins?: number;
+  orderId?: string;
+};
+
+export async function issueOtp(opts: IssueOtpOpts) {
+  const {
+    identifier,
+    userId = null,
+    phone,
+    whatsappPhone,
+    email,
+    channelPref = "whatsapp",
+    brand = "DaySpring",
+    purposeLabel = "Verification",
+    expiresMins = OTP_TTL_MIN,
+    orderId,
+  } = opts;
 
   if (!(await canSend(identifier))) {
-    return { ok: false as const, error: 'Too many OTP requests. Try again later.' };
+    return { ok: false as const, error: "Too many OTP requests. Try again later." };
   }
 
   const code = genCode();
   const codeHash = await bcrypt.hash(code, 8);
-  const expiresAt = new Date(Date.now() + OTP_TTL_MIN * 60 * 1000);
+  const expiresAt = new Date(Date.now() + expiresMins * 60 * 1000);
 
-  // 🔐 Store ONLY the hash. Do not store raw code.
+  const normalizedPhone = normalizeToTermiiPhone(phone);
+  const normalizedWhatsappPhone = normalizeToTermiiPhone(whatsappPhone);
+
   const row = await prisma.otp.create({
     data: {
       identifier,
@@ -50,58 +75,199 @@ export async function issueOtp(opts: {
       expiresAt,
       attempts: 0,
       channel: channelPref.toUpperCase(),
-      // consumedAt left null until successfully verified
     },
     select: { id: true },
   });
 
-  // Try WA → fallback to SMS
-  let sent = false;
+  const attempts: Array<{
+    channel: OtpChannel;
+    run: () => Promise<any>;
+  }> = [];
+
+  if (channelPref === "whatsapp") {
+    if (normalizedWhatsappPhone) {
+      attempts.push({
+        channel: "whatsapp",
+        run: () =>
+          sendOtpWhatsappViaTermii({
+            to: normalizedWhatsappPhone,
+            code,
+            expiresMinutes: expiresMins,
+            brand,
+            purposeLabel,
+          }),
+      });
+    }
+
+    if (normalizedPhone) {
+      attempts.push({
+        channel: "sms",
+        run: () =>
+          sendOtpSmsViaTermii({
+            to: normalizedPhone,
+            code,
+            expiresMinutes: expiresMins,
+            brand,
+            purposeLabel,
+          }),
+      });
+    }
+
+    if (email) {
+      attempts.push({
+        channel: "email",
+        run: () =>
+          sendOtpEmail(email, code, {
+            brand,
+            expiresMins,
+            purposeLabel,
+            orderId,
+          }),
+      });
+    }
+  } else if (channelPref === "sms") {
+    if (normalizedPhone) {
+      attempts.push({
+        channel: "sms",
+        run: () =>
+          sendOtpSmsViaTermii({
+            to: normalizedPhone,
+            code,
+            expiresMinutes: expiresMins,
+            brand,
+            purposeLabel,
+          }),
+      });
+    }
+
+    if (normalizedWhatsappPhone) {
+      attempts.push({
+        channel: "whatsapp",
+        run: () =>
+          sendOtpWhatsappViaTermii({
+            to: normalizedWhatsappPhone,
+            code,
+            expiresMinutes: expiresMins,
+            brand,
+            purposeLabel,
+          }),
+      });
+    }
+
+    if (email) {
+      attempts.push({
+        channel: "email",
+        run: () =>
+          sendOtpEmail(email, code, {
+            brand,
+            expiresMins,
+            purposeLabel,
+            orderId,
+          }),
+      });
+    }
+  } else {
+    if (email) {
+      attempts.push({
+        channel: "email",
+        run: () =>
+          sendOtpEmail(email, code, {
+            brand,
+            expiresMins,
+            purposeLabel,
+            orderId,
+          }),
+      });
+    }
+
+    if (normalizedWhatsappPhone) {
+      attempts.push({
+        channel: "whatsapp",
+        run: () =>
+          sendOtpWhatsappViaTermii({
+            to: normalizedWhatsappPhone,
+            code,
+            expiresMinutes: expiresMins,
+            brand,
+            purposeLabel,
+          }),
+      });
+    }
+
+    if (normalizedPhone) {
+      attempts.push({
+        channel: "sms",
+        run: () =>
+          sendOtpSmsViaTermii({
+            to: normalizedPhone,
+            code,
+            expiresMinutes: expiresMins,
+            brand,
+            purposeLabel,
+          }),
+      });
+    }
+  }
+
+  if (!attempts.length) {
+    return { ok: false as const, error: "No valid delivery channel found for OTP." };
+  }
+
   let lastErr: string | undefined;
 
-  if (channelPref === 'whatsapp' && phoneE164) {
-    const wa = await sendWhatsappOtp(phoneE164, code);
-    sent = wa.ok;
-    if (!wa.ok) lastErr = wa.error;
+  for (const attempt of attempts) {
+    try {
+      await attempt.run();
+
+      await prisma.otp.update({
+        where: { id: row.id },
+        data: { channel: attempt.channel.toUpperCase() },
+      });
+
+      return {
+        ok: true as const,
+        id: row.id,
+        ttlMin: expiresMins,
+        channel: attempt.channel,
+      };
+    } catch (err: any) {
+      lastErr = String(err?.message || err || `Failed via ${attempt.channel}`);
+    }
   }
 
-  if (!sent && phoneE164) {
-    const sms = await sendSmsOtp(
-      phoneE164,
-      `Your DaySpring code is ${code} . Expires in ${OTP_TTL_MIN} minute(s).`
-    );
-    sent = sms?.ok === true;
-    if (!sms?.ok) lastErr = 'SMS failed';
-  }
-
-  return sent
-    ? { ok: true as const, id: row.id, ttlMin: OTP_TTL_MIN }
-    : { ok: false as const, error: lastErr || 'Send failed' };
+  return {
+    ok: false as const,
+    error: lastErr || "Send failed",
+  };
 }
 
-/**
- * Verify an OTP code (by the SAME identifier you used in issueOtp).
- */
 export async function verifyOtp(opts: { identifier: string; code: string }) {
   const { identifier, code } = opts;
 
-  // Latest unconsumed, unexpired OTP for this identifier
   const row = await prisma.otp.findFirst({
     where: {
       identifier,
       consumedAt: null,
       expiresAt: { gt: new Date() },
     },
-    orderBy: { createdAt: 'desc' },
-    select: { id: true, codeHash: true, attempts: true },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      codeHash: true,
+      attempts: true,
+    },
   });
 
-  if (!row) return { ok: false as const, error: 'No active code. Please request a new one.' };
-  if ((row.attempts ?? 0) >= MAX_ATTEMPTS) return { ok: false as const, error: 'Too many attempts' };
+  if (!row) {
+    return { ok: false as const, error: "No active code. Please request a new one." };
+  }
+
+  if ((row.attempts ?? 0) >= MAX_ATTEMPTS) {
+    return { ok: false as const, error: "Too many attempts" };
+  }
 
   const good = await bcrypt.compare(code, row.codeHash);
 
-  // Always bump attempts
   await prisma.otp.update({
     where: { id: row.id },
     data: {
@@ -110,5 +276,7 @@ export async function verifyOtp(opts: { identifier: string; code: string }) {
     },
   });
 
-  return good ? { ok: true as const } : { ok: false as const, error: 'Invalid code' };
+  return good
+    ? { ok: true as const }
+    : { ok: false as const, error: "Invalid code" };
 }

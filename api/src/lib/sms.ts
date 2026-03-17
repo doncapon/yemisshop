@@ -1,247 +1,247 @@
-// src/lib/sms.ts
-// DEV: console OTP; real SMS later; WhatsApp guarded by envs
-import https from 'https';
+// // src/lib/sms.ts
+// // DEV: console OTP; real SMS later; WhatsApp guarded by envs
+// import https from 'https';
 
-// Switch to true when you wire Twilio
-const USE_REAL_SMS = false;
+// // Switch to true when you wire Twilio
+// const USE_REAL_SMS = false;
 
-export async function sendSmsOtp(to: string, text: string) {
-  if (!USE_REAL_SMS) {
-    await new Promise((r) => setTimeout(r, 200));
-    console.log(`\n[SMS:DEV] To: ${to}\n[SMS:DEV] Message: ${text}\n`);
-    return { ok: true as const };
-  }
-  // TODO: real SMS integration here
-}
+// export async function sendSmsOtp(to: string, text: string) {
+//   if (!USE_REAL_SMS) {
+//     await new Promise((r) => setTimeout(r, 200));
+//     console.log(`\n[SMS:DEV] To: ${to}\n[SMS:DEV] Message: ${text}\n`);
+//     return { ok: true as const };
+//   }
+//   // TODO: real SMS integration here
+// }
 
-export async function sendWhatsappOtp(toE164: string, code: string) {
-  // Only run if properly configured
-  if (!process.env.WABA_PHONE_NUMBER_ID || !process.env.WABA_TOKEN) {
-    console.warn('[whatsapp] Missing WABA envs; skipping send.');
-    return { ok: false, error: 'WABA not configured' };
-  }
+// export async function sendWhatsappOtp(toE164: string, code: string) {
+//   // Only run if properly configured
+//   if (!process.env.WABA_PHONE_NUMBER_ID || !process.env.WABA_TOKEN) {
+//     console.warn('[whatsapp] Missing WABA envs; skipping send.');
+//     return { ok: false, error: 'WABA not configured' };
+//   }
 
-  // DEV-ONLY: relax TLS if behind corporate MITM with custom CA
-  // Prefer NODE_EXTRA_CA_CERTS to trust your corp CA instead of this.
-  const devHttpsAgent =
-    process.env.NODE_ENV !== 'production'
-      ? new https.Agent({ rejectUnauthorized: false })
-      : undefined;
+//   // DEV-ONLY: relax TLS if behind corporate MITM with custom CA
+//   // Prefer NODE_EXTRA_CA_CERTS to trust your corp CA instead of this.
+//   const devHttpsAgent =
+//     process.env.NODE_ENV !== 'production'
+//       ? new https.Agent({ rejectUnauthorized: false })
+//       : undefined;
 
-  const res = await fetch(
-    `https://graph.facebook.com/v19.0/${process.env.WABA_PHONE_NUMBER_ID}/messages`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.WABA_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: toE164,
-        type: 'template',
-        template: {
-          name: 'hello_world',
-          language: { code: 'en_US' },
-          //components: [{ type: 'body', parameters: [{ type: 'text', text: code }] }],
-        },
-      }),
-      // @ts-ignore – Node 18 fetch (undici) doesn't accept https.Agent directly in types,
-      // but it will pass it to the dispatcher; keep this DEV-only if you must.
-      agent: devHttpsAgent,
-    } as any
-  );
+//   const res = await fetch(
+//     `https://graph.facebook.com/v19.0/${process.env.WABA_PHONE_NUMBER_ID}/messages`,
+//     {
+//       method: 'POST',
+//       headers: {
+//         Authorization: `Bearer ${process.env.WABA_TOKEN}`,
+//         'Content-Type': 'application/json',
+//       },
+//       body: JSON.stringify({
+//         messaging_product: 'whatsapp',
+//         to: toE164,
+//         type: 'template',
+//         template: {
+//           name: 'hello_world',
+//           language: { code: 'en_US' },
+//           //components: [{ type: 'body', parameters: [{ type: 'text', text: code }] }],
+//         },
+//       }),
+//       // @ts-ignore – Node 18 fetch (undici) doesn't accept https.Agent directly in types,
+//       // but it will pass it to the dispatcher; keep this DEV-only if you must.
+//       agent: devHttpsAgent,
+//     } as any
+//   );
 
-  if (!res.ok) {
-  const errBody = await res.text();
-  console.error('[whatsapp] send failed:', res.status, errBody);
-  return { ok: false, error: errBody };
-}
-  return { ok: res.ok, error: res.ok ? undefined : await res.text() };
-}
-
-
-// Required envs:
-// - WABA_PHONE_NUMBER_ID   (e.g. 123456789012345)
-// - WABA_TOKEN             (Graph API access token; temp or system-user permanent)
-// Optional:
-// - WABA_TEMPLATE_NAME     (e.g. "supplier_notify"; must be APPROVED)
-// - WABA_TEMPLATE_LANG     (e.g. "en" ; defaults to "en")
-
-const WABA_ID = process.env.WABA_PHONE_NUMBER_ID || '';
-const WABA_TOKEN = process.env.WABA_TOKEN || '';
-const WABA_TEMPLATE_NAME = process.env.WABA_TEMPLATE_NAME || ''; // if provided, we send as template by default
-const WABA_TEMPLATE_LANG = process.env.WABA_TEMPLATE_LANG || 'en';
-
-// DEV-ONLY: relax TLS if behind corp MITM. Prefer proper CA via NODE_EXTRA_CA_CERTS instead.
-const devHttpsAgent =
-  process.env.NODE_ENV !== 'production'
-    ? new https.Agent({ rejectUnauthorized: false })
-    : undefined;
-
-type SendWhatsAppOpts = {
-  /**
-   * Force template or text. If omitted:
-   * - uses template when WABA_TEMPLATE_NAME is set
-   * - otherwise tries free-form text (requires 24h session)
-   */
-  useTemplate?: boolean;
-  /** Override template name for this call */
-  templateName?: string;
-  /** Template language (default 'en') */
-  langCode?: string;
-  /**
-   * Custom components for template (advanced).
-   * If not provided, will send a single body parameter with the `msg` content.
-   */
-  components?: any[];
-  /** Disable URL preview for text messages */
-  previewUrl?: boolean;
-};
+//   if (!res.ok) {
+//   const errBody = await res.text();
+//   console.error('[whatsapp] send failed:', res.status, errBody);
+//   return { ok: false, error: errBody };
+// }
+//   return { ok: res.ok, error: res.ok ? undefined : await res.text() };
+// }
 
 
+// // Required envs:
+// // - WABA_PHONE_NUMBER_ID   (e.g. 123456789012345)
+// // - WABA_TOKEN             (Graph API access token; temp or system-user permanent)
+// // Optional:
+// // - WABA_TEMPLATE_NAME     (e.g. "supplier_notify"; must be APPROVED)
+// // - WABA_TEMPLATE_LANG     (e.g. "en" ; defaults to "en")
+
+// const WABA_ID = process.env.WABA_PHONE_NUMBER_ID || '';
+// const WABA_TOKEN = process.env.WABA_TOKEN || '';
+// const WABA_TEMPLATE_NAME = process.env.WABA_TEMPLATE_NAME || ''; // if provided, we send as template by default
+// const WABA_TEMPLATE_LANG = process.env.WABA_TEMPLATE_LANG || 'en';
+
+// // DEV-ONLY: relax TLS if behind corp MITM. Prefer proper CA via NODE_EXTRA_CA_CERTS instead.
+// const devHttpsAgent =
+//   process.env.NODE_ENV !== 'production'
+//     ? new https.Agent({ rejectUnauthorized: false })
+//     : undefined;
+
+// type SendWhatsAppOpts = {
+//   /**
+//    * Force template or text. If omitted:
+//    * - uses template when WABA_TEMPLATE_NAME is set
+//    * - otherwise tries free-form text (requires 24h session)
+//    */
+//   useTemplate?: boolean;
+//   /** Override template name for this call */
+//   templateName?: string;
+//   /** Template language (default 'en') */
+//   langCode?: string;
+//   /**
+//    * Custom components for template (advanced).
+//    * If not provided, will send a single body parameter with the `msg` content.
+//    */
+//   components?: any[];
+//   /** Disable URL preview for text messages */
+//   previewUrl?: boolean;
+// };
 
 
-// Strongly recommend a dedicated approved OTP template
-// e.g. "dayspring_otp" with body: "Your DaySpring OTP is {{1}}. Expires in {{2}} minutes."
-const WABA_OTP_TEMPLATE_NAME = (
-  process.env.WABA_OTP_TEMPLATE_NAME ||
-  process.env.WABA_TEMPLATE_NAME ||
-  ""
-).trim();
 
 
-export async function sendWhatsApp(
-  toE164: string,
-  msg: string,
-  opts: SendWhatsAppOpts = {}
-): Promise<{ ok: true; id?: string } | { ok: false; error: string; status?: number }> {
-  if (!WABA_ID || !WABA_TOKEN) {
-    const reason = "[whatsapp] Missing WABA_PHONE_NUMBER_ID or WABA_TOKEN";
-    console.warn(reason);
-    return { ok: false, error: reason };
-  }
+// // Strongly recommend a dedicated approved OTP template
+// // e.g. "dayspring_otp" with body: "Your DaySpring OTP is {{1}}. Expires in {{2}} minutes."
+// const WABA_OTP_TEMPLATE_NAME = (
+//   process.env.WABA_OTP_TEMPLATE_NAME ||
+//   process.env.WABA_TEMPLATE_NAME ||
+//   ""
+// ).trim();
 
-  const url = `https://graph.facebook.com/v19.0/${WABA_ID}/messages`;
 
-  const useTemplate =
-    typeof opts.useTemplate === "boolean" ? opts.useTemplate : Boolean(WABA_OTP_TEMPLATE_NAME);
+// export async function sendWhatsApp(
+//   toE164: string,
+//   msg: string,
+//   opts: SendWhatsAppOpts = {}
+// ): Promise<{ ok: true; id?: string } | { ok: false; error: string; status?: number }> {
+//   if (!WABA_ID || !WABA_TOKEN) {
+//     const reason = "[whatsapp] Missing WABA_PHONE_NUMBER_ID or WABA_TOKEN";
+//     console.warn(reason);
+//     return { ok: false, error: reason };
+//   }
 
-  const headers = {
-    Authorization: `Bearer ${WABA_TOKEN}`,
-    "Content-Type": "application/json",
-  };
+//   const url = `https://graph.facebook.com/v19.0/${WABA_ID}/messages`;
 
-  let body: any;
+//   const useTemplate =
+//     typeof opts.useTemplate === "boolean" ? opts.useTemplate : Boolean(WABA_OTP_TEMPLATE_NAME);
 
-  if (useTemplate) {
-    const templateName = (opts.templateName || WABA_OTP_TEMPLATE_NAME).trim();
-    if (!templateName) {
-      return { ok: false, error: "Template mode requested but no template name provided" };
-    }
+//   const headers = {
+//     Authorization: `Bearer ${WABA_TOKEN}`,
+//     "Content-Type": "application/json",
+//   };
 
-    const components =
-      opts.components ??
-      [{ type: "body", parameters: [{ type: "text", text: msg }] }];
+//   let body: any;
 
-    body = {
-      messaging_product: "whatsapp",
-      to: toE164,
-      type: "template",
-      template: {
-        name: templateName,
-        language: { code: opts.langCode || WABA_TEMPLATE_LANG },
-        components,
-      },
-    };
-  } else {
-    body = {
-      messaging_product: "whatsapp",
-      to: toE164,
-      type: "text",
-      text: {
-        preview_url: Boolean(opts.previewUrl),
-        body: msg,
-      },
-    };
-  }
+//   if (useTemplate) {
+//     const templateName = (opts.templateName || WABA_OTP_TEMPLATE_NAME).trim();
+//     if (!templateName) {
+//       return { ok: false, error: "Template mode requested but no template name provided" };
+//     }
 
-  const res = await fetch(
-    url,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      // @ts-ignore Node fetch types don’t accept https.Agent; undici will pass it through
-      agent: devHttpsAgent,
-    } as any
-  );
+//     const components =
+//       opts.components ??
+//       [{ type: "body", parameters: [{ type: "text", text: msg }] }];
 
-  const text = await res.text();
-  if (!res.ok) {
-    return { ok: false, error: text || res.statusText, status: res.status };
-  }
+//     body = {
+//       messaging_product: "whatsapp",
+//       to: toE164,
+//       type: "template",
+//       template: {
+//         name: templateName,
+//         language: { code: opts.langCode || WABA_TEMPLATE_LANG },
+//         components,
+//       },
+//     };
+//   } else {
+//     body = {
+//       messaging_product: "whatsapp",
+//       to: toE164,
+//       type: "text",
+//       text: {
+//         preview_url: Boolean(opts.previewUrl),
+//         body: msg,
+//       },
+//     };
+//   }
 
-  try {
-    const data = JSON.parse(text);
-    const id = data?.messages?.[0]?.id;
-    return { ok: true, id };
-  } catch {
-    return { ok: true };
-  }
-}
+//   const res = await fetch(
+//     url,
+//     {
+//       method: "POST",
+//       headers,
+//       body: JSON.stringify(body),
+//       // @ts-ignore Node fetch types don’t accept https.Agent; undici will pass it through
+//       agent: devHttpsAgent,
+//     } as any
+//   );
 
-/** ---------- OTP wrappers ---------- */
+//   const text = await res.text();
+//   if (!res.ok) {
+//     return { ok: false, error: text || res.statusText, status: res.status };
+//   }
 
-type OtpWhatsAppMeta = {
-  brand?: string;        // "DaySpring"
-  expiresMins?: number;  // e.g. 5
-  purposeLabel?: string; // "Payment verification"
-};
+//   try {
+//     const data = JSON.parse(text);
+//     const id = data?.messages?.[0]?.id;
+//     return { ok: true, id };
+//   } catch {
+//     return { ok: true };
+//   }
+// }
 
-function devPrintOtp(channel: "WHATSAPP", to: string, msg: string) {
-  // Always show in dev if WhatsApp isn't configured
-  console.log(`\n[OTP:${channel}:DEV] To: ${to}\n${msg}\n`);
-}
+// /** ---------- OTP wrappers ---------- */
 
-/**
- * Send OTP via WhatsApp.
- * Uses template mode by default (recommended).
- *
- * IMPORTANT: your approved template should match the parameters below.
- * Default expects 2 params: {{1}}=code, {{2}}=expiresMins
- */
-export async function sendWhatsAppOtp(toE164: string, code: string, meta: OtpWhatsAppMeta = {}) {
-  const brand = meta.brand || "DaySpring";
-  const expiresMins = Math.max(1, Number(meta.expiresMins ?? 5));
-  const purpose = meta.purposeLabel ? ` (${meta.purposeLabel})` : "";
+// type OtpWhatsAppMeta = {
+//   brand?: string;        // "DaySpring"
+//   expiresMins?: number;  // e.g. 5
+//   purposeLabel?: string; // "Payment verification"
+// };
 
-  // If WABA isn't configured, dev-print and return ok=false but non-throwing
-  if (!WABA_ID || !WABA_TOKEN || !WABA_OTP_TEMPLATE_NAME) {
-    devPrintOtp(
-      "WHATSAPP",
-      toE164,
-      `${brand} OTP${purpose}: ${code} (expires in ${expiresMins} mins)`
-    );
-    return { ok: false as const, error: "WABA not configured" };
-  }
+// function devPrintOtp(channel: "WHATSAPP", to: string, msg: string) {
+//   // Always show in dev if WhatsApp isn't configured
+//   console.log(`\n[OTP:${channel}:DEV] To: ${to}\n${msg}\n`);
+// }
 
-  // Template expects: code + expires
-  const components = [
-    {
-      type: "body",
-      parameters: [
-        { type: "text", text: String(code) },
-        { type: "text", text: String(expiresMins) },
-      ],
-    },
-  ];
+// /**
+//  * Send OTP via WhatsApp.
+//  * Uses template mode by default (recommended).
+//  *
+//  * IMPORTANT: your approved template should match the parameters below.
+//  * Default expects 2 params: {{1}}=code, {{2}}=expiresMins
+//  */
+// export async function sendWhatsAppOtp(toE164: string, code: string, meta: OtpWhatsAppMeta = {}) {
+//   const brand = meta.brand || "DaySpring";
+//   const expiresMins = Math.max(1, Number(meta.expiresMins ?? 5));
+//   const purpose = meta.purposeLabel ? ` (${meta.purposeLabel})` : "";
 
-  const labelMsg = `${brand} OTP${purpose}: ${code}. Expires in ${expiresMins} minutes.`;
+//   // If WABA isn't configured, dev-print and return ok=false but non-throwing
+//   if (!WABA_ID || !WABA_TOKEN || !WABA_OTP_TEMPLATE_NAME) {
+//     devPrintOtp(
+//       "WHATSAPP",
+//       toE164,
+//       `${brand} OTP${purpose}: ${code} (expires in ${expiresMins} mins)`
+//     );
+//     return { ok: false as const, error: "WABA not configured" };
+//   }
 
-  return sendWhatsApp(toE164, labelMsg, {
-    useTemplate: true,
-    templateName: WABA_OTP_TEMPLATE_NAME,
-    components,
-  });
-}
+//   // Template expects: code + expires
+//   const components = [
+//     {
+//       type: "body",
+//       parameters: [
+//         { type: "text", text: String(code) },
+//         { type: "text", text: String(expiresMins) },
+//       ],
+//     },
+//   ];
+
+//   const labelMsg = `${brand} OTP${purpose}: ${code}. Expires in ${expiresMins} minutes.`;
+
+//   return sendWhatsApp(toE164, labelMsg, {
+//     useTemplate: true,
+//     templateName: WABA_OTP_TEMPLATE_NAME,
+//     components,
+//   });
+// }

@@ -25,6 +25,16 @@ function toJsonObject(v: unknown): Prisma.JsonObject {
   ) as Prisma.JsonObject;
 }
 
+
+function pickOrderShippingAddress(order: any) {
+  return (
+    order?.shippingAddressJson ??
+    order?.shippingAddressSnapshotJson ??
+    order?.deliveryAddressJson ??
+    null
+  );
+}
+
 export async function issueReceiptIfNeeded(paymentId: string) {
   // load everything needed to render a receipt
   const pay = await prisma.payment.findUnique({
@@ -32,8 +42,14 @@ export async function issueReceiptIfNeeded(paymentId: string) {
     include: {
       order: {
         include: {
-          user: { select: { email: true, firstName: true, lastName: true, phone: true } },
-          shippingAddress: true,
+          user: {
+            select: {
+              email: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+            },
+          },
           items: {
             include: {
               product: { select: { title: true, sku: true } },
@@ -80,68 +96,68 @@ export async function issueReceiptIfNeeded(paymentId: string) {
       },
       total: o.total,
       createdAt: o.createdAt,
-      shippingAddress: o.shippingAddress, // raw; render selectively
+      shippingAddress: pickOrderShippingAddress(o), // raw snapshot; render selectively
       items: o.items.map((it) => {
-        const qty = new Prisma.Decimal(it.quantity as any);
-        const unit = new Prisma.Decimal(it.unitPrice as any);
-        const computedLineTotal =
-          it.lineTotal != null ? new Prisma.Decimal(it.lineTotal as any) : qty.times(unit);
+      const qty = new Prisma.Decimal(it.quantity as any);
+      const unit = new Prisma.Decimal(it.unitPrice as any);
+      const computedLineTotal =
+        it.lineTotal != null ? new Prisma.Decimal(it.lineTotal as any) : qty.times(unit);
 
-        return {
-          id: it.id,
-          title: it.title || it.product?.title || "Item",
-          variantSku: it.variant?.sku || null,
-          productSku: it.product?.sku || null,
-          unitPrice: it.unitPrice,
-          quantity: it.quantity,
-          lineTotal: computedLineTotal,
-          selectedOptions: (it as any).selectedOptions ?? [],
-        };
-      }),
-    },
+      return {
+        id: it.id,
+        title: it.title || it.product?.title || "Item",
+        variantSku: it.variant?.sku || null,
+        productSku: it.product?.sku || null,
+        unitPrice: it.unitPrice,
+        quantity: it.quantity,
+        lineTotal: computedLineTotal,
+        selectedOptions: (it as any).selectedOptions ?? [],
+      };
+    }),
+  },
 
     customer: {
       email: o.user?.email || "",
-      name: [o.user?.firstName, o.user?.lastName].filter(Boolean).join(" ") || "",
-      phone: o.user?.phone || "",
+        name: [o.user?.firstName, o.user?.lastName].filter(Boolean).join(" ") || "",
+          phone: o.user?.phone || "",
     },
 
-    // Your brand info — hardcode or read from env/config
-    merchant: {
-      name: process.env.APP_NAME || "DaySpring",
-      addressLine1: process.env.MERCHANT_ADDR1 || "",
+// Your brand info — hardcode or read from env/config
+merchant: {
+  name: process.env.APP_NAME || "DaySpring",
+    addressLine1: process.env.MERCHANT_ADDR1 || "",
       addressLine2: process.env.MERCHANT_ADDR2 || "",
-      supportEmail: process.env.SUPPORT_EMAIL || "support@example.com",
+        supportEmail: process.env.SUPPORT_EMAIL || "support@example.com",
     },
   };
 
-  // Propose a compact, unique receiptNo
-  const proposed = compactReceiptNo(pay.id, pay.reference, pay.paidAt);
+// Propose a compact, unique receiptNo
+const proposed = compactReceiptNo(pay.id, pay.reference, pay.paidAt);
 
-  // Try to save. If collision (extremely rare), add a quick suffix and retry.
-  try {
-    const updated = await prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        receiptNo: proposed,
-        receiptIssuedAt: new Date(),
-        receiptData: toJsonObject(snapshot),
-      },
-    });
-    return updated;
-  } catch (e: any) {
-    if (String(e?.code) !== "P2002") throw e; // not unique conflict
-    const alt = `${proposed}-${(((Math.random() * 36 ** 2) | 0).toString(36) as string)
-      .toUpperCase()
-      .padStart(2, "0")}`;
-    const updated = await prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        receiptNo: alt,
-        receiptIssuedAt: new Date(),
-        receiptData: toJsonObject(snapshot),
-      },
-    });
-    return updated;
-  }
+// Try to save. If collision (extremely rare), add a quick suffix and retry.
+try {
+  const updated = await prisma.payment.update({
+    where: { id: paymentId },
+    data: {
+      receiptNo: proposed,
+      receiptIssuedAt: new Date(),
+      receiptData: toJsonObject(snapshot),
+    },
+  });
+  return updated;
+} catch (e: any) {
+  if (String(e?.code) !== "P2002") throw e; // not unique conflict
+  const alt = `${proposed}-${(((Math.random() * 36 ** 2) | 0).toString(36) as string)
+    .toUpperCase()
+    .padStart(2, "0")}`;
+  const updated = await prisma.payment.update({
+    where: { id: paymentId },
+    data: {
+      receiptNo: alt,
+      receiptIssuedAt: new Date(),
+      receiptData: toJsonObject(snapshot),
+    },
+  });
+  return updated;
+}
 }

@@ -4,7 +4,6 @@ import { requireAuth } from "../middleware/auth.js";
 import { NotificationType, Prisma, SupplierPaymentStatus } from "@prisma/client";
 import { assertVerifiedOrderOtp } from "./adminOrders.js";
 import { sendOtpEmail } from "../lib/email.js";
-import { sendWhatsAppOtp } from "../lib/sms.js";
 import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
 import crypto from "crypto";
 import { PurchaseOrderStatus } from "@prisma/client";
@@ -15,6 +14,7 @@ import {
   notifyAdmins,
   notifySupplierBySupplierId,
 } from "../services/notifications.service.js";
+import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
 
 const router = Router();
 
@@ -559,11 +559,17 @@ async function bestEffortSendDeliveryOtp(opts: {
   try {
     if (phoneE164 && !notifySentWhatsapp) {
       report.attempted.push("WHATSAPP_FALLBACK");
-      await (sendWhatsAppOtp as any)(phoneE164, opts.otp, "DELIVERY_OTP");
+      await sendOtpWhatsappViaTermii({
+        to: phoneE164,
+        code: opts.otp,
+        brand: "DaySpring",
+        expiresMinutes: 10,
+        purposeLabel: "Delivery OTP",
+      });
       report.channels.push("WHATSAPP");
     }
   } catch (e) {
-    recordErr("sendWhatsAppOtp", e);
+    recordErr("sendOtpWhatsappViaTermii", e);
   }
 
   // ✅ sent = at least one channel succeeded
@@ -1040,7 +1046,7 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
           await notifyUser(
             shopperId,
             {
-              type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Order delivered",
               body: `Your delivery for order ${orderId} is complete.`,
               data: {
@@ -1430,7 +1436,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
           await notifyUser(
             shopperId,
             {
-              type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Order update",
               body: `Status for part of your order ${orderIdStr} is now ${friendly}.`,
               data: {
@@ -1446,7 +1452,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         await notifySupplierBySupplierId(
           supplierIdStr,
           {
-            type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
             title: "Purchase order updated",
             body: `Status for purchase order ${po.id} (order ${orderIdStr}) is now ${normalizedNext}.`,
             data: {
@@ -1460,7 +1466,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
 
         await notifyAdmins(
           {
-            type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
             title: "Purchase order status updated",
             body: `Purchase order ${po.id} for order ${orderIdStr} is now ${normalizedNext}.`,
             data: {
@@ -1588,7 +1594,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
             await notifyUser(
               shopperId,
               {
-                type:  NotificationType.RIDER_DELIVERED,
+                type: NotificationType.RIDER_DELIVERED,
                 title: "Order out for delivery",
                 body: `Your order ${orderIdStr} is now out for delivery.`,
                 data: {
@@ -1602,7 +1608,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
 
           await notifyAdmins(
             {
-              type:  NotificationType.RIDER_ASSIGNED,
+              type: NotificationType.RIDER_ASSIGNED,
               title: "Rider assigned",
               body: `Rider was assigned to purchase order ${updated.id} for order ${orderIdStr}.`,
               data: {

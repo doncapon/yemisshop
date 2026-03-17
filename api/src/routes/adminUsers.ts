@@ -145,57 +145,62 @@ router.get("/users/:userId", async (req, res, next) => {
   try {
     const userId = String(req.params.userId);
 
-    const select = pickSelect("User", {
+    const userDetailSelect = {
       id: true,
       email: true,
       role: true,
       firstName: true,
       lastName: true,
-      displayName: true, // auto-removed if not in schema ✅
       phone: true,
       createdAt: true,
       joinedAt: true,
       status: true,
       emailVerifiedAt: true,
       phoneVerifiedAt: true,
-      dob: true,
-      address: true,
-      shippingAddress: true,
-      language: true,
-      theme: true,
-      currency: true,
-      productInterests: true,
-      notificationPrefs: true,
-    });
+      defaultShippingAddressId: true,
 
-    const u = await prisma.user.findUnique({
+      address: true,
+      defaultShippingAddress: true,
+      shippingAddresses: {
+        where: { isActive: true },
+        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+      },
+    } satisfies Prisma.UserSelect;
+
+    type AdminUserDetail = Prisma.UserGetPayload<{
+      select: typeof userDetailSelect;
+    }>;
+
+    const u: AdminUserDetail | null = await prisma.user.findUnique({
       where: { id: userId },
-      select: select as any,
+      select: userDetailSelect,
     });
 
     if (!u) return res.status(404).json({ error: "User not found" });
 
-    // shape it to match your MeResponse-ish expectations
+    const primaryShippingAddress =
+      u.defaultShippingAddress ??
+      u.shippingAddresses.find((a) => a.isDefault) ??
+      u.shippingAddresses[0] ??
+      null;
+
     res.json({
-      id: (u as any).id,
-      email: (u as any).email,
-      role: (u as any).role,
-      firstName: (u as any).firstName ?? null,
-      lastName: (u as any).lastName ?? null,
-      displayName: (u as any).displayName ?? null, // will just be null if not selected/doesn't exist
-      phone: (u as any).phone ?? null,
-      joinedAt: ((u as any).joinedAt ?? (u as any).createdAt) ?? null,
-      status: (u as any).status ?? null,
-      emailVerified: Boolean((u as any).emailVerifiedAt),
-      phoneVerified: Boolean((u as any).phoneVerifiedAt),
-      dob: (u as any).dob ?? null,
-      address: (u as any).address ?? null,
-      shippingAddress: (u as any).shippingAddress ?? null,
-      language: (u as any).language ?? null,
-      theme: (u as any).theme ?? null,
-      currency: (u as any).currency ?? null,
-      productInterests: Array.isArray((u as any).productInterests) ? (u as any).productInterests : undefined,
-      notificationPrefs: (u as any).notificationPrefs ?? null,
+      id: u.id,
+      email: u.email,
+      role: u.role,
+      firstName: u.firstName ?? null,
+      lastName: u.lastName ?? null,
+      phone: u.phone ?? null,
+      joinedAt: u.joinedAt ?? u.createdAt ?? null,
+      status: u.status ?? null,
+      emailVerified: Boolean(u.emailVerifiedAt),
+      phoneVerified: Boolean(u.phoneVerifiedAt),
+      address: u.address ?? null,
+
+      shippingAddress: primaryShippingAddress,
+      shippingAddresses: u.shippingAddresses ?? [],
+      defaultShippingAddressId:
+        u.defaultShippingAddressId ?? primaryShippingAddress?.id ?? null,
     });
   } catch (e) {
     next(e);

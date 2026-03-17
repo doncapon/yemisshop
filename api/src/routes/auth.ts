@@ -272,6 +272,7 @@ router.post(
 );
 
 // ---------------- ME ----------------
+// ---------------- ME ----------------
 router.get(
   "/me",
   requireAuth,
@@ -279,41 +280,51 @@ router.get(
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const u = await prisma.user.findUnique({
+    const authMeSelect = {
+      id: true,
+      email: true,
+      role: true,
+      firstName: true,
+      middleName: true,
+      lastName: true,
+      status: true,
+      phone: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true,
+      joinedAt: true,
+      address: true,
+      defaultShippingAddressId: true,
+      defaultShippingAddress: true,
+      shippingAddresses: {
+        where: { isActive: true },
+        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+      },
+    } satisfies Prisma.UserSelect;
+
+    type AuthMeUser = Prisma.UserGetPayload<{
+      select: typeof authMeSelect;
+    }>;
+
+    const u: AuthMeUser | null = await prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        firstName: true,
-        middleName: true,
-        lastName: true,
-        status: true,
-        phone: true,
-        emailVerifiedAt: true,
-        phoneVerifiedAt: true,
-        joinedAt: true,
-        address: true,
-        shippingAddress: true,
-      } as any,
+      select: authMeSelect,
     });
 
     if (!u) return res.status(404).json({ error: "User not found" });
 
-    res.json({
-      id: u.id,
-      email: u.email,
-      role: u.role,
-      status: (u as any).status ?? "PENDING",
-      firstName: u.firstName,
-      middleName: (u as any).middleName ?? null,
-      lastName: u.lastName,
-      phone: (u as any).phone ?? null,
-      joinedAt: (u as any).joinedAt ?? null,
-      emailVerified: Boolean((u as any).emailVerifiedAt),
-      phoneVerified: Boolean((u as any).phoneVerifiedAt),
-      address: (u as any).address ?? null,
-      shippingAddress: (u as any).shippingAddress ?? null,
+    const primaryShippingAddress =
+      u.defaultShippingAddress ??
+      u.shippingAddresses.find((a) => a.isDefault) ??
+      u.shippingAddresses[0] ??
+      null;
+
+    return res.json({
+      data: {
+        ...u,
+        shippingAddress: primaryShippingAddress, // legacy compatibility
+        defaultShippingAddressId:
+          u.defaultShippingAddressId ?? primaryShippingAddress?.id ?? null,
+      },
     });
   })
 );
@@ -467,7 +478,7 @@ router.post(
       const r = await issueOtp({
         identifier: user.id,
         userId: user.id,
-        phoneE164: phone,
+        phone: phone,
         channelPref: "whatsapp",
       });
 
@@ -805,6 +816,11 @@ router.post("/resend-otp", requireAuth, async (req, res) => {
       return res.status(401).json({ error: "Unauthenticated" });
     }
 
+    const requestedPhone = String(req.body?.phone ?? "").trim();
+    const normalizedRequestedPhone = requestedPhone
+      ? normalizePhoneToE164(requestedPhone)
+      : null;
+
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -817,31 +833,29 @@ router.post("/resend-otp", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const rawPhone = String(user.phone || "").trim();
-    if (!rawPhone) {
-      return res.status(400).json({
-        error: "No phone number is available for OTP delivery.",
-      });
+    let phoneE164 = normalizedRequestedPhone;
+
+    if (!phoneE164) {
+      const rawPhone = String(user.phone || "").trim();
+      if (!rawPhone) {
+        return res.status(400).json({
+          error: "No phone number is available for OTP delivery.",
+        });
+      }
+
+      phoneE164 = normalizePhoneToE164(rawPhone);
     }
 
-    const phoneE164 = normalizePhoneToE164(rawPhone);
     if (!phoneE164) {
       return res.status(400).json({
         error: "Phone number must be in a valid international format.",
       });
     }
 
-    if (phoneE164 !== rawPhone) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { phone: phoneE164 },
-      });
-    }
-
     const result = await issueOtp({
       identifier: user.id,
       userId: user.id,
-      phoneE164,
+      phone: phoneE164,
       channelPref: "whatsapp",
     });
 
@@ -1125,7 +1139,7 @@ router.post("/register-supplier", async (req, res) => {
         const r = await issueOtp({
           identifier: user.id,
           userId: user.id,
-          phoneE164,
+          phone: phoneE164,
           channelPref: "whatsapp",
         });
 

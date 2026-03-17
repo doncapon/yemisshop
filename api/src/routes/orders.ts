@@ -76,6 +76,7 @@ type CreateOrderBody = {
 
   // new
   shippingQuoteIds?: string[] | null;
+  selectedUserShippingAddressId?: string;
 
   // legacy fallback
   shippingQuoteId?: string | null;
@@ -229,6 +230,122 @@ async function getSelectedShippingQuotesTx(
   }
 
   return out;
+}
+
+
+type UserShippingAddressSnapshot = {
+  id: string;
+  label: string | null;
+  recipientName: string | null;
+  phone: string;
+  whatsappPhone: string | null;
+  houseNumber: string | null;
+  streetName: string | null;
+  postCode: string | null;
+  town: string | null;
+  city: string;
+  state: string;
+  country: string;
+  lga: string | null;
+  landmark: string | null;
+  directionsNote: string | null;
+
+  // NEW
+  phoneVerifiedAt: Date | null;
+  phoneVerifiedBy: string | null;
+  verificationMeta: any;
+};
+
+function normalizePhoneLoose(phone?: string | null) {
+  return String(phone ?? "").replace(/[^\d+]/g, "").replace(/^\+/, "").trim();
+}
+
+function isSavedShippingAddressVerifiedForCheckout(args: {
+  saved: UserShippingAddressSnapshot | null | undefined;
+  userPhone?: string | null;
+  userPhoneVerifiedAt?: Date | string | null;
+}) {
+  const saved = args.saved;
+  if (!saved) return false;
+
+  if (saved.phoneVerifiedAt) return true;
+
+  const savedPhone = normalizePhoneLoose(saved.phone);
+  const userPhone = normalizePhoneLoose(args.userPhone);
+
+  if (
+    savedPhone &&
+    userPhone &&
+    savedPhone === userPhone &&
+    args.userPhoneVerifiedAt
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+async function getUserShippingAddressForCheckoutTx(
+  tx: any,
+  args: { userId: string; selectedUserShippingAddressId: string }
+): Promise<UserShippingAddressSnapshot> {
+  const row = await tx.userShippingAddress.findFirst({
+    where: {
+      id: String(args.selectedUserShippingAddressId),
+      userId: String(args.userId),
+      isActive: true,
+    },
+    select: {
+      id: true,
+      label: true,
+      recipientName: true,
+      phone: true,
+      whatsappPhone: true,
+      houseNumber: true,
+      streetName: true,
+      postCode: true,
+      town: true,
+      city: true,
+      state: true,
+      country: true,
+      lga: true,
+      landmark: true,
+      directionsNote: true,
+
+      // NEW
+      phoneVerifiedAt: true,
+      phoneVerifiedBy: true,
+      verificationMeta: true,
+    },
+  });
+
+  if (!row) {
+    throw new Error("Selected delivery address was not found for this user.");
+  }
+
+  return row;
+}
+
+async function createOrderAddressSnapshotFromUserShippingAddressTx(
+  tx: any,
+  saved: UserShippingAddressSnapshot
+) {
+  return tx.address.create({
+    data: {
+      houseNumber: saved.houseNumber ?? null,
+      streetName: saved.streetName ?? null,
+      postCode: saved.postCode ?? null,
+      town: saved.town ?? null,
+      city: saved.city ?? null,
+      state: saved.state ?? null,
+      country: saved.country ?? null,
+      lga: saved.lga ?? null,
+      landmark: saved.landmark ?? null,
+      directionsNote: saved.directionsNote ?? null,
+      isValidated: false,
+    },
+    select: { id: true },
+  });
 }
 
 function buildOrderShippingBreakdownFromQuotes(quotesBySupplier: SelectedShippingQuoteMap) {
@@ -1674,16 +1791,16 @@ async function ensurePurchaseOrdersForOrderTx(
       const totalFee = round2(
         Number(
           row?.totalFee ??
-            row?.totals?.totalFee ??
-            0
+          row?.totals?.totalFee ??
+          0
         )
       );
 
       const shippingCurrency = String(
         row?.currency ??
-          breakdown?.currency ??
-          order.shippingCurrency ??
-          "NGN"
+        breakdown?.currency ??
+        order.shippingCurrency ??
+        "NGN"
       );
 
       const shippingServiceLevel = row?.serviceLevel
@@ -1701,10 +1818,10 @@ async function ensurePurchaseOrdersForOrderTx(
       const shippingCarrierName =
         String(row?.rateSource ?? "").toUpperCase() === "LIVE_CARRIER"
           ? String(
-              row?.pricingMeta?.carrierName ??
-                row?.pricingMetaJson?.carrierName ??
-                ""
-            ).trim() || null
+            row?.pricingMeta?.carrierName ??
+            row?.pricingMetaJson?.carrierName ??
+            ""
+          ).trim() || null
           : null;
 
       breakdownQuoteMap.set(sid, {
@@ -2026,10 +2143,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return res.status(400).json({ error: "No items." });
   }
 
-  if (shippingEnabled && !body.shippingAddressId && !body.shippingAddress) {
-    return res
-      .status(400)
-      .json({ error: "shippingAddress or shippingAddressId is required." });
+  if (
+    !body.selectedUserShippingAddressId &&
+    !body.shippingAddressId &&
+    !body.shippingAddress
+  ) {
+    return res.status(400).json({
+      error:
+        "selectedUserShippingAddressId, shippingAddress, or shippingAddressId is required.",
+    });
   }
 
   const userId = getUserId(req);
@@ -2052,66 +2174,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return null;
   };
 
-  const getFallbackCustomerUnitFromSupplierCost = (
-    supplierUnitCost: number,
-    settings: CheckoutSettingsSnapshot,
-    ctx: { productId: string; variantId: string | null }
-  ): number => {
-    const cfg = getMarginConfig(settings);
-    const marginPercent = resolveMarginPercentForItem(settings);
-
-    const percentMarginValue = round2(supplierUnitCost * (marginPercent / 100));
-    const actualMargin = Math.max(cfg.minMarginNGN, percentMarginValue);
-
-    const customerUnit = round2(supplierUnitCost + actualMargin);
-
-    if (!(customerUnit > 0)) {
-      throw new Error(
-        `Could not compute customer unit price for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
-        }.`
-      );
-    }
-
-    return customerUnit;
-  };
-
-  const assertClientCheckoutUnitReasonable = (
-    clientUnit: number,
-    supplierUnitCost: number,
-    settings: CheckoutSettingsSnapshot,
-    ctx: { productId: string; variantId: string | null }
-  ) => {
-    if (!(clientUnit > 0)) {
-      throw new Error(
-        `Invalid checkout unit price for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
-        }.`
-      );
-    }
-
-    if (clientUnit + 1 < supplierUnitCost) {
-      throw new Error(
-        `Checkout unit price is below supplier cost for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
-        }.`
-      );
-    }
-
-    const maxMarginPct = Math.max(0, Number(settings.maxMarginPct ?? 100));
-    const maxReasonable =
-      supplierUnitCost > 0
-        ? round2(
-          supplierUnitCost * (1 + maxMarginPct / 100) +
-          Math.max(0, settings.minMarginNGN)
-        )
-        : clientUnit;
-
-    if (supplierUnitCost > 0 && clientUnit - maxReasonable > 5) {
-      throw new Error(
-        `Checkout unit price is outside allowed margin bounds for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
-        }.`
-      );
-    }
-  };
-
   try {
     const created = await prisma.$transaction(
       async (tx: any) => {
@@ -2126,7 +2188,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         if (shippingEnabledTxVal) {
           selectedShippingQuotesBySupplier = await getSelectedShippingQuotesTx(tx, {
             shippingQuoteIds: body.shippingQuoteIds ?? null,
-            shippingQuoteId: body.shippingQuoteId ?? null, // legacy fallback
+            shippingQuoteId: body.shippingQuoteId ?? null,
             userId,
           });
 
@@ -2156,12 +2218,215 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           shippingRateSourceFinal = normalizeShippingRateSource(rawRate);
         }
 
+        let shippingAddressId: string | null = null;
+        let billingAddressId: string | null = null;
+        let selectedUserShippingAddressId: string | null = null;
+
+        const buyer = await tx.user.findUnique({
+          where: { id: String(userId) },
+          select: {
+            id: true,
+            phone: true,
+            phoneVerifiedAt: true,
+          },
+        });
+
+        if (!buyer) {
+          throw new Error("User not found.");
+        }
+
+        const DELIVERY_PHONE_UNVERIFIED_MSG =
+          "The selected delivery phone is not verified. Please verify it before placing your order.";
+
+        /* ------------------------------------------------------------------ */
+        /* SHIPPING ADDRESS RESOLUTION + VERIFICATION ENFORCEMENT              */
+        /* ------------------------------------------------------------------ */
+
+        if (body.selectedUserShippingAddressId) {
+          const saved = await getUserShippingAddressForCheckoutTx(tx, {
+            userId,
+            selectedUserShippingAddressId: body.selectedUserShippingAddressId,
+          });
+
+          const verified = isSavedShippingAddressVerifiedForCheckout({
+            saved,
+            userPhone: buyer.phone,
+            userPhoneVerifiedAt: buyer.phoneVerifiedAt,
+          });
+
+          if (!verified) {
+            throw new Error(DELIVERY_PHONE_UNVERIFIED_MSG);
+          }
+
+          const snapshot = await createOrderAddressSnapshotFromUserShippingAddressTx(
+            tx,
+            saved
+          );
+
+          if (!snapshot?.id) {
+            throw new Error("Could not create shipping address snapshot.");
+          }
+
+          shippingAddressId = String(snapshot.id);
+          selectedUserShippingAddressId = String(saved.id);
+        } else if (body.shippingAddressId) {
+          const rawShippingAddressId = String(body.shippingAddressId).trim();
+
+          // Backward-compatible path:
+          // Treat shippingAddressId primarily as a saved user shipping address id.
+          const savedUserShipping = await tx.userShippingAddress.findFirst({
+            where: {
+              id: rawShippingAddressId,
+              userId,
+              isActive: true,
+            },
+            select: {
+              id: true,
+              label: true,
+              recipientName: true,
+              phone: true,
+              whatsappPhone: true,
+              houseNumber: true,
+              streetName: true,
+              postCode: true,
+              town: true,
+              city: true,
+              state: true,
+              country: true,
+              lga: true,
+              landmark: true,
+              directionsNote: true,
+              phoneVerifiedAt: true,
+              phoneVerifiedBy: true,
+              verificationMeta: true,
+            },
+          });
+
+          if (savedUserShipping) {
+            const verified = isSavedShippingAddressVerifiedForCheckout({
+              saved: savedUserShipping,
+              userPhone: buyer.phone,
+              userPhoneVerifiedAt: buyer.phoneVerifiedAt,
+            });
+
+            if (!verified) {
+              throw new Error(DELIVERY_PHONE_UNVERIFIED_MSG);
+            }
+
+            const snapshot = await createOrderAddressSnapshotFromUserShippingAddressTx(
+              tx,
+              savedUserShipping
+            );
+
+            if (!snapshot?.id) {
+              throw new Error("Could not create shipping address snapshot.");
+            }
+
+            shippingAddressId = String(snapshot.id);
+            selectedUserShippingAddressId = String(savedUserShipping.id);
+          } else {
+            // Optional strictness:
+            // do not allow raw Address.id shopper checkout bypass anymore
+            throw new Error(
+              "Selected delivery address was not found. Please reselect your saved delivery detail."
+            );
+          }
+        } else if (body.shippingAddress) {
+          // Legacy/manual fallback. For your modern shopper flow, you may remove this entirely.
+          const a = body.shippingAddress;
+
+          const createdShipping = await tx.address.create({
+            data: {
+              houseNumber: a.houseNumber ?? null,
+              streetName: a.streetName ?? null,
+              postCode: a.postCode ?? null,
+              town: a.town ?? null,
+              city: a.city ?? null,
+              state: a.state ?? null,
+              country: a.country ?? null,
+              lga: (a as any).lga ?? null,
+              landmark: (a as any).landmark ?? null,
+              directionsNote: (a as any).directionsNote ?? null,
+              placeId: (a as any).placeId ?? null,
+              validationSource: (a as any).validationSource ?? null,
+              isValidated: Boolean((a as any).isValidated ?? false),
+              latitude:
+                (a as any).latitude != null && `${(a as any).latitude}` !== ""
+                  ? Number((a as any).latitude)
+                  : null,
+              longitude:
+                (a as any).longitude != null && `${(a as any).longitude}` !== ""
+                  ? Number((a as any).longitude)
+                  : null,
+              validatedAt:
+                (a as any).validatedAt ? new Date((a as any).validatedAt) : null,
+            },
+            select: { id: true },
+          });
+
+          shippingAddressId = String(createdShipping.id);
+        }
+
+        if (!shippingAddressId) {
+          throw new Error("A shipping address is required to create this order.");
+        }
+
+        if (body.billingAddressId) {
+          const existingBilling = await tx.address.findUnique({
+            where: { id: String(body.billingAddressId) },
+            select: { id: true },
+          });
+
+          if (!existingBilling) {
+            throw new Error("Billing address not found.");
+          }
+
+          billingAddressId = String(existingBilling.id);
+        } else if (body.billingAddress) {
+          const b = body.billingAddress;
+
+          const createdBilling = await tx.address.create({
+            data: {
+              houseNumber: b.houseNumber ?? null,
+              streetName: b.streetName ?? null,
+              postCode: b.postCode ?? null,
+              town: b.town ?? null,
+              city: b.city ?? null,
+              state: b.state ?? null,
+              country: b.country ?? null,
+              lga: (b as any).lga ?? null,
+              landmark: (b as any).landmark ?? null,
+              directionsNote: (b as any).directionsNote ?? null,
+              placeId: (b as any).placeId ?? null,
+              validationSource: (b as any).validationSource ?? null,
+              isValidated: Boolean((b as any).isValidated ?? false),
+              latitude:
+                (b as any).latitude != null && `${(b as any).latitude}` !== ""
+                  ? Number((b as any).latitude)
+                  : null,
+              longitude:
+                (b as any).longitude != null && `${(b as any).longitude}` !== ""
+                  ? Number((b as any).longitude)
+                  : null,
+              validatedAt:
+                (b as any).validatedAt ? new Date((b as any).validatedAt) : null,
+            },
+            select: { id: true },
+          });
+
+          billingAddressId = String(createdBilling.id);
+        }
+
         const data: any = {
+          userId,
+          shippingAddressId,
+          selectedUserShippingAddressId,
+          billingAddressId,
+
           subtotal: 0,
           tax: 0,
           total: 0,
           status: "CREATED",
-          user: { connect: { id: userId } },
 
           shippingFee: shippingEnabledTxVal ? shippingFeeFinal : 0,
           shippingCurrency: shippingCurrencyFinal,
@@ -2173,62 +2438,28 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               ? buildOrderShippingBreakdownFromQuotes(selectedShippingQuotesBySupplier)
               : shippingEnabledTxVal && shippingFeeFinal > 0
                 ? {
-                  quoteId: null,
-                  serviceLevel: "STANDARD",
-                  zoneCode: null,
-                  zoneName: null,
-                  currency: shippingCurrencyFinal,
-                  rateSource:
-                    (shippingRateSourceFinal as any) ??
-                    normalizeShippingRateSource("MANUAL"),
-                  components: {
-                    shippingFee: shippingFeeFinal,
-                    remoteSurcharge: 0,
-                    fuelSurcharge: 0,
-                    handlingFee: 0,
-                    insuranceFee: 0,
-                  },
-                  totalFee: shippingFeeFinal,
-                  etaMinDays: null,
-                  etaMaxDays: null,
-                  pricingMeta: { source: "checkout_fallback" },
-                }
+                    quoteId: null,
+                    serviceLevel: "STANDARD",
+                    zoneCode: null,
+                    zoneName: null,
+                    currency: shippingCurrencyFinal,
+                    rateSource:
+                      (shippingRateSourceFinal as any) ??
+                      normalizeShippingRateSource("MANUAL"),
+                    components: {
+                      shippingFee: shippingFeeFinal,
+                      remoteSurcharge: 0,
+                      fuelSurcharge: 0,
+                      handlingFee: 0,
+                      insuranceFee: 0,
+                    },
+                    totalFee: shippingFeeFinal,
+                    etaMinDays: null,
+                    etaMaxDays: null,
+                    pricingMeta: { source: "checkout_fallback" },
+                  }
                 : null,
         };
-
-        if (body.shippingAddressId) {
-          data.shippingAddress = { connect: { id: body.shippingAddressId } };
-        } else if (body.shippingAddress) {
-          const a = body.shippingAddress;
-          data.shippingAddress = {
-            create: {
-              houseNumber: a.houseNumber ?? null,
-              streetName: a.streetName ?? null,
-              postCode: a.postCode ?? null,
-              town: a.town ?? null,
-              city: a.city ?? null,
-              state: a.state ?? null,
-              country: a.country ?? null,
-            },
-          };
-        }
-
-        if (body.billingAddressId) {
-          data.billingAddress = { connect: { id: body.billingAddressId } };
-        } else if (body.billingAddress) {
-          const b = body.billingAddress;
-          data.billingAddress = {
-            create: {
-              houseNumber: b.houseNumber ?? null,
-              streetName: b.streetName ?? null,
-              postCode: b.postCode ?? null,
-              town: b.town ?? null,
-              city: b.city ?? null,
-              state: b.state ?? null,
-              country: b.country ?? null,
-            },
-          };
-        }
 
         const order = await tx.order.create({ data });
 
@@ -2456,12 +2687,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
                 chosenSupplierId: alloc.supplierId,
 
-                // keep actual supplier allocation cost
                 chosenSupplierUnitPrice: supplierUnitCost,
 
                 title: productTitle,
-
-                // customer-facing billed price must match checkout
                 unitPrice: round2(Number(checkoutUnit)),
                 quantity: alloc.qty,
                 lineTotal: round2(Number(checkoutUnit) * alloc.qty),
@@ -2508,20 +2736,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           taxMode === "ADDED" && rate > 0 ? subtotal * rate : 0;
 
         const serviceFeeBaseSnapshot = resolveServiceFeeBaseSnapshot(body, settings);
-
-        // comms/gateway already baked into retail price in your current model,
-        // so do not add them again and do not use them for order profit reporting.
         const serviceFeeCommsSnapshot = 0;
         const serviceFeeGatewaySnapshot = 0;
-
-        // keep this only if you still want one summary field in DB;
-        // otherwise you can set it to 0 and read serviceFeeBase only.
         const serviceFeeTotalSnapshot = serviceFeeBaseSnapshot;
 
         const shippingFee = shippingEnabledTxVal ? shippingFeeFinal : 0;
-
-        // IMPORTANT: do NOT add service fee again to total, because it is already
-        // included inside checkout retail/unit prices.
         const total = round2(subtotal + vatAddOn + shippingFee);
 
         const updatedOrder = await tx.order.update({
@@ -2537,7 +2756,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             ),
             total,
 
-            // snapshot saved from checkout at order time
             serviceFeeBase: serviceFeeBaseSnapshot,
             serviceFeeComms: serviceFeeCommsSnapshot,
             serviceFeeGateway: serviceFeeGatewaySnapshot,
@@ -2554,26 +2772,26 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 ? buildOrderShippingBreakdownFromQuotes(selectedShippingQuotesBySupplier)
                 : shippingEnabledTxVal && shippingFee > 0
                   ? {
-                    quoteId: null,
-                    serviceLevel: "STANDARD",
-                    zoneCode: null,
-                    zoneName: null,
-                    currency: shippingCurrencyFinal,
-                    rateSource:
-                      (shippingRateSourceFinal as any) ??
-                      normalizeShippingRateSource("MANUAL"),
-                    components: {
-                      shippingFee,
-                      remoteSurcharge: 0,
-                      fuelSurcharge: 0,
-                      handlingFee: 0,
-                      insuranceFee: 0,
-                    },
-                    totalFee: shippingFee,
-                    etaMinDays: null,
-                    etaMaxDays: null,
-                    pricingMeta: { source: "checkout_fallback" },
-                  }
+                      quoteId: null,
+                      serviceLevel: "STANDARD",
+                      zoneCode: null,
+                      zoneName: null,
+                      currency: shippingCurrencyFinal,
+                      rateSource:
+                        (shippingRateSourceFinal as any) ??
+                        normalizeShippingRateSource("MANUAL"),
+                      components: {
+                        shippingFee,
+                        remoteSurcharge: 0,
+                        fuelSurcharge: 0,
+                        handlingFee: 0,
+                        insuranceFee: 0,
+                      },
+                      totalFee: shippingFee,
+                      etaMinDays: null,
+                      etaMaxDays: null,
+                      pricingMeta: { source: "checkout_fallback" },
+                    }
                   : null,
           },
           select: {
@@ -2655,7 +2873,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             vatIncluded: round2(vatIncluded),
             vatAddOn: round2(vatAddOn),
             serviceFeeMeta: {
-              source: Number.isFinite(Number(body?.serviceFeeBase)) ? "checkout_snapshot" : "settings_fallback",
+              source: Number.isFinite(Number(body?.serviceFeeBase))
+                ? "checkout_snapshot"
+                : "settings_fallback",
               serviceFeeBase: serviceFeeBaseSnapshot,
               serviceFeeComms: serviceFeeCommsSnapshot,
               serviceFeeGateway: serviceFeeGatewaySnapshot,

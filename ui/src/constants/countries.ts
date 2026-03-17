@@ -21,6 +21,10 @@ export const SUPPLIER_REGISTRATION_COUNTRIES = COUNTRIES.filter(
   (c) => c.allowSupplierRegistration
 );
 
-export const COUNTRY_MAP = Object.fromEntries(
+export const COUNTRY_MAP: Record<string, CountryConfig> = Object.fromEntries(
   COUNTRIES.map((c) => [c.code, c])
+);
+
+export const COUNTRY_NAME_MAP: Record<string, CountryConfig> = Object.fromEntries(
+  COUNTRIES.map((c) => [c.name.toLowerCase(), c])
 );

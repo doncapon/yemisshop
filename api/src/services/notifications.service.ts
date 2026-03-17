@@ -2,7 +2,7 @@
 import { safeSend } from "../lib/email.js";
 import { prisma } from "../lib/prisma.js";
 import { Prisma, NotificationType } from "@prisma/client";
-import { sendWhatsApp } from "../lib/sms.js";
+import { sendWhatsappViaTermii } from "../lib/termii.js";
 
 type NotificationPayload = {
   type: NotificationType; // strongly typed
@@ -248,11 +248,10 @@ export async function notifyCustomerOrderRefunded(
     // Optional: WhatsApp notification
     if (order.user.phone) {
       try {
-        await sendWhatsApp(
-          order.user.phone,
-          `Your ${label} has been refunded.${amountText ? ` Amount: ${amountText}.` : ""
-          }`
-        );
+        await sendWhatsappViaTermii({
+          to: order.user.phone,
+          message: `Your ${label} has been refunded.${amountText ? ` Amount: ${amountText}.` : ""}`,
+        });
       } catch (e) {
         console.error("[notifyCustomerOrderRefunded] WhatsApp failed", e);
       }
@@ -344,10 +343,10 @@ export async function notifyCustomerOrderCancelled(orderId: string, tx?: Tx) {
 
     if (order.user.phone) {
       try {
-        await sendWhatsApp(
-          order.user.phone,
-          `Your order ${order.id} has been cancelled. If you have any questions, please contact support.`
-        );
+        await sendWhatsappViaTermii({
+          to: order.user.phone,
+          message: `Your order ${order.id} has been cancelled. If you have any questions, please contact support.`,
+        });
       } catch (e) {
         console.error("[notifyCustomerOrderCancelled] WhatsApp failed", e);
       }
