@@ -572,27 +572,6 @@ export default function VerifyEmail() {
                           <RefreshCcw size={16} />
                           I’ve verified-Refresh status 
                         </ActionButton>
-
-                        {isLoggedIn ? (
-                          <Link
-                            to="/profile"
-                            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-medium text-zinc-800 transition hover:bg-zinc-50"
-                            title="Change or correct your email address"
-                          >
-                            <UserCog size={16} />
-                            Update email
-                          </Link>
-                        ) : (
-                          <Link
-                            to="/login"
-                            state={{ from: "/verify" }}
-                            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-medium text-zinc-800 transition hover:bg-zinc-50"
-                            title="Sign in to update your email address"
-                          >
-                            <UserCog size={16} />
-                            Sign in to update email
-                          </Link>
-                        )}
                       </div>
                     </div>
                   ) : null}
