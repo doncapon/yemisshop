@@ -1,4 +1,3 @@
-// src/pages/Login.tsx
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
@@ -16,7 +15,11 @@ function safeReturnTo(v: unknown): string | null {
   const s = typeof v === "string" ? v : "";
   if (!s) return null;
   if (!s.startsWith("/")) return null;
-  if (s.startsWith("/login") || s.startsWith("/register") || s.startsWith("/forgot-password")) {
+  if (
+    s.startsWith("/login") ||
+    s.startsWith("/register") ||
+    s.startsWith("/forgot-password")
+  ) {
     return null;
   }
   return s;
@@ -70,7 +73,7 @@ function normalizeProfile(raw: any): MeResponse | null {
   return {
     id: String(raw.id ?? ""),
     email: String(raw.email ?? ""),
-    role: (raw.role ?? "SHOPPER") as Role,
+    role: normRole(raw.role ?? "SHOPPER"),
     firstName: raw.firstName ?? null,
     middleName: raw.middleName ?? null,
     lastName: raw.lastName ?? null,
@@ -81,7 +84,11 @@ function normalizeProfile(raw: any): MeResponse | null {
 }
 
 function normRole(r: any): Role {
-  const x = String(r || "").trim().toUpperCase();
+  let x = String(r || "").trim().toUpperCase();
+  x = x.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (x === "SUPERADMIN") x = "SUPER_ADMIN";
+  if (x === "SUPER_ADMINISTRATOR") x = "SUPER_ADMIN";
+
   return (
     x === "ADMIN" ||
     x === "SUPER_ADMIN" ||
@@ -104,10 +111,13 @@ function getDefaultPathByRole(role: Role): string {
   return map[role] || "/";
 }
 
+function pickMePayload(payload: any): any {
+  return payload?.data?.user ?? payload?.data?.data ?? payload?.data ?? payload?.user ?? payload ?? null;
+}
+
 export default function Login() {
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
-  const bootstrap = useAuthStore((s) => s.bootstrap);
 
   const setUser = useAuthStore((s) => s.setUser);
   const setNeedsVerification = useAuthStore((s) => s.setNeedsVerification);
@@ -145,12 +155,6 @@ export default function Login() {
     return !!blockedProfile.emailVerified;
   }, [blockedProfile]);
 
-  useEffect(() => {
-    if (!hydrated) {
-      bootstrap().catch(() => null);
-    }
-  }, [hydrated, bootstrap]);
-
   const computedReturnTo = useMemo(() => {
     const stateFrom = readFromState(loc.state as any);
     const qpFrom = safeReturnTo(new URLSearchParams(loc.search).get("from"));
@@ -165,9 +169,11 @@ export default function Login() {
     return stateFrom || qpFrom || ssFrom || null;
   }, [loc.state, loc.search]);
 
-  if (returnToRef.current == null && computedReturnTo) {
-    returnToRef.current = computedReturnTo;
-  }
+  useEffect(() => {
+    if (!returnToRef.current && computedReturnTo) {
+      returnToRef.current = computedReturnTo;
+    }
+  }, [computedReturnTo]);
 
   useEffect(() => {
     if (!returnToRef.current) return;
@@ -207,6 +213,11 @@ export default function Login() {
     const t = setInterval(() => setEmailCooldown((s) => Math.max(0, s - 1)), 1000);
     return () => clearInterval(t);
   }, [emailCooldown]);
+
+  async function fetchCanonicalMe(): Promise<MeResponse | null> {
+    const res = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
+    return normalizeProfile(pickMePayload(res));
+  }
 
   function commitLogin(
     profile: MeResponse,
@@ -268,7 +279,9 @@ export default function Login() {
 
     setLoading(true);
     try {
-      clearAuth();
+      // Do NOT clear auth here.
+      // Clearing auth before the new cookie-backed session is confirmed
+      // can cause false logout/race issues on older pages.
 
       const res = await api.post<LoginOk>(
         "/api/auth/login",
@@ -280,14 +293,14 @@ export default function Login() {
       );
 
       const data = res.data as LoginOk;
-      const normalizedProfile = normalizeProfile(data?.profile);
+      const responseProfile = normalizeProfile(data?.profile);
 
-      if (!normalizedProfile?.id) {
+      if (!responseProfile?.id) {
         throw new Error("Login response missing profile");
       }
 
-      const roleKey = normRole(normalizedProfile.role);
-      const isFullyVerified = !!normalizedProfile.emailVerified;
+      const roleKey = normRole(responseProfile.role);
+      const isFullyVerified = !!responseProfile.emailVerified;
       const needsVer = !!data?.needsVerification;
       const vt = data?.verifyToken ?? null;
 
@@ -296,8 +309,8 @@ export default function Login() {
       // supplier flow: stay on login page and show inline email verification tools
       if (roleKey === "SUPPLIER" && !isFullyVerified) {
         suppressAutoRedirectRef.current = true;
-        commitLogin(normalizedProfile, true, vt);
-        setBlockedProfile(normalizedProfile);
+        commitLogin(responseProfile, true, vt);
+        setBlockedProfile(responseProfile);
         setErr("Please verify your email address to continue.");
         setVerifyPanelOpen(true);
         setCooldown(1);
@@ -307,15 +320,18 @@ export default function Login() {
       // shopper flow: do NOT commit to store yet, show choice first
       if (roleKey === "SHOPPER" && !isFullyVerified) {
         suppressAutoRedirectRef.current = true;
-        setPendingShopperProfile(normalizedProfile);
+        setPendingShopperProfile(responseProfile);
         setShopperNoticeOpen(true);
         setCooldown(1);
         return;
       }
 
-      commitLogin(normalizedProfile, needsVer);
+      // Confirm the cookie-backed session using canonical /api/auth/me
+      const canonicalProfile = (await fetchCanonicalMe()) || responseProfile;
 
-      const target = returnToRef.current || getDefaultPathByRole(roleKey);
+      commitLogin(canonicalProfile, needsVer, vt);
+
+      const target = returnToRef.current || getDefaultPathByRole(normRole(canonicalProfile.role));
       finalizeNavigate(target);
     } catch (e: any) {
       const status = e?.response?.status;
@@ -413,21 +429,27 @@ export default function Login() {
     }
   };
 
-  const handleShopperVerifyNow = () => {
+  const handleShopperVerifyNow = async () => {
     if (!pendingShopperProfile) return;
-    commitLogin(pendingShopperProfile, true, verifyToken);
+
+    const canonicalProfile = (await fetchCanonicalMe().catch(() => null)) || pendingShopperProfile;
+    commitLogin(canonicalProfile, true, verifyToken);
     finalizeNavigate("/verify");
   };
 
-  const handleShopperDashboard = () => {
+  const handleShopperDashboard = async () => {
     if (!pendingShopperProfile) return;
-    commitLogin(pendingShopperProfile, true, verifyToken);
+
+    const canonicalProfile = (await fetchCanonicalMe().catch(() => null)) || pendingShopperProfile;
+    commitLogin(canonicalProfile, true, verifyToken);
     finalizeNavigate("/dashboard");
   };
 
-  const handleShopperCatalogue = () => {
+  const handleShopperCatalogue = async () => {
     if (!pendingShopperProfile) return;
-    commitLogin(pendingShopperProfile, true, verifyToken);
+
+    const canonicalProfile = (await fetchCanonicalMe().catch(() => null)) || pendingShopperProfile;
+    commitLogin(canonicalProfile, true, verifyToken);
     finalizeNavigate("/");
   };
 
