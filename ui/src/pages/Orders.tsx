@@ -819,9 +819,6 @@ export default function OrdersPage() {
   const nav = useNavigate();
   const location = useLocation();
 
-  const storeUser = useAuthStore((s) => s.user);
-  const storeRole = (storeUser?.role || "") as Role;
-
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -867,31 +864,55 @@ export default function OrdersPage() {
     });
   };
 
-  /* ----- Auth / Role (cookie session) ----- */
+  /* ----- Auth / Role (cookie session) ----- */  const storeUser = useAuthStore((s) => s.user);
+  const storeRole = (storeUser?.role || "") as Role;
+  const storeUserId = useAuthStore((s) => s.user?.id ?? null);
+  const authHydrated = useAuthStore((s) => s.hydrated);
+
   const meQ = useQuery({
     queryKey: ["me-min"],
-    queryFn: async () => (await api.get("/api/profile/me", AXIOS_COOKIE_CFG)).data as { role: Role; id?: string },
+    enabled: authHydrated,
+    queryFn: async () => {
+      const res = await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
+      return (res.data?.data ?? res.data ?? null) as { role?: Role; id?: string } | null;
+    },
     staleTime: 60_000,
     retry: false,
     refetchOnWindowFocus: false,
   });
 
-  const authReady = meQ.isSuccess || meQ.isError; // cookie check has resolved
-  const role: Role = (storeRole || meQ.data?.role || "SHOPPER") as Role;
+  const authReady = authHydrated && (meQ.isSuccess || meQ.isError);
+
+  const sessionUser = useMemo(() => {
+    if (meQ.data?.id) {
+      return {
+        ...(storeUser ?? {}),
+        ...meQ.data,
+      };
+    }
+    return storeUser ?? null;
+  }, [meQ.data, storeUser]);
+
+  const isSessionAuthenticated = !!sessionUser?.id || !!storeUserId;
+
+  const role: Role = (sessionUser?.role || storeRole || "SHOPPER") as Role;
 
   const isSuperAdmin = role === "SUPER_ADMIN";
   const isAdmin = role === "ADMIN" || isSuperAdmin;
   const isMetricsRole = isSuperAdmin;
   const isSupplier = String(role || "").toUpperCase() === "SUPPLIER";
 
-  // If cookie session is invalid -> force login
-  const mustLogin = authReady && (meQ.isError ? isAuthError(meQ.error) : false);
+  const meStatus = (meQ.error as any)?.response?.status;
 
-  // If supplier role -> redirect to supplier orders
+  // Redirect only when BOTH store auth and cookie auth fail
+  const mustLogin =
+    authReady &&
+    !isSessionAuthenticated &&
+    (meStatus === 401 || meStatus === 403);
+
   const mustGoSupplier = authReady && !mustLogin && isSupplier;
 
-  // Block all other queries if we will redirect (still call hooks, but disable network)
-  const queriesEnabled = authReady && !mustLogin && !mustGoSupplier;
+  const queriesEnabled = authReady && isSessionAuthenticated && !mustGoSupplier;
 
   /* ----- Orders ----- */
   const ordersQ = useQuery({
@@ -908,8 +929,11 @@ export default function OrdersPage() {
 
   // If any query comes back 401/403, also kick to login
   const mustLoginFromData =
-    (ordersQ.isError && isAuthError(ordersQ.error)) || (meQ.isError && isAuthError(meQ.error));
-
+    authReady &&
+    !isSessionAuthenticated &&
+    ((ordersQ.isError && isAuthError(ordersQ.error)) ||
+      (meQ.isError && isAuthError(meQ.error)));
+      
   /* ---- expanded row from ?open= ---- */
   const openId = useMemo(() => searchParams.get("open") || "", [searchParams]);
   useEffect(() => {
