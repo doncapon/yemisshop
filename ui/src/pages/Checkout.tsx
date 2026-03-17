@@ -1454,15 +1454,24 @@ export default function Checkout() {
     retry: false,
   });
 
+  const sessionUser = useMemo(() => {
+    return (meQ.data as any) ?? user ?? null;
+  }, [meQ.data, user]);
+
+  const isSessionAuthenticated = !!sessionUser?.id;
+
   useEffect(() => {
     if (!hydrated) return;
     if (meQ.isLoading) return;
 
     const status = (meQ.error as any)?.response?.status;
-    if (!meQ.data && status === 401) {
+
+    // Only redirect if BOTH the local auth store and cookie-session check say unauthenticated.
+    if (!user?.id && !meQ.data && (status === 401 || status === 403)) {
       nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
     }
-  }, [hydrated, meQ.isLoading, meQ.data, meQ.error, nav]);
+  }, [hydrated, meQ.isLoading, meQ.data, meQ.error, user?.id, nav]);
+
 
   const [checkingVerification, setCheckingVerification] = useState(true);
   const [emailOk, setEmailOk] = useState(false);
@@ -1641,7 +1650,7 @@ export default function Checkout() {
     queryKey: [
       "checkout",
       "shipping-quotes:v4",
-      user?.id,
+      sessionUser?.id,
       selectedShippingId,
       JSON.stringify({
         ...selectedShippingQuoteAddress,
@@ -1652,7 +1661,7 @@ export default function Checkout() {
     enabled:
       shippingEnabled &&
       hydrated &&
-      !!user?.id &&
+      isSessionAuthenticated &&
       cart.length > 0 &&
       !loadingProfile &&
       !!selectedShippingAddress &&
@@ -1700,7 +1709,7 @@ export default function Checkout() {
   }, [homeAddr]);
 
   const loadProfileState = useCallback(async () => {
-    if (!hydrated || !user?.id) return;
+    if (!hydrated || !isSessionAuthenticated) return;
 
     setCheckingVerification(true);
     setLoadingProfile(true);
@@ -1754,7 +1763,7 @@ export default function Checkout() {
       setCheckingVerification(false);
       setLoadingProfile(false);
     }
-  }, [hydrated, user?.id, nav]);
+  }, [hydrated, isSessionAuthenticated, nav]);
 
   useEffect(() => {
     void loadProfileState();
@@ -2507,7 +2516,7 @@ export default function Checkout() {
     );
   }
 
-  if (hydrated && !user?.id) {
+  if (hydrated && !meQ.isLoading && !isSessionAuthenticated) {
     return <Navigate to="/login" replace state={{ from: { pathname: "/checkout" } }} />;
   }
 
@@ -2838,8 +2847,8 @@ export default function Checkout() {
                           <div
                             key={addr.id}
                             className={`rounded-2xl border p-4 transition ${isSelected
-                                ? "border-amber-400 bg-amber-50/60 shadow-sm"
-                                : "border-border bg-white"
+                              ? "border-amber-400 bg-amber-50/60 shadow-sm"
+                              : "border-border bg-white"
                               }`}
                           >
                             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -2882,8 +2891,8 @@ export default function Checkout() {
                                 <button
                                   type="button"
                                   className={`rounded-xl px-3 py-2 text-xs sm:text-sm font-medium border transition ${isSelected
-                                      ? "border-amber-300 bg-amber-100 text-amber-800"
-                                      : "border-border bg-surface text-ink hover:bg-black/5"
+                                    ? "border-amber-300 bg-amber-100 text-amber-800"
+                                    : "border-border bg-surface text-ink hover:bg-black/5"
                                     }`}
                                   onClick={() => handleSelectShipping(addr.id)}
                                   disabled={syncingSelectedShippingId === addr.id}
