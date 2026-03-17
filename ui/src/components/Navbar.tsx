@@ -93,6 +93,10 @@ function useClickAway<T extends HTMLElement>(onAway: () => void) {
   return ref;
 }
 
+function isExternalHref(to: string) {
+  return /^(https?:)?\/\//i.test(String(to || ""));
+}
+
 function IconNavLink({
   to,
   end,
@@ -102,7 +106,7 @@ function IconNavLink({
   disabled,
   badgeCount,
   onPrefetch,
-  hardNavigate = true,
+  hardNavigate = false,
 }: {
   to: string;
   end?: boolean;
@@ -125,7 +129,7 @@ function IconNavLink({
 
       onClick?.();
 
-      if (!hardNavigate) return;
+      if (!hardNavigate || !isExternalHref(to)) return;
 
       e.preventDefault();
       window.location.assign(to);
@@ -213,6 +217,7 @@ function MobileMenuButton({
 
 export default function Navbar() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
@@ -278,11 +283,20 @@ export default function Navbar() {
     return init || "U";
   }, [firstName, lastName]);
 
-  const hardGo = useCallback((to: string) => {
-    setMenuOpen(false);
-    setMobileMoreOpen(false);
-    window.location.assign(to);
-  }, []);
+  const hardGo = useCallback(
+    (to: string) => {
+      setMenuOpen(false);
+      setMobileMoreOpen(false);
+
+      if (isExternalHref(to)) {
+        window.location.assign(to);
+        return;
+      }
+
+      navigate(to);
+    },
+    [navigate]
+  );
 
   const logout = useCallback(async () => {
     setMenuOpen(false);
@@ -295,7 +309,6 @@ export default function Navbar() {
       //
     }
 
-    // Clear cart badge + local cart immediately on logout
     clearCartStorageAndBroadcast();
     setCartQty(0);
 
@@ -330,7 +343,7 @@ export default function Navbar() {
 
   useEffect(() => {
     syncCartQty();
-  }, [loc.key, syncCartQty]);
+  }, [syncCartQty]);
 
   useEffect(() => {
     const onCartUpdated = () => syncCartQty();
@@ -387,33 +400,24 @@ export default function Navbar() {
     if (!st.hydrated) return;
     if (!st.user?.id) return;
 
-    for (const url of ["/api/auth/me", "/api/profile/me"]) {
-      try {
-        const res = await api.get(url, AXIOS_COOKIE_CFG);
-        const data = res?.data?.data ?? res?.data ?? null;
+    try {
+      const res = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
+      const data = res?.data?.data ?? res?.data ?? null;
 
-        if (data?.id) {
-          useAuthStore.setState({
-            user: {
-              ...(st.user ?? {}),
-              ...data,
-            },
-          });
-          return;
-        }
-      } catch (e: any) {
-        // Passive navbar verification must NEVER force logout or clear cart.
-        // Protected pages will decide whether a real login redirect is needed.
-        if (!isAuthError(e)) {
-          return;
-        }
+      if (data?.id) {
+        useAuthStore.setState({
+          user: {
+            ...(st.user ?? {}),
+            ...data,
+          },
+        });
       }
+    } catch (e: any) {
+      if (!isAuthError(e)) return;
+      // Passive navbar verification must NEVER force logout or clear cart.
+      // Protected pages decide whether an actual redirect is needed.
     }
   }, [forced]);
-
-  useEffect(() => {
-    verifySession();
-  }, [loc.key, verifySession]);
 
   useEffect(() => {
     const onFocus = () => verifySession();
