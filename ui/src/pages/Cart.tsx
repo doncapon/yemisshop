@@ -433,51 +433,51 @@ export default function Cart() {
     writeCartLines(lines as any);
   }, []);
 
-  const loadCart = useCallback(async () => {
-    const requestId = ++activeRequestIdRef.current;
+const loadCart = useCallback(async () => {
+  const requestId = ++activeRequestIdRef.current;
 
-    if (isAuthed) {
-      try {
-        const serverItems = await fetchServerCart();
-        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
-        safeSetCart(serverItems);
-        mirrorAuthedCartToLocal(serverItems);
-        setHydrated(true);
-        return;
-      } catch (err: any) {
-        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+  if (isAuthed) {
+    try {
+      const serverItems = await fetchServerCart();
+      if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
 
-        const status = Number(err?.response?.status || 0);
+      safeSetCart(serverItems);
+      mirrorAuthedCartToLocal(serverItems);
+      setHydrated(true);
+      return;
+    } catch (err: any) {
+      if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
 
-        // Session expired / invalid auth
-        if (status === 401) {
-          try {
-            writeCartLines([]);
-          } catch {
-            //
-          }
+      const status = Number(err?.response?.status || 0);
 
-          safeSetCart([]);
-          setHydrated(true);
-          window.dispatchEvent(new Event("cart:updated"));
-          window.dispatchEvent(new Event("auth:expired"));
-          return;
-        }
-
-        // Non-auth failure: keep local fallback if you really want resilience
+      // IMPORTANT:
+      // On mobile / flaky auth-cookie situations, do NOT wipe local cart backup.
+      // Fall back to the last mirrored local cart so the cart UI does not disappear.
+      if (status === 401 || status === 403) {
         const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+
         safeSetCart(localItems);
         setHydrated(true);
+
+        // Let the rest of the app know auth may be stale,
+        // but keep the cart visible instead of deleting it.
+        window.dispatchEvent(new Event("auth:expired"));
         return;
       }
+
+      // Non-auth failure: keep local fallback for resilience
+      const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+      safeSetCart(localItems);
+      setHydrated(true);
+      return;
     }
+  }
 
-    const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-    if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
-    safeSetCart(guestItems);
-    setHydrated(true);
-  }, [isAuthed, mirrorAuthedCartToLocal, safeSetCart]);
-
+  const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+  if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+  safeSetCart(guestItems);
+  setHydrated(true);
+}, [isAuthed, mirrorAuthedCartToLocal, safeSetCart]);
   useEffect(() => {
     isMountedRef.current = true;
 
