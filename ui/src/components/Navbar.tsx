@@ -387,49 +387,26 @@ export default function Navbar() {
     if (!st.hydrated) return;
     if (!st.user?.id) return;
 
-    let resolvedUser: any = null;
-    let lastErr: any = null;
-
     for (const url of ["/api/auth/me", "/api/profile/me"]) {
       try {
         const res = await api.get(url, AXIOS_COOKIE_CFG);
         const data = res?.data?.data ?? res?.data ?? null;
+
         if (data?.id) {
-          resolvedUser = data;
-          break;
+          useAuthStore.setState({
+            user: {
+              ...(st.user ?? {}),
+              ...data,
+            },
+          });
+          return;
         }
       } catch (e: any) {
-        lastErr = e;
-
-        // Ignore temporary non-auth failures
+        // Passive navbar verification must NEVER force logout or clear cart.
+        // Protected pages will decide whether a real login redirect is needed.
         if (!isAuthError(e)) {
           return;
         }
-      }
-    }
-
-    if (resolvedUser?.id) {
-      useAuthStore.setState({
-        user: {
-          ...(st.user ?? {}),
-          ...resolvedUser,
-        },
-      });
-      return;
-    }
-
-    if (isAuthError(lastErr)) {
-      useAuthStore.setState({ user: null });
-      setMenuOpen(false);
-      setMobileMoreOpen(false);
-
-      clearCartStorageAndBroadcast();
-      setCartQty(0);
-
-      try {
-        window.dispatchEvent(new Event("auth:expired"));
-      } catch {
-        //
       }
     }
   }, [forced]);
@@ -445,19 +422,17 @@ export default function Navbar() {
   }, [verifySession]);
 
   useEffect(() => {
-    const onAuthReset = () => {
+    const onLogout = () => {
       setMenuOpen(false);
       setMobileMoreOpen(false);
       clearCartStorageAndBroadcast();
       setCartQty(0);
     };
 
-    window.addEventListener("auth:logout", onAuthReset as EventListener);
-    window.addEventListener("auth:expired", onAuthReset as EventListener);
+    window.addEventListener("auth:logout", onLogout as EventListener);
 
     return () => {
-      window.removeEventListener("auth:logout", onAuthReset as EventListener);
-      window.removeEventListener("auth:expired", onAuthReset as EventListener);
+      window.removeEventListener("auth:logout", onLogout as EventListener);
     };
   }, []);
 

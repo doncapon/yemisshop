@@ -499,19 +499,12 @@ export default function Cart() {
 
         // If session is still effectively authenticated, keep the local mirror
         // instead of wiping the cart because mobile cookies/store can briefly wobble.
-        if (status === 401 || status === 403) {
-          if (isAuthed) {
-            const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-            safeSetCart(localItems);
-            setHydrated(true);
-            return;
-          }
+           if (status === 401 || status === 403) {
+          const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
 
-          // True logout / expired session: clear local mirrored cart too.
-          clearLocalCartStorage();
-          safeSetCart([]);
+          // Keep whatever local snapshot we have instead of forcing auth expiry here.
+          safeSetCart(localItems);
           setHydrated(true);
-          window.dispatchEvent(new Event("auth:expired"));
           return;
         }
 
@@ -528,8 +521,7 @@ export default function Cart() {
     setHydrated(true);
   }, [isAuthed, clearLocalCartStorage, mirrorAuthedCartToLocal, safeSetCart]);
 
-
-    useEffect(() => {
+  useEffect(() => {
     const onAuthReset = () => {
       activeRequestIdRef.current += 1;
       focusedQtyKeyRef.current = null;
@@ -555,7 +547,6 @@ export default function Cart() {
       window.removeEventListener("auth:expired", onAuthReset as EventListener);
     };
   }, [clearAllNotes, safeSetCart]);
-
   
   useEffect(() => {
     isMountedRef.current = true;
