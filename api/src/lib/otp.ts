@@ -12,7 +12,13 @@ const OTP_LEN = Number(process.env.OTP_LEN || 6);
 const MAX_PER_15M = Number(process.env.OTP_MAX_PER_15M || 3);
 const MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
 
-type OtpChannel = "whatsapp" | "sms" | "email";
+const OTP_CONSOLE_ONLY =
+  String(process.env.OTP_CONSOLE_ONLY || "").toLowerCase() === "true";
+
+const NODE_ENV = String(process.env.NODE_ENV || "").toLowerCase();
+const IS_DEV = NODE_ENV === "development" || !NODE_ENV;
+
+type OtpChannel = "whatsapp" | "sms" | "email" | "console";
 
 function genCode(len = OTP_LEN) {
   return Array.from({ length: len }, () => Math.floor(Math.random() * 10)).join("");
@@ -29,18 +35,43 @@ async function canSend(identifier: string) {
 type IssueOtpOpts = {
   identifier: string;
   userId?: string | null;
-
   phone?: string | null;
   whatsappPhone?: string | null;
   email?: string | null;
-
   channelPref?: OtpChannel;
-
   brand?: string;
   purposeLabel?: string;
   expiresMins?: number;
   orderId?: string;
 };
+
+function maskValue(v?: string | null) {
+  const s = String(v || "").trim();
+  if (!s) return null;
+  if (s.length <= 4) return s;
+  return `${"*".repeat(Math.max(0, s.length - 4))}${s.slice(-4)}`;
+}
+
+function shouldConsoleOnly() {
+  // Explicit kill switch wins
+  if (OTP_CONSOLE_ONLY) return true;
+
+  // In dev / pre-live, default to console mode unless explicitly forcing live
+  const forceLiveInDev =
+    String(process.env.TERMII_FORCE_LIVE_IN_DEV || "").toLowerCase() === "true";
+
+  if (IS_DEV && !forceLiveInDev) return true;
+
+  // Respect existing Termii log-only kill switches too
+  const globalLogOnly =
+    String(process.env.TERMII_LOG_ONLY || "").toLowerCase() === "true";
+  const smsLogOnly =
+    String(process.env.TERMII_SMS_LOG_ONLY || "").toLowerCase() === "true";
+  const whatsappLogOnly =
+    String(process.env.TERMII_WHATSAPP_LOG_ONLY || "").toLowerCase() === "true";
+
+  return globalLogOnly || smsLogOnly || whatsappLogOnly;
+}
 
 export async function issueOtp(opts: IssueOtpOpts) {
   const {
@@ -55,6 +86,17 @@ export async function issueOtp(opts: IssueOtpOpts) {
     expiresMins = OTP_TTL_MIN,
     orderId,
   } = opts;
+  console.log("[OTP LIB LOADED FROM FILE]", import.meta.url);
+
+  console.log("[issueOtp ENTER]", {
+    identifier: opts?.identifier,
+    userId: opts?.userId,
+    phone: opts?.phone,
+    whatsappPhone: opts?.whatsappPhone,
+    email: opts?.email,
+    channelPref: opts?.channelPref,
+    at: new Date().toISOString(),
+  });
 
   if (!(await canSend(identifier))) {
     return { ok: false as const, error: "Too many OTP requests. Try again later." };
@@ -78,6 +120,42 @@ export async function issueOtp(opts: IssueOtpOpts) {
     },
     select: { id: true },
   });
+
+  const consoleOnly = shouldConsoleOnly();
+
+  // Always log helpful debug info before delivery attempt
+  console.log("[OTP/issueOtp] generated", {
+    otpId: row.id,
+    identifier,
+    userId,
+    purposeLabel,
+    preferredChannel: channelPref,
+    normalizedPhone: maskValue(normalizedPhone),
+    normalizedWhatsappPhone: maskValue(normalizedWhatsappPhone),
+    email: email ? maskValue(email) : null,
+    expiresMins,
+    consoleOnly,
+    code, // keep visible pre-live
+  });
+
+  if (consoleOnly) {
+    await prisma.otp.update({
+      where: { id: row.id },
+      data: { channel: "CONSOLE" },
+    });
+
+    console.log(
+      `[OTP:CONSOLE_ONLY] ${purposeLabel} code for ${identifier}: ${code}`
+    );
+
+    return {
+      ok: true as const,
+      id: row.id,
+      ttlMin: expiresMins,
+      channel: "console" as const,
+      code,
+    };
+  }
 
   const attempts: Array<{
     channel: OtpChannel;
@@ -210,6 +288,16 @@ export async function issueOtp(opts: IssueOtpOpts) {
   }
 
   if (!attempts.length) {
+    console.warn("[OTP/issueOtp] no valid delivery channel", {
+      otpId: row.id,
+      identifier,
+      phone,
+      whatsappPhone,
+      email,
+      normalizedPhone,
+      normalizedWhatsappPhone,
+    });
+
     return { ok: false as const, error: "No valid delivery channel found for OTP." };
   }
 
@@ -217,6 +305,12 @@ export async function issueOtp(opts: IssueOtpOpts) {
 
   for (const attempt of attempts) {
     try {
+      console.log("[OTP/issueOtp] attempting delivery", {
+        otpId: row.id,
+        identifier,
+        channel: attempt.channel,
+      });
+
       await attempt.run();
 
       await prisma.otp.update({
@@ -224,14 +318,29 @@ export async function issueOtp(opts: IssueOtpOpts) {
         data: { channel: attempt.channel.toUpperCase() },
       });
 
+      console.log("[OTP/issueOtp] delivered", {
+        otpId: row.id,
+        identifier,
+        channel: attempt.channel,
+        code, // still log pre-live
+      });
+
       return {
         ok: true as const,
         id: row.id,
         ttlMin: expiresMins,
         channel: attempt.channel,
+        code,
       };
     } catch (err: any) {
       lastErr = String(err?.message || err || `Failed via ${attempt.channel}`);
+
+      console.error("[OTP/issueOtp] delivery failed", {
+        otpId: row.id,
+        identifier,
+        channel: attempt.channel,
+        error: lastErr,
+      });
     }
   }
 
@@ -274,6 +383,12 @@ export async function verifyOtp(opts: { identifier: string; code: string }) {
       attempts: (row.attempts ?? 0) + 1,
       consumedAt: good ? new Date() : null,
     },
+  });
+
+  console.log("[OTP/verifyOtp]", {
+    identifier,
+    otpId: row.id,
+    ok: good,
   });
 
   return good

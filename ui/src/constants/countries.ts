@@ -1,3 +1,4 @@
+//constants/countries.ts
 export type CountryConfig = {
   code: string;
   name: string;

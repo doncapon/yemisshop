@@ -1,3 +1,4 @@
+//constants/nigeriaLocations.ts
 export const STATE_TO_LGAS: Record<string, string[]> = {
   Abia: [
     "Aba North",

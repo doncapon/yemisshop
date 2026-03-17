@@ -502,34 +502,66 @@ function mergeProfileShippingAddresses(profile?: ProfileMe | null) {
 
   const map = new Map<string, SavedShippingAddress>();
 
-  for (const item of list) {
+  const normalizeAddr = (item: any): SavedShippingAddress | null => {
     const id = String(item?.id ?? "").trim();
     const city = String(item?.city ?? "").trim();
     const state = String(item?.state ?? "").trim();
     const phone = String(item?.phone ?? "").trim();
-    if (!id || !city || !state || !phone) continue;
+    if (!id || !city || !state || !phone) return null;
 
-    map.set(id, {
+    return {
       ...item,
-      country: item.country || "Nigeria",
-      isActive: item.isActive == null ? true : !!item.isActive,
-      phoneVerifiedAt: item.phoneVerifiedAt ?? null,
-      phoneVerifiedBy: item.phoneVerifiedBy ?? null,
-      verificationMeta: item.verificationMeta ?? null,
-    });
+      id,
+      city,
+      state,
+      phone,
+      country: item?.country || "Nigeria",
+      isActive: item?.isActive == null ? true : !!item?.isActive,
+      phoneVerifiedAt: item?.phoneVerifiedAt ?? null,
+      phoneVerifiedBy: item?.phoneVerifiedBy ?? null,
+      verificationMeta: item?.verificationMeta ?? null,
+    };
+  };
+
+  // 1) Start with the array entries
+  for (const item of list) {
+    const normalized = normalizeAddr(item);
+    if (!normalized) continue;
+    map.set(normalized.id, normalized);
   }
 
+  // 2) Overlay the single canonical/default shippingAddress from profile
+  //    so Checkout matches Profile when both refer to the same id.
   if (legacy?.city && legacy?.state && legacy?.phone) {
-    const legacyId = String(legacy.id ?? "legacy-shipping");
-    if (!map.has(legacyId)) {
+    const legacyId = String(legacy.id ?? "legacy-shipping").trim();
+    const normalizedLegacy = normalizeAddr({
+      ...legacy,
+      id: legacyId,
+    });
+
+    if (normalizedLegacy) {
+      const existing = map.get(legacyId);
+
       map.set(legacyId, {
-        ...legacy,
-        id: legacyId,
-        country: legacy.country || "Nigeria",
-        isActive: legacy.isActive == null ? true : !!legacy.isActive,
-        phoneVerifiedAt: (legacy as any)?.phoneVerifiedAt ?? null,
-        phoneVerifiedBy: (legacy as any)?.phoneVerifiedBy ?? null,
-        verificationMeta: (legacy as any)?.verificationMeta ?? null,
+        ...(existing ?? {}),
+        ...normalizedLegacy,
+
+        // Prefer the canonical/default object's verification fields when present
+        phoneVerifiedAt:
+          normalizedLegacy.phoneVerifiedAt ??
+          existing?.phoneVerifiedAt ??
+          null,
+        phoneVerifiedBy:
+          normalizedLegacy.phoneVerifiedBy ??
+          existing?.phoneVerifiedBy ??
+          null,
+        verificationMeta:
+          normalizedLegacy.verificationMeta ??
+          existing?.verificationMeta ??
+          null,
+
+        // Preserve default flag if either source says so
+        isDefault: !!(normalizedLegacy.isDefault || existing?.isDefault),
       });
     }
   }
@@ -538,6 +570,7 @@ function mergeProfileShippingAddresses(profile?: ProfileMe | null) {
 
   let defaultId =
     String(profile?.defaultShippingAddressId ?? "").trim() ||
+    profile?.shippingAddress?.id ||
     addresses.find((a) => a.isDefault)?.id ||
     addresses[0]?.id ||
     null;

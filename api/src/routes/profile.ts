@@ -40,8 +40,7 @@ const savedShippingAddressSchema = z.object({
 const updateSavedShippingAddressSchema = savedShippingAddressSchema.partial();
 
 function cleanString(v: string | undefined) {
-  const s = String(v ?? "").trim();
-  return s;
+  return String(v ?? "").trim();
 }
 
 function toNullIfBlank(v: string | undefined) {
@@ -77,6 +76,19 @@ function mapSavedShippingAddress(row: any) {
   };
 }
 
+function normalizePhoneToE164(input: unknown, defaultCountryCode = "234"): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+
+  const cleaned = raw.replace(/[^\d+]/g, "");
+
+  if (/^\+\d{8,15}$/.test(cleaned)) return cleaned;
+  if (/^00\d{8,15}$/.test(cleaned)) return `+${cleaned.slice(2)}`;
+  if (/^0\d{7,14}$/.test(cleaned)) return `+${defaultCountryCode}${cleaned.slice(1)}`;
+  if (/^\d{8,15}$/.test(cleaned)) return `+${cleaned}`;
+  return null;
+}
+
 /**
  * GET /api/profile/me
  * Returns:
@@ -84,6 +96,8 @@ function mapSavedShippingAddress(row: any) {
  * - shippingAddress: resolved default saved shipping address (for old checkout UI compatibility)
  * - shippingAddresses: all active saved shipping addresses
  * - defaultShippingAddressId
+ *
+ * Full account verification is email-driven only.
  */
 router.get("/me", requireAuth, async (req, res, next) => {
   try {
@@ -164,9 +178,6 @@ router.get("/me", requireAuth, async (req, res, next) => {
             directionsNote: true,
             isDefault: true,
             isActive: true,
-            phoneVerifiedAt: true,
-            phoneVerifiedBy: true,
-            verificationMeta: true,
             createdAt: true,
             updatedAt: true,
           },
@@ -191,7 +202,7 @@ router.get("/me", requireAuth, async (req, res, next) => {
       middleName: user.middleName,
       lastName: user.lastName,
       phone: user.phone,
-      status: user.status,
+      status: user.emailVerifiedAt ? "VERIFIED" : "PENDING",
       emailVerifiedAt: user.emailVerifiedAt,
       phoneVerifiedAt: user.phoneVerifiedAt,
       dateOfBirth: user.dateOfBirth,
@@ -199,94 +210,13 @@ router.get("/me", requireAuth, async (req, res, next) => {
       address: user.address,
       shippingAddress: defaultShippingAddress
         ? {
-            id: defaultShippingAddress.id,
-            houseNumber: defaultShippingAddress.houseNumber ?? "",
-            streetName: defaultShippingAddress.streetName ?? "",
-            postCode: defaultShippingAddress.postCode ?? "",
-            town: defaultShippingAddress.town ?? "",
-            city: defaultShippingAddress.city ?? "",
-            state: defaultShippingAddress.state ?? "",
-            country: defaultShippingAddress.country ?? "",
-            lga: defaultShippingAddress.lga ?? "",
-            recipientName: defaultShippingAddress.recipientName ?? "",
-            phone: defaultShippingAddress.phone ?? "",
-            whatsappPhone: defaultShippingAddress.whatsappPhone ?? "",
-            label: defaultShippingAddress.label ?? "",
-            landmark: defaultShippingAddress.landmark ?? "",
-            directionsNote: defaultShippingAddress.directionsNote ?? "",
-            isDefault: !!defaultShippingAddress.isDefault,
-          }
+          id: defaultShippingAddress.id,
+          phoneVerifiedBy: (defaultShippingAddress as any).phoneVerifiedBy ?? null,
+          verificationMeta: (defaultShippingAddress as any).verificationMeta ?? Prisma.JsonNull,
+        }
         : null,
       defaultShippingAddressId: user.defaultShippingAddressId ?? defaultShippingAddress?.id ?? null,
       shippingAddresses: user.shippingAddresses.map(mapSavedShippingAddress),
-    });
-  } catch (e) {
-    next(e);
-  }
-});
-
-/**
- * POST /api/profile/shipping-addresses/:id/request-phone-otp
- * Sends OTP for saved shipping address verification.
- * Prefers whatsappPhone if present, otherwise falls back to phone.
- * Uses the shared OTP service, which can still route through Termii.
- */
-router.post("/shipping-addresses/:id/request-phone-otp", requireAuth, async (req, res, next) => {
-  try {
-    const userId = req.user!.id;
-    const id = String(req.params.id);
-
-    const existing = await prisma.userShippingAddress.findFirst({
-      where: { id, userId, isActive: true },
-      select: {
-        id: true,
-        phone: true,
-        whatsappPhone: true,
-        phoneVerifiedAt: true,
-      },
-    });
-
-    if (!existing) {
-      return res.status(404).json({ error: "Shipping address not found" });
-    }
-
-    if (existing.phoneVerifiedAt) {
-      return res.json({
-        ok: true,
-        alreadyVerified: true,
-        message: "This delivery phone is already verified.",
-      });
-    }
-
-    const whatsappPhone = cleanString(existing.whatsappPhone ?? undefined);
-    const phone = cleanString(existing.phone ?? undefined);
-    const hasWhatsapp = !!whatsappPhone;
-    const targetPhone = hasWhatsapp ? whatsappPhone : phone;
-
-    if (!targetPhone) {
-      return res.status(400).json({
-        error: "This saved address does not have a valid phone or WhatsApp number.",
-      });
-    }
-
-    const result = await issueOtp({
-      identifier: `shipping-address:${id}`,
-      userId,
-      phone: targetPhone,
-      channelPref: hasWhatsapp ? "whatsapp" : "sms",
-    });
-
-    if (!result.ok) {
-      return res.status(400).json({
-        error: result.error || "Could not send OTP.",
-      });
-    }
-
-    return res.json({
-      ok: true,
-      message: "OTP sent successfully.",
-      channel: hasWhatsapp ? "whatsapp" : "sms",
-      maskedPhone: targetPhone.slice(-4).padStart(targetPhone.length, "*"),
     });
   } catch (e) {
     next(e);
@@ -357,8 +287,10 @@ router.post("/shipping", requireAuth, async (req, res, next) => {
           userId,
           label: toNullIfBlank(data.label),
           recipientName: toNullIfBlank(data.recipientName),
-          phone: cleanString(data.phone),
-          whatsappPhone: toNullIfBlank(data.whatsappPhone),
+          phone: normalizePhoneToE164(cleanString(data.phone)) || cleanString(data.phone),
+          whatsappPhone:
+            normalizePhoneToE164(cleanString(data.whatsappPhone)) ||
+            toNullIfBlank(data.whatsappPhone),
           houseNumber: toNullIfBlank(data.houseNumber),
           streetName: toNullIfBlank(data.streetName),
           postCode: toNullIfBlank(data.postCode),
@@ -421,28 +353,6 @@ router.post("/shipping-addresses", requireAuth, async (req, res, next) => {
     const data = savedShippingAddressSchema.parse(req.body);
 
     const saved = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: {
-          id: true,
-          phone: true,
-          phoneVerifiedAt: true,
-        },
-      });
-
-      if (!user) {
-        throw new Error("User not found");
-      }
-
-      const incomingPhone = cleanString(data.phone);
-      const userPhone = cleanString(user.phone ?? "");
-
-      const shouldAutoVerify =
-        !!incomingPhone &&
-        !!userPhone &&
-        incomingPhone === userPhone &&
-        !!user.phoneVerifiedAt;
-
       if (data.isDefault) {
         await tx.userShippingAddress.updateMany({
           where: { userId },
@@ -455,8 +365,11 @@ router.post("/shipping-addresses", requireAuth, async (req, res, next) => {
           userId,
           label: toNullIfBlank(data.label),
           recipientName: toNullIfBlank(data.recipientName),
-          phone: incomingPhone,
-          whatsappPhone: toNullIfBlank(data.whatsappPhone),
+          phone:
+            normalizePhoneToE164(cleanString(data.phone)) || cleanString(data.phone),
+          whatsappPhone:
+            normalizePhoneToE164(cleanString(data.whatsappPhone)) ||
+            toNullIfBlank(data.whatsappPhone),
           houseNumber: toNullIfBlank(data.houseNumber),
           streetName: toNullIfBlank(data.streetName),
           postCode: toNullIfBlank(data.postCode),
@@ -469,14 +382,6 @@ router.post("/shipping-addresses", requireAuth, async (req, res, next) => {
           directionsNote: toNullIfBlank(data.directionsNote),
           isDefault: !!data.isDefault,
           isActive: true,
-          phoneVerifiedAt: shouldAutoVerify ? user.phoneVerifiedAt : null,
-          phoneVerifiedBy: shouldAutoVerify ? "PROFILE_PHONE_MATCH" : null,
-          verificationMeta: shouldAutoVerify
-            ? {
-                source: "PROFILE_PHONE_MATCH",
-                matchedUserPhone: incomingPhone,
-              }
-            : Prisma.JsonNull,
         },
       });
 
@@ -507,13 +412,7 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
 
     const existing = await prisma.userShippingAddress.findFirst({
       where: { id, userId, isActive: true },
-      select: {
-        id: true,
-        phone: true,
-        phoneVerifiedAt: true,
-        phoneVerifiedBy: true,
-        verificationMeta: true,
-      },
+      select: { id: true },
     });
 
     if (!existing) {
@@ -528,12 +427,6 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
         });
       }
 
-      const nextPhone =
-        data.phone !== undefined ? cleanString(data.phone) : cleanString(existing.phone);
-
-      const prevPhone = cleanString(existing.phone);
-      const phoneChanged = nextPhone !== prevPhone;
-
       const row = await tx.userShippingAddress.update({
         where: { id },
         data: {
@@ -541,9 +434,18 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
           ...(data.recipientName !== undefined
             ? { recipientName: toNullIfBlank(data.recipientName) }
             : {}),
-          ...(data.phone !== undefined ? { phone: nextPhone } : {}),
+          ...(data.phone !== undefined
+            ? {
+              phone:
+                normalizePhoneToE164(cleanString(data.phone)) || cleanString(data.phone),
+            }
+            : {}),
           ...(data.whatsappPhone !== undefined
-            ? { whatsappPhone: toNullIfBlank(data.whatsappPhone) }
+            ? {
+              whatsappPhone:
+                normalizePhoneToE164(cleanString(data.whatsappPhone)) ||
+                toNullIfBlank(data.whatsappPhone),
+            }
             : {}),
           ...(data.houseNumber !== undefined
             ? { houseNumber: toNullIfBlank(data.houseNumber) }
@@ -568,13 +470,6 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
             ? { directionsNote: toNullIfBlank(data.directionsNote) }
             : {}),
           ...(data.isDefault !== undefined ? { isDefault: !!data.isDefault } : {}),
-          ...(phoneChanged
-            ? {
-                phoneVerifiedAt: null,
-                phoneVerifiedBy: null,
-                verificationMeta: Prisma.JsonNull,
-              }
-            : {}),
         },
       });
 
@@ -589,78 +484,6 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
     });
 
     res.json({ data: mapSavedShippingAddress(saved) });
-  } catch (e) {
-    next(e);
-  }
-});
-
-router.post("/shipping-addresses/:id/verify-phone", requireAuth, async (req, res, next) => {
-  try {
-    const userId = req.user!.id;
-    const id = String(req.params.id);
-    const rawCode = String(req.body?.otp ?? req.body?.code ?? "").trim();
-
-    if (!/^\d{6}$/.test(rawCode)) {
-      return res.status(400).json({ error: "OTP must be 6 digits." });
-    }
-
-    const existing = await prisma.userShippingAddress.findFirst({
-      where: { id, userId, isActive: true },
-      select: {
-        id: true,
-        phone: true,
-        whatsappPhone: true,
-        phoneVerifiedAt: true,
-      },
-    });
-
-    if (!existing) {
-      return res.status(404).json({ error: "Shipping address not found" });
-    }
-
-    if (existing.phoneVerifiedAt) {
-      const fullRow = await prisma.userShippingAddress.findFirst({
-        where: { id, userId, isActive: true },
-      });
-
-      return res.json({
-        ok: true,
-        alreadyVerified: true,
-        data: mapSavedShippingAddress(fullRow),
-      });
-    }
-
-    const out = await verifyOtp({
-      identifier: `shipping-address:${id}`,
-      code: rawCode,
-    });
-
-    if (!out.ok) {
-      return res.status(400).json({
-        error: out.error || "Invalid OTP. Please try again.",
-      });
-    }
-
-    const now = new Date();
-
-    const row = await prisma.userShippingAddress.update({
-      where: { id },
-      data: {
-        phoneVerifiedAt: now,
-        phoneVerifiedBy: "CHECKOUT_DELIVERY_OTP",
-        verificationMeta: {
-          source: "CHECKOUT_DELIVERY_OTP",
-          verifiedPhone: existing.phone ?? null,
-          verifiedWhatsappPhone: existing.whatsappPhone ?? null,
-          verifiedAt: now.toISOString(),
-        } as Prisma.InputJsonValue,
-      },
-    });
-
-    return res.json({
-      ok: true,
-      data: mapSavedShippingAddress(row),
-    });
   } catch (e) {
     next(e);
   }
@@ -769,17 +592,251 @@ router.delete("/shipping-addresses/:id", requireAuth, async (req, res, next) => 
   }
 });
 
-function normalizePhoneToE164(input: unknown, defaultCountryCode = "234"): string | null {
-  const raw = String(input ?? "").trim();
-  if (!raw) return null;
+/**
+ * POST /api/profile/shipping-addresses/:id/request-phone-otp
+ * Sends OTP for saved shipping address verification.
+ * Prefers whatsappPhone if present, otherwise falls back to phone.
+ * This is delivery-phone verification only. It does NOT affect account status.
+ */
+router.post("/shipping-addresses/:id/request-phone-otp", requireAuth, async (req, res, next) => {
+  console.log("[PROFILE OTP ROUTE HIT]", {
+    id: req.params.id,
+    userId: req.user?.id,
+    at: new Date().toISOString(),
+  });
 
-  const cleaned = raw.replace(/[^\d+]/g, "");
+  try {
+    const userId = req.user!.id;
+    const id = String(req.params.id || "").trim();
 
-  if (/^\+\d{8,15}$/.test(cleaned)) return cleaned;
-  if (/^00\d{8,15}$/.test(cleaned)) return `+${cleaned.slice(2)}`;
-  if (/^0\d{7,14}$/.test(cleaned)) return `+${defaultCountryCode}${cleaned.slice(1)}`;
-  if (/^\d{8,15}$/.test(cleaned)) return `+${cleaned}`;
-  return null;
-}
+    console.log("[PROFILE OTP] step 1 - before findFirst", { id, userId });
+
+    const existing = await prisma.userShippingAddress.findFirst({
+      where: { id, userId, isActive: true },
+      select: {
+        id: true,
+        phone: true,
+        whatsappPhone: true,
+        phoneVerifiedAt: true,
+      },
+    });
+
+    console.log("[PROFILE OTP] step 2 - after findFirst", { existing });
+
+    if (!existing) {
+      console.log("[PROFILE OTP] step 3 - not found");
+      return res.status(404).json({ error: "Shipping address not found" });
+    }
+
+    if (existing.phoneVerifiedAt) {
+      console.log("[PROFILE OTP] step 4 - already verified");
+      return res.json({
+        ok: true,
+        alreadyVerified: true,
+        message: "This delivery phone is already verified.",
+      });
+    }
+
+    const rawWhatsappPhone = cleanString(existing.whatsappPhone ?? undefined);
+    const rawPhone = cleanString(existing.phone ?? undefined);
+
+    console.log("[PROFILE OTP] step 5 - raw numbers", {
+      rawWhatsappPhone,
+      rawPhone,
+    });
+
+    const whatsappPhone = rawWhatsappPhone
+      ? normalizePhoneToE164(rawWhatsappPhone)
+      : null;
+
+    const phone = rawPhone
+      ? normalizePhoneToE164(rawPhone)
+      : null;
+
+    console.log("[PROFILE OTP] step 6 - normalized numbers", {
+      whatsappPhone,
+      phone,
+    });
+
+    const hasRawWhatsapp = !!rawWhatsappPhone;
+    const hasRawPhone = !!rawPhone;
+    const hasValidWhatsapp = !!whatsappPhone;
+    const hasValidPhone = !!phone;
+
+    console.log("[PROFILE OTP] step 7 - channel flags", {
+      hasRawWhatsapp,
+      hasRawPhone,
+      hasValidWhatsapp,
+      hasValidPhone,
+    });
+
+    if (!hasValidWhatsapp && !hasValidPhone) {
+      let error = "Please save a valid delivery phone or WhatsApp number before requesting OTP.";
+
+      if (hasRawWhatsapp && !hasRawPhone) {
+        error = "Your WhatsApp number is invalid. Please update it and try again.";
+      } else if (!hasRawWhatsapp && hasRawPhone && !hasValidPhone) {
+        error = "Your delivery phone number is invalid. Please update it and try again.";
+      } else if (hasRawWhatsapp && !hasValidWhatsapp && hasRawPhone && !hasValidPhone) {
+        error =
+          "Your saved delivery phone and WhatsApp number are invalid. Please update at least one valid number and try again.";
+      }
+
+      console.log("[PROFILE OTP] step 8 - invalid numbers", { error });
+      return res.status(400).json({ error });
+    }
+
+    const preferredPhone = whatsappPhone || phone;
+    const fallbackPhone =
+      whatsappPhone && phone && whatsappPhone !== phone ? phone : null;
+
+    console.log("[PROFILE OTP] step 9 - before issueOtp", {
+      preferredPhone,
+      fallbackPhone,
+      channelPref: hasValidWhatsapp ? "whatsapp" : "sms",
+    });
+
+    let sentChannel: "whatsapp" | "sms" = hasValidWhatsapp ? "whatsapp" : "sms";
+    let sentPhone = preferredPhone!;
+    let result = await issueOtp({
+      identifier: `shipping-address:${id}`,
+      userId,
+      phone: preferredPhone!,
+      whatsappPhone: whatsappPhone || undefined,
+      channelPref: hasValidWhatsapp ? "whatsapp" : "sms",
+    });
+
+    console.log("[PROFILE OTP] step 10 - after issueOtp", { result });
+
+    if (!result.ok && hasValidWhatsapp && fallbackPhone) {
+      console.log("[PROFILE OTP] step 11 - trying SMS fallback");
+
+      const fallbackResult = await issueOtp({
+        identifier: `shipping-address:${id}`,
+        userId,
+        phone: fallbackPhone,
+        channelPref: "sms",
+      });
+
+      console.log("[PROFILE OTP] step 12 - fallback result", { fallbackResult });
+
+      if (fallbackResult.ok) {
+        result = fallbackResult;
+        sentChannel = "sms";
+        sentPhone = fallbackPhone;
+      }
+    }
+
+    if (!result.ok) {
+      console.log("[PROFILE OTP] step 13 - final failure", { result });
+      return res.status(400).json({
+        error:
+          result.error ||
+          (hasValidWhatsapp
+            ? "Could not send OTP to your WhatsApp number or delivery phone. Please confirm your saved numbers and try again."
+            : "Could not send OTP to your delivery phone. Please confirm your saved number and try again."),
+      });
+    }
+
+    console.log("[PROFILE OTP] step 14 - success response", {
+      sentChannel,
+      sentPhone,
+    });
+
+    return res.json({
+      ok: true,
+      message:
+        sentChannel === "whatsapp"
+          ? "OTP sent successfully via WhatsApp."
+          : "OTP sent successfully via SMS.",
+      channel: sentChannel,
+      maskedPhone: sentPhone.slice(-4).padStart(sentPhone.length, "*"),
+    });
+  } catch (e: any) {
+    console.error("[PROFILE OTP ROUTE ERROR]", {
+      message: e?.message,
+      stack: e?.stack,
+    });
+    next(e);
+  }
+});
+
+
+/**
+ * POST /api/profile/shipping-addresses/:id/verify-phone
+ * Verifies saved shipping address delivery phone OTP.
+ * This is delivery-phone verification only. It does NOT affect account status.
+ */
+router.post("/shipping-addresses/:id/verify-phone", requireAuth, async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const id = String(req.params.id);
+    const rawCode = String(req.body?.otp ?? req.body?.code ?? "").trim();
+
+    if (!/^\d{6}$/.test(rawCode)) {
+      return res.status(400).json({ error: "OTP must be 6 digits." });
+    }
+
+    const existing = await prisma.userShippingAddress.findFirst({
+      where: { id, userId, isActive: true },
+      select: {
+        id: true,
+        phone: true,
+        whatsappPhone: true,
+        phoneVerifiedAt: true,
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "Shipping address not found" });
+    }
+
+    if (existing.phoneVerifiedAt) {
+      const fullRow = await prisma.userShippingAddress.findFirst({
+        where: { id, userId, isActive: true },
+      });
+
+      return res.json({
+        ok: true,
+        alreadyVerified: true,
+        data: mapSavedShippingAddress(fullRow),
+      });
+    }
+
+    const out = await verifyOtp({
+      identifier: `shipping-address:${id}`,
+      code: rawCode,
+    });
+
+    if (!out.ok) {
+      return res.status(400).json({
+        error: out.error || "Invalid OTP. Please try again.",
+      });
+    }
+
+    const now = new Date();
+
+    const row = await prisma.userShippingAddress.update({
+      where: { id },
+      data: {
+        phoneVerifiedAt: now,
+        phoneVerifiedBy: "CHECKOUT_DELIVERY_OTP",
+        verificationMeta: {
+          source: "CHECKOUT_DELIVERY_OTP",
+          verifiedPhone: existing.phone ?? null,
+          verifiedWhatsappPhone: existing.whatsappPhone ?? null,
+          verifiedAt: now.toISOString(),
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      data: mapSavedShippingAddress(row),
+    });
+  } catch (e) {
+    next(e);
+  }
+});
 
 export default router;
