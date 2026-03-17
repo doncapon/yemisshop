@@ -1,5 +1,6 @@
 // src/pages/Cart.tsx
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
@@ -335,8 +336,45 @@ async function serverSetQty(item: CartItem, qty: number) {
 ========================================================= */
 
 export default function Cart() {
-  const userId = useAuthStore((s) => s.user?.id ?? null);
-  const isAuthed = !!userId;
+  const authHydrated = useAuthStore((s) => s.hydrated);
+  const storeUser = useAuthStore((s) => s.user);
+
+  const meQ = useQuery({
+    queryKey: ["auth", "me:min", "cart"],
+    enabled: authHydrated,
+    queryFn: async () => {
+      let lastErr: any = null;
+
+      for (const url of ["/api/auth/me", "/api/profile/me"]) {
+        try {
+          const res = await api.get(url, AXIOS_COOKIE_CFG);
+          return (res.data?.data ?? res.data ?? null) as any;
+        } catch (e: any) {
+          lastErr = e;
+          if (!(e?.response?.status === 401 || e?.response?.status === 403)) {
+            throw e;
+          }
+        }
+      }
+
+      throw lastErr;
+    },
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const sessionUser = useMemo(() => {
+    if ((meQ.data as any)?.id) {
+      return {
+        ...(storeUser ?? {}),
+        ...(meQ.data as any),
+      };
+    }
+    return storeUser ?? null;
+  }, [meQ.data, storeUser]);
+
+  const isAuthed = !!sessionUser?.id;
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
@@ -433,51 +471,92 @@ export default function Cart() {
     writeCartLines(lines as any);
   }, []);
 
-const loadCart = useCallback(async () => {
-  const requestId = ++activeRequestIdRef.current;
-
-  if (isAuthed) {
+    const clearLocalCartStorage = useCallback(() => {
     try {
-      const serverItems = await fetchServerCart();
-      if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+      writeCartLines([] as any);
+    } catch {
+      //
+    }
+    window.dispatchEvent(new Event("cart:updated"));
+  }, []);
 
-      safeSetCart(serverItems);
-      mirrorAuthedCartToLocal(serverItems);
-      setHydrated(true);
-      return;
-    } catch (err: any) {
-      if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+  const loadCart = useCallback(async () => {
+    const requestId = ++activeRequestIdRef.current;
 
-      const status = Number(err?.response?.status || 0);
+    if (isAuthed) {
+      try {
+        const serverItems = await fetchServerCart();
+        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
 
-      // IMPORTANT:
-      // On mobile / flaky auth-cookie situations, do NOT wipe local cart backup.
-      // Fall back to the last mirrored local cart so the cart UI does not disappear.
-      if (status === 401 || status === 403) {
+        safeSetCart(serverItems);
+        mirrorAuthedCartToLocal(serverItems);
+        setHydrated(true);
+        return;
+      } catch (err: any) {
+        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+
+        const status = Number(err?.response?.status || 0);
+
+        // If session is still effectively authenticated, keep the local mirror
+        // instead of wiping the cart because mobile cookies/store can briefly wobble.
+        if (status === 401 || status === 403) {
+          if (isAuthed) {
+            const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+            safeSetCart(localItems);
+            setHydrated(true);
+            return;
+          }
+
+          // True logout / expired session: clear local mirrored cart too.
+          clearLocalCartStorage();
+          safeSetCart([]);
+          setHydrated(true);
+          window.dispatchEvent(new Event("auth:expired"));
+          return;
+        }
+
         const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-
         safeSetCart(localItems);
         setHydrated(true);
-
-        // Let the rest of the app know auth may be stale,
-        // but keep the cart visible instead of deleting it.
-        window.dispatchEvent(new Event("auth:expired"));
         return;
       }
-
-      // Non-auth failure: keep local fallback for resilience
-      const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-      safeSetCart(localItems);
-      setHydrated(true);
-      return;
     }
-  }
 
-  const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-  if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
-  safeSetCart(guestItems);
-  setHydrated(true);
-}, [isAuthed, mirrorAuthedCartToLocal, safeSetCart]);
+    const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+    if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+    safeSetCart(guestItems);
+    setHydrated(true);
+  }, [isAuthed, clearLocalCartStorage, mirrorAuthedCartToLocal, safeSetCart]);
+
+
+    useEffect(() => {
+    const onAuthReset = () => {
+      activeRequestIdRef.current += 1;
+      focusedQtyKeyRef.current = null;
+      clearAllNotes();
+
+      try {
+        writeCartLines([] as any);
+      } catch {
+        //
+      }
+
+      safeSetCart([]);
+      setQtyDraft({});
+      setExpanded({});
+      setHydrated(true);
+    };
+
+    window.addEventListener("auth:logout", onAuthReset as EventListener);
+    window.addEventListener("auth:expired", onAuthReset as EventListener);
+
+    return () => {
+      window.removeEventListener("auth:logout", onAuthReset as EventListener);
+      window.removeEventListener("auth:expired", onAuthReset as EventListener);
+    };
+  }, [clearAllNotes, safeSetCart]);
+
+  
   useEffect(() => {
     isMountedRef.current = true;
 

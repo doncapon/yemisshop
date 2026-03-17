@@ -8,8 +8,7 @@ import { useAuthStore } from "../store/auth";
 import NotificationsBell from "../components/notifications/NotificationsBell";
 import DaySpringLogo from "../components/brand/DayspringLogo";
 import api from "../api/client";
-import { readCartLines } from "../utils/cartModel";
-
+import { readCartLines, writeCartLines } from "../utils/cartModel";
 import {
   Home,
   LayoutGrid,
@@ -56,6 +55,20 @@ function getCartQtyFromStorage(): number {
     }, 0);
   } catch {
     return 0;
+  }
+}
+
+function clearCartStorageAndBroadcast() {
+  try {
+    writeCartLines([] as any);
+  } catch {
+    //
+  }
+
+  try {
+    window.dispatchEvent(new Event("cart:updated"));
+  } catch {
+    //
   }
 }
 
@@ -278,7 +291,25 @@ export default function Navbar() {
     const target = `${loc.pathname}${loc.search}`;
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch { }
+    } catch {
+      //
+    }
+
+    // Clear cart badge + local cart immediately on logout
+    clearCartStorageAndBroadcast();
+    setCartQty(0);
+
+    try {
+      useAuthStore.setState({ user: null });
+    } catch {
+      //
+    }
+
+    try {
+      window.dispatchEvent(new Event("auth:logout"));
+    } catch {
+      //
+    }
 
     const qp = encodeURIComponent(target);
     await performLogout(`/login?from=${qp}`);
@@ -356,16 +387,49 @@ export default function Navbar() {
     if (!st.hydrated) return;
     if (!st.user?.id) return;
 
-    try {
-      const { data } = await api.get("/auth/me", AXIOS_COOKIE_CFG);
-      if (data?.id) {
-        useAuthStore.setState({ user: data });
+    let resolvedUser: any = null;
+    let lastErr: any = null;
+
+    for (const url of ["/api/auth/me", "/api/profile/me"]) {
+      try {
+        const res = await api.get(url, AXIOS_COOKIE_CFG);
+        const data = res?.data?.data ?? res?.data ?? null;
+        if (data?.id) {
+          resolvedUser = data;
+          break;
+        }
+      } catch (e: any) {
+        lastErr = e;
+
+        // Ignore temporary non-auth failures
+        if (!isAuthError(e)) {
+          return;
+        }
       }
-    } catch (e: any) {
-      if (isAuthError(e)) {
-        useAuthStore.setState({ user: null });
-        setMenuOpen(false);
-        setMobileMoreOpen(false);
+    }
+
+    if (resolvedUser?.id) {
+      useAuthStore.setState({
+        user: {
+          ...(st.user ?? {}),
+          ...resolvedUser,
+        },
+      });
+      return;
+    }
+
+    if (isAuthError(lastErr)) {
+      useAuthStore.setState({ user: null });
+      setMenuOpen(false);
+      setMobileMoreOpen(false);
+
+      clearCartStorageAndBroadcast();
+      setCartQty(0);
+
+      try {
+        window.dispatchEvent(new Event("auth:expired"));
+      } catch {
+        //
       }
     }
   }, [forced]);
@@ -379,6 +443,23 @@ export default function Navbar() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [verifySession]);
+
+  useEffect(() => {
+    const onAuthReset = () => {
+      setMenuOpen(false);
+      setMobileMoreOpen(false);
+      clearCartStorageAndBroadcast();
+      setCartQty(0);
+    };
+
+    window.addEventListener("auth:logout", onAuthReset as EventListener);
+    window.addEventListener("auth:expired", onAuthReset as EventListener);
+
+    return () => {
+      window.removeEventListener("auth:logout", onAuthReset as EventListener);
+      window.removeEventListener("auth:expired", onAuthReset as EventListener);
+    };
+  }, []);
 
   const prefetchWishlist = useCallback(async () => {
     if (!useAuthStore.getState().user?.id) return;
@@ -463,7 +544,7 @@ export default function Navbar() {
                       end
                       icon={<ShoppingCart size={18} />}
                       label="Cart"
-                      badgeCount={cartQty}
+                      badgeCount={isLoggedIn ? cartQty : 0}
                     />
                   )}
 
@@ -725,7 +806,7 @@ export default function Navbar() {
                   title="Cart"
                 >
                   <ShoppingCart size={18} className="pointer-events-none" />
-                  {cartQty > 0 && (
+                  {isLoggedIn && cartQty > 0 && (
                     <span className="pointer-events-none absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
                       {cartQty > 9 ? "9+" : cartQty}
                     </span>
