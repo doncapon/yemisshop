@@ -12,7 +12,6 @@ import {
   ChevronRight,
   ExternalLink,
   Inbox,
-  UserCog,
   CheckCircle2,
 } from "lucide-react";
 import api from "../api/client";
@@ -49,19 +48,55 @@ type NormalizedMe = {
   status?: string | null;
 };
 
-function normalizeMe(raw: any): NormalizedMe | null {
-  if (!raw) return null;
+function unwrapUserPayload(raw: any): any {
+  if (!raw || typeof raw !== "object") return raw;
 
-  const emailVerified = raw.emailVerified === true || !!raw.emailVerifiedAt;
+  if (raw.data && typeof raw.data === "object") return raw.data;
+  if (raw.profile && typeof raw.profile === "object") return raw.profile;
+  if (raw.user && typeof raw.user === "object") return raw.user;
+
+  return raw;
+}
+
+function normalizeMe(raw: any): NormalizedMe | null {
+  const src = unwrapUserPayload(raw);
+  if (!src || typeof src !== "object") return null;
+
+  const id = String(src.id ?? "").trim();
+  const email = String(src.email ?? "").trim();
+
+  if (!id && !email) return null;
+
+  const emailVerified = src.emailVerified === true || !!src.emailVerifiedAt;
 
   return {
-    id: String(raw.id ?? ""),
-    email: String(raw.email ?? ""),
-    firstName: raw.firstName ?? null,
-    lastName: raw.lastName ?? null,
-    emailVerifiedAt: raw.emailVerifiedAt ?? null,
+    id,
+    email,
+    firstName: src.firstName ?? null,
+    lastName: src.lastName ?? null,
+    emailVerifiedAt: src.emailVerifiedAt ?? null,
     emailVerified,
-    status: raw.status ?? null,
+    status: src.status ?? null,
+  };
+}
+
+function mergeVerifiedState(
+  prev: NormalizedMe | null,
+  next: NormalizedMe | null
+): NormalizedMe | null {
+  if (!prev) return next;
+  if (!next) return prev;
+
+  const keepVerified = prev.emailVerified || next.emailVerified;
+  const keepVerifiedAt = prev.emailVerifiedAt || next.emailVerifiedAt || null;
+
+  return {
+    ...prev,
+    ...next,
+    email: next.email || prev.email,
+    id: next.id || prev.id,
+    emailVerified: keepVerified,
+    emailVerifiedAt: keepVerifiedAt,
   };
 }
 
@@ -122,8 +157,8 @@ function CardHeader({
         ) : null}
 
         <div className="min-w-0">
-          <h3 className="text-sm sm:text-base font-semibold text-zinc-900">{title}</h3>
-          {subtitle ? <p className="mt-1 text-xs sm:text-sm text-zinc-500">{subtitle}</p> : null}
+          <h3 className="text-sm font-semibold text-zinc-900 sm:text-base">{title}</h3>
+          {subtitle ? <p className="mt-1 text-xs text-zinc-500 sm:text-sm">{subtitle}</p> : null}
         </div>
       </div>
 
@@ -186,16 +221,24 @@ export default function VerifyEmail() {
   }, [eParam]);
 
   useEffect(() => {
+    setStatusChecked(false);
+  }, [targetEmail]);
+
+  useEffect(() => {
     if (okParam === "1") {
       setBanner("Your email has been verified successfully. You can continue.");
       setErr(null);
-      setMe((m) =>
-        normalizeMe({
-          ...(m || {}),
-          email: m?.email || targetEmail,
-          emailVerifiedAt: new Date().toISOString(),
-          emailVerified: true,
-        })
+
+      setMe((prev) =>
+        mergeVerifiedState(
+          prev,
+          normalizeMe({
+            ...(prev || {}),
+            email: prev?.email || targetEmail,
+            emailVerifiedAt: new Date().toISOString(),
+            emailVerified: true,
+          })
+        )
       );
     } else if (errParam) {
       setErr("That verification link could not be validated. Please request a new email below.");
@@ -210,25 +253,36 @@ export default function VerifyEmail() {
         setLoading(true);
 
         try {
-          const { data } = await api.get<MeResponse>("/api/profile/me", AXIOS_COOKIE_CFG);
+          const profileRes = await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
           if (!alive) return;
-          const normalized = normalizeMe(data);
-          setMe(normalized);
-          if (!targetEmail) setTargetEmail((normalized?.email || "").toLowerCase());
+
+          const normalized = normalizeMe(profileRes.data);
+          setMe((prev) => mergeVerifiedState(prev, normalized));
+
+          if (!targetEmail && normalized?.email) {
+            setTargetEmail(normalized.email.toLowerCase());
+          }
+
           return;
         } catch (e: any) {
           if (!isAuthError(e)) {
-            //
+            // continue to auth/me fallback
           }
         }
 
-        const { data } = await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG);
+        const authRes = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
         if (!alive) return;
-        const normalized = normalizeMe(data);
-        setMe(normalized);
-        if (!targetEmail) setTargetEmail((normalized?.email || "").toLowerCase());
+
+        const normalized = normalizeMe(authRes.data);
+        setMe((prev) => mergeVerifiedState(prev, normalized));
+
+        if (!targetEmail && normalized?.email) {
+          setTargetEmail(normalized.email.toLowerCase());
+        }
       } catch {
-        if (alive) setMe(null);
+        if (alive) {
+          setMe((prev) => prev ?? null);
+        }
       } finally {
         if (alive) setLoading(false);
       }
@@ -237,10 +291,11 @@ export default function VerifyEmail() {
     return () => {
       alive = false;
     };
-  }, [location.key, targetEmail]);
+  }, [location.key]);
 
   useEffect(() => {
     if (!targetEmail || statusChecked) return;
+
     let alive = true;
 
     (async () => {
@@ -252,13 +307,16 @@ export default function VerifyEmail() {
         if (!alive) return;
 
         if (data?.emailVerifiedAt) {
-          setMe((m) =>
-            normalizeMe({
-              ...(m || {}),
-              email: targetEmail,
-              emailVerifiedAt: data.emailVerifiedAt,
-              emailVerified: true,
-            })
+          setMe((prev) =>
+            mergeVerifiedState(
+              prev,
+              normalizeMe({
+                ...(prev || {}),
+                email: targetEmail,
+                emailVerifiedAt: data.emailVerifiedAt,
+                emailVerified: true,
+              })
+            )
           );
         }
       } catch {
@@ -276,10 +334,9 @@ export default function VerifyEmail() {
   useEffect(() => {
     if (emailCooldown <= 0) return;
 
-    emailTimerRef.current = window.setTimeout(
-      () => setEmailCooldown((s) => Math.max(0, s - 1)),
-      1000
-    ) as unknown as number;
+    emailTimerRef.current = window.setTimeout(() => {
+      setEmailCooldown((s) => Math.max(0, s - 1));
+    }, 1000) as unknown as number;
 
     return () => {
       if (emailTimerRef.current) window.clearTimeout(emailTimerRef.current);
@@ -292,50 +349,66 @@ export default function VerifyEmail() {
     setBanner(null);
 
     try {
+      let foundVerified = false;
+
       if (targetEmail) {
         const { data } = await api.get("/api/auth/email-status", {
           params: { email: targetEmail },
         });
 
         if (data?.emailVerifiedAt) {
-          setMe((m) =>
-            normalizeMe({
-              ...(m || {}),
-              email: targetEmail,
-              emailVerifiedAt: data.emailVerifiedAt,
-              emailVerified: true,
-            })
+          foundVerified = true;
+          setMe((prev) =>
+            mergeVerifiedState(
+              prev,
+              normalizeMe({
+                ...(prev || {}),
+                email: targetEmail,
+                emailVerifiedAt: data.emailVerifiedAt,
+                emailVerified: true,
+              })
+            )
           );
         }
       }
 
       try {
-        const r = await api.get<MeResponse>("/api/profile/me", AXIOS_COOKIE_CFG);
+        const r = await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
         const normalized = normalizeMe(r.data);
-        setMe(normalized);
+        setMe((prev) => mergeVerifiedState(prev, normalized));
 
-        if (normalized?.emailVerified) {
-          setBanner("Your email is verified. You can continue.");
-        } else {
-          setBanner("Still waiting for confirmation. Check your inbox or resend the email below.");
-        }
+        const finalVerified = foundVerified || !!normalized?.emailVerified;
+        setBanner(
+          finalVerified
+            ? "Your email is verified. You can continue."
+            : "Still waiting for confirmation. Check your inbox or resend the email below."
+        );
+        return;
       } catch (e: any) {
         if (!isAuthError(e)) {
           try {
-            const r2 = await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG);
+            const r2 = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
             const normalized = normalizeMe(r2.data);
-            setMe(normalized);
+            setMe((prev) => mergeVerifiedState(prev, normalized));
 
-            if (normalized?.emailVerified) {
-              setBanner("Your email is verified. You can continue.");
-            } else {
-              setBanner("Still waiting for confirmation. Check your inbox or resend the email below.");
-            }
+            const finalVerified = foundVerified || !!normalized?.emailVerified;
+            setBanner(
+              finalVerified
+                ? "Your email is verified. You can continue."
+                : "Still waiting for confirmation. Check your inbox or resend the email below."
+            );
+            return;
           } catch {
             //
           }
         }
       }
+
+      setBanner(
+        foundVerified
+          ? "Your email is verified. You can continue."
+          : "Still waiting for confirmation. Check your inbox or resend the email below."
+      );
     } catch (e: any) {
       setErr(e?.response?.data?.error || "Failed to refresh status");
     }
@@ -343,6 +416,7 @@ export default function VerifyEmail() {
 
   const resendPublic = async () => {
     if (!targetEmail || sendingEmail || emailCooldown > 0) return;
+
     setSendingEmail(true);
     setErr(null);
     setBanner(null);
@@ -365,6 +439,7 @@ export default function VerifyEmail() {
 
   const resendAuthed = async () => {
     if (!isLoggedIn || sendingEmail || emailCooldown > 0) return;
+
     setSendingEmail(true);
     setErr(null);
     setBanner(null);
@@ -389,6 +464,7 @@ export default function VerifyEmail() {
   };
 
   const nextStepPath = "/dashboard";
+  const shownEmail = targetEmail || me?.email || "—";
 
   return (
     <SiteLayout>
@@ -455,7 +531,7 @@ export default function VerifyEmail() {
 
             <div className="p-4 sm:p-5">
               {loading ? (
-                <div className="space-y-3 animate-pulse">
+                <div className="animate-pulse space-y-3">
                   <div className="h-4 w-2/3 rounded bg-zinc-200" />
                   <div className="h-3 w-1/2 rounded bg-zinc-200" />
                   <div className="h-20 w-full rounded-2xl bg-zinc-100" />
@@ -486,7 +562,7 @@ export default function VerifyEmail() {
                             Email address
                           </p>
                           <p className="mt-1 break-all text-sm font-semibold text-zinc-900 sm:text-base">
-                            {targetEmail || me?.email || "—"}
+                            {shownEmail}
                           </p>
                         </div>
                       </div>
@@ -520,7 +596,7 @@ export default function VerifyEmail() {
                         </div>
 
                         <div className="min-w-0 flex-1">
-                          <h4 className="text-sm sm:text-base font-semibold text-zinc-900">
+                          <h4 className="text-sm font-semibold text-zinc-900 sm:text-base">
                             Check your email
                           </h4>
                           <p className="mt-1 text-sm leading-6 text-zinc-600">
@@ -570,7 +646,7 @@ export default function VerifyEmail() {
                           className="border border-zinc-200 bg-purple-300 text-zinc-800 hover:bg-purple-200"
                         >
                           <RefreshCcw size={16} />
-                          I’ve verified-Refresh status 
+                          I’ve verified - Refresh status
                         </ActionButton>
                       </div>
                     </div>
