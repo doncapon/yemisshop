@@ -299,6 +299,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
         status: true,
         createdAt: true,
         serviceFeeTotal: true,
+        shippingFee: true,
         serviceFeeBase: true,
         serviceFeeComms: true,
         serviceFeeGateway: true,
@@ -362,8 +363,8 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     }, 0)
   );
 
-  const serviceFeeTotal = Number(order.serviceFeeTotal ?? 0);
-  const safeServiceFeeTotal = Number.isFinite(serviceFeeTotal) ? serviceFeeTotal : 0;
+  const shippingFee = Number(order.shippingFee ?? 0);
+  const safeShippingFee = Number.isFinite(shippingFee) ? shippingFee : 0;
 
   const tax = Number(order.tax ?? 0);
   const safeTax = Number.isFinite(tax) ? tax : 0;
@@ -371,7 +372,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
   const orderTotal =
     Number.isFinite(Number(order.total)) && Number(order.total) > 0
       ? Number(order.total)
-      : itemsSubtotal + safeServiceFeeTotal + safeTax;
+      : itemsSubtotal + safeShippingFee + safeTax;
 
   const safeAmountPaid = Number.isFinite(amountPaid) && amountPaid > 0 ? amountPaid : orderTotal;
 
@@ -451,8 +452,8 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
           </tr>
 
           <tr>
-            <td style="padding:4px 0;color:#374151;">Service fee</td>
-            <td style="padding:4px 0;text-align:right;color:#111827;">₦${safeServiceFeeTotal.toLocaleString()}</td>
+            <td style="padding:4px 0;color:#374151;">Shipping</td>
+            <td style="padding:4px 0;text-align:right;color:#111827;">₦${safeShippingFee.toLocaleString()}</td>
           </tr>
 
           <tr>
@@ -481,7 +482,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     `Paid at: ${paidAt.toLocaleString()}`,
     ``,
     `Items subtotal: ₦${itemsSubtotal.toLocaleString()}`,
-    `Service fee: ₦${safeServiceFeeTotal.toLocaleString()}`,
+    `Shipping: ₦${safeShippingFee.toLocaleString()}`,
     `Order total: ₦${orderTotal.toLocaleString()}`,
     ``,
     `You can view your order and receipt in your dashboard.`,
@@ -495,7 +496,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     paymentId: payment.id,
     preview,
     itemsSubtotal,
-    serviceFeeTotal: safeServiceFeeTotal,
+    shippingFee: safeShippingFee,
     orderTotal,
   });
 }
