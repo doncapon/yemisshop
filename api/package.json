@@ -16,7 +16,7 @@
     "seed:catalog": "tsx prisma/seedCategories.ts",
     "seed:products": "tsx prisma/seedCategories.ts",
     "postdeploy": "npm run seed",
-    "job:run": "tsx dist/src/jobs/runner.ts",
+    "job:run": "node dist/src/jobs/runner.js",
     "prestart": "prisma migrate deploy && echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true"
   },
   "dependencies": {
