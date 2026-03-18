@@ -203,6 +203,63 @@ type SameAsHomeUsage = {
 };
 
 const SAME_AS_HOME_ONCE_KEY = "checkout:sameAsHomeOnce:v1";
+const VERIFIED_SHIPPING_PHONE_KEY = "checkout:verifiedShippingPhones:v1";
+
+type VerifiedShippingPhoneCache = Record<
+  string,
+  {
+    shippingAddressId: string;
+    phone: string;
+    verifiedAt: number;
+  }
+>;
+
+function readVerifiedShippingPhoneCache(): VerifiedShippingPhoneCache {
+  try {
+    const raw = localStorage.getItem(VERIFIED_SHIPPING_PHONE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeVerifiedShippingPhoneCache(cache: VerifiedShippingPhoneCache) {
+  try {
+    localStorage.setItem(VERIFIED_SHIPPING_PHONE_KEY, JSON.stringify(cache));
+  } catch {
+    //
+  }
+}
+
+function verifiedShippingPhoneCacheKey(shippingAddressId: string, phone: string) {
+  return `${String(shippingAddressId).trim()}::${normalizePhoneForCompare(phone)}`;
+}
+
+function markVerifiedShippingPhoneLocally(shippingAddressId: string, phone: string) {
+  const sid = String(shippingAddressId).trim();
+  const normalizedPhone = normalizePhoneForCompare(phone);
+  if (!sid || !normalizedPhone) return;
+
+  const cache = readVerifiedShippingPhoneCache();
+  cache[verifiedShippingPhoneCacheKey(sid, normalizedPhone)] = {
+    shippingAddressId: sid,
+    phone: normalizedPhone,
+    verifiedAt: Date.now(),
+  };
+  writeVerifiedShippingPhoneCache(cache);
+}
+
+function isShippingPhoneVerifiedLocally(shippingAddressId?: string | null, phone?: string | null) {
+  const sid = String(shippingAddressId ?? "").trim();
+  const normalizedPhone = normalizePhoneForCompare(String(phone ?? ""));
+  if (!sid || !normalizedPhone) return false;
+
+  const cache = readVerifiedShippingPhoneCache();
+  return !!cache[verifiedShippingPhoneCacheKey(sid, normalizedPhone)];
+}
+
 
 function readSameAsHomeUsage(): SameAsHomeUsage {
   try {
@@ -1634,6 +1691,15 @@ export default function Checkout() {
 
     if (isSavedAddressPhoneVerified(selectedShippingAddress)) return true;
 
+    if (
+      isShippingPhoneVerifiedLocally(
+        selectedShippingAddress.id,
+        selectedShippingAddress.phone
+      )
+    ) {
+      return true;
+    }
+
     const selectedPhone = normalizePhoneForCompare(selectedShippingAddress.phone ?? "");
     if (!selectedPhone) return false;
 
@@ -1744,6 +1810,11 @@ export default function Checkout() {
       const merged = mergeProfileShippingAddresses(data);
       setShippingAddresses(merged.addresses);
       setSelectedShippingId((prev) => prev ?? merged.defaultId ?? null);
+      for (const addr of merged.addresses) {
+        if (isSavedAddressPhoneVerified(addr)) {
+          markVerifiedShippingPhoneLocally(addr.id, addr.phone);
+        }
+      }
 
       if (flags.phoneOk && data?.phone) {
         setVerifiedPhoneForCheckout((prev) => prev ?? String(data.phone));
@@ -2176,6 +2247,11 @@ export default function Checkout() {
           prev.map((addr) => (addr.id === updated.id ? { ...addr, ...updated } : addr))
         );
       }
+
+      markVerifiedShippingPhoneLocally(
+        selectedShippingAddress.id,
+        selectedShippingAddress.phone
+      );
 
       setVerifiedPhoneForCheckout(selectedShippingAddress.phone);
       setOtpSentToPhone(null);
