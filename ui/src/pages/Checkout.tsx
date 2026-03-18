@@ -254,10 +254,19 @@ function markVerifiedShippingPhoneLocally(shippingAddressId: string, phone: stri
 function isShippingPhoneVerifiedLocally(shippingAddressId?: string | null, phone?: string | null) {
   const sid = String(shippingAddressId ?? "").trim();
   const normalizedPhone = normalizePhoneForCompare(String(phone ?? ""));
-  if (!sid || !normalizedPhone) return false;
+  if (!normalizedPhone) return false;
 
   const cache = readVerifiedShippingPhoneCache();
-  return !!cache[verifiedShippingPhoneCacheKey(sid, normalizedPhone)];
+
+  // strongest match: same address id + same phone
+  if (sid && cache[verifiedShippingPhoneCacheKey(sid, normalizedPhone)]) {
+    return true;
+  }
+
+  // fallback: same phone found anywhere in verified cache
+  return Object.values(cache).some(
+    (entry) => normalizePhoneForCompare(entry.phone) === normalizedPhone
+  );
 }
 
 
@@ -641,9 +650,19 @@ function mergeProfileShippingAddresses(profile?: ProfileMe | null) {
   return { addresses, defaultId };
 }
 
+function getSavedAddressPhoneVerifiedStamp(addr?: SavedShippingAddress | null) {
+  if (!addr) return null;
+
+  return (
+    addr.phoneVerifiedAt ??
+    addr.verificationMeta?.phoneVerifiedAt ??
+    addr.verificationMeta?.verifiedAt ??
+    null
+  );
+}
+
 function isSavedAddressPhoneVerified(addr?: SavedShippingAddress | null) {
-  if (!addr) return false;
-  return normalizeStampPresent(addr.phoneVerifiedAt);
+  return normalizeStampPresent(getSavedAddressPhoneVerifiedStamp(addr));
 }
 
 async function tryRequests<T>(requests: Array<() => Promise<T>>): Promise<T> {
@@ -1377,7 +1396,7 @@ const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLI
       <input
         ref={ref}
         {...props}
-        className={`border border-border rounded-xl px-3 py-2.5 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
+        className={`border border-border rounded-xl px-3 py-2.5 bg-white text-ink placeholder:text-ink-soft placeholder:text-[0.6em] focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
       />
     );
   }
@@ -1389,7 +1408,7 @@ function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (
     <textarea
       {...props}
-      className={`border border-border rounded-xl px-3 py-2.5 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
+      className={`border border-border rounded-xl px-3 py-2.5 bg-white text-ink placeholder:text-ink-soft placeholder:text-[0.6em] focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
     />
   );
 }
@@ -1562,7 +1581,6 @@ export default function Checkout() {
 
   const [otpCode, setOtpCode] = useState("");
   const [otpSentToPhone, setOtpSentToPhone] = useState<string | null>(null);
-  const [verifiedPhoneForCheckout, setVerifiedPhoneForCheckout] = useState<string | null>(null);
   const [sendingOtp, setSendingOtp] = useState(false);
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [otpMessage, setOtpMessage] = useState<string | null>(null);
@@ -1688,29 +1706,27 @@ export default function Checkout() {
 
   const selectedPhoneVerified = useMemo(() => {
     if (!selectedShippingAddress) return false;
+    return isSavedAddressPhoneVerified(selectedShippingAddress);
+  }, [selectedShippingAddress]);
 
-    if (isSavedAddressPhoneVerified(selectedShippingAddress)) return true;
-
-    if (
-      isShippingPhoneVerifiedLocally(
-        selectedShippingAddress.id,
-        selectedShippingAddress.phone
-      )
-    ) {
-      return true;
+  useEffect(() => {
+    if (!selectedShippingAddress) {
+      setOtpCode("");
+      setOtpSentToPhone(null);
+      setOtpMessage(null);
+      return;
     }
 
-    const selectedPhone = normalizePhoneForCompare(selectedShippingAddress.phone ?? "");
-    if (!selectedPhone) return false;
+    if (isSavedAddressPhoneVerified(selectedShippingAddress)) {
+      setOtpCode("");
+      setOtpSentToPhone(null);
+      setOtpMessage("This delivery phone is already verified.");
+      return;
+    }
 
-    const verifiedInline = normalizePhoneForCompare(verifiedPhoneForCheckout ?? "");
-    if (verifiedInline && verifiedInline === selectedPhone) return true;
-
-    const verifiedProfilePhone = phoneOk ? normalizePhoneForCompare(profilePhone) : "";
-    if (verifiedProfilePhone && verifiedProfilePhone === selectedPhone) return true;
-
-    return false;
-  }, [selectedShippingAddress, verifiedPhoneForCheckout, phoneOk, profilePhone]);
+    setOtpCode("");
+    setOtpMessage(null);
+  }, [selectedShippingAddress]);
 
   const shippingQ = useQuery({
     queryKey: [
@@ -1810,15 +1826,7 @@ export default function Checkout() {
       const merged = mergeProfileShippingAddresses(data);
       setShippingAddresses(merged.addresses);
       setSelectedShippingId((prev) => prev ?? merged.defaultId ?? null);
-      for (const addr of merged.addresses) {
-        if (isSavedAddressPhoneVerified(addr)) {
-          markVerifiedShippingPhoneLocally(addr.id, addr.phone);
-        }
-      }
 
-      if (flags.phoneOk && data?.phone) {
-        setVerifiedPhoneForCheckout((prev) => prev ?? String(data.phone));
-      }
     } catch (e: any) {
       const status = e?.response?.status;
       if (status === 401) {
@@ -1883,31 +1891,7 @@ export default function Checkout() {
     return () => window.removeEventListener("cart:updated", syncFromCart);
   }, []);
 
-  useEffect(() => {
-    const selectedPhone = normalizePhoneForCompare(selectedShippingAddress?.phone ?? "");
 
-    if (!selectedPhone) {
-      setOtpCode("");
-      setOtpSentToPhone(null);
-      setOtpMessage(null);
-      return;
-    }
-
-    const alreadyVerified =
-      isSavedAddressPhoneVerified(selectedShippingAddress) ||
-      (normalizePhoneForCompare(verifiedPhoneForCheckout ?? "") === selectedPhone) ||
-      (phoneOk && normalizePhoneForCompare(profilePhone) === selectedPhone);
-
-    if (alreadyVerified) {
-      setOtpCode("");
-      setOtpSentToPhone(null);
-      setOtpMessage("This delivery phone is already verified.");
-      return;
-    }
-
-    setOtpCode("");
-    setOtpMessage(null);
-  }, [selectedShippingAddress, verifiedPhoneForCheckout, phoneOk, profilePhone]);
 
   const applySameAsHomeToShippingFormOnce = () => {
     if (!sameAsHomeAvailable) return;
@@ -2103,8 +2087,6 @@ export default function Checkout() {
       } catch {
         //
       }
-
-      await loadProfileState();
     } catch (e: any) {
       openModal({
         title: "Delivery details",
@@ -2236,29 +2218,52 @@ export default function Checkout() {
     try {
       setVerifyingOtp(true);
 
+      const verifiedAt = new Date().toISOString();
+
       const res = await verifyPhoneOtpForCheckout({
         shippingAddressId: selectedShippingAddress.id,
         code,
       });
 
       const updated = normalizeSavedShippingAddressLike(res);
-      if (updated) {
-        setShippingAddresses((prev) =>
-          prev.map((addr) => (addr.id === updated.id ? { ...addr, ...updated } : addr))
-        );
-      }
 
-      markVerifiedShippingPhoneLocally(
-        selectedShippingAddress.id,
-        selectedShippingAddress.phone
+      setShippingAddresses((prev) =>
+        prev.map((addr) => {
+          if (addr.id !== selectedShippingAddress.id) return addr;
+
+          return {
+            ...addr,
+            ...(updated ?? {}),
+            id: addr.id,
+            phoneVerifiedAt:
+              updated?.phoneVerifiedAt ??
+              updated?.verificationMeta?.phoneVerifiedAt ??
+              updated?.verificationMeta?.verifiedAt ??
+              addr.phoneVerifiedAt ??
+              verifiedAt,
+            verificationMeta: {
+              ...(addr.verificationMeta ?? {}),
+              ...(updated?.verificationMeta ?? {}),
+              phoneVerifiedAt:
+                updated?.verificationMeta?.phoneVerifiedAt ??
+                updated?.verificationMeta?.verifiedAt ??
+                verifiedAt,
+            },
+          };
+        })
       );
 
-      setVerifiedPhoneForCheckout(selectedShippingAddress.phone);
       setOtpSentToPhone(null);
       setOtpCode("");
       setOtpMessage("Phone verified for this delivery detail.");
-
-      await loadProfileState();
+    } catch (e: any) {
+      openModal({
+        title: "Verify phone",
+        message: safeServerMessage(
+          e,
+          "We could not verify the OTP right now. Please try again."
+        ),
+      });
     } finally {
       setVerifyingOtp(false);
     }
@@ -2915,10 +2920,7 @@ export default function Checkout() {
                       {shippingAddresses.map((addr) => {
                         const isSelected = selectedShippingId === addr.id;
                         const isDefault = !!addr.isDefault;
-                        const isVerifiedNow =
-                          isSavedAddressPhoneVerified(addr) ||
-                          normalizePhoneForCompare(addr.phone) === normalizePhoneForCompare(verifiedPhoneForCheckout ?? "") ||
-                          (phoneOk && normalizePhoneForCompare(addr.phone) === normalizePhoneForCompare(profilePhone));
+                        const isVerifiedNow = isSavedAddressPhoneVerified(addr);
                         return (
                           <div
                             key={addr.id}
@@ -3249,11 +3251,7 @@ export default function Checkout() {
                           </p>
                         ) : selectedPhoneVerified ? (
                           <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs sm:text-sm text-emerald-800">
-                            {isSavedAddressPhoneVerified(selectedShippingAddress)
-                              ? "This delivery phone was already verified for this saved delivery detail."
-                              : normalizePhoneForCompare(selectedShippingAddress.phone) === normalizePhoneForCompare(profilePhone) && phoneOk
-                                ? "This delivery phone matches your verified profile phone."
-                                : "This delivery phone has been verified for the current checkout."}
+                           {"This delivery phone was already verified for this saved delivery detail."}
                           </div>
                         ) : (
                           <>

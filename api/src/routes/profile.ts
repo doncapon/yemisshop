@@ -178,6 +178,9 @@ router.get("/me", requireAuth, async (req, res, next) => {
             directionsNote: true,
             isDefault: true,
             isActive: true,
+            phoneVerifiedAt: true,
+            phoneVerifiedBy: true,
+            verificationMeta: true,
             createdAt: true,
             updatedAt: true,
           },
@@ -209,11 +212,7 @@ router.get("/me", requireAuth, async (req, res, next) => {
       createdAt: user.createdAt,
       address: user.address,
       shippingAddress: defaultShippingAddress
-        ? {
-          id: defaultShippingAddress.id,
-          phoneVerifiedBy: (defaultShippingAddress as any).phoneVerifiedBy ?? null,
-          verificationMeta: (defaultShippingAddress as any).verificationMeta ?? Prisma.JsonNull,
-        }
+        ? mapSavedShippingAddress(defaultShippingAddress)
         : null,
       defaultShippingAddressId: user.defaultShippingAddressId ?? defaultShippingAddress?.id ?? null,
       shippingAddresses: user.shippingAddresses.map(mapSavedShippingAddress),
