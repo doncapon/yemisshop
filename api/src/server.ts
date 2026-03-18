@@ -76,8 +76,6 @@ import supplierDocumentsRouter from "./routes/supplierDocuments.js";
 import publicCountriesRouter from "./routes/publicCountries.js";
 import adminSupplierDocumentsRouter from "./routes/adminSupplierDocuments.js";
 
-import { registerJobs } from "./jobs/registerJobs.js";
-import { registerExpireUnpaidOrdersJob } from "./jobs/expireUnpaidOrders.job.js";
 import adminShippingRouter from "./routes/adminShipping.js";
 
 
@@ -289,11 +287,6 @@ const apiCsp = helmet.contentSecurityPolicy({
     upgradeInsecureRequests: [],
   },
 });
-
-// app.use((req, res, next) => {
-//   if (req.path.startsWith("/api")) return apiCsp(req, res, next);
-//   return next();
-// });
 
 if (process.env.NODE_ENV === "production") {
   app.use(
@@ -619,12 +612,4 @@ const HOST = process.env.HOST || "0.0.0.0";
 
 app.listen(PORT, HOST, () => {
   console.log(`API on http://${HOST}:${PORT}`);
-
-  if (shouldRunScheduler()) {
-    console.log("[cron] scheduler enabled on this instance");
-    registerJobs();
-    registerExpireUnpaidOrdersJob();
-  } else {
-    console.log("[cron] scheduler disabled on this instance");
-  }
 });
