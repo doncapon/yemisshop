@@ -290,10 +290,10 @@ const apiCsp = helmet.contentSecurityPolicy({
   },
 });
 
-app.use((req, res, next) => {
-  if (req.path.startsWith("/api")) return apiCsp(req, res, next);
-  return next();
-});
+// app.use((req, res, next) => {
+//   if (req.path.startsWith("/api")) return apiCsp(req, res, next);
+//   return next();
+// });
 
 if (process.env.NODE_ENV === "production") {
   app.use(
