@@ -622,47 +622,57 @@ export default function App() {
   }, [hydrated, isAuthed, user, loc.pathname, loc.search]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    if (isAuthed) return;
+  // ✅ CRITICAL FIX: wait for auth to fully resolve
+  if (!hydrated || user === undefined) return;
 
-    const p = loc.pathname;
+  // ✅ already logged in → do nothing
+  if (isAuthed) return;
 
-    const publicSupplierPaths = new Set([
-      "/register-supplier",
-      "/supplier/verify-contact",
-    ]);
+  const p = loc.pathname;
 
-    const isProtectedSupplierPath =
-      (p === "/supplier" || p.startsWith("/supplier/")) &&
-      !publicSupplierPaths.has(p);
+  const publicSupplierPaths = new Set([
+    "/register-supplier",
+    "/supplier/verify-contact",
+  ]);
 
-    const isProtectedPath =
-      p === "/checkout" ||
-      p === "/orders" ||
-      p === "/wishlist" ||
-      p === "/profile" ||
-      p === "/dashboard" ||
-      p === "/customer-dashboard" ||
-      p === "/account/sessions" ||
-      p === "/admin" ||
-      p.startsWith("/admin/") ||
-      isProtectedSupplierPath ||
-      p === "/rider" ||
-      p.startsWith("/u/");
+  const isProtectedSupplierPath =
+    (p === "/supplier" || p.startsWith("/supplier/")) &&
+    !publicSupplierPaths.has(p);
 
-    if (!isProtectedPath) return;
-    if (p === "/login") return;
+  const isProtectedPath =
+    p === "/checkout" ||
+    p === "/orders" ||
+    p === "/wishlist" ||
+    p === "/profile" ||
+    p === "/dashboard" ||
+    p === "/customer-dashboard" ||
+    p === "/account/sessions" ||
+    p === "/admin" ||
+    p.startsWith("/admin/") ||
+    isProtectedSupplierPath ||
+    p === "/rider" ||
+    p.startsWith("/u/");
 
-    const rawTarget = `${loc.pathname}${loc.search}`;
-    const returnTarget = p === "/checkout" ? "/cart" : rawTarget;
+  // ✅ ONLY redirect if actually protected
+  if (!isProtectedPath) return;
 
-    try {
-      sessionStorage.setItem("auth:returnTo", returnTarget);
-    } catch {}
+  // avoid loop
+  if (p === "/login") return;
 
-    const qp = encodeURIComponent(returnTarget);
-    nav(`/login?from=${qp}`, { replace: true, state: { from: returnTarget } });
-  }, [hydrated, isAuthed, loc.pathname, loc.search, nav]);
+  const rawTarget = `${loc.pathname}${loc.search}`;
+  const returnTarget = p === "/checkout" ? "/cart" : rawTarget;
+
+  try {
+    sessionStorage.setItem("auth:returnTo", returnTarget);
+  } catch {}
+
+  const qp = encodeURIComponent(returnTarget);
+
+  nav(`/login?from=${qp}`, {
+    replace: true,
+    state: { from: returnTarget },
+  });
+}, [hydrated, user, isAuthed, loc.pathname, loc.search, nav]);
 
   useEffect(() => {
     try {

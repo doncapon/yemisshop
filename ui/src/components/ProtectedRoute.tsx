@@ -6,18 +6,7 @@ import api from "../api/client";
 
 type Props = {
   children: React.ReactNode;
-
-  /**
-   * Allowed roles (normalized comparison).
-   * Accepts aliases like ["SUPER_ADMIN", "SUPERADMIN"].
-   * If omitted, any authenticated user can access.
-   */
   roles?: string[];
-
-  /**
-   * For supplier rider: allow only certain route prefixes even if rider is included in roles.
-   * Example: ["/supplier/orders"]
-   */
   riderAllowPrefixes?: string[];
 };
 
@@ -34,27 +23,11 @@ type SupplierDocumentLite = {
 };
 
 type SupplierMeLite = {
-  id?: string;
-  supplierId?: string;
   legalName?: string | null;
   registrationType?: string | null;
   registrationCountryCode?: string | null;
-  registeredAddress?: {
-    houseNumber?: string | null;
-    streetName?: string | null;
-    city?: string | null;
-    state?: string | null;
-    country?: string | null;
-    postCode?: string | null;
-  } | null;
-  pickupAddress?: {
-    houseNumber?: string | null;
-    streetName?: string | null;
-    city?: string | null;
-    state?: string | null;
-    country?: string | null;
-    postCode?: string | null;
-  } | null;
+  registeredAddress?: any;
+  pickupAddress?: any;
 };
 
 function normRole(role: unknown) {
@@ -63,7 +36,6 @@ function normRole(role: unknown) {
 
   if (r === "SUPERADMIN") r = "SUPER_ADMIN";
   if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
-  if (r === "SUPERUSER") r = "SUPER_USER";
 
   return r;
 }
@@ -71,23 +43,23 @@ function normRole(role: unknown) {
 function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
-    String(addr.houseNumber ?? "").trim() ||
-      String(addr.streetName ?? "").trim() ||
-      String(addr.city ?? "").trim() ||
-      String(addr.state ?? "").trim() ||
-      String(addr.country ?? "").trim() ||
-      String(addr.postCode ?? "").trim()
+    addr.houseNumber ||
+    addr.streetName ||
+    addr.city ||
+    addr.state ||
+    addr.country ||
+    addr.postCode
   );
 }
 
 function isRegisteredBusiness(registrationType?: string | null) {
-  return String(registrationType ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
+  return String(registrationType ?? "").toUpperCase() === "REGISTERED_BUSINESS";
 }
 
 function docSatisfied(docs: SupplierDocumentLite[], kind: string) {
   return docs.some((d) => {
-    const k = String(d.kind ?? "").trim().toUpperCase();
-    const s = String(d.status ?? "").trim().toUpperCase();
+    const k = String(d.kind ?? "").toUpperCase();
+    const s = String(d.status ?? "").toUpperCase();
     return k === kind && (s === "PENDING" || s === "APPROVED");
   });
 }
@@ -102,50 +74,59 @@ export default function ProtectedRoute({
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  if (!hydrated) return <>{children}</>;
+  const userRole = normRole(user?.role);
+
+  /* ✅ CRITICAL FIX: wait for auth properly */
+  if (!hydrated || user === undefined) {
+    return (
+      <div className="min-h-[40vh] flex items-center justify-center">
+        <div className="text-sm text-zinc-500">Loading session...</div>
+      </div>
+    );
+  }
 
   const isAuthed = !!user?.id;
 
+  /* 🔐 Not authenticated */
   if (!isAuthed) {
     const from = `${location.pathname}${location.search}`;
     const qp = encodeURIComponent(from);
 
     try {
       sessionStorage.setItem("auth:returnTo", from);
-    } catch {}
+    } catch { }
 
-    return <Navigate to={`/login?from=${qp}`} replace state={{ from }} />;
+    return <Navigate to={`/login?from=${qp}`} replace />;
   }
 
-  const userRole = normRole(user?.role);
-
+  /* 🚴 Rider restriction */
   if (
-    userRole === normRole("SUPPLIER_RIDER") &&
-    Array.isArray(riderAllowPrefixes) &&
-    riderAllowPrefixes.length > 0
+    userRole === "SUPPLIER_RIDER" &&
+    riderAllowPrefixes?.length
   ) {
-    const ok = riderAllowPrefixes.some((p) => location.pathname.startsWith(p));
+    const ok = riderAllowPrefixes.some((p) =>
+      location.pathname.startsWith(p)
+    );
     if (!ok) return <Navigate to="/supplier/orders" replace />;
   }
 
-  if (userRole === "SUPER_ADMIN") {
-    return <>{children}</>;
-  }
+  /* 👑 Super admin bypass */
+  if (userRole === "SUPER_ADMIN") return <>{children}</>;
 
+  /* 🎯 Role check */
   const allowedSet = useMemo(() => {
-    const arr = Array.isArray(roles) ? roles : [];
-    return new Set(arr.map(normRole).filter(Boolean));
+    return new Set((roles || []).map(normRole));
   }, [roles]);
 
   if (allowedSet.size > 0 && !allowedSet.has(userRole)) {
     return <Navigate to="/" replace />;
   }
 
+  /* 🧠 Supplier onboarding check */
   const supplierOnboardingQ = useQuery({
-    queryKey: ["protected-route", "supplier-onboarding"],
+    queryKey: ["supplier-onboarding"],
     enabled: userRole === "SUPPLIER",
-    staleTime: 15_000,
-    refetchOnWindowFocus: false,
+    staleTime: 30_000,
     retry: 1,
     queryFn: async () => {
       const [authRes, supplierRes, docsRes] = await Promise.all([
@@ -156,89 +137,79 @@ export default function ProtectedRoute({
           .catch(() => ({ data: { data: [] } })),
       ]);
 
-      const authMe = ((authRes.data as any)?.data ??
-        (authRes.data as any)?.user ??
-        authRes.data ??
-        {}) as AuthMeLite;
+      const authMe = authRes.data?.data ?? {};
+      const supplierMe = supplierRes.data?.data ?? {};
+      const docs = docsRes.data?.data ?? [];
 
-      const supplierMe = ((supplierRes.data as any)?.data ??
-        supplierRes.data ??
-        {}) as SupplierMeLite;
-
-      const rawDocs = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
-      const docs = Array.isArray(rawDocs) ? (rawDocs as SupplierDocumentLite[]) : [];
-
-      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
+      const contactDone = !!authMe.emailVerified && !!authMe.phoneVerified;
 
       const businessDone = Boolean(
-        String(supplierMe?.legalName ?? "").trim() &&
-          String(supplierMe?.registrationType ?? "").trim() &&
-          String(supplierMe?.registrationCountryCode ?? "").trim()
+        supplierMe.legalName &&
+        supplierMe.registrationType &&
+        supplierMe.registrationCountryCode
       );
 
       const addressDone =
-        hasAddress(supplierMe?.registeredAddress) || hasAddress(supplierMe?.pickupAddress);
+        hasAddress(supplierMe.registeredAddress) ||
+        hasAddress(supplierMe.pickupAddress);
 
       const requiredKinds = [
-        ...(isRegisteredBusiness(supplierMe?.registrationType)
+        ...(isRegisteredBusiness(supplierMe.registrationType)
           ? ["BUSINESS_REGISTRATION_CERTIFICATE"]
           : []),
         "GOVERNMENT_ID",
         "PROOF_OF_ADDRESS",
       ];
 
-      const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
+      const docsDone = requiredKinds.every((k) =>
+        docSatisfied(docs, k)
+      );
 
-      const onboardingDone = contactDone && businessDone && addressDone && docsDone;
+      const onboardingDone =
+        contactDone && businessDone && addressDone && docsDone;
 
       const nextPath = !contactDone
         ? "/supplier/verify-contact"
         : !businessDone
-        ? "/supplier/onboarding"
-        : !addressDone
-        ? "/supplier/onboarding/address"
-        : !docsDone
-        ? "/supplier/onboarding/documents"
-        : "/supplier";
+          ? "/supplier/onboarding"
+          : !addressDone
+            ? "/supplier/onboarding/address"
+            : !docsDone
+              ? "/supplier/onboarding/documents"
+              : "/supplier";
 
-      return {
-        contactDone,
-        businessDone,
-        addressDone,
-        docsDone,
-        onboardingDone,
-        nextPath,
-      };
+      return { onboardingDone, nextPath };
     },
   });
 
-  if (userRole === "SUPPLIER") {
-    if (supplierOnboardingQ.isLoading) {
-      return (
-        <div className="min-h-[40vh] flex items-center justify-center px-4">
-          <div className="text-sm text-zinc-500">Checking supplier access…</div>
+  /* 🔥 CRITICAL FIX: do NOT redirect while loading */
+  if (userRole === "SUPPLIER" && supplierOnboardingQ.isLoading) {
+    return (
+      <div className="min-h-[40vh] flex items-center justify-center">
+        <div className="text-sm text-zinc-500">
+          Preparing supplier dashboard...
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
+  if (userRole === "SUPPLIER") {
     const onboarding = supplierOnboardingQ.data;
-    const onboardingDone = !!onboarding?.onboardingDone;
 
-    if (!onboardingDone) {
+    if (!onboarding?.onboardingDone) {
       const path = location.pathname;
 
-      const allowedWhileOnboarding = [
+      const allowed = [
         "/supplier",
-        "/dashboard",
         "/supplier/verify-contact",
         "/supplier/onboarding",
         "/supplier/onboarding/address",
         "/supplier/onboarding/documents",
-        "/account/sessions",
-        "/profile",
       ];
 
-      const isAllowed = allowedWhileOnboarding.some((p) => path === p || path.startsWith(`${p}/`));
+      const isAllowed = allowed.some((p) =>
+        path.startsWith(p)
+      );
 
       if (!isAllowed) {
         return <Navigate to={onboarding?.nextPath || "/supplier/verify-contact"} replace />;
