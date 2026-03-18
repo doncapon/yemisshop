@@ -939,7 +939,11 @@ export default function ProductDetail() {
 
   const saveReviewMutation = useMutation({
     mutationFn: async ({ rating, comment }: { rating: number; comment: string }) => {
-      const body = { rating, comment: comment.trim() || null };
+      const body = {
+        rating: Math.max(1, Math.min(5, Math.round(Number(rating) || 0))),
+        comment: String(comment ?? "").trim(),
+      };
+
       const { data } = await api.post(`/api/products/${id}/reviews`, body, AXIOS_COOKIE_CFG);
       return (data as any)?.data ?? data ?? {};
     },
@@ -947,6 +951,9 @@ export default function ProductDetail() {
       queryClient.invalidateQueries({ queryKey: ["product-my-review", id] });
       queryClient.invalidateQueries({ queryKey: ["product-reviews-summary", id] });
       queryClient.invalidateQueries({ queryKey: ["product", id] });
+    },
+    onError: (err: any) => {
+      console.error("save review failed", err?.response?.status, err?.response?.data || err);
     },
   });
 
@@ -996,6 +1003,19 @@ export default function ProductDetail() {
     product?.bestSupplierRating?.ratingAvg,
     product?.bestSupplierRating?.ratingCount,
   ]);
+
+
+  const reviewBlockedMessage = React.useMemo(() => {
+    const err: any = saveReviewMutation.error;
+    const status = Number(err?.response?.status ?? 0);
+
+    if (status !== 403) return "";
+
+    return (
+      err?.response?.data?.error ||
+      "You’ll be able to review this product after you buy it and your order is delivered."
+    );
+  }, [saveReviewMutation.error]);
 
   /* ---------------- Variants / Axes ---------------- */
   const allVariants = product?.variants ?? [];
@@ -2207,15 +2227,13 @@ export default function ProductDetail() {
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-zinc-50 to-white">
-        <div className="origin-top scale-[0.92] sm:scale-100">
-
+        <div>
           {/* Top bar */}
-          <div className="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
+          <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pt-3 md:pt-6">
             <div className="flex items-center justify-between gap-3">
               <button
                 type="button"
                 onClick={goBack}
-
                 className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
               >
                 ←
@@ -2223,21 +2241,21 @@ export default function ProductDetail() {
 
               <div className="text-xs text-zinc-500">
                 {product.brand?.name ? (
-                  <span className="truncate max-w-[60vw] inline-block">
+                  <span className="truncate max-w-[68vw] inline-block">
                     {product.brand.name} / {product.title}
                   </span>
                 ) : (
-                  <span className="truncate max-w-[60vw] inline-block">{product.title}</span>
+                  <span className="truncate max-w-[68vw] inline-block">{product.title}</span>
                 )}
               </div>
             </div>
           </div>
 
           {/* MAIN GRID */}
-          <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
+          <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 py-3 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 max-[360px]:gap-4">
             {/* LEFT */}
             <div className="space-y-3 md:space-y-5">
-              <div className="relative mx-auto w-full sm:max-w-[92%]">
+              <div className="relative w-full">
                 <div
                   ref={imageStageRef}
                   className={`relative rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
@@ -2324,7 +2342,7 @@ export default function ProductDetail() {
               </div>
 
               {images.length > 1 && (
-                <div className="grid grid-cols-5 gap-2 sm:gap-3">
+                <div className="grid grid-cols-5 gap-2">
                   {images.map((src, idx) => {
                     const broken = !!brokenByIndex[idx];
                     if (!src || broken) return null;
@@ -2362,8 +2380,8 @@ export default function ProductDetail() {
             </div>
 
             {/* RIGHT */}
-            <div className="space-y-4 md:space-y-5">
-              <div className={`${cardCls} p-4 md:p-5`}>
+            <div className="space-y-3 md:space-y-5">
+              <div className={`${cardCls} p-3 sm:p-4 md:p-5`}>
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">{product.title}</h1>
@@ -2518,7 +2536,6 @@ export default function ProductDetail() {
                   </div>
                 </div>
 
-
                 <div className="mt-5 flex flex-col sm:flex-row items-center gap-3">
                   <button
                     type="button"
@@ -2540,28 +2557,33 @@ export default function ProductDetail() {
                   </Link>
                 </div>
 
-                {computed.supplierName ? (
-                  <div className="mt-3 text-xs text-zinc-500">
-                    Supplier: <span className="font-medium text-zinc-700">{computed.supplierName}</span>
-                  </div>
-                ) : null}
-
                 {/* ⭐ Review form */}
                 <div className="mt-6 border-t border-zinc-200 pt-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold text-zinc-900">Rate this product</h2>
-                    {ratingSummary.avg != null && (
-                      <div className="flex items-center gap-1 text-xs text-zinc-500">
-                        <span>{ratingSummary.avg.toFixed(1)}★</span>
-                        {ratingSummary.count != null && (
-                          <span>
-                            ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                  <div className="flex items-start justify-between gap-3">
+                    <h2 className="text-sm font-semibold text-zinc-900">
+                      Rate this product
+                    </h2>
 
+                    <div className="flex flex-col items-end text-right">
+                      {ratingSummary.avg != null && (
+                        <div className="flex items-center gap-1 text-xs text-zinc-500">
+                          <span>{ratingSummary.avg.toFixed(1)}★</span>
+                          {ratingSummary.count != null && (
+                            <span>
+                              ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      <Link
+                        to={`/products/${product.id}/reviews`}
+                        className="mt-1 text-xs sm:text-sm font-medium text-fuchsia-600 hover:underline"
+                      >
+                        See all reviews →
+                      </Link>
+                    </div>
+                  </div>
                   {!user && (
                     <p className="mt-2 text-xs text-zinc-600">
                       <Link to="/login" className="font-medium text-fuchsia-600 hover:text-fuchsia-700">
@@ -2630,7 +2652,7 @@ export default function ProductDetail() {
                         )}
                       </div>
 
-                      {saveReviewMutation.isError && (
+                      {saveReviewMutation.isError && !reviewBlockedMessage && (
                         <div className="text-xs text-rose-600">
                           {(saveReviewMutation.error as any)?.message || "Could not save review. Please try again."}
                         </div>
@@ -2640,13 +2662,19 @@ export default function ProductDetail() {
                           {(deleteReviewMutation.error as any)?.message || "Could not reset review. Please try again."}
                         </div>
                       )}
+
+                      {reviewBlockedMessage && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          {reviewBlockedMessage}
+                        </div>
+                      )}
                     </form>
                   )}
                 </div>
               </div>
 
               {/* Description on mobile */}
-              <div className={`md:hidden ${cardCls} p-4`}>
+              <div className={`md:hidden ${cardCls} p-3 sm:p-4`}>
                 <h2 className="text-base font-semibold mb-1">Description</h2>
                 <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
               </div>
@@ -2655,8 +2683,8 @@ export default function ProductDetail() {
 
           {/* Similar products */}
           {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
-            <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 pb-6">
-              <div className={`${cardCls} p-4 md:p-5`}>
+            <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pb-5 md:pb-6">
+              <div className={`${cardCls} p-3 sm:p-4 md:p-5`}>
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="text-base font-semibold">Similar products</h2>
                   <div className="flex items-center gap-2">
@@ -2691,7 +2719,6 @@ export default function ProductDetail() {
                             supplierPrice: basePrice,
                             baseServiceFeeNGN,
                             commsUnitCostNGN,
-
                             gatewayFeePercent,
                             gatewayFixedFeeNGN,
                             gatewayFeeCapNGN,

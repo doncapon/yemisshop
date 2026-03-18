@@ -1,16 +1,12 @@
 // api/src/routes/productReviews.ts
 import express, { type Request, type Response } from "express";
 import { z } from "zod";
-import { Prisma } from "@prisma/client";
+import { Prisma, PurchaseOrderStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { recomputeSupplierRatingWithReviews } from "../services/supplierRating.service.js";
 
 const router = express.Router();
-
-/* -------------------------------------------------------------------------- */
-/* Helpers                                                                    */
-/* -------------------------------------------------------------------------- */
 
 const wrap =
   (fn: (req: Request, res: Response) => any) =>
@@ -24,53 +20,80 @@ const ReviewBodySchema = z.object({
   variantId: z.string().trim().optional(),
 });
 
-/**
- * Check if this user actually bought this product from this supplier
- * (for "verified purchase" badge).
- *
- * NOTE: adjust `order: { userId }` if your schema uses `shopperId` etc.
- */
-async function isVerifiedPurchase(opts: {
+async function getVerifiedDeliveredPurchase(opts: {
   userId: string;
-  supplierId: string;
   productId: string;
+  supplierId: string;
 }) {
-  const { userId, supplierId, productId } = opts;
+  const { userId, productId, supplierId } = opts;
 
-  const item = await prisma.orderItem.findFirst({
+  const poItem = await prisma.purchaseOrderItem.findFirst({
     where: {
-      productId,
-      chosenSupplierId: supplierId,
-      order: {
-        userId, // 🔁 change to shopperId if needed
-      } as any,
-    } as any,
-    select: { id: true, orderId: true },
+      purchaseOrder: {
+        supplierId,
+        status: PurchaseOrderStatus.DELIVERED,
+        order: {
+          userId,
+        },
+      },
+      orderItem: {
+        productId,
+      },
+    },
+    orderBy: {
+      purchaseOrder: {
+        deliveredAt: "desc",
+      },
+    },
+    select: {
+      purchaseOrderId: true,
+      orderItem: {
+        select: {
+          variantId: true,
+          productId: true,
+        },
+      },
+      purchaseOrder: {
+        select: {
+          id: true,
+          status: true,
+          deliveredAt: true,
+        },
+      },
+    },
   });
 
-  if (!item) return { verified: false, orderId: null };
-  return { verified: true, orderId: item.orderId ?? null };
+  if (!poItem?.purchaseOrderId) {
+    return {
+      verified: false,
+      purchaseOrderId: null as string | null,
+      variantId: null as string | null,
+    };
+  }
+
+  return {
+    verified: true,
+    purchaseOrderId: poItem.purchaseOrderId,
+    variantId: poItem.orderItem?.variantId ? String(poItem.orderItem.variantId) : null,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
 /* POST /api/products/:productId/reviews                                      */
 /* -------------------------------------------------------------------------- */
-/**
- * Body: { rating: 1–5, title?, comment?, variantId? }
- *
- * One review per (supplierId, productId, userId) using
- * @@unique([supplierId, productId, userId]) => SupplierReview_user_product_unique
- */
 router.post(
   "/products/:productId/reviews",
   requireAuth,
   wrap(async (req: any, res: Response) => {
-    const userId = req.user?.id;
+    const userId = String(req.user?.id ?? "");
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const productId = String(req.params.productId ?? "");
-    const parsed = ReviewBodySchema.safeParse(req.body);
+    const productId = String(req.params.productId ?? "").trim();
+    if (!productId) {
+      return res.status(400).json({ error: "Missing productId" });
+    }
 
+    const parsed = ReviewBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({
         error: "Invalid payload",
@@ -80,10 +103,12 @@ router.post(
 
     const { rating, title, comment, variantId } = parsed.data;
 
-    // 1) Load product + supplierId (one supplier per product in your model)
-    const product = await prisma.product.findFirst({
+    const product = await prisma.product.findUnique({
       where: { id: productId },
-      select: { id: true, supplierId: true },
+      select: {
+        id: true,
+        supplierId: true,
+      },
     });
 
     if (!product) {
@@ -91,27 +116,47 @@ router.post(
     }
 
     if (!product.supplierId) {
-      return res
-        .status(400)
-        .json({ error: "Product is not linked to a supplier" });
+      return res.status(400).json({
+        error: "Product is not linked to a supplier",
+      });
     }
 
     const supplierId = String(product.supplierId);
 
-    // 2) Check verified purchase
-    const { verified, orderId } = await isVerifiedPurchase({
-      userId: String(userId),
-      supplierId,
+    const purchase = await getVerifiedDeliveredPurchase({
+      userId,
       productId,
+      supplierId,
     });
 
-    // 3) Upsert review (one review per user per product per supplier)
+    if (!purchase.verified || !purchase.purchaseOrderId) {
+      return res.status(403).json({
+        error: "Only customers who bought and received this product can review it.",
+      });
+    }
+
+    if (variantId) {
+      const variant = await prisma.productVariant.findFirst({
+        where: {
+          id: String(variantId),
+          productId,
+        },
+        select: { id: true },
+      });
+
+      if (!variant) {
+        return res.status(400).json({
+          error: "Selected variant does not belong to this product.",
+        });
+      }
+    }
+
     const review = await prisma.supplierReview.upsert({
       where: {
         SupplierReview_user_product_unique: {
           supplierId,
           productId,
-          userId: String(userId),
+          userId,
         },
       },
       update: {
@@ -119,20 +164,19 @@ router.post(
         title: title ?? null,
         comment: comment ?? null,
         variantId: variantId ?? null,
-        verifiedPurchase: verified,
-        // keep existing purchaseOrderId if already set
-        purchaseOrderId: orderId ?? undefined,
+        verifiedPurchase: true,
+        purchaseOrderId: purchase.purchaseOrderId,
       },
       create: {
         supplierId,
         productId,
-        userId: String(userId),
+        userId,
         rating,
         title: title ?? null,
         comment: comment ?? null,
-        variantId: variantId ?? null,
-        verifiedPurchase: verified,
-        purchaseOrderId: orderId ?? null, // field is nullable in your schema
+        variantId: variantId ?? purchase.variantId ?? null,
+        verifiedPurchase: true,
+        purchaseOrderId: purchase.purchaseOrderId,
       },
       select: {
         id: true,
@@ -150,7 +194,6 @@ router.post(
       },
     });
 
-    // 4) Recompute combined rating and persist on Supplier
     const { ratingAvg, ratingCount } =
       await recomputeSupplierRatingWithReviews(supplierId);
 
@@ -169,22 +212,14 @@ router.post(
 /* -------------------------------------------------------------------------- */
 /* GET /api/products/:productId/reviews                                       */
 /* -------------------------------------------------------------------------- */
-/**
- * Public list of reviews for a product, + average rating.
- *
- * ✅ Uses Prisma.validator so rows are typed with `user`, fixing
- * "Property 'user' does not exist on type …".
- */
 router.get(
   "/products/:productId/reviews",
   wrap(async (req: Request, res: Response) => {
-    // 🔧 Coerce route param to simple string so Prisma is happy
-    const productId = String(req.params.productId ?? "");
+    const productId = String(req.params.productId ?? "").trim();
 
-    // Define the select using Prisma.validator to get a typed payload
     const reviewWithUserSelect =
       Prisma.validator<Prisma.SupplierReviewFindManyArgs>()({
-        where: { productId }, // `productId` is now a plain string
+        where: { productId },
         orderBy: { createdAt: "desc" },
         take: 50,
         select: {
@@ -199,7 +234,6 @@ router.get(
               id: true,
               firstName: true,
               lastName: true,
-              email: true,
             },
           },
         },
@@ -214,9 +248,6 @@ router.get(
       }),
     ]);
 
-    const avg = agg._avg.rating ?? 0;
-    const count = agg._count._all ?? 0;
-
     return res.json({
       data: rows.map((r) => ({
         id: r.id,
@@ -229,12 +260,11 @@ router.get(
           id: r.user.id,
           firstName: r.user.firstName ?? null,
           lastName: r.user.lastName ?? null,
-          email: r.user.email ?? null,
         },
       })),
       summary: {
-        ratingAvg: Number(avg) || 0,
-        ratingCount: count,
+        ratingAvg: Number(agg._avg.rating ?? 0) || 0,
+        ratingCount: agg._count._all ?? 0,
       },
     });
   })
@@ -243,14 +273,10 @@ router.get(
 /* -------------------------------------------------------------------------- */
 /* GET /api/products/:productId/reviews/summary                               */
 /* -------------------------------------------------------------------------- */
-/**
- * Lightweight summary endpoint for the product detail badge:
- * returns only { ratingAvg, ratingCount }.
- */
 router.get(
   "/products/:productId/reviews/summary",
   wrap(async (req: Request, res: Response) => {
-    const productId = String(req.params.productId ?? "");
+    const productId = String(req.params.productId ?? "").trim();
 
     const agg = await prisma.supplierReview.aggregate({
       where: { productId },
@@ -258,13 +284,10 @@ router.get(
       _count: { _all: true },
     });
 
-    const ratingAvg = Number(agg._avg.rating ?? 0) || 0;
-    const ratingCount = agg._count._all ?? 0;
-
     return res.json({
       data: {
-        ratingAvg,
-        ratingCount,
+        ratingAvg: Number(agg._avg.rating ?? 0) || 0,
+        ratingCount: agg._count._all ?? 0,
       },
     });
   })
@@ -273,24 +296,21 @@ router.get(
 /* -------------------------------------------------------------------------- */
 /* GET /api/products/:productId/reviews/my                                    */
 /* -------------------------------------------------------------------------- */
-/**
- * Get the current authenticated user's review for this product (if any).
- */
 router.get(
   "/products/:productId/reviews/my",
   requireAuth,
   wrap(async (req: any, res: Response) => {
-    const userId = req.user?.id;
+    const userId = String(req.user?.id ?? "");
     if (!userId) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const productId = String(req.params.productId ?? "");
+    const productId = String(req.params.productId ?? "").trim();
 
     const review = await prisma.supplierReview.findFirst({
       where: {
         productId,
-        userId: String(userId),
+        userId,
       },
       select: {
         id: true,
@@ -308,66 +328,45 @@ router.get(
       },
     });
 
-    // Frontend is usually fine with null if user hasn't reviewed yet
     return res.json({
       data: review ?? null,
     });
   })
 );
 
-/* ------------------------------------------------------------------
- * DELETE /api/products/:id/reviews/my
- * ------------------------------------------------------------------
- * Removes the current user's review(s) for this product.
- * Uses SupplierReview model (your schema).
- * ------------------------------------------------------------------*/
+/* -------------------------------------------------------------------------- */
+/* DELETE /api/products/:id/reviews/my                                        */
+/* -------------------------------------------------------------------------- */
 router.delete(
   "/products/:id/reviews/my",
   requireAuth,
   wrap(async (req: any, res: Response) => {
-    const productId = String(req.params.id ?? "");
-    const userId = req.user?.id as string | undefined;
+    const productId = String(req.params.id ?? "").trim();
+    const userId = String(req.user?.id ?? "");
 
     if (!userId) {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
-    // Delete all reviews this user left for this product (any supplier)
     const deleteResult = await prisma.supplierReview.deleteMany({
       where: {
-        userId: String(userId),
+        userId,
         productId,
       },
     });
 
-    // For the "reset my rating" UX it's nicer to always return success
-    if (deleteResult.count === 0) {
-      return res.json({
-        data: {
-          success: true,
-          deletedCount: 0,
-          ratingAvg: null,
-          ratingCount: 0,
-        },
-      });
-    }
-
-    // Recompute aggregate for this product from SupplierReview
     const agg = await prisma.supplierReview.aggregate({
       where: { productId },
       _avg: { rating: true },
       _count: { _all: true },
     });
 
-    const ratingAvg = agg._avg.rating ?? null;
-    const ratingCount = agg._count._all ?? 0;
-
     return res.json({
       data: {
         success: true,
         deletedCount: deleteResult.count,
-        ratingAvg,
-        ratingCount,
+        ratingAvg: agg._avg.rating ?? null,
+        ratingCount: agg._count._all ?? 0,
       },
     });
   })

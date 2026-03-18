@@ -85,6 +85,7 @@ import SupplierOnboardingDocuments from "./pages/supplier/SupplierOnboardingDocu
 import api from "./api/client";
 import AdminSupplierDocuments from "./pages/admin/AdminSupplierDocuments";
 import AdminShipping from "./pages/admin/AdminShipping";
+import ProductReviews from "./pages/ProductReviews";
 
 /* -----------------------------
    Role normalization + aliases
@@ -720,6 +721,7 @@ export default function App() {
               <Routes key={loc.key}>
                 <Route path="/" element={<HomeRoute />} />
                 <Route path="/products/:id" element={<ProductDetail />} />
+                <Route path="/products/:id/reviews" element={<ProductReviews />} />
                 <Route path="/cart" element={<Cart />} />
                 <Route path="/verify" element={<Verify />} />
                 <Route path="/privacy" element={<DataPrivacy />} />

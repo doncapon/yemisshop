@@ -19,7 +19,6 @@ function toNumber(n: any) {
 
 function toNum(d: any): number | null {
   if (d == null) return null;
-
   // handle Prisma Decimal safely
   if (typeof d === "object" && d && typeof (d as any).toNumber === "function") {
     const n = (d as any).toNumber();
