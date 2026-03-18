@@ -1820,7 +1820,7 @@ export default function Catalog() {
         params: {
           include: includeStr,
           status: "LIVE",
-          take: 200,
+          take: 20,
           page: 1,
         },
       });

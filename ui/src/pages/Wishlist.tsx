@@ -346,7 +346,7 @@ async function fetchCatalogProductsLite(): Promise<CatalogProductLite[]> {
     params: {
       include: "variants,offers",
       status: "LIVE",
-      take: 200,
+      take: 20,
       page: 1,
     },
   });
