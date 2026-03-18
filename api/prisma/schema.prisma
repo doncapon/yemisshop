@@ -264,6 +264,8 @@ model ProductVariant {
   @@index([productId])
   @@index([productId, isActive])
   @@index([productId, archivedAt])
+
+  @@index([productId, isActive, archivedAt])
 }
 
 model ProductVariantOption {
@@ -349,6 +351,10 @@ model Product {
   @@index([ownerId])
   @@index([createdById])
   @@index([updatedById])
+
+  @@index([status, isDeleted, createdAt])
+  @@index([status, categoryId, isDeleted, createdAt])
+  @@index([status, brandId, isDeleted, createdAt])
 }
 
 model PaymentEvent {
@@ -1225,6 +1231,9 @@ model SupplierProductOffer {
   @@index([productId])
   @@index([supplierId])
   @@index([isActive, inStock])
+
+  @@index([productId, isActive, inStock, availableQty])
+  @@index([productId, supplierId])
 }
 
 model SupplierVariantOffer {
@@ -1253,6 +1262,11 @@ model SupplierVariantOffer {
   @@index([productId])
   @@index([supplierId])
   @@index([isActive, inStock])
+
+  @@index([productId, isActive, inStock, availableQty])
+  @@index([variantId, isActive, inStock, availableQty])
+  @@index([productId, variantId])
+
 }
 
 model OrderOtpRequest {
