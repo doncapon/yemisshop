@@ -1809,7 +1809,7 @@ export default function Catalog() {
   /* ---------------- Products query ---------------- */
 
   const productsQ = useQuery<Product[]>({
-    queryKey: ["products", { include: includeStr, status: "LIVE" }],
+    queryKey: ["products", { include: includeStr, status: "LIVE", all: true }],
     staleTime: 5 * 60_000,
     gcTime: 15 * 60_000,
     refetchOnWindowFocus: false,
@@ -1820,8 +1820,6 @@ export default function Catalog() {
         params: {
           include: includeStr,
           status: "LIVE",
-          take: 20,
-          page,
         },
       });
 
