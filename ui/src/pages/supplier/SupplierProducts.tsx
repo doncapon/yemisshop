@@ -81,8 +81,10 @@ type SupplierDocumentLite = {
 };
 
 type AuthMeLite = {
-  emailVerified?: boolean;
-  phoneVerified?: boolean;
+  emailVerified?: boolean | null;
+  phoneVerified?: boolean | null;
+  emailVerifiedAt?: string | null;
+  phoneVerifiedAt?: string | null;
 };
 
 type SupplierMeLite = {
@@ -173,6 +175,26 @@ function docSatisfied(docs: SupplierDocumentLite[], kind: string) {
     const s = String(d.status ?? "").trim().toUpperCase();
     return k === kind && (s === "PENDING" || s === "APPROVED");
   });
+}
+
+function isTruthyVerificationFlag(value: unknown) {
+  if (value === true) return true;
+  if (typeof value === "string" && value.trim()) return true;
+  return false;
+}
+
+function isEmailVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag(authMe?.emailVerified) ||
+    isTruthyVerificationFlag(authMe?.emailVerifiedAt)
+  );
+}
+
+function isPhoneVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag(authMe?.phoneVerified) ||
+    isTruthyVerificationFlag(authMe?.phoneVerifiedAt)
+  );
 }
 
 function getSupplierNextPath(stage: {
@@ -403,10 +425,6 @@ export default function SupplierProductsPage() {
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  useEffect(() => {
-    useAuthStore.getState().bootstrap?.().catch?.(() => null);
-  }, []);
-
   const urlSupplierId = useMemo(() => {
     const v = normStr(searchParams.get("supplierId"));
     return v || undefined;
@@ -460,10 +478,14 @@ export default function SupplierProductsPage() {
           .catch(() => ({ data: { data: [] } })),
       ]);
 
-      const authMe = ((authRes.data as any)?.data ??
-        (authRes.data as any)?.user ??
-        authRes.data ??
-        {}) as AuthMeLite;
+      const authPayload = authRes.data as any;
+      const authMe = (
+        authPayload?.data?.user ??
+        authPayload?.user ??
+        authPayload?.data ??
+        authPayload ??
+        {}
+      ) as AuthMeLite;
 
       const supplierMe = ((supplierRes.data as any)?.data ??
         supplierRes.data ??
@@ -472,7 +494,7 @@ export default function SupplierProductsPage() {
       const docsRaw = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
       const docs = Array.isArray(docsRaw) ? (docsRaw as SupplierDocumentLite[]) : [];
 
-      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
+      const contactDone = isEmailVerified(authMe) && isPhoneVerified(authMe);
 
       const businessDone = Boolean(
         String(supplierMe?.legalName ?? "").trim() &&
@@ -554,10 +576,7 @@ export default function SupplierProductsPage() {
         pageSize,
       },
     ],
-    enabled:
-      hydrated &&
-      !supplierLocked &&
-      (!isAdmin || !!adminSupplierId),
+    enabled: hydrated && !supplierLocked && (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       const skip = (page - 1) * pageSize;
       const { data } = await api.get<{
@@ -632,11 +651,7 @@ export default function SupplierProductsPage() {
       "delete-eligibility",
       { ids: items.map((x) => x.id), supplierId: adminSupplierId, page, pageSize },
     ],
-    enabled:
-      hydrated &&
-      !supplierLocked &&
-      items.length > 0 &&
-      (!isAdmin || !!adminSupplierId),
+    enabled: hydrated && !supplierLocked && items.length > 0 && (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       const ids = items.map((x) => x.id).join(",");
       const { data } = await api.get("/api/supplier/products/delete-eligibility", {

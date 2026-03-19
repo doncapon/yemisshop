@@ -56,8 +56,10 @@ type AuthMeLite = {
   phone?: string | null;
   firstName?: string | null;
   lastName?: string | null;
-  emailVerified?: boolean;
-  phoneVerified?: boolean;
+  emailVerified?: boolean | null;
+  phoneVerified?: boolean | null;
+  emailVerifiedAt?: string | null;
+  phoneVerifiedAt?: string | null;
 };
 
 function maskEmail(v: string) {
@@ -89,6 +91,26 @@ function getVerifyConfig() {
 
 function pickString(v: unknown) {
   return String(v ?? "").trim();
+}
+
+function isTruthyVerificationFlag(value: unknown) {
+  if (value === true) return true;
+  if (typeof value === "string" && value.trim()) return true;
+  return false;
+}
+
+function isEmailVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag(authMe?.emailVerified) ||
+    isTruthyVerificationFlag(authMe?.emailVerifiedAt)
+  );
+}
+
+function isPhoneVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag(authMe?.phoneVerified) ||
+    isTruthyVerificationFlag(authMe?.phoneVerifiedAt)
+  );
 }
 
 function countryLabel(code?: string | null) {
@@ -172,10 +194,14 @@ export default function SupplierVerifyContact() {
 
       try {
         const authRes = await api.get("/api/auth/me", cfg);
-        authData = ((authRes.data as any)?.data ??
-          (authRes.data as any)?.user ??
-          authRes.data ??
-          {}) as AuthMeLite;
+        const authPayload = authRes.data as any;
+        authData = (
+          authPayload?.data?.user ??
+          authPayload?.user ??
+          authPayload?.data ??
+          authPayload ??
+          {}
+        ) as AuthMeLite;
       } catch {}
 
       const resolvedEmail =
@@ -212,12 +238,8 @@ export default function SupplierVerifyContact() {
           contactPhone: resolvedPhone,
         });
 
-        if (typeof authData?.emailVerified === "boolean") {
-          setEmailVerified(!!authData.emailVerified);
-        }
-        if (typeof authData?.phoneVerified === "boolean") {
-          setPhoneVerified(!!authData.phoneVerified);
-        }
+        setEmailVerified(isEmailVerified(authData));
+        setPhoneVerified(isPhoneVerified(authData));
       }
     } catch (e: any) {
       setErr(
@@ -253,16 +275,22 @@ export default function SupplierVerifyContact() {
         withCredentials: true,
       });
 
-      setEmailVerified(!!emailRes?.data?.emailVerifiedAt);
+      setEmailVerified(
+        !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified
+      );
 
       try {
         const meRes = await api.get("/api/auth/me", cfg);
-        const me = ((meRes.data as any)?.data ??
-          (meRes.data as any)?.user ??
-          meRes.data ??
-          {}) as AuthMeLite;
+        const mePayload = meRes.data as any;
+        const me = (
+          mePayload?.data?.user ??
+          mePayload?.user ??
+          mePayload?.data ??
+          mePayload ??
+          {}
+        ) as AuthMeLite;
 
-        setPhoneVerified(!!me?.phoneVerified);
+        setPhoneVerified(isPhoneVerified(me));
       } catch {
         // ignore
       }
