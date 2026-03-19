@@ -150,6 +150,22 @@ type CatalogPersistedState = {
   pageSize: 8 | 12 | 16;
 };
 
+type CatalogProductsMeta = {
+  page: number;
+  take: number;
+  skip: number;
+  total: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+};
+
+type CatalogProductsResponse = {
+  data: Product[];
+  total: number;
+  meta: CatalogProductsMeta;
+};
+
 const ngn = new Intl.NumberFormat("en-NG", {
   style: "currency",
   currency: "NGN",
@@ -1808,8 +1824,8 @@ export default function Catalog() {
 
   /* ---------------- Products query ---------------- */
 
-  const productsQ = useQuery<Product[]>({
-    queryKey: ["products", { include: includeStr, status: "LIVE", all: true }],
+  const productsQ = useQuery<CatalogProductsResponse>({
+    queryKey: ["products", { include: includeStr, status: "LIVE", page, take: pageSize }],
     staleTime: 5 * 60_000,
     gcTime: 15 * 60_000,
     refetchOnWindowFocus: false,
@@ -1820,16 +1836,14 @@ export default function Catalog() {
         params: {
           include: includeStr,
           status: "LIVE",
+          take: pageSize,
+          page,
         },
       });
 
-      const raw: any[] = Array.isArray(data)
-        ? data
-        : Array.isArray((data as any)?.data)
-          ? (data as any).data
-          : [];
+      const raw: any[] = Array.isArray((data as any)?.data) ? (data as any).data : [];
 
-      return (raw || [])
+      const mapped = raw
         .filter((x) => x && x.id != null)
         .map((x) => {
           const variants: Variant[] = Array.isArray(x.variants)
@@ -1939,13 +1953,41 @@ export default function Catalog() {
             status: String(x.status ?? ""),
           } satisfies Product;
         });
+
+      return {
+        data: mapped,
+        total: Number((data as any)?.total ?? mapped.length ?? 0),
+        meta: {
+          page: Number((data as any)?.meta?.page ?? page),
+          take: Number((data as any)?.meta?.take ?? pageSize),
+          skip: Number((data as any)?.meta?.skip ?? Math.max(0, (page - 1) * pageSize)),
+          total: Number((data as any)?.meta?.total ?? (data as any)?.total ?? mapped.length ?? 0),
+          totalPages: Number((data as any)?.meta?.totalPages ?? 1),
+          hasNextPage: Boolean((data as any)?.meta?.hasNextPage),
+          hasPrevPage: Boolean((data as any)?.meta?.hasPrevPage),
+        },
+      };
     },
   });
 
   const products = useMemo(() => {
-    const list = Array.isArray(productsQ.data) ? productsQ.data : [];
+    const list = Array.isArray(productsQ.data?.data) ? productsQ.data.data : [];
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
+
+  const productsMeta = useMemo(() => {
+    return (
+      productsQ.data?.meta ?? {
+        page,
+        take: pageSize,
+        skip: Math.max(0, (page - 1) * pageSize),
+        total: products.length,
+        totalPages: 1,
+        hasNextPage: false,
+        hasPrevPage: false,
+      }
+    );
+  }, [productsQ.data, page, pageSize, products.length]);
 
   const productViews = useMemo<ProductView[]>(() => {
     const out: ProductView[] = new Array(products.length);
@@ -2461,10 +2503,10 @@ export default function Catalog() {
     setPage((curr) => (curr === 1 ? curr : 1));
   }, [selectedCategories, selectedBucketIdxs, selectedBrands, pageSize, sortKey, query, inStockOnly]);
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const totalPages = Math.max(1, Number(productsMeta.totalPages || 1));
   const currentPage = Math.min(page, totalPages);
-  const start = (currentPage - 1) * pageSize;
-  const pageItems = useMemo(() => sorted.slice(start, start + pageSize), [sorted, start, pageSize]);
+  const start = Number(productsMeta.skip ?? Math.max(0, (currentPage - 1) * pageSize));
+  const pageItems = useMemo(() => sorted, [sorted]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);

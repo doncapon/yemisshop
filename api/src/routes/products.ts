@@ -19,7 +19,7 @@ function toNumber(n: any) {
 
 function toNum(d: any): number | null {
   if (d == null) return null;
-  // handle Prisma Decimal safely
+
   if (typeof d === "object" && d && typeof (d as any).toNumber === "function") {
     const n = (d as any).toNumber();
     return Number.isFinite(n) ? n : null;
@@ -101,7 +101,6 @@ function supplierPayoutReadyWhere() {
   return Object.keys(where).length ? where : {};
 }
 
-// attach supplier payout-ready filter to offer models
 function offerSupplierPayoutReadyWhere(offerModelName: string, enforce: boolean) {
   if (!enforce) return {};
 
@@ -120,29 +119,18 @@ function normalizeId(v: any) {
   return nonEmptyString(v) ? String(v).trim() : null;
 }
 
-function buildPayoutReadySupplierWhere() {
-  return {
-    isPayoutEnabled: true,
-    accountNumber: { not: null },
-    accountName: { not: null },
-    bankCode: { not: null },
-    bankName: { not: null },
-    bankCountry: { not: null },
-  } as const;
-}
 function buildExcludeSupplierWhere(raw: unknown) {
   const id = normalizeId(raw);
   return id ? { supplierId: { not: id } } : {};
 }
 
 /**
- * Guard offer queries by filtering supplierId IS NOT NULL **only**
+ * Guard offer queries by filtering supplierId IS NOT NULL only
  * for models where supplierId is nullable in the schema.
  *
- * - SupplierProductOffer.supplierId is REQUIRED (String) → no filter needed
- * - SupplierVariantOffer.supplierId is OPTIONAL (String?) → filter NOT NULL
+ * Your current schema does not need extra filtering here.
  */
-function offerNonNullSupplierIdWhere(modelName: string) {
+function offerNonNullSupplierIdWhere(_modelName: string) {
   return {};
 }
 
@@ -344,7 +332,7 @@ function computePublicDisplayPriceRetailOnly(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Query schema & price helpers                                               */
+/* Query schema & pagination helpers                                          */
 /* -------------------------------------------------------------------------- */
 
 const QSchema = z.object({
@@ -352,8 +340,32 @@ const QSchema = z.object({
   status: z.string().optional(),
   take: z.coerce.number().optional(),
   skip: z.coerce.number().optional(),
+  page: z.coerce.number().optional(),
   include: z.string().optional(),
 });
+
+function resolvePagination(args: { take?: number; skip?: number; page?: number }) {
+  const rawTake = Number(args.take ?? 24);
+  const take = Math.min(100, Math.max(1, rawTake));
+
+  const hasPage = Number.isFinite(Number(args.page));
+  const page = hasPage ? Math.max(1, Number(args.page)) : 1;
+
+  let skip = 0;
+  if (hasPage) {
+    skip = (page - 1) * take;
+  } else {
+    skip = Math.max(0, Number(args.skip ?? 0));
+  }
+
+  const currentPage = Math.floor(skip / take) + 1;
+
+  return {
+    take,
+    skip,
+    page: currentPage,
+  };
+}
 
 /* -------------------------------------------------------------------------- */
 /* LIST: GET /api/products                                                    */
@@ -365,8 +377,11 @@ router.get(
     const parsed = QSchema.parse(req.query ?? {});
     const q = String(parsed.q ?? "").trim();
 
-    const take = Math.min(100, Math.max(1, Number(parsed.take ?? 24)));
-    const skip = Math.max(0, Number(parsed.skip ?? 0));
+    const { take, skip, page } = resolvePagination({
+      take: parsed.take,
+      skip: parsed.skip,
+      page: parsed.page,
+    });
 
     const includeParam = String((req.query as any).include ?? "")
       .split(",")
@@ -379,10 +394,9 @@ router.get(
     const wantAttributes = includeParam.includes("attributes");
     const wantOffers = includeParam.includes("offers");
 
-    // public catalogue defaults to LIVE
-    const statusRaw = "LIVE";
-    const isLive = true;
-    const needOffers = wantOffers || statusRaw === "LIVE";
+    const statusRaw = String(parsed.status ?? "LIVE").trim().toUpperCase() || "LIVE";
+    const isLive = statusRaw === "LIVE";
+    const needOffers = wantOffers || isLive;
 
     const pricing = await getPublicPricingSettingsCached();
     const dec0 = new Prisma.Decimal("0");
@@ -394,7 +408,7 @@ router.get(
 
     const baseWhere: Prisma.ProductWhereInput = {
       ...(productActiveWhere() as any),
-      ...(isLive ? { status: "LIVE" as any } : {}),
+      ...(statusRaw ? { status: statusRaw as any } : {}),
       ...(q
         ? {
             OR: [
@@ -451,7 +465,7 @@ router.get(
     const [items, total] = await Promise.all([
       prisma.product.findMany({
         where: productWhere,
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take,
         skip,
         select: {
@@ -476,9 +490,23 @@ router.get(
       }),
     ]);
 
+    const totalPages = Math.max(1, Math.ceil(total / take));
+
     if (!items.length) {
       res.setHeader("Cache-Control", "no-store");
-      return res.json({ data: [], total: 0 });
+      return res.json({
+        data: [],
+        total,
+        meta: {
+          page,
+          take,
+          skip,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPrevPage: page > 1,
+        },
+      });
     }
 
     const ids = items.map((p) => String(p.id));
@@ -974,7 +1002,7 @@ router.get(
         brand: wantBrand ? (br ? { id: br.id, name: br.name } : null) : null,
         brandName: wantBrand ? br?.name ?? null : null,
 
-        status: "LIVE",
+        status: statusRaw,
 
         offersFrom,
 
@@ -1015,7 +1043,19 @@ router.get(
       };
     });
 
-    return res.json({ data, total });
+    return res.json({
+      data,
+      total,
+      meta: {
+        page,
+        take,
+        skip,
+        total,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+    });
   })
 );
 
