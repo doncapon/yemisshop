@@ -3009,85 +3009,304 @@ async function buildAvailabilityGetter(pairs: Pair[]) {
    GET /api/orders (admins only)
 ========================================================= */
 
-router.get("/", requireAuth, async (req, res) => {
-  try {
-    if (!isAdmin((req as any).user?.role))
-      return res.status(403).json({ error: "Admins only" });
+type OrdersListSortKey = "id" | "user" | "items" | "total" | "status" | "date";
+type OrdersListSortDir = "asc" | "desc";
 
-    const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw)
-      ? Math.min(100, Math.max(1, limitRaw))
-      : 50;
+type ParsedOrdersListQuery = {
+  page: number;
+  pageSize: number;
+  skip: number;
+  q: string;
+  status: string | null;
+  from: string | null;
+  to: string | null;
+  minTotal: number | null;
+  maxTotal: number | null;
+  sortBy: OrdersListSortKey;
+  sortDir: OrdersListSortDir;
+};
 
-    const q = String(req.query.q ?? "").trim();
-    const where: any = q
-      ? {
-        OR: [
-          { id: { contains: q } },
-          {
-            user: {
-              email: {
-                contains: q,
-                mode: "insensitive" as const,
-              },
+function parsePositiveInt(v: any, fallback: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.floor(n));
+}
+
+function parseNullableNumber(v: any): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseSortKey(v: any): OrdersListSortKey {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "id" || s === "user" || s === "items" || s === "total" || s === "status" || s === "date") {
+    return s;
+  }
+  return "date";
+}
+
+function parseSortDir(v: any): OrdersListSortDir {
+  return String(v ?? "").trim().toLowerCase() === "asc" ? "asc" : "desc";
+}
+
+function parseYmdStart(v: any): Date | null {
+  const s = String(v ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T00:00:00.000Z`);
+  return Number.isNaN(+d) ? null : d;
+}
+
+function parseYmdEnd(v: any): Date | null {
+  const s = String(v ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T23:59:59.999Z`);
+  return Number.isNaN(+d) ? null : d;
+}
+
+function parseOrdersListQuery(req: Request): ParsedOrdersListQuery {
+  const page = parsePositiveInt(req.query.page, 1);
+  const pageSize = Math.min(100, parsePositiveInt(req.query.pageSize ?? req.query.limit, 10));
+  const skip = (page - 1) * pageSize;
+
+  const q = String(req.query.q ?? "").trim();
+
+  const rawStatus = String(req.query.status ?? "").trim().toUpperCase();
+  const status = rawStatus && rawStatus !== "ALL" ? rawStatus : null;
+
+  return {
+    page,
+    pageSize,
+    skip,
+    q,
+    status,
+    from: String(req.query.from ?? "").trim() || null,
+    to: String(req.query.to ?? "").trim() || null,
+    minTotal: parseNullableNumber(req.query.minTotal),
+    maxTotal: parseNullableNumber(req.query.maxTotal),
+    sortBy: parseSortKey(req.query.sortBy),
+    sortDir: parseSortDir(req.query.sortDir),
+  };
+}
+
+function buildOrdersWhere(args: {
+  userId?: string;
+  q?: string;
+  status?: string | null;
+  from?: string | null;
+  to?: string | null;
+  minTotal?: number | null;
+  maxTotal?: number | null;
+  includeUserEmail?: boolean;
+}) {
+  const AND: any[] = [];
+
+  if (args.userId) {
+    AND.push({ userId: String(args.userId) });
+  }
+
+  if (args.status) {
+    AND.push({ status: String(args.status) });
+  }
+
+  const fromDate = parseYmdStart(args.from);
+  const toDate = parseYmdEnd(args.to);
+
+  if (fromDate || toDate) {
+    AND.push({
+      createdAt: {
+        ...(fromDate ? { gte: fromDate } : {}),
+        ...(toDate ? { lte: toDate } : {}),
+      },
+    });
+  }
+
+  if (args.minTotal != null || args.maxTotal != null) {
+    AND.push({
+      total: {
+        ...(args.minTotal != null ? { gte: args.minTotal } : {}),
+        ...(args.maxTotal != null ? { lte: args.maxTotal } : {}),
+      },
+    });
+  }
+
+  const q = String(args.q ?? "").trim();
+  if (q) {
+    const OR: any[] = [
+      { id: { contains: q } },
+      {
+        items: {
+          some: {
+            title: {
+              contains: q,
+              mode: "insensitive" as const,
             },
           },
-        ],
-      }
-      : {};
+        },
+      },
+      {
+        payments: {
+          some: {
+            reference: {
+              contains: q,
+              mode: "insensitive" as const,
+            },
+          },
+        },
+      },
+    ];
+
+    if (args.includeUserEmail) {
+      OR.push({
+        user: {
+          email: {
+            contains: q,
+            mode: "insensitive" as const,
+          },
+        },
+      });
+    }
+
+    AND.push({ OR });
+  }
+
+  if (AND.length === 0) return {};
+  if (AND.length === 1) return AND[0];
+  return { AND };
+}
+
+function buildOrdersOrderBy(sortBy: OrdersListSortKey, sortDir: OrdersListSortDir, isAdminList: boolean) {
+  const dir = sortDir;
+
+  switch (sortBy) {
+    case "id":
+      return [{ id: dir }, { createdAt: "desc" as const }];
+
+    case "total":
+      return [{ total: dir }, { createdAt: "desc" as const }];
+
+    case "status":
+      return [{ status: dir }, { createdAt: "desc" as const }];
+
+    case "user":
+      return isAdminList
+        ? ([{ user: { email: dir } } as any, { createdAt: "desc" as const }])
+        : ([{ createdAt: "desc" as const }]);
+
+    case "items":
+      return [{ items: { _count: dir } } as any, { createdAt: "desc" as const }];
+
+    case "date":
+    default:
+      return [{ createdAt: dir }, { id: "desc" as const }];
+  }
+}
+
+function makePaginatedResponse<T>(args: {
+  rows: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}) {
+  const totalPages = Math.max(1, Math.ceil(args.total / args.pageSize));
+
+  return {
+    data: args.rows,
+    total: args.total,
+    page: args.page,
+    pageSize: args.pageSize,
+    totalPages,
+  };
+}
+
+router.get("/", requireAuth, async (req, res) => {
+  try {
+    if (!isAdmin((req as any).user?.role)) {
+      return res.status(403).json({ error: "Admins only" });
+    }
+
+    const parsed = parseOrdersListQuery(req);
+    const where = buildOrdersWhere({
+      q: parsed.q,
+      status: parsed.status,
+      from: parsed.from,
+      to: parsed.to,
+      minTotal: parsed.minTotal,
+      maxTotal: parsed.maxTotal,
+      includeUserEmail: true,
+    });
+
+    const orderBy = buildOrdersOrderBy(parsed.sortBy, parsed.sortDir, true);
 
     const asNumLocal = (v: any, d = 0) => {
       const n = Number(v);
       return Number.isFinite(n) ? n : d;
     };
 
-    const orders = await prisma.order.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      take,
-      select: {
-        id: true,
-        status: true,
-        subtotal: true,
-        tax: true,
-        total: true,
-        createdAt: true,
-        serviceFeeBase: true,
-        serviceFeeComms: true,
-        serviceFeeGateway: true,
-        shippingFee: true,
-        shippingCurrency: true,
-        shippingRateSource: true,
-        shippingBreakdownJson: true,
-        serviceFeeTotal: true,
-        user: { select: { email: true } },
-        purchaseOrders: {
-          select: {
-            id: true,
-            supplierId: true,
-            status: true,
-            payoutStatus: true,
-            deliveryOtpVerifiedAt: true,
-            deliveredAt: true,
-            shippedAt: true,
-            createdAt: true,
+    const [total, orders] = await prisma.$transaction([
+      prisma.order.count({ where }),
+      prisma.order.findMany({
+        where,
+        orderBy,
+        skip: parsed.skip,
+        take: parsed.pageSize,
+        select: {
+          id: true,
+          status: true,
+          subtotal: true,
+          tax: true,
+          total: true,
+          createdAt: true,
+          serviceFeeBase: true,
+          serviceFeeComms: true,
+          serviceFeeGateway: true,
+          shippingFee: true,
+          shippingCurrency: true,
+          shippingRateSource: true,
+          shippingBreakdownJson: true,
+          serviceFeeTotal: true,
+          user: { select: { email: true } },
+          purchaseOrders: {
+            select: {
+              id: true,
+              supplierId: true,
+              status: true,
+              payoutStatus: true,
+              deliveryOtpVerifiedAt: true,
+              deliveredAt: true,
+              shippedAt: true,
+              createdAt: true,
+            },
+          },
+          _count: {
+            select: {
+              items: true,
+            },
           },
         },
-      },
-    });
+      }),
+    ]);
 
     const orderIds = orders.map((o: any) => o.id);
-    if (orderIds.length === 0) return res.json({ data: [] });
+    if (orderIds.length === 0) {
+      return res.json(
+        makePaginatedResponse({
+          rows: [],
+          total,
+          page: parsed.page,
+          pageSize: parsed.pageSize,
+        })
+      );
+    }
 
     const poRows = await prisma.purchaseOrder.findMany({
       where: { orderId: { in: orderIds } },
       select: { orderId: true, supplierId: true, status: true },
     });
+
     const poStatusByOrderSupplier: Record<string, string> = {};
     for (const po of poRows as any[]) {
-      poStatusByOrderSupplier[
-        `${String(po.orderId)}::${String(po.supplierId)}`
-      ] = String(po.status || "PENDING");
+      poStatusByOrderSupplier[`${String(po.orderId)}::${String(po.supplierId)}`] = String(po.status || "PENDING");
     }
 
     const paymentsByOrder: Record<string, any[]> = {};
@@ -3127,15 +3346,18 @@ router.get("/", requireAuth, async (req, res) => {
         where: { orderId: { in: orderIds }, status: "PAID" as any },
         select: { orderId: true, amount: true },
       });
+
       for (const p of paid as any[]) {
         const id = String(p.orderId);
-        paidAmountByOrder[id] =
-          (paidAmountByOrder[id] || 0) + asNumLocal(p.amount, 0);
+        paidAmountByOrder[id] = (paidAmountByOrder[id] || 0) + asNumLocal(p.amount, 0);
       }
-    } catch { }
+    } catch {
+      //
+    }
 
     const itemsByOrder: Record<string, any[]> = {};
     let allItems: any[] = [];
+
     try {
       allItems = await prisma.orderItem.findMany({
         where: { orderId: { in: orderIds } },
@@ -3168,16 +3390,14 @@ router.get("/", requireAuth, async (req, res) => {
           uniqPairs.push({ productId: pid, variantId: vid });
         }
       }
+
       const getAvail = await buildAvailabilityGetter(uniqPairs);
 
       for (const it of allItems) {
         const oid = String(it.orderId);
         const unitPrice = asNumLocal(it.unitPrice, 0);
         const quantity = asNumLocal(it.quantity, 1);
-        const lineTotal = asNumLocal(
-          it.lineTotal ?? unitPrice * quantity,
-          unitPrice * quantity
-        );
+        const lineTotal = asNumLocal(it.lineTotal ?? unitPrice * quantity, unitPrice * quantity);
 
         const pid = String(it.productId);
         const vid = it.variantId == null ? null : String(it.variantId);
@@ -3197,15 +3417,11 @@ router.get("/", requireAuth, async (req, res) => {
           quantity,
           lineTotal,
           status: itemStatus,
-          chosenSupplierProductOfferId:
-            it.chosenSupplierProductOfferId ?? null,
-          chosenSupplierVariantOfferId:
-            it.chosenSupplierVariantOfferId ?? null,
+          chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
+          chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
           chosenSupplierId: it.chosenSupplierId ?? null,
           chosenSupplierUnitPrice:
-            it.chosenSupplierUnitPrice != null
-              ? asNumLocal(it.chosenSupplierUnitPrice, 0)
-              : null,
+            it.chosenSupplierUnitPrice != null ? asNumLocal(it.chosenSupplierUnitPrice, 0) : null,
           selectedOptions: it.selectedOptions ?? null,
           currentAvailableQty: availableQty,
           currentInStock: inStock,
@@ -3215,19 +3431,28 @@ router.get("/", requireAuth, async (req, res) => {
       console.error("Failed to load order items", e);
     }
 
-    return res.json({
-      data: orders.map((o: any) => {
-        const oid = String(o.id);
-        return {
-          ...o,
-          items: itemsByOrder[oid] || [],
-          payments: paymentsByOrder[oid] || [],
-          paidAmount: paidAmountByOrder[oid] || 0,
-          deliveryOtpVerifiedAt: (o as any).purchaseOrder?.deliveryOtpVerifiedAt ?? null,
-          purchaseOrder: undefined,
-        };
-      }),
+    const rows = orders.map((o: any) => {
+      const oid = String(o.id);
+      return {
+        ...o,
+        items: itemsByOrder[oid] || [],
+        payments: paymentsByOrder[oid] || [],
+        paidAmount: paidAmountByOrder[oid] || 0,
+        itemsCount: Number(o?._count?.items ?? (itemsByOrder[oid]?.length || 0)),
+        deliveryOtpVerifiedAt: (o as any).purchaseOrder?.deliveryOtpVerifiedAt ?? null,
+        purchaseOrder: undefined,
+        _count: undefined,
+      };
     });
+
+    return res.json(
+      makePaginatedResponse({
+        rows,
+        total,
+        page: parsed.page,
+        pageSize: parsed.pageSize,
+      })
+    );
   } catch (e: any) {
     console.error("GET /api/orders failed:", e?.message, e?.stack);
     res.status(500).json({ error: e?.message || "Failed to fetch orders" });
@@ -3240,13 +3465,23 @@ router.get("/", requireAuth, async (req, res) => {
 
 router.get("/mine", requireAuth, async (req, res) => {
   try {
-    const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw)
-      ? Math.min(100, Math.max(1, limitRaw))
-      : 50;
-
     const userId = (req as any).user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const parsed = parseOrdersListQuery(req);
+
+    const where = buildOrdersWhere({
+      userId: String(userId),
+      q: parsed.q,
+      status: parsed.status,
+      from: parsed.from,
+      to: parsed.to,
+      minTotal: parsed.minTotal,
+      maxTotal: parsed.maxTotal,
+      includeUserEmail: false,
+    });
+
+    const orderBy = buildOrdersOrderBy(parsed.sortBy, parsed.sortDir, false);
 
     const asNumLocal = (x: any, d = 0) => {
       const n = Number(x);
@@ -3255,45 +3490,61 @@ router.get("/mine", requireAuth, async (req, res) => {
 
     const toShopperStatus = (s: any) => {
       const u = String(s || "").toUpperCase();
-      if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED")
-        return "PROCESSING";
+      if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED") return "PROCESSING";
       return u;
     };
 
-    const baseOrders = await prisma.order.findMany({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
-      take,
-      select: {
-        id: true,
-        status: true,
-        subtotal: true,
-        tax: true,
-        total: true,
-        createdAt: true,
-        serviceFeeBase: true,
-        serviceFeeComms: true,
-        serviceFeeGateway: true,
-        shippingFee: true,
-        shippingCurrency: true,
-        shippingRateSource: true,
-        shippingBreakdownJson: true,
-        serviceFeeTotal: true,
-      },
-    });
+    const [total, baseOrders] = await prisma.$transaction([
+      prisma.order.count({ where }),
+      prisma.order.findMany({
+        where,
+        orderBy,
+        skip: parsed.skip,
+        take: parsed.pageSize,
+        select: {
+          id: true,
+          status: true,
+          subtotal: true,
+          tax: true,
+          total: true,
+          createdAt: true,
+          serviceFeeBase: true,
+          serviceFeeComms: true,
+          serviceFeeGateway: true,
+          shippingFee: true,
+          shippingCurrency: true,
+          shippingRateSource: true,
+          shippingBreakdownJson: true,
+          serviceFeeTotal: true,
+          _count: {
+            select: {
+              items: true,
+            },
+          },
+        },
+      }),
+    ]);
 
     const orderIds = baseOrders.map((o: any) => o.id);
-    if (orderIds.length === 0) return res.json({ data: [] });
+    if (orderIds.length === 0) {
+      return res.json(
+        makePaginatedResponse({
+          rows: [],
+          total,
+          page: parsed.page,
+          pageSize: parsed.pageSize,
+        })
+      );
+    }
 
     const poRows = await prisma.purchaseOrder.findMany({
       where: { orderId: { in: orderIds } },
       select: { orderId: true, supplierId: true, status: true },
     });
+
     const poStatusByOrderSupplier: Record<string, string> = {};
     for (const po of poRows as any[]) {
-      poStatusByOrderSupplier[
-        `${String(po.orderId)}::${String(po.supplierId)}`
-      ] = String(po.status || "PENDING");
+      poStatusByOrderSupplier[`${String(po.orderId)}::${String(po.supplierId)}`] = String(po.status || "PENDING");
     }
 
     const allItems = await prisma.orderItem.findMany({
@@ -3327,6 +3578,7 @@ router.get("/mine", requireAuth, async (req, res) => {
         uniqPairs.push({ productId: pid, variantId: vid });
       }
     }
+
     const getAvail = await buildAvailabilityGetter(uniqPairs);
 
     const itemsByOrder: Record<string, any[]> = {};
@@ -3335,10 +3587,7 @@ router.get("/mine", requireAuth, async (req, res) => {
 
       const qty = asNumLocal(it.quantity, 1);
       const unitPrice = asNumLocal(it.unitPrice, 0);
-      const lineTotal = asNumLocal(
-        it.lineTotal ?? unitPrice * qty,
-        unitPrice * qty
-      );
+      const lineTotal = asNumLocal(it.lineTotal ?? unitPrice * qty, unitPrice * qty);
 
       const pid = String(it.productId);
       const vid = it.variantId == null ? null : String(it.variantId);
@@ -3359,22 +3608,18 @@ router.get("/mine", requireAuth, async (req, res) => {
         lineTotal,
         status: toShopperStatus(rawPoStatus),
         supplierStatusRaw: String(rawPoStatus || "PENDING"),
-        chosenSupplierProductOfferId:
-          it.chosenSupplierProductOfferId ?? null,
-        chosenSupplierVariantOfferId:
-          it.chosenSupplierVariantOfferId ?? null,
+        chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
+        chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
         chosenSupplierId: it.chosenSupplierId ?? null,
         chosenSupplierUnitPrice:
-          it.chosenSupplierUnitPrice != null
-            ? asNumLocal(it.chosenSupplierUnitPrice, 0)
-            : null,
+          it.chosenSupplierUnitPrice != null ? asNumLocal(it.chosenSupplierUnitPrice, 0) : null,
         currentAvailableQty: availableQty,
         currentInStock: inStock,
         selectedOptions: it.selectedOptions ?? null,
       });
     }
 
-    const data = baseOrders.map((o: any) => ({
+    const rows = baseOrders.map((o: any) => ({
       id: o.id,
       status: o.status,
       subtotal: asNumLocal(o.subtotal, 0),
@@ -3382,13 +3627,21 @@ router.get("/mine", requireAuth, async (req, res) => {
       total: asNumLocal(o.total, 0),
       createdAt: o.createdAt?.toISOString?.() ?? o.createdAt,
       items: itemsByOrder[o.id] || [],
+      itemsCount: Number(o?._count?.items ?? (itemsByOrder[o.id]?.length || 0)),
       serviceFeeBase: asNumLocal(o.serviceFeeBase, 0),
       serviceFeeComms: asNumLocal(o.serviceFeeComms, 0),
       serviceFeeGateway: asNumLocal(o.serviceFeeGateway, 0),
       serviceFeeTotal: asNumLocal(o.serviceFeeTotal, 0),
     }));
 
-    res.json({ data });
+    return res.json(
+      makePaginatedResponse({
+        rows,
+        total,
+        page: parsed.page,
+        pageSize: parsed.pageSize,
+      })
+    );
   } catch (e: any) {
     console.error("list my orders failed:", e?.message, e?.stack);
     res.status(500).json({ error: e?.message || "Failed to fetch your orders" });

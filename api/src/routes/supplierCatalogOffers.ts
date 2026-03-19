@@ -10,8 +10,6 @@ const router = Router();
 
 const isSupplier = (role?: string) =>
   String(role || "").toUpperCase() === "SUPPLIER";
-const isAdmin = (role?: string) =>
-  ["ADMIN", "SUPER_ADMIN"].includes(String(role || "").toUpperCase());
 
 function num(v: any) {
   const n = Number(v);
@@ -28,6 +26,27 @@ function sameStr(a: any, b: any) {
 
 function sameBool(a: any, b: any) {
   return Boolean(a) === Boolean(b);
+}
+
+function parsePositiveInt(v: any, fallback: number, min = 1, max = 100) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.trunc(n);
+  if (i < min) return fallback;
+  return Math.min(i, max);
+}
+
+function parseNonNegativeInt(v: any, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.trunc(n);
+  return i < 0 ? fallback : i;
+}
+
+function offerableProductStatuses() {
+  // Your schema default is PUBLISHED.
+  // Keeping LIVE too so older rows/routes do not break.
+  return ["PUBLISHED", "LIVE"];
 }
 
 async function getSupplierForUser(userId: string) {
@@ -162,14 +181,18 @@ async function queuePendingChangeRequest(
 
 /**
  * GET /api/supplier/catalog/products
+ * Server-side pagination:
+ * - page / pageSize
+ * - also supports legacy skip / take
  */
 router.get("/products", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
 
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
-  if (!isSupplier(role))
+  if (!isSupplier(role)) {
     return res.status(403).json({ error: "Supplier access required" });
+  }
 
   const s = await getSupplierForUser(userId);
   if (!s?.id) return res.status(403).json({ error: "Supplier not found" });
@@ -177,12 +200,22 @@ router.get("/products", requireAuth, async (req: any, res) => {
   const supplierId = s.id;
 
   const q = String(req.query?.q ?? "").trim();
-  const take = Math.min(50, Math.max(1, Number(req.query?.take ?? 20) || 20));
-  const skip = Math.max(0, Number(req.query?.skip ?? 0) || 0);
+
+  const pageParam = req.query?.page;
+  const pageSizeParam = req.query?.pageSize;
+  const takeParam = req.query?.take;
+  const skipParam = req.query?.skip;
+
+  const pageSize = parsePositiveInt(pageSizeParam ?? takeParam, 20, 1, 100);
+  const page = parsePositiveInt(pageParam, 1, 1, 100000);
+
+  const skipFromPage = (page - 1) * pageSize;
+  const skip = skipParam != null ? parseNonNegativeInt(skipParam, skipFromPage) : skipFromPage;
+  const take = pageSize;
 
   const where: any = {
     isDeleted: false,
-    status: "LIVE",
+    status: { in: offerableProductStatuses() },
     OR: [{ supplierId: { not: supplierId } }, { supplierId: null }],
   };
 
@@ -229,26 +262,31 @@ router.get("/products", requireAuth, async (req: any, res) => {
   const [items, total] = await Promise.all([
     prisma.product.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       skip,
       take,
       select: {
         id: true,
         title: true,
+        description: true,
         sku: true,
         retailPrice: true,
         imagesJson: true,
         inStock: true,
+        availableQty: true,
         supplierId: true,
+        status: true,
         brand: { select: { id: true, name: true } },
 
         ProductVariant: {
           where: { isActive: true, archivedAt: null },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           select: {
             id: true,
             sku: true,
             retailPrice: true,
             inStock: true,
+            availableQty: true,
             imagesJson: true,
             options: {
               select: {
@@ -263,8 +301,11 @@ router.get("/products", requireAuth, async (req: any, res) => {
         },
 
         supplierProductOffers: {
+          where: { supplierId },
           select: {
             id: true,
+            supplierId: true,
+            productId: true,
             basePrice: true,
             availableQty: true,
             leadDays: true,
@@ -277,16 +318,22 @@ router.get("/products", requireAuth, async (req: any, res) => {
           },
           take: 1,
         },
+
         supplierVariantOffers: {
+          where: { supplierId },
           select: {
             id: true,
+            supplierId: true,
+            productId: true,
             variantId: true,
+            supplierProductOfferId: true,
             unitPrice: true,
             availableQty: true,
             leadDays: true,
             isActive: true,
             inStock: true,
             currency: true,
+            createdAt: true,
             updatedAt: true,
           },
         },
@@ -299,24 +346,82 @@ router.get("/products", requireAuth, async (req: any, res) => {
     const productImages = Array.isArray(p.imagesJson) ? p.imagesJson : [];
 
     const variants = Array.isArray(p.ProductVariant) ? p.ProductVariant : [];
-    const normVariants = variants.map((v: any) => ({
-      ...v,
-      imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-      price: v.retailPrice ?? null,
-    }));
+    const variantOffers = Array.isArray(p.supplierVariantOffers) ? p.supplierVariantOffers : [];
+
+    const normVariants = variants.map((v: any) => {
+      const myVariantOffer =
+        variantOffers.find((vo: any) => String(vo.variantId) === String(v.id)) ?? null;
+
+      return {
+        ...v,
+        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+        retailPrice: v.retailPrice ?? null,
+        supplierVariantOffer: myVariantOffer
+          ? {
+              id: myVariantOffer.id,
+              supplierId: myVariantOffer.supplierId,
+              productId: myVariantOffer.productId,
+              variantId: myVariantOffer.variantId,
+              supplierProductOfferId: myVariantOffer.supplierProductOfferId ?? null,
+              unitPrice: myVariantOffer.unitPrice != null ? Number(myVariantOffer.unitPrice) : 0,
+              availableQty: myVariantOffer.availableQty ?? 0,
+              leadDays: myVariantOffer.leadDays ?? null,
+              isActive: !!myVariantOffer.isActive,
+              inStock: !!myVariantOffer.inStock,
+              currency: myVariantOffer.currency ?? "NGN",
+              createdAt: myVariantOffer.createdAt,
+              updatedAt: myVariantOffer.updatedAt,
+            }
+          : null,
+      };
+    });
+
+    const myBaseOffer = Array.isArray(p.supplierProductOffers) ? p.supplierProductOffers[0] ?? null : null;
 
     return {
-      ...p,
-      imagesJson: productImages,
-      ProductVariant: normVariants,
+      id: p.id,
+      title: p.title,
+      description: p.description,
+      sku: p.sku,
       retailPrice: p.retailPrice ?? null,
+      imagesJson: productImages,
+      inStock: !!p.inStock,
+      availableQty: p.availableQty ?? 0,
+      supplierId: p.supplierId ?? null,
+      status: p.status,
+      brand: p.brand ?? null,
+      offer: myBaseOffer
+        ? {
+            id: myBaseOffer.id,
+            supplierId: myBaseOffer.supplierId,
+            productId: myBaseOffer.productId,
+            basePrice: myBaseOffer.basePrice != null ? Number(myBaseOffer.basePrice) : 0,
+            availableQty: myBaseOffer.availableQty ?? 0,
+            leadDays: myBaseOffer.leadDays ?? null,
+            isActive: !!myBaseOffer.isActive,
+            inStock: !!myBaseOffer.inStock,
+            currency: myBaseOffer.currency ?? "NGN",
+            createdAt: myBaseOffer.createdAt,
+            updatedAt: myBaseOffer.updatedAt,
+            pendingChangeId: myBaseOffer.pendingChangeId ?? null,
+          }
+        : null,
+      ProductVariant: normVariants,
     };
   });
+
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, take)));
+  const currentPage = Math.floor(skip / take) + 1;
 
   return res.json({
     data: {
       items: normalized,
       total,
+      page: currentPage,
+      pageSize: take,
+      totalPages,
+      hasNextPage: skip + take < total,
+      hasPrevPage: skip > 0,
       skip,
       take,
       supplierId,
@@ -329,14 +434,16 @@ router.get("/:id", requireAuth, async (req: any, res) => {
   const userId = requiredString(req.user?.id ?? "").trim();
 
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
-  if (!isSupplier(role))
+  if (!isSupplier(role)) {
     return res.status(403).json({ error: "Supplier access required" });
+  }
 
   const s = await getSupplierForUser(userId);
-  if (!s?.id)
+  if (!s?.id) {
     return res
       .status(403)
       .json({ error: "Supplier profile not found for this user" });
+  }
 
   const id = requiredString(req.params.id);
 
@@ -349,11 +456,11 @@ router.get("/:id", requireAuth, async (req: any, res) => {
         ...(s.userId
           ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[])
           : []),
-        { supplierProductOffers: { some: {} } } as any,
-        { supplierVariantOffers: { some: {} } } as any,
+        { supplierProductOffers: { some: { supplierId: s.id } } } as any,
+        { supplierVariantOffers: { some: { supplierId: s.id } } } as any,
         {
           AND: [
-            { status: "LIVE" as any },
+            { status: { in: offerableProductStatuses() } } as any,
             { OR: [{ supplierId: { not: s.id } }, { supplierId: null }] } as any,
           ],
         } as any,
@@ -372,15 +479,21 @@ router.get("/:id", requireAuth, async (req: any, res) => {
             },
           },
           supplierVariantOffers: {
+            where: { supplierId: s.id },
             select: {
               id: true,
               supplierId: true,
+              productId: true,
+              variantId: true,
+              supplierProductOfferId: true,
               unitPrice: true,
               availableQty: true,
               inStock: true,
               isActive: true,
               leadDays: true,
               currency: true,
+              createdAt: true,
+              updatedAt: true,
             },
             take: 1,
           },
@@ -389,9 +502,11 @@ router.get("/:id", requireAuth, async (req: any, res) => {
       },
 
       supplierProductOffers: {
+        where: { supplierId: s.id },
         select: {
           id: true,
           supplierId: true,
+          productId: true,
           basePrice: true,
           currency: true,
           inStock: true,
@@ -482,12 +597,17 @@ router.get("/:id", requireAuth, async (req: any, res) => {
       offer: myOffer
         ? {
             id: myOffer.id,
+            supplierId: myOffer.supplierId,
+            productId: myOffer.productId,
             basePrice,
             currency: myOffer.currency,
             inStock: myOffer.inStock,
             isActive: myOffer.isActive,
             leadDays: myOffer.leadDays ?? null,
             availableQty: myOffer.availableQty ?? 0,
+            createdAt: myOffer.createdAt,
+            updatedAt: myOffer.updatedAt,
+            pendingChangeId: myOffer.pendingChangeId ?? null,
           }
         : null,
 
@@ -497,19 +617,26 @@ router.get("/:id", requireAuth, async (req: any, res) => {
           return {
             id: v.id,
             sku: v.sku,
+            retailPrice: v.retailPrice ?? null,
+            availableQty: v.availableQty ?? 0,
+            inStock: v.inStock ?? true,
+            imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
             unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
-            availableQty: vo?.availableQty ?? v.availableQty ?? 0,
-            inStock: vo?.inStock ?? v.inStock,
-            isActive: vo?.isActive ?? true,
             supplierVariantOffer: vo
               ? {
                   id: vo.id,
+                  supplierId: vo.supplierId,
+                  productId: vo.productId,
+                  variantId: vo.variantId,
+                  supplierProductOfferId: vo.supplierProductOfferId ?? null,
                   unitPrice: Number(vo.unitPrice ?? 0),
                   availableQty: vo.availableQty ?? 0,
                   inStock: vo.inStock ?? true,
                   isActive: vo.isActive ?? true,
                   leadDays: vo.leadDays ?? null,
                   currency: vo.currency ?? "NGN",
+                  createdAt: vo.createdAt,
+                  updatedAt: vo.updatedAt,
                 }
               : null,
             options: Array.isArray(v.options)
@@ -553,9 +680,10 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
     select: { id: true, isDeleted: true, status: true, supplierId: true },
   });
 
-  if (!p || p.isDeleted || p.status !== "LIVE") {
+  if (!p || p.isDeleted || !offerableProductStatuses().includes(String(p.status))) {
     return res.status(404).json({ error: "Product not found/offerable" });
   }
+
   if (p.supplierId !== supplierId) {
     return res
       .status(403)
@@ -571,6 +699,7 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
     },
     select: {
       id: true,
+      supplierId: true,
       productId: true,
       basePrice: true,
       availableQty: true,
@@ -598,6 +727,7 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
       },
       select: {
         id: true,
+        supplierId: true,
         productId: true,
         basePrice: true,
         availableQty: true,
@@ -650,6 +780,7 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
         },
         select: {
           id: true,
+          supplierId: true,
           productId: true,
           basePrice: true,
           availableQty: true,
@@ -698,8 +829,9 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
-  if (!isSupplier(role))
+  if (!isSupplier(role)) {
     return res.status(403).json({ error: "Supplier access required" });
+  }
 
   const s = await getSupplierForUser(userId);
   if (!s?.id) return res.status(403).json({ error: "Supplier not found" });
@@ -738,7 +870,7 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
     !v ||
     v.productId !== body.productId ||
     v.product.isDeleted ||
-    v.product.status !== "LIVE"
+    !offerableProductStatuses().includes(String(v.product.status))
   ) {
     return res.status(404).json({ error: "Variant not found/offerable" });
   }
@@ -774,6 +906,7 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
     },
     select: {
       id: true,
+      supplierId: true,
       productId: true,
       variantId: true,
       unitPrice: true,
@@ -783,6 +916,8 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
       inStock: true,
       currency: true,
       supplierProductOfferId: true,
+      createdAt: true,
+      updatedAt: true,
     },
   });
 
@@ -802,14 +937,17 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
       },
       select: {
         id: true,
+        supplierId: true,
         productId: true,
         variantId: true,
+        supplierProductOfferId: true,
         unitPrice: true,
         availableQty: true,
         leadDays: true,
         isActive: true,
         inStock: true,
         currency: true,
+        createdAt: true,
         updatedAt: true,
       },
     });
@@ -853,14 +991,17 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
         },
         select: {
           id: true,
+          supplierId: true,
           productId: true,
           variantId: true,
+          supplierProductOfferId: true,
           unitPrice: true,
           availableQty: true,
           leadDays: true,
           isActive: true,
           inStock: true,
           currency: true,
+          createdAt: true,
           updatedAt: true,
         },
       });
@@ -897,8 +1038,9 @@ router.delete("/offers/variant/:id", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
-  if (!isSupplier(role))
+  if (!isSupplier(role)) {
     return res.status(403).json({ error: "Supplier access required" });
+  }
 
   const s = await getSupplierForUser(userId);
   if (!s?.id) return res.status(403).json({ error: "Supplier not found" });
@@ -927,8 +1069,9 @@ router.delete("/offers/base/:productId", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
-  if (!isSupplier(role))
+  if (!isSupplier(role)) {
     return res.status(403).json({ error: "Supplier access required" });
+  }
 
   const s = await getSupplierForUser(userId);
   if (!s?.id) return res.status(403).json({ error: "Supplier not found" });

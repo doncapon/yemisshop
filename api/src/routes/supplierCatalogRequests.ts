@@ -24,7 +24,8 @@ const AttributeTypeSchema = z.preprocess(
 );
 
 /**
- * UI sends: { type, name, slug?, notes?, parentId?, attributeType?, attributeId?, valueName?, valueCode? }
+ * UI sends:
+ * { type, name, slug?, notes?, parentId?, attributeType?, attributeId?, valueName?, valueCode? }
  */
 const baseSchema = z.object({
   type: TypeSchema,
@@ -70,8 +71,8 @@ function buildPayload(input: BaseInput) {
     case "ATTRIBUTE_VALUE":
       return {
         attributeId: input.attributeId,
-        name: input.valueName,          // stored as "name"
-        code: input.valueCode ?? null,  // stored as "code"
+        name: input.valueName,
+        code: input.valueCode ?? null,
         notes: input.notes ?? null,
       };
   }
@@ -93,6 +94,14 @@ function validateByType(input: BaseInput) {
     if (!input.valueName) return "valueName is required";
   }
   return null;
+}
+
+function parsePositiveInt(v: unknown, fallback: number, min = 1, max = 100) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.trunc(n);
+  if (i < min) return fallback;
+  return Math.min(i, max);
 }
 
 /**
@@ -127,7 +136,6 @@ r.post("/", requireAuth, async (req, res, next) => {
         supplierId: supplier.id,
         payload: payload as any,
         reason: input.notes ?? null,
-        // status defaults to PENDING
       },
     });
 
@@ -139,6 +147,13 @@ r.post("/", requireAuth, async (req, res, next) => {
 
 /**
  * GET /api/supplier/catalog-requests
+ * Server-side pagination:
+ * - page=1
+ * - pageSize=20
+ * Optional filters:
+ * - status=PENDING|APPROVED|REJECTED
+ * - type=BRAND|CATEGORY|ATTRIBUTE|ATTRIBUTE_VALUE
+ * - q=search text
  */
 r.get("/", requireAuth, async (req, res, next) => {
   try {
@@ -151,39 +166,78 @@ r.get("/", requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: "Supplier account not found for this user" });
     }
 
-    const rows = await prisma.catalogRequest.findMany({
-      where: { supplierId: supplier.id },
-      orderBy: { createdAt: "desc" },
-    });
+    const page = parsePositiveInt(req.query.page, 1, 1, 100000);
+    const pageSize = parsePositiveInt(req.query.pageSize, 20, 1, 100);
+    const skip = (page - 1) * pageSize;
 
-    const data = rows.map((row: { payload: any; reason: any; }) => {
+    const rawStatus = String(req.query.status ?? "").trim().toUpperCase();
+    const rawType = String(req.query.type ?? "").trim().toUpperCase();
+    const q = String(req.query.q ?? "").trim();
+
+    const allowedStatuses = new Set(["PENDING", "APPROVED", "REJECTED"]);
+    const allowedTypes = new Set(["BRAND", "CATEGORY", "ATTRIBUTE", "ATTRIBUTE_VALUE"]);
+
+    const where: any = {
+      supplierId: supplier.id,
+    };
+
+    if (rawStatus && allowedStatuses.has(rawStatus)) {
+      where.status = rawStatus;
+    }
+
+    if (rawType && allowedTypes.has(rawType)) {
+      where.type = rawType;
+    }
+
+    if (q) {
+      where.OR = [
+        { reason: { contains: q, mode: "insensitive" } },
+        { payload: { path: ["name"], string_contains: q } },
+        { payload: { path: ["slug"], string_contains: q } },
+        { payload: { path: ["notes"], string_contains: q } },
+        { payload: { path: ["code"], string_contains: q } },
+        { payload: { path: ["attributeId"], string_contains: q } },
+        { payload: { path: ["parentId"], string_contains: q } },
+      ];
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.catalogRequest.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip,
+        take: pageSize,
+      }),
+      prisma.catalogRequest.count({ where }),
+    ]);
+
+    const data = rows.map((row: any) => {
       const p = (row.payload ?? {}) as any;
-
-      // payload shapes:
-      // - CATEGORY/BRAND: { name, slug, notes, parentId? }
-      // - ATTRIBUTE: { name, type, notes }
-      // - ATTRIBUTE_VALUE: { attributeId, name, code, notes }
 
       return {
         ...row,
-
-        // Common UI fields
         name: p.name ?? null,
         slug: p.slug ?? null,
         parentId: p.parentId ?? null,
         notes: p.notes ?? row.reason ?? null,
-
-        // Attribute fields
-        attributeType: p.type ?? null,       // for ATTRIBUTE, p.type is TEXT/SELECT/MULTISELECT
-        attributeId: p.attributeId ?? null,  // for ATTRIBUTE_VALUE
-
-        // Attribute value fields
-        valueName: p.name ?? null,           // ATTRIBUTE_VALUE stored as p.name
-        valueCode: p.code ?? null,           // ATTRIBUTE_VALUE stored as p.code
+        attributeType: p.type ?? null,
+        attributeId: p.attributeId ?? null,
+        valueName: row.type === "ATTRIBUTE_VALUE" ? (p.name ?? null) : null,
+        valueCode: row.type === "ATTRIBUTE_VALUE" ? (p.code ?? null) : null,
       };
     });
 
-    res.json({ data });
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    res.json({
+      data,
+      page,
+      pageSize,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPrevPage: page > 1,
+    });
   } catch (e) {
     next(e);
   }

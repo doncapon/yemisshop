@@ -17,7 +17,7 @@ import {
   ChevronRight,
   Users,
 } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AxiosError } from "axios";
 
 import SiteLayout from "../../layouts/SiteLayout";
@@ -34,14 +34,17 @@ function Card({ children, className = "" }: { children: React.ReactNode; classNa
   );
 }
 
-type ShippingAddress = {
-  houseNumber: string;
-  streetName: string;
+type AddressLike = {
+  houseNumber?: string | null;
+  streetName?: string | null;
   postCode?: string | null;
   town?: string | null;
-  city: string;
-  state: string;
-  country: string;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  lga?: string | null;
+  landmark?: string | null;
+  directionsNote?: string | null;
 };
 
 type OrderItem = {
@@ -50,7 +53,8 @@ type OrderItem = {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
-  chosenSupplierOfferId?: string | null;
+  chosenSupplierProductOfferId?: string | null;
+  chosenSupplierVariantOfferId?: string | null;
   chosenSupplierUnitPrice?: number | null;
   selectedOptions?: any;
 };
@@ -60,7 +64,7 @@ type SupplierOrder = {
   status: string;
   createdAt?: string | null;
   customerEmail?: string | null;
-  shippingAddress?: ShippingAddress | null;
+  shippingAddress?: AddressLike | null;
 
   purchaseOrderId?: string | null;
   supplierStatus?: string | null;
@@ -76,6 +80,14 @@ type SupplierOrder = {
   refundStatus?: string | null;
 
   deliveryOtpVerifiedAt?: string | null;
+};
+
+type SupplierOrdersEnvelope = {
+  data: SupplierOrder[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
 };
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
@@ -106,9 +118,15 @@ function moneyNgn(n?: number | null) {
 
 function badgeClass(status: string) {
   const s = String(status || "").toUpperCase();
-  if (["SHIPPED", "DELIVERED"].includes(s)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
-  if (["PACKED", "CONFIRMED"].includes(s)) return "bg-amber-50 text-amber-700 border-amber-200";
-  if (["CANCELED", "CANCELLED", "FAILED"].includes(s)) return "bg-rose-50 text-rose-700 border-rose-200";
+  if (["SHIPPED", "OUT_FOR_DELIVERY", "DELIVERED"].includes(s)) {
+    return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  }
+  if (["CONFIRMED", "PACKED", "FUNDED", "CREATED", "PENDING", "PROCESSING"].includes(s)) {
+    return "bg-amber-50 text-amber-700 border-amber-200";
+  }
+  if (["CANCELED", "CANCELLED", "FAILED", "REFUND_REQUESTED"].includes(s)) {
+    return "bg-rose-50 text-rose-700 border-rose-200";
+  }
   return "bg-zinc-50 text-zinc-700 border-zinc-200";
 }
 
@@ -116,21 +134,23 @@ function payoutBadgeClass(status?: string | null) {
   const s = String(status || "").toUpperCase();
   if (["RELEASED", "PAID"].includes(s)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
   if (["HELD", "PENDING"].includes(s)) return "bg-amber-50 text-amber-700 border-amber-200";
-  if (["FAILED", "BLOCKED"].includes(s)) return "bg-rose-50 text-rose-700 border-rose-200";
+  if (["FAILED", "REFUNDED"].includes(s)) return "bg-rose-50 text-rose-700 border-rose-200";
   return "bg-zinc-50 text-zinc-700 border-zinc-200";
 }
 
-function formatAddress(a?: ShippingAddress | null) {
+function formatAddress(a?: AddressLike | null) {
   if (!a) return "—";
+  const line1 = [a.houseNumber || "", a.streetName || ""].filter(Boolean).join(" ").trim();
   const parts = [
-    `${a.houseNumber} ${a.streetName}`.trim(),
+    line1,
+    a.landmark || "",
     a.town || "",
     a.city || "",
     a.state || "",
     a.postCode || "",
     a.country || "",
   ].filter(Boolean);
-  return parts.join(", ");
+  return parts.length ? parts.join(", ") : "—";
 }
 
 function supplierOptionsLabel(selectedOptions: any) {
@@ -191,7 +211,6 @@ export default function SupplierOrders() {
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role);
 
-  // ✅ ensure session bootstrap happens (cookie auth)
   useEffect(() => {
     useAuthStore.getState().bootstrap?.().catch?.(() => null);
   }, []);
@@ -200,7 +219,6 @@ export default function SupplierOrders() {
   const isRider = role === "SUPPLIER_RIDER";
   const isSupplierUser = role === "SUPPLIER";
 
-  // ✅ admin supplierId: url OR stored (works when landing directly on /supplier/orders)
   const urlSupplierId = useMemo(() => {
     const v = normStr(searchParams.get("supplierId"));
     return v || undefined;
@@ -213,7 +231,6 @@ export default function SupplierOrders() {
 
   const adminSupplierId = isAdmin ? (urlSupplierId ?? storedSupplierId) : undefined;
 
-  // ✅ persist + inject stored into URL if missing (admin-only view)
   useEffect(() => {
     if (!isAdmin) return;
 
@@ -243,7 +260,6 @@ export default function SupplierOrders() {
     return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
   };
 
-  // ✅ keep q synced with route param and search param (?q=...)
   const [q, setQ] = useState(() => (orderId ?? searchParams.get("q") ?? "").trim());
 
   useEffect(() => {
@@ -281,9 +297,9 @@ export default function SupplierOrders() {
   const [riderView, setRiderView] = useState<"active" | "delivered">("active");
 
   const [deliveryOtpCode, setDeliveryOtpCode] = useState<Record<string, string>>({});
-  const [deliveryOtpMsg, setDeliveryOtpMsg] = useState<Record<string, { type: "info" | "warn" | "error"; text: string }>>(
-    {}
-  );
+  const [deliveryOtpMsg, setDeliveryOtpMsg] = useState<
+    Record<string, { type: "info" | "warn" | "error"; text: string | React.ReactNode }>
+  >({});
 
   const [status, setStatus] = useState<string>("ANY");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -293,9 +309,9 @@ export default function SupplierOrders() {
   const [cancelReason, setCancelReason] = useState<Record<string, string>>({});
   const [cancelOtpCode, setCancelOtpCode] = useState<Record<string, string>>({});
   const [cancelOtpToken, setCancelOtpToken] = useState<Record<string, string>>({});
-  const [cancelOtpMsg, setCancelOtpMsg] = useState<Record<string, { type: "info" | "warn" | "error"; text: string }>>(
-    {}
-  );
+  const [cancelOtpMsg, setCancelOtpMsg] = useState<
+    Record<string, { type: "info" | "warn" | "error"; text: string }>
+  >({});
   const [cancelOtpErr, setCancelOtpErr] = useState<Record<string, string>>({});
   const [cancelOtpMeta, setCancelOtpMeta] = useState<
     Record<
@@ -313,31 +329,29 @@ export default function SupplierOrders() {
   const filterStatuses = [
     "CREATED",
     "FUNDED",
-    "PROCESSING",
-    "PENDING",
     "CONFIRMED",
     "PACKED",
     "SHIPPED",
+    "OUT_FOR_DELIVERY",
     "DELIVERED",
     "CANCELED",
+    "REFUND_REQUESTED",
   ] as const;
 
-  const [payoutMsg, setPayoutMsg] = useState<
-    Record<string, { type: "info" | "error"; text?: React.ReactNode }>
-  >({});
-  const [payoutPendingByPo, setPayoutPendingByPo] = useState<Record<string, boolean>>({});
-  const payoutBankDetailsLink = withSupplierCtx(
-    "/supplier/settings?focus=payout-bank-details#payout-bank-details"
+  const [payoutMsg, setPayoutMsg] = useState<Record<string, { type: "info" | "error"; text?: React.ReactNode }>>(
+    {}
   );
+  const [payoutPendingByPo, setPayoutPendingByPo] = useState<Record<string, boolean>>({});
+  const payoutBankDetailsLink = withSupplierCtx("/supplier/settings?focus=payout-bank-details#payout-bank-details");
+
   const PAGE_SIZES = [10, 20, 50, 100] as const;
   const [pageSize, setPageSize] = useState<number>(20);
   const [page, setPage] = useState<number>(1);
 
   useEffect(() => {
     setPage(1);
-  }, [q, status, riderView]);
+  }, [q, status, riderView, adminSupplierId]);
 
-  // expire cancel OTP token client-side when expiresAt passes
   useEffect(() => {
     const timers: number[] = [];
 
@@ -370,25 +384,41 @@ export default function SupplierOrders() {
     return () => timers.forEach((id) => window.clearTimeout(id));
   }, [cancelOtpToken, cancelOtpMeta]);
 
-  // ✅ cookie-auth orders list (loads on page launch once hydrated)
   const ordersQ = useQuery({
-    queryKey: ["supplier", "orders", { supplierId: adminSupplierId, riderView }],
+    queryKey: ["supplier", "orders", { supplierId: adminSupplierId, riderView, page, pageSize }],
     enabled: hydrated && (!isAdmin || !!adminSupplierId),
-    queryFn: async () => {
+    placeholderData: keepPreviousData,
+    queryFn: async (): Promise<SupplierOrdersEnvelope> => {
       try {
-        const { data } = await api.get<{ data: SupplierOrder[] }>("/api/supplier/orders", {
+        const { data } = await api.get<SupplierOrdersEnvelope>("/api/supplier/orders", {
           withCredentials: true,
           params: {
             supplierId: adminSupplierId,
             ...(isRider ? { view: riderView } : {}),
+            page,
+            pageSize,
           },
         });
-        return Array.isArray(data?.data) ? data.data : [];
+
+        return {
+          data: Array.isArray(data?.data) ? data.data : [],
+          page: Number(data?.page ?? page) || page,
+          pageSize: Number(data?.pageSize ?? pageSize) || pageSize,
+          total: Number(data?.total ?? 0) || 0,
+          totalPages: Number(data?.totalPages ?? 0) || 0,
+        };
       } catch (err) {
         const e = err as AxiosError<any>;
         const st = e?.response?.status;
-        if (st === 404) return [];
-        if (st === 204) return [];
+        if (st === 404 || st === 204) {
+          return {
+            data: [],
+            page,
+            pageSize,
+            total: 0,
+            totalPages: 0,
+          };
+        }
         throw err;
       }
     },
@@ -398,22 +428,29 @@ export default function SupplierOrders() {
     retry: 1,
   });
 
-  // ✅ force a refetch once session is hydrated (prevents “landed but blank”)
   useEffect(() => {
     if (!hydrated) return;
     ordersQ.refetch().catch(() => null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, adminSupplierId, riderView]);
+  }, [hydrated, adminSupplierId, riderView, page, pageSize]);
+
+  const serverRows = ordersQ.data?.data || [];
+  const serverTotal = Number(ordersQ.data?.total ?? 0);
+  const serverPage = Number(ordersQ.data?.page ?? page);
+  const serverPageSize = Number(ordersQ.data?.pageSize ?? pageSize);
+  const serverPageCount = Math.max(
+    1,
+    Number(ordersQ.data?.totalPages || Math.ceil(serverTotal / Math.max(1, serverPageSize)) || 1)
+  );
 
   const filtered = useMemo(() => {
-    const list = ordersQ.data || [];
     const needle = q.trim().toLowerCase();
 
-    return list.filter((o) => {
+    return serverRows.filter((o) => {
       const supplierStatusRaw = normStatus(o.supplierStatus || "PENDING");
       const supplierStatusBase = toFlowBaseStatus(supplierStatusRaw);
 
-      if (status !== "ANY" && supplierStatusBase !== status) return false;
+      if (status !== "ANY" && supplierStatusRaw !== status && supplierStatusBase !== status) return false;
       if (!needle) return true;
 
       const hitOrderId = String(o.id).toLowerCase().includes(needle);
@@ -423,24 +460,16 @@ export default function SupplierOrders() {
 
       return hitOrderId || hitRefundId || hitEmail || hitItem;
     });
-  }, [ordersQ.data, q, status]);
+  }, [serverRows, q, status]);
 
-  const total = filtered.length;
-  const pageCount = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
-  const safePage = Math.min(Math.max(1, page), pageCount);
+  const visibleRows = filtered;
+  const visibleCount = visibleRows.length;
 
-  useEffect(() => {
-    if (safePage !== page) setPage(safePage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageCount]);
-
-  const startIdx = total === 0 ? 0 : (safePage - 1) * pageSize;
-  const endIdxExclusive = Math.min(startIdx + pageSize, total);
-  const pageItems = useMemo(() => filtered.slice(startIdx, endIdxExclusive), [filtered, startIdx, endIdxExclusive]);
+  const pageStart = serverTotal === 0 ? 0 : (serverPage - 1) * serverPageSize + 1;
+  const pageEnd = serverTotal === 0 ? 0 : Math.min(serverPage * serverPageSize, serverTotal);
 
   const qc = useQueryClient();
 
-  // ✅ cookie-auth: request delivery OTP
   const requestDeliveryOtpM = useMutation({
     mutationFn: async (vars: { poId: string }) => {
       const { data } = await api.post(
@@ -479,7 +508,6 @@ export default function SupplierOrders() {
     },
   });
 
-  // ✅ cookie-auth: update supplier status
   const updateStatusM = useMutation({
     mutationFn: async (vars: { orderId: string; status: string; otpToken?: string; reason?: string }) => {
       const otpToken = String(vars.otpToken ?? "").trim();
@@ -501,7 +529,6 @@ export default function SupplierOrders() {
     },
   });
 
-  // ✅ cookie-auth: verify delivery OTP
   const verifyDeliveryOtpM = useMutation({
     mutationFn: async (vars: { poId: string; code: string }) => {
       const otpToken = String(deliveryOtpToken[vars.poId] ?? "").trim();
@@ -541,7 +568,7 @@ export default function SupplierOrders() {
         msg.toLowerCase().includes("missing bank") ||
         msg.toLowerCase().includes("payouts disabled");
 
-      setDeliveryOtpMsg((s:any) => ({
+      setDeliveryOtpMsg((s: any) => ({
         ...s,
         [vars.poId]: {
           type: "error",
@@ -563,7 +590,6 @@ export default function SupplierOrders() {
     },
   });
 
-  // ✅ cookie-auth: release payout
   const releasePayoutM = useMutation({
     mutationFn: async (vars: { poId: string; orderId: string }) => {
       const { data } = await api.post(
@@ -640,7 +666,6 @@ export default function SupplierOrders() {
     },
   });
 
-  // cancel otp endpoints (public-ish, keep cookie creds on anyway)
   const requestCancelOtpM = useMutation({
     mutationFn: async (vars: { orderId: string }) => {
       const { data } = await api.post(`/api/orders/${vars.orderId}/cancel-otp/request`, {}, { withCredentials: true });
@@ -752,7 +777,6 @@ export default function SupplierOrders() {
     return true;
   }
 
-  // ✅ Mobile-first: auto-collapse others when opening one (keeps screen clean)
   function toggleExpand(orderId: string) {
     setExpanded((prev) => {
       const next: Record<string, boolean> = {};
@@ -775,7 +799,6 @@ export default function SupplierOrders() {
           </div>
         )}
 
-        {/* Hero (compact on mobile) */}
         <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
@@ -832,7 +855,6 @@ export default function SupplierOrders() {
           </div>
         </div>
 
-        {/* Controls (mobile tidy) */}
         <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
           <Card className="lg:col-span-2">
             <div className="p-3 sm:p-5 flex flex-col gap-3">
@@ -863,7 +885,7 @@ export default function SupplierOrders() {
                 {isRider && (
                   <select
                     value={riderView}
-                    onChange={(e) => setRiderView(e.target.value as any)}
+                    onChange={(e) => setRiderView(e.target.value as "active" | "delivered")}
                     className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
                   >
                     <option value="active">Active deliveries</option>
@@ -888,7 +910,6 @@ export default function SupplierOrders() {
           </Card>
         </div>
 
-        {/* Orders list (mobile cards first) */}
         <div className="mt-4">
           <Card>
             <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
@@ -896,23 +917,30 @@ export default function SupplierOrders() {
                 <div>
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Order queue</div>
                   <div className="text-[11px] sm:text-xs text-zinc-500">
-                    {ordersQ.isLoading ? "Loading…" : ordersQ.isError ? "Temporarily unavailable" : `${total} order(s)`}
+                    {ordersQ.isLoading
+                      ? "Loading…"
+                      : ordersQ.isError
+                        ? "Temporarily unavailable"
+                        : q.trim() || status !== "ANY"
+                          ? `${visibleCount} shown on this page • ${serverTotal} total`
+                          : `${serverTotal} order(s)`}
                   </div>
                 </div>
 
-                {!ordersQ.isLoading && !ordersQ.isError && total > 0 && (
+                {!ordersQ.isLoading && !ordersQ.isError && serverTotal > 0 && (
                   <div className="flex items-center gap-2 flex-wrap justify-end">
                     <div className="text-[11px] text-zinc-600">
-                      <span className="font-semibold text-zinc-900">{startIdx + 1}</span>–
-                      <span className="font-semibold text-zinc-900">{endIdxExclusive}</span> of{" "}
-                      <span className="font-semibold text-zinc-900">{total}</span>
+                      <span className="font-semibold text-zinc-900">{pageStart}</span>–
+                      <span className="font-semibold text-zinc-900">{pageEnd}</span> of{" "}
+                      <span className="font-semibold text-zinc-900">{serverTotal}</span>
                     </div>
 
                     <select
                       value={pageSize}
                       onChange={(e) => {
                         const n = Number(e.target.value);
-                        setPageSize(Number.isFinite(n) && n > 0 ? n : 20);
+                        const next = Number.isFinite(n) && n > 0 ? n : 20;
+                        setPageSize(next);
                         setPage(1);
                       }}
                       className="rounded-xl border bg-white px-3 py-2 text-[12px]"
@@ -927,7 +955,7 @@ export default function SupplierOrders() {
 
                     <button
                       type="button"
-                      disabled={safePage <= 1}
+                      disabled={serverPage <= 1}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
                       className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                     >
@@ -935,13 +963,13 @@ export default function SupplierOrders() {
                     </button>
 
                     <div className="text-[12px] text-zinc-600">
-                      <span className="font-semibold text-zinc-900">{safePage}</span>/{pageCount}
+                      <span className="font-semibold text-zinc-900">{serverPage}</span>/{serverPageCount}
                     </div>
 
                     <button
                       type="button"
-                      disabled={safePage >= pageCount}
-                      onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                      disabled={serverPage >= serverPageCount}
+                      onClick={() => setPage((p) => Math.min(serverPageCount, p + 1))}
                       className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                     >
                       Next <ChevronRight size={14} />
@@ -958,11 +986,17 @@ export default function SupplierOrders() {
                 </div>
               )}
 
-              {!ordersQ.isLoading && !ordersQ.isError && total === 0 && (
+              {!ordersQ.isLoading && !ordersQ.isError && serverTotal === 0 && (
                 <div className="rounded-2xl border bg-white p-6 text-sm text-zinc-600">You have no orders yet.</div>
               )}
 
-              {pageItems.map((o) => {
+              {!ordersQ.isLoading && !ordersQ.isError && serverTotal > 0 && visibleCount === 0 && (
+                <div className="rounded-2xl border bg-white p-6 text-sm text-zinc-600">
+                  No orders on this page match your current search/filter.
+                </div>
+              )}
+
+              {visibleRows.map((o) => {
                 const isOpen = !!expanded[o.id];
                 const cancelOtpVerified = !!String(cancelOtpToken[o.id] ?? "").trim();
 
@@ -998,13 +1032,18 @@ export default function SupplierOrders() {
                 const canAttemptPayout = canAttemptReleasePayout(o);
 
                 const canShowUpdateButton =
-                  !isAdmin && !isRider && !isTerminal && ["PENDING", "CONFIRMED", "PACKED"].includes(supplierFlowBase);
+                  !isAdmin &&
+                  !isRider &&
+                  !isTerminal &&
+                  ["PENDING", "CONFIRMED", "PACKED"].includes(supplierFlowBase);
 
-                const canConfirmDelivery = !!poId && supplierFlowBase === "SHIPPED" && !otpVerified;
+                const canConfirmDelivery =
+                  !!poId &&
+                  ["SHIPPED", "OUT_FOR_DELIVERY"].includes(supplierStatusRaw) &&
+                  !otpVerified;
 
                 return (
                   <div key={o.id} className="rounded-2xl border bg-white p-3 sm:p-4">
-                    {/* Top row (mobile stacked) */}
                     <div className="flex flex-col gap-2">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
@@ -1052,8 +1091,11 @@ export default function SupplierOrders() {
 
                         {poId && (
                           <span
-                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${otpVerified ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"
-                              }`}
+                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${
+                              otpVerified
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : "bg-amber-50 text-amber-700 border-amber-200"
+                            }`}
                           >
                             OTP: {otpVerified ? "VERIFIED" : "NOT VERIFIED"}
                           </span>
@@ -1066,7 +1108,6 @@ export default function SupplierOrders() {
                         </div>
                       )}
 
-                      {/* Action buttons (mobile 2-col grid) */}
                       <div className="mt-1 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                         {canShowUpdateButton && (
                           <button
@@ -1126,15 +1167,15 @@ export default function SupplierOrders() {
 
                       {poId && payoutMsg[String(o.purchaseOrderId)]?.text ? (
                         <div
-                          className={`text-[12px] ${payoutMsg[String(o.purchaseOrderId)]?.type === "error" ? "text-rose-700" : "text-emerald-700"
-                            }`}
+                          className={`text-[12px] ${
+                            payoutMsg[String(o.purchaseOrderId)]?.type === "error" ? "text-rose-700" : "text-emerald-700"
+                          }`}
                         >
                           {payoutMsg[String(o.purchaseOrderId)]?.text}
                         </div>
                       ) : null}
                     </div>
 
-                    {/* Details panel */}
                     {isOpen && (
                       <div className="mt-3 rounded-2xl border bg-white p-3">
                         {poId && (isSupplierUser || isAdmin) ? (
@@ -1154,17 +1195,21 @@ export default function SupplierOrders() {
                           </div>
                         ) : null}
 
-                        {(isSupplierUser || isAdmin) && o.supplierStatus === "SHIPPED" && o.purchaseOrderId && (
-                          <div className="mb-3">
-                            <AssignRiderControl
-                              purchaseOrderId={o.purchaseOrderId}
-                              currentRiderId={o.riderId ?? null}
-                              disabled={normStatus(o.supplierStatus) === "DELIVERED" || normStatus(o.supplierStatus) === "CANCELED"}
-                            />
-                          </div>
-                        )}
+                        {(isSupplierUser || isAdmin) &&
+                          normStatus(o.supplierStatus) === "SHIPPED" &&
+                          o.purchaseOrderId && (
+                            <div className="mb-3">
+                              <AssignRiderControl
+                                purchaseOrderId={o.purchaseOrderId}
+                                currentRiderId={o.riderId ?? null}
+                                disabled={
+                                  normStatus(o.supplierStatus) === "DELIVERED" ||
+                                  normStatus(o.supplierStatus) === "CANCELED"
+                                }
+                              />
+                            </div>
+                          )}
 
-                        {/* Editor */}
                         {editingId === o.id && (
                           <div className="rounded-xl border bg-zinc-50 p-3 flex flex-col gap-2">
                             <div className="text-[12px] font-semibold text-zinc-700">Set supplier status</div>
@@ -1213,11 +1258,12 @@ export default function SupplierOrders() {
                               </button>
                             </div>
 
-                            {updateStatusM.isError && <div className="text-[12px] text-rose-700">Failed to update. Please try again.</div>}
+                            {updateStatusM.isError && (
+                              <div className="text-[12px] text-rose-700">Failed to update. Please try again.</div>
+                            )}
                           </div>
                         )}
 
-                        {/* Cancel OTP panel */}
                         {editingId === o.id &&
                           normStatus(nextStatus) === "CANCELED" &&
                           ["CONFIRMED", "PACKED"].includes(supplierFlowBase) && (
@@ -1283,12 +1329,13 @@ export default function SupplierOrders() {
 
                         {cancelOtpMsg[o.id]?.text ? (
                           <div
-                            className={`mt-2 text-[12px] ${cancelOtpMsg[o.id].type === "warn"
-                              ? "text-amber-700"
-                              : cancelOtpMsg[o.id].type === "error"
-                                ? "text-rose-700"
-                                : "text-emerald-700"
-                              }`}
+                            className={`mt-2 text-[12px] ${
+                              cancelOtpMsg[o.id].type === "warn"
+                                ? "text-amber-700"
+                                : cancelOtpMsg[o.id].type === "error"
+                                  ? "text-rose-700"
+                                  : "text-emerald-700"
+                            }`}
                           >
                             {cancelOtpMsg[o.id].text}
                             {cancelOtpMsg[o.id].type === "warn" ? (
@@ -1303,70 +1350,73 @@ export default function SupplierOrders() {
                           </div>
                         ) : null}
 
-                        {/* Delivery OTP verify block (when shipped) */}
-                        {poId && supplierFlowBase === "SHIPPED" && !otpVerified && (isSupplierUser || isRider) && (
-                          <div className="mt-3 rounded-xl border bg-white p-3">
-                            <div className="text-[12px] font-semibold text-zinc-800">Confirm delivery (customer OTP)</div>
+                        {poId &&
+                          ["SHIPPED", "OUT_FOR_DELIVERY"].includes(supplierStatusRaw) &&
+                          !otpVerified &&
+                          (isSupplierUser || isRider) && (
+                            <div className="mt-3 rounded-xl border bg-white p-3">
+                              <div className="text-[12px] font-semibold text-zinc-800">Confirm delivery (customer OTP)</div>
 
-                            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              <div className="flex gap-2">
-                                <input
-                                  value={deliveryOtpCode[poId] ?? ""}
-                                  onChange={(e) => {
-                                    const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
-                                    setDeliveryOtpCode((s) => ({ ...s, [poId]: v }));
-                                  }}
-                                  placeholder="123456"
-                                  className="flex-1 rounded-xl border px-3 py-2 text-sm"
-                                  inputMode="numeric"
-                                />
+                              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <div className="flex gap-2">
+                                  <input
+                                    value={deliveryOtpCode[poId] ?? ""}
+                                    onChange={(e) => {
+                                      const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
+                                      setDeliveryOtpCode((s) => ({ ...s, [poId]: v }));
+                                    }}
+                                    placeholder="123456"
+                                    className="flex-1 rounded-xl border px-3 py-2 text-sm"
+                                    inputMode="numeric"
+                                  />
+
+                                  <button
+                                    type="button"
+                                    disabled={verifyDeliveryOtpM.isPending || !/^\d{6}$/.test(deliveryOtpCode[poId] ?? "")}
+                                    onClick={() => verifyDeliveryOtpM.mutate({ poId, code: deliveryOtpCode[poId] ?? "" })}
+                                    className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                  >
+                                    {verifyDeliveryOtpM.isPending ? "Verifying…" : "Verify"}
+                                  </button>
+                                </div>
 
                                 <button
                                   type="button"
-                                  disabled={verifyDeliveryOtpM.isPending || !/^\d{6}$/.test(deliveryOtpCode[poId] ?? "")}
-                                  onClick={() => verifyDeliveryOtpM.mutate({ poId, code: deliveryOtpCode[poId] ?? "" })}
-                                  className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                  disabled={requestDeliveryOtpM.isPending}
+                                  onClick={() => requestDeliveryOtpM.mutate({ poId })}
+                                  className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
                                 >
-                                  {verifyDeliveryOtpM.isPending ? "Verifying…" : "Verify"}
+                                  {requestDeliveryOtpM.isPending ? "Sending…" : "Request OTP"}
                                 </button>
                               </div>
 
-                              <button
-                                type="button"
-                                disabled={requestDeliveryOtpM.isPending}
-                                onClick={() => requestDeliveryOtpM.mutate({ poId })}
-                                className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
-                              >
-                                {requestDeliveryOtpM.isPending ? "Sending…" : "Request OTP"}
-                              </button>
-                            </div>
-
-                            {deliveryOtpMsg[poId]?.text ? (
-                              <div
-                                className={`mt-2 text-[12px] ${deliveryOtpMsg[poId].type === "error"
-                                  ? "text-rose-700"
-                                  : deliveryOtpMsg[poId].type === "warn"
-                                    ? "text-amber-700"
-                                    : "text-emerald-700"
+                              {deliveryOtpMsg[poId]?.text ? (
+                                <div
+                                  className={`mt-2 text-[12px] ${
+                                    deliveryOtpMsg[poId].type === "error"
+                                      ? "text-rose-700"
+                                      : deliveryOtpMsg[poId].type === "warn"
+                                        ? "text-amber-700"
+                                        : "text-emerald-700"
                                   }`}
-                              >
-                                {deliveryOtpMsg[poId].text}
+                                >
+                                  {deliveryOtpMsg[poId].text}
+                                </div>
+                              ) : null}
+
+                              <div className="mt-2 text-[11px] text-zinc-500">
+                                This confirms delivery and unlocks payout release when status is DELIVERED.
                               </div>
-                            ) : null}
-
-                            <div className="mt-2 text-[11px] text-zinc-500">
-                              This confirms delivery and unlocks payout release when status is DELIVERED.
                             </div>
-                          </div>
-                        )}
+                          )}
 
-                        {/* Items */}
                         <div className="mt-3 space-y-2">
                           <div className="text-[12px] font-semibold text-zinc-700">Items allocated to you</div>
 
                           {(o.items || []).map((it) => {
                             const optLabel = supplierOptionsLabel(it.selectedOptions);
-                            const supplierCost = it.chosenSupplierUnitPrice != null ? it.chosenSupplierUnitPrice * it.quantity : null;
+                            const supplierCost =
+                              it.chosenSupplierUnitPrice != null ? it.chosenSupplierUnitPrice * it.quantity : null;
 
                             return (
                               <div key={it.id} className="rounded-xl border bg-zinc-50 p-3">
@@ -1397,11 +1447,11 @@ export default function SupplierOrders() {
                 );
               })}
 
-              {!ordersQ.isLoading && !ordersQ.isError && total > 0 && pageCount > 1 && (
+              {!ordersQ.isLoading && !ordersQ.isError && serverTotal > 0 && serverPageCount > 1 && (
                 <div className="pt-2 flex items-center justify-end gap-2 flex-wrap">
                   <button
                     type="button"
-                    disabled={safePage <= 1}
+                    disabled={serverPage <= 1}
                     onClick={() => setPage((p) => Math.max(1, p - 1))}
                     className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                   >
@@ -1409,14 +1459,14 @@ export default function SupplierOrders() {
                   </button>
 
                   <div className="text-[12px] text-zinc-600">
-                    Page <span className="font-semibold text-zinc-900">{safePage}</span> /{" "}
-                    <span className="font-semibold text-zinc-900">{pageCount}</span>
+                    Page <span className="font-semibold text-zinc-900">{serverPage}</span> /{" "}
+                    <span className="font-semibold text-zinc-900">{serverPageCount}</span>
                   </div>
 
                   <button
                     type="button"
-                    disabled={safePage >= pageCount}
-                    onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                    disabled={serverPage >= serverPageCount}
+                    onClick={() => setPage((p) => Math.min(serverPageCount, p + 1))}
                     className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                   >
                     Next <ChevronRight size={14} />

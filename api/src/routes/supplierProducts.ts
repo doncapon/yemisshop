@@ -1165,7 +1165,6 @@ function supplierOfferOrderBy() {
 
 
 
-
 router.get("/", requireAuth, async (req, res) => {
   try {
     const ctx = await resolveSupplierContext(req);
@@ -1202,112 +1201,172 @@ router.get("/", requireAuth, async (req, res) => {
         : []),
     ];
 
-    const where: Prisma.ProductWhereInput = {
+    const baseWhere: Prisma.ProductWhereInput = {
       isDeleted: false,
       OR: ownershipOr as any,
       ...(categoryId ? { categoryId } : {}),
       ...(brandId ? { brandId } : {}),
       ...(q
         ? {
-          AND: [
-            {
-              OR: [
-                { title: { contains: q, mode: "insensitive" } },
-                { sku: { contains: q, mode: "insensitive" } },
-                { description: { contains: q, mode: "insensitive" } },
-              ],
-            },
-          ],
-        }
-        : {}),
-      ...(status !== "ANY" && status !== "PENDING" && status !== "REJECTED"
-        ? { status: status as any }
+            AND: [
+              {
+                OR: [
+                  { title: { contains: q, mode: "insensitive" } },
+                  { sku: { contains: q, mode: "insensitive" } },
+                  { description: { contains: q, mode: "insensitive" } },
+                ],
+              },
+            ],
+          }
         : {}),
     };
 
-    const [items, rawTotal] = await Promise.all([
-      prisma.product.findMany({
-        where,
+    const isModerationFilteredStatus =
+      status === "PENDING" || status === "REJECTED" || status === "APPROVED";
+
+    let pageProductIds: string[] = [];
+    let total = 0;
+
+    if (!isModerationFilteredStatus) {
+      const dbWhere: Prisma.ProductWhereInput = {
+        ...baseWhere,
+        ...(status !== "ANY" ? { status: status as any } : {}),
+      };
+
+      const [pagedIds, rawTotal] = await Promise.all([
+        prisma.product.findMany({
+          where: dbWhere,
+          orderBy: { createdAt: "desc" },
+          skip,
+          take,
+          select: { id: true },
+        }),
+        prisma.product.count({ where: dbWhere }),
+      ]);
+
+      pageProductIds = pagedIds.map((x: any) => String(x.id));
+      total = rawTotal;
+    } else {
+      const candidateRows = await prisma.product.findMany({
+        where: baseWhere,
         orderBy: { createdAt: "desc" },
-        take,
-        skip,
         select: {
           id: true,
-          title: true,
-          sku: true,
           status: true,
-          inStock: true,
-          imagesJson: true,
-          createdAt: true,
-          categoryId: true,
-          brandId: true,
-          availableQty: true,
           hasPendingChanges: true,
-          supplierId: true,
-          ownerId: true as any,
-          userId: true as any,
-          supplierProductOffers: {
-            where: { supplierId: s.id },
-            select: {
-              basePrice: true,
-              currency: true,
-              inStock: true,
-              availableQty: true,
-              isActive: true,
-            },
-            ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
-            take: 1,
-          },
         },
-      }),
-      prisma.product.count({ where }),
-    ]);
+      });
 
-    const productIds = items.map((p: any) => String(p.id));
+      const candidateIds = candidateRows.map((x: any) => String(x.id));
+
+      const moderationByProduct = await getLatestModerationByProduct(String(s.id), candidateIds);
+
+      const filteredIds = candidateRows
+        .filter((p: any) => {
+          const pid = String(p.id);
+          const moderation = moderationByProduct[pid] ?? {
+            moderationStatus: null,
+          };
+
+          const hasPendingChanges =
+            Boolean(p.hasPendingChanges) ||
+            moderation.moderationStatus === "PENDING" ||
+            String(p.status ?? "").toUpperCase() === "PENDING";
+
+          const effectiveModerationStatus = hasPendingChanges
+            ? "PENDING"
+            : moderation.moderationStatus;
+
+          if (status === "PENDING") return effectiveModerationStatus === "PENDING";
+          if (status === "REJECTED") return effectiveModerationStatus === "REJECTED";
+          if (status === "APPROVED") return effectiveModerationStatus === "APPROVED";
+          return true;
+        })
+        .map((p: any) => String(p.id));
+
+      total = filteredIds.length;
+      pageProductIds = filteredIds.slice(skip, skip + take);
+    }
+
+    if (!pageProductIds.length) {
+      return res.json({
+        data: [],
+        total,
+        meta: { lowStockThreshold: LOW_STOCK_THRESHOLD },
+      });
+    }
+
+    const items = await prisma.product.findMany({
+      where: { id: { in: pageProductIds } },
+      select: {
+        id: true,
+        title: true,
+        sku: true,
+        status: true,
+        inStock: true,
+        imagesJson: true,
+        createdAt: true,
+        categoryId: true,
+        brandId: true,
+        availableQty: true,
+        hasPendingChanges: true,
+        supplierId: true,
+        ownerId: true as any,
+        userId: true as any,
+        supplierProductOffers: {
+          where: { supplierId: s.id },
+          select: {
+            basePrice: true,
+            currency: true,
+            inStock: true,
+            availableQty: true,
+            isActive: true,
+          },
+          ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
+          take: 1,
+        },
+      },
+    });
+
+    const productIds = pageProductIds.slice();
 
     const [moderationByProduct, variantMin, baseAgg, variantAgg] = await Promise.all([
       getLatestModerationByProduct(String(s.id), productIds),
 
-      productIds.length
-        ? prisma.supplierVariantOffer.groupBy({
-          by: ["productId"],
-          where: {
-            productId: { in: productIds },
-            supplierId: s.id,
-            isActive: true,
-            inStock: true,
-            availableQty: { gt: 0 },
-            unitPrice: { gt: new Prisma.Decimal("0") },
-          } as any,
-          _min: { unitPrice: true },
-        })
-        : Promise.resolve([] as any[]),
+      prisma.supplierVariantOffer.groupBy({
+        by: ["productId"],
+        where: {
+          productId: { in: productIds },
+          supplierId: s.id,
+          isActive: true,
+          inStock: true,
+          availableQty: { gt: 0 },
+          unitPrice: { gt: new Prisma.Decimal("0") },
+        } as any,
+        _min: { unitPrice: true },
+      }),
 
-      productIds.length
-        ? prisma.supplierProductOffer.groupBy({
-          by: ["productId"],
-          where: {
-            productId: { in: productIds },
-            supplierId: s.id,
-            isActive: true,
-            inStock: true,
-          } as any,
-          _sum: { availableQty: true },
-        })
-        : Promise.resolve([] as any[]),
+      prisma.supplierProductOffer.groupBy({
+        by: ["productId"],
+        where: {
+          productId: { in: productIds },
+          supplierId: s.id,
+          isActive: true,
+          inStock: true,
+        } as any,
+        _sum: { availableQty: true },
+      }),
 
-      productIds.length
-        ? prisma.supplierVariantOffer.groupBy({
-          by: ["productId"],
-          where: {
-            productId: { in: productIds },
-            supplierId: s.id,
-            isActive: true,
-            inStock: true,
-          } as any,
-          _sum: { availableQty: true },
-        })
-        : Promise.resolve([] as any[]),
+      prisma.supplierVariantOffer.groupBy({
+        by: ["productId"],
+        where: {
+          productId: { in: productIds },
+          supplierId: s.id,
+          isActive: true,
+          inStock: true,
+        } as any,
+        _sum: { availableQty: true },
+      }),
     ]);
 
     const variantMinByProduct: Record<string, number> = {};
@@ -1325,86 +1384,75 @@ router.get("/", requireAuth, async (req, res) => {
       totalsByProduct[pid] = (totalsByProduct[pid] ?? 0) + Number(r._sum?.availableQty ?? 0);
     }
 
-    let mapped = items.map((p: any) => {
-      const pid = String(p.id);
-      const offer = p.supplierProductOffers?.[0] ?? null;
-
-      const offerQtyTotal = totalsByProduct[pid] ?? 0;
-      const availableQty =
-        offerQtyTotal > 0 ? offerQtyTotal : Number(offer?.availableQty ?? p.availableQty ?? 0);
-
-      const inStock =
-        offer != null ? availableQty > 0 || offer.inStock === true : Boolean(p.inStock);
-
-      const ownedBySupplier =
-        String(p.supplierId ?? "") === String(s.id) ||
-        (s.userId &&
-          (String(p.ownerId ?? "") === String(s.userId) ||
-            String(p.userId ?? "") === String(s.userId)));
-
-      const baseOfferPrice =
-        offer?.basePrice != null && Number(offer.basePrice) > 0 ? Number(offer.basePrice) : 0;
-      const variantFallbackPrice = variantMinByProduct[pid] ?? 0;
-      const displayBasePrice = baseOfferPrice > 0 ? baseOfferPrice : variantFallbackPrice;
-
-      const moderation = moderationByProduct[pid] ?? {
-        moderationStatus: null,
-        moderationMessage: null,
-        moderationReviewedAt: null,
-      };
-
-      const hasPendingChanges =
-        Boolean(p.hasPendingChanges) ||
-        moderation.moderationStatus === "PENDING" ||
-        String(p.status ?? "").toUpperCase() === "PENDING";
-
-      const isRejected =
-        !hasPendingChanges && moderation.moderationStatus === "REJECTED";
-
-      return {
-        id: p.id,
-        title: p.title,
-        sku: p.sku,
-        status: p.status,
-        inStock,
-        availableQty,
-        imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
-        createdAt: p.createdAt,
-        categoryId: p.categoryId ?? null,
-        brandId: p.brandId ?? null,
-
-        basePrice: displayBasePrice,
-        currency: offer?.currency ?? "NGN",
-        offerIsActive: offer?.isActive ?? false,
-
-        isLowStock: availableQty <= LOW_STOCK_THRESHOLD,
-        isDerived: !ownedBySupplier,
-
-        hasPendingChanges,
-        moderationStatus: hasPendingChanges ? "PENDING" : moderation.moderationStatus,
-        moderationMessage: isRejected ? moderation.moderationMessage : null,
-        moderationReviewedAt: isRejected ? moderation.moderationReviewedAt : null,
-      };
-    });
-
-    if (status === "PENDING") {
-      mapped = mapped.filter(
-        (p) => p.moderationStatus === "PENDING" || p.hasPendingChanges === true
-      );
+    const itemById = new Map<string, any>();
+    for (const p of items as any[]) {
+      itemById.set(String(p.id), p);
     }
 
-    if (status === "REJECTED") {
-      mapped = mapped.filter((p) => p.moderationStatus === "REJECTED");
-    }
+    const mapped = pageProductIds
+      .map((pid) => itemById.get(String(pid)))
+      .filter(Boolean)
+      .map((p: any) => {
+        const pid = String(p.id);
+        const offer = p.supplierProductOffers?.[0] ?? null;
 
-    if (status === "APPROVED") {
-      mapped = mapped.filter((p) => p.moderationStatus === "APPROVED");
-    }
+        const offerQtyTotal = totalsByProduct[pid] ?? 0;
+        const availableQty =
+          offerQtyTotal > 0 ? offerQtyTotal : Number(offer?.availableQty ?? p.availableQty ?? 0);
 
-    const total =
-      status === "PENDING" || status === "REJECTED" || status === "APPROVED"
-        ? mapped.length
-        : rawTotal;
+        const inStock =
+          offer != null ? availableQty > 0 || offer.inStock === true : Boolean(p.inStock);
+
+        const ownedBySupplier =
+          String(p.supplierId ?? "") === String(s.id) ||
+          (s.userId &&
+            (String(p.ownerId ?? "") === String(s.userId) ||
+              String(p.userId ?? "") === String(s.userId)));
+
+        const baseOfferPrice =
+          offer?.basePrice != null && Number(offer.basePrice) > 0 ? Number(offer.basePrice) : 0;
+        const variantFallbackPrice = variantMinByProduct[pid] ?? 0;
+        const displayBasePrice = baseOfferPrice > 0 ? baseOfferPrice : variantFallbackPrice;
+
+        const moderation = moderationByProduct[pid] ?? {
+          moderationStatus: null,
+          moderationMessage: null,
+          moderationReviewedAt: null,
+        };
+
+        const hasPendingChanges =
+          Boolean(p.hasPendingChanges) ||
+          moderation.moderationStatus === "PENDING" ||
+          String(p.status ?? "").toUpperCase() === "PENDING";
+
+        const isRejected =
+          !hasPendingChanges && moderation.moderationStatus === "REJECTED";
+
+        return {
+          id: p.id,
+          title: p.title,
+          sku: p.sku,
+          status: p.status,
+          inStock,
+          availableQty,
+          imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
+          createdAt: p.createdAt,
+          categoryId: p.categoryId ?? null,
+          brandId: p.brandId ?? null,
+
+          basePrice: displayBasePrice,
+          currency: offer?.currency ?? "NGN",
+          offerIsActive: offer?.isActive ?? false,
+
+          isLowStock: availableQty <= LOW_STOCK_THRESHOLD,
+          isDerived: !ownedBySupplier,
+
+          hasPendingChanges,
+          moderationStatus: hasPendingChanges ? "PENDING" : moderation.moderationStatus,
+          moderationMessage: isRejected ? moderation.moderationMessage : null,
+          moderationReviewedAt: isRejected ? moderation.moderationReviewedAt : null,
+        };
+      });
 
     return res.json({
       data: mapped,

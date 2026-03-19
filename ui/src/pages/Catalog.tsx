@@ -1447,7 +1447,6 @@ function getProductImageCandidates(p: Product): string[] {
 /* =========================================================
    Component
 ========================================================= */
-
 export default function Catalog() {
   const initialPersisted = useMemo(() => readCatalogState(), []);
 
@@ -1513,7 +1512,7 @@ export default function Catalog() {
   }, []);
 
   /* ---------------- Settings ---------------- */
-  /* ---------------- Settings ---------------- */
+
   const settingsQ = useQuery<{
     baseServiceFeeNGN: number;
     commsUnitCostNGN: number;
@@ -1528,7 +1527,6 @@ export default function Catalog() {
     retry: 0,
     queryFn: async () => {
       const { data } = await api.get<PublicSettings>("/api/settings/public");
-
       const root = (data as any)?.data ?? data ?? {};
 
       return {
@@ -1615,7 +1613,6 @@ export default function Catalog() {
     selectedBucketIdxs,
     selectedBrands,
     sortKey,
-    query,
     inStockOnly,
     expandedCats,
     page,
@@ -1627,20 +1624,18 @@ export default function Catalog() {
       setQuery("");
       persistSnapshot();
       setCatalogReturning(true);
-
       setRefineOpen(false);
       setSearchFocused(false);
       setActiveIdx(0);
       setTouchStartX(null);
 
       nav(`/products/${productId}`, {
-        state: {
-          from: locationStateFrom,
-        },
+        state: { from: locationStateFrom },
       });
     },
     [persistSnapshot, nav, locationStateFrom]
   );
+
   const closeRefine = useCallback(() => {
     setRefineOpen(false);
     setSearchFocused(false);
@@ -1676,7 +1671,6 @@ export default function Catalog() {
     };
   }, [refineOpen]);
 
-
   useEffect(() => {
     const clearSearchUi = () => {
       setQuery("");
@@ -1686,10 +1680,7 @@ export default function Catalog() {
 
     clearSearchUi();
 
-    const onPageShow = () => {
-      clearSearchUi();
-    };
-
+    const onPageShow = () => clearSearchUi();
     window.addEventListener("pageshow", onPageShow);
     return () => window.removeEventListener("pageshow", onPageShow);
   }, []);
@@ -1752,7 +1743,6 @@ export default function Catalog() {
     selectedBucketIdxs,
     selectedBrands,
     sortKey,
-    query,
     inStockOnly,
     expandedCats,
     page,
@@ -1826,11 +1816,12 @@ export default function Catalog() {
 
   const productsQ = useQuery<CatalogProductsResponse>({
     queryKey: ["products", { include: includeStr, status: "LIVE", page, take: pageSize }],
-    staleTime: 5 * 60_000,
+    staleTime: 30_000,
     gcTime: 15 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchOnMount: false,
+    retry: 1,
+    placeholderData: (previousData) => previousData,
     queryFn: async () => {
       const { data } = await api.get("/api/products", {
         params: {
@@ -1848,40 +1839,40 @@ export default function Catalog() {
         .map((x) => {
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => ({
-              id: String(v.id),
-              sku: v.sku ?? null,
-              retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
-              inStock: v.inStock === true,
-              imagesJson: normalizeImages(v.imagesJson),
-              availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
-              offers: Array.isArray(v.offers)
-                ? v.offers.map((o: any) => ({
-                  id: String(o.id),
-                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number.isFinite(Number(o.availableQty))
-                    ? Number(o.availableQty)
-                    : null,
-                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                  currency: o.currency ?? "NGN",
-                  leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
-                  supplierRatingAvg:
-                    o.supplierRatingAvg != null
-                      ? decToNumber(o.supplierRatingAvg)
-                      : o.supplier?.ratingAvg != null
-                        ? decToNumber(o.supplier.ratingAvg)
+                id: String(v.id),
+                sku: v.sku ?? null,
+                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
+                inStock: v.inStock === true,
+                imagesJson: normalizeImages(v.imagesJson),
+                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+                offers: Array.isArray(v.offers)
+                  ? v.offers.map((o: any) => ({
+                      id: String(o.id),
+                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                      isActive: o.isActive === true,
+                      inStock: o.inStock === true,
+                      availableQty: Number.isFinite(Number(o.availableQty))
+                        ? Number(o.availableQty)
                         : null,
-                  supplierRatingCount:
-                    o.supplierRatingCount != null
-                      ? Number(o.supplierRatingCount)
-                      : o.supplier?.ratingCount != null
-                        ? Number(o.supplier.ratingCount)
-                        : null,
-                }))
-                : [],
-            }))
+                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                      currency: o.currency ?? "NGN",
+                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
+                      supplierRatingAvg:
+                        o.supplierRatingAvg != null
+                          ? decToNumber(o.supplierRatingAvg)
+                          : o.supplier?.ratingAvg != null
+                            ? decToNumber(o.supplier.ratingAvg)
+                            : null,
+                      supplierRatingCount:
+                        o.supplierRatingCount != null
+                          ? Number(o.supplierRatingCount)
+                          : o.supplier?.ratingCount != null
+                            ? Number(o.supplier.ratingCount)
+                            : null,
+                    }))
+                  : [],
+              }))
             : [];
 
           const baseSource =
@@ -1942,9 +1933,9 @@ export default function Catalog() {
             brand:
               x.brand && (x.brand.id != null || x.brand.name != null)
                 ? {
-                  id: String(x.brand.id ?? ""),
-                  name: cleanText(x.brand.name),
-                }
+                    id: String(x.brand.id ?? ""),
+                    name: cleanText(x.brand.name),
+                  }
                 : null,
             variants,
             supplierProductOffers: baseOffers,
@@ -1954,17 +1945,33 @@ export default function Catalog() {
           } satisfies Product;
         });
 
+      const total = Number((data as any)?.meta?.total ?? (data as any)?.total ?? 0) || 0;
+      const take = Number((data as any)?.meta?.take ?? pageSize) || pageSize;
+      const serverPage = Number((data as any)?.meta?.page ?? page) || page;
+      const totalPages =
+        Number((data as any)?.meta?.totalPages ?? 0) || Math.max(1, Math.ceil(total / take));
+      const skip =
+        Number((data as any)?.meta?.skip ?? NaN) >= 0
+          ? Number((data as any)?.meta?.skip)
+          : Math.max(0, (serverPage - 1) * take);
+
       return {
         data: mapped,
-        total: Number((data as any)?.total ?? mapped.length ?? 0),
+        total,
         meta: {
-          page: Number((data as any)?.meta?.page ?? page),
-          take: Number((data as any)?.meta?.take ?? pageSize),
-          skip: Number((data as any)?.meta?.skip ?? Math.max(0, (page - 1) * pageSize)),
-          total: Number((data as any)?.meta?.total ?? (data as any)?.total ?? mapped.length ?? 0),
-          totalPages: Number((data as any)?.meta?.totalPages ?? 1),
-          hasNextPage: Boolean((data as any)?.meta?.hasNextPage),
-          hasPrevPage: Boolean((data as any)?.meta?.hasPrevPage),
+          page: serverPage,
+          take,
+          skip,
+          total,
+          totalPages,
+          hasNextPage:
+            typeof (data as any)?.meta?.hasNextPage === "boolean"
+              ? Boolean((data as any)?.meta?.hasNextPage)
+              : serverPage < totalPages,
+          hasPrevPage:
+            typeof (data as any)?.meta?.hasPrevPage === "boolean"
+              ? Boolean((data as any)?.meta?.hasPrevPage)
+              : serverPage > 1,
         },
       };
     },
@@ -1975,19 +1982,28 @@ export default function Catalog() {
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
 
-  const productsMeta = useMemo(() => {
+  const productsMeta = useMemo<CatalogProductsMeta>(() => {
     return (
       productsQ.data?.meta ?? {
         page,
         take: pageSize,
         skip: Math.max(0, (page - 1) * pageSize),
         total: products.length,
-        totalPages: 1,
+        totalPages: Math.max(1, Math.ceil(products.length / pageSize)),
         hasNextPage: false,
-        hasPrevPage: false,
+        hasPrevPage: page > 1,
       }
     );
   }, [productsQ.data, page, pageSize, products.length]);
+
+  const totalProducts = Number(productsMeta.total ?? productsQ.data?.total ?? 0) || 0;
+  const totalPages = Math.max(
+    1,
+    Number(productsMeta.totalPages || Math.ceil(totalProducts / pageSize) || 1)
+  );
+  const currentPage = Math.min(Math.max(1, page), totalPages);
+  const pageTake = Number(productsMeta.take ?? pageSize) || pageSize;
+  const start = totalProducts > 0 ? Number(productsMeta.skip ?? (currentPage - 1) * pageTake) : 0;
 
   const productViews = useMemo<ProductView[]>(() => {
     const out: ProductView[] = new Array(products.length);
@@ -2035,6 +2051,7 @@ export default function Catalog() {
     gatewayFixedFeeNGN,
     gatewayFeeCapNGN,
   ]);
+
   /* ---------------- Categories ---------------- */
 
   const categoriesTreeQ = useQuery<CategoryNode[]>({
@@ -2080,25 +2097,22 @@ export default function Catalog() {
   const normalizeFavoriteIds = useCallback((payload: any): string[] => {
     const root = payload ?? {};
 
-    const candidates =
-      Array.isArray(root?.productIds) ? root.productIds
-        : Array.isArray(root?.data?.productIds) ? root.data.productIds
-          : Array.isArray(root?.items) ? root.items
-            : Array.isArray(root?.data) ? root.data
-              : Array.isArray(root) ? root
-                : [];
+    const candidates = Array.isArray(root?.productIds)
+      ? root.productIds
+      : Array.isArray(root?.data?.productIds)
+        ? root.data.productIds
+        : Array.isArray(root?.items)
+          ? root.items
+          : Array.isArray(root?.data)
+            ? root.data
+            : Array.isArray(root)
+              ? root
+              : [];
 
     const ids = candidates
       .map((x: any) => {
         if (typeof x === "string" || typeof x === "number") return String(x);
-
-        return (
-          x?.productId ??
-          x?.product?.id ??
-          x?.favoriteProductId ??
-          x?.id ??
-          null
-        );
+        return x?.productId ?? x?.product?.id ?? x?.favoriteProductId ?? x?.id ?? null;
       })
       .filter(Boolean)
       .map(String);
@@ -2127,7 +2141,6 @@ export default function Catalog() {
       setFavIds(new Set());
       return;
     }
-
     setFavIds(new Set((favQuery.data ?? []).map(String)));
   }, [favQuery.data, hydrated, isAuthed, isSupplier]);
 
@@ -2160,11 +2173,7 @@ export default function Catalog() {
 
       const key = ["favorites", "mine", user?.id ?? "anon"] as const;
       const prev = qc.getQueryData<string[]>(key) ?? [];
-
-      const next = prev.includes(pid)
-        ? prev.filter((id) => id !== pid)
-        : [...prev, pid];
-
+      const next = prev.includes(pid) ? prev.filter((id) => id !== pid) : [...prev, pid];
       qc.setQueryData(key, next);
 
       return { prev, pid };
@@ -2203,12 +2212,6 @@ export default function Catalog() {
     [toggleFav]
   );
 
-
-
-
-
-
-
   /* ---------------- Filters/sort ---------------- */
 
   const stockRank = useCallback((p: ProductView) => (p._availableNow ? 0 : 1), []);
@@ -2228,9 +2231,7 @@ export default function Catalog() {
   useEffect(() => {
     setSelectedBucketIdxs((curr) => {
       const next = curr.filter((idx) => idx >= 0 && idx < PRICE_BUCKETS.length);
-      if (next.length === curr.length && next.every((v, i) => v === curr[i])) {
-        return curr;
-      }
+      if (next.length === curr.length && next.every((v, i) => v === curr[i])) return curr;
       return next;
     });
   }, [PRICE_BUCKETS.length]);
@@ -2500,17 +2501,18 @@ export default function Catalog() {
       didHydrateRef.current = true;
       return;
     }
-    setPage((curr) => (curr === 1 ? curr : 1));
+    setPage(1);
   }, [selectedCategories, selectedBucketIdxs, selectedBrands, pageSize, sortKey, query, inStockOnly]);
 
-  const totalPages = Math.max(1, Number(productsMeta.totalPages || 1));
-  const currentPage = Math.min(page, totalPages);
-  const start = Number(productsMeta.skip ?? Math.max(0, (currentPage - 1) * pageSize));
-  const pageItems = useMemo(() => sorted, [sorted]);
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
 
   useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
+    setJumpVal("");
+  }, [currentPage]);
 
   useEffect(() => {
     if (didRestoreScrollRef.current) return;
@@ -2541,24 +2543,33 @@ export default function Catalog() {
     });
   }, [productsQ.isLoading]);
 
+  const isPageFetching = productsQ.isFetching && !productsQ.isLoading;
+  const canGoPrev = currentPage > 1 && !isPageFetching;
+  const canGoNext = currentPage < totalPages && !isPageFetching;
+
   const goTo = useCallback(
-    (p: number) => {
-      const clamped = Math.min(Math.max(1, p), totalPages);
+    (nextPage: number) => {
+      if (isPageFetching) return;
+
+      const clamped = Math.min(Math.max(1, Math.trunc(Number(nextPage) || 1)), totalPages);
       if (clamped === currentPage) return;
+
       setPage(clamped);
       writeCatalogScroll(0);
       scrollResultsToTop();
     },
-    [totalPages, currentPage, scrollResultsToTop]
+    [currentPage, totalPages, isPageFetching, scrollResultsToTop]
   );
 
   const windowedPages = useCallback((current: number, total: number, radius = 2) => {
     const pages: number[] = [];
     const s = Math.max(1, current - radius);
     const e = Math.min(total, current + radius);
+
     for (let i = s; i <= e; i++) pages.push(i);
     if (pages[0] !== 1) pages.unshift(1);
     if (pages[pages.length - 1] !== total) pages.push(total);
+
     return [...new Set(pages)].sort((a, b) => a - b);
   }, []);
 
@@ -2567,9 +2578,14 @@ export default function Catalog() {
     [currentPage, totalPages, windowedPages]
   );
 
+  const pageItems = useMemo(() => sorted, [sorted]);
+  const pageCount = pageItems.length;
+  const displayFrom = totalProducts === 0 || pageCount === 0 ? 0 : start + 1;
+  const displayTo = totalProducts === 0 || pageCount === 0 ? 0 : Math.min(start + pageCount, totalProducts);
+
   /* =========================================================
      Add to cart
-========================================================= */
+  ========================================================= */
 
   const setCartQty = useCallback(
     async (p: ProductView, nextQty: number) => {
@@ -2625,8 +2641,6 @@ export default function Catalog() {
           activeBaseOffer?.supplierId ?? null,
           activeBaseOffer?.id
         );
-
-
       } catch (err: any) {
         console.error(err);
         openModal({ title: "Cart", message: err?.message || "Could not update cart." });
@@ -2644,7 +2658,6 @@ export default function Catalog() {
       const qty = Number((line as any)?.qty ?? 0);
 
       if (!productId || variantId != null) continue;
-
       map.set(productId, (map.get(productId) || 0) + (Number.isFinite(qty) ? qty : 0));
     }
 
@@ -2715,7 +2728,6 @@ export default function Catalog() {
   const toggleExpand = useCallback((id: string) => {
     setExpandedCats((m) => ({ ...m, [id]: !m[id] }));
   }, []);
-
   /* ---------------- Render guards ---------------- */
 
   if (productsQ.isLoading) {
@@ -2740,7 +2752,6 @@ export default function Catalog() {
   /* =========================================================
      Main render
 ========================================================= */
-
   return (
     <SiteLayout>
       <div
@@ -2793,7 +2804,6 @@ export default function Catalog() {
             <p className="text-xs text-zinc-600">Search and filter quickly.</p>
           </div>
         </div>
-
 
         {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700 md:hidden">
@@ -2869,8 +2879,8 @@ export default function Catalog() {
               Search
             </button>
           </form>
-          <div className="mt-1 flex items-center gap-2">
 
+          <div className="mt-1 flex items-center gap-2">
             <select
               value={sortKey}
               onChange={(e) => setSortKey(e.target.value as SortKey)}
@@ -2883,9 +2893,7 @@ export default function Catalog() {
 
             <select
               value={pageSize}
-              onChange={(e) =>
-                setPageSize(Number(e.target.value) as 8 | 12 | 16)
-              }
+              onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
               className="h-7 w-[64px] rounded-md border border-zinc-200 bg-white px-1 text-[11px] text-zinc-700"
             >
               <option value={8}>8</option>
@@ -2901,7 +2909,6 @@ export default function Catalog() {
               <SlidersHorizontal size={11} />
               Filters
             </button>
-
           </div>
 
           <div className="mt-1 flex items-center">
@@ -2915,10 +2922,7 @@ export default function Catalog() {
               In stock
             </label>
           </div>
-
         </div>
-
-
 
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
           <aside className="hidden md:block">
@@ -2945,9 +2949,7 @@ export default function Catalog() {
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Sort</label>
                 <select
                   value={sortKey}
-                  onChange={(e) => {
-                    setSortKey(e.target.value as SortKey);
-                  }}
+                  onChange={(e) => setSortKey(e.target.value as SortKey)}
                   className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2"
                 >
                   <option value="relevance">Relevance</option>
@@ -2960,9 +2962,7 @@ export default function Catalog() {
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Per page</label>
                 <select
                   value={pageSize}
-                  onChange={(e) => {
-                    setPageSize(Number(e.target.value) as 8 | 12 | 16);
-                  }}
+                  onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
                   className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2"
                 >
                   <option value={8}>8</option>
@@ -2976,9 +2976,7 @@ export default function Catalog() {
                   <input
                     type="checkbox"
                     checked={inStockOnly}
-                    onChange={(e) => {
-                      setInStockOnly(e.target.checked);
-                    }}
+                    onChange={(e) => setInStockOnly(e.target.checked)}
                     className="h-3 w-3 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
                   />
                   In stock
@@ -2990,9 +2988,7 @@ export default function Catalog() {
                   <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => {
-                      setSelectedCategories([]);
-                    }}
+                    onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
                     Reset
@@ -3009,20 +3005,22 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
+                              checked
+                                ? "border-zinc-900 bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
-                                  ? "text-white/90 hover:bg-white/10"
-                                  : "text-zinc-600 hover:bg-black/5"
-                                  }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
+                                  checked
+                                    ? "text-white/90 hover:bg-white/10"
+                                    : "text-zinc-600 hover:bg-black/5"
+                                }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -3041,8 +3039,9 @@ export default function Catalog() {
                             </button>
 
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
-                                }`}
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                             >
                               ({count})
                             </span>
@@ -3060,15 +3059,17 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
-                                }`}
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                             >
                               ({c.count})
                             </span>
@@ -3086,9 +3087,7 @@ export default function Catalog() {
                     <h4 className="text-xs font-semibold text-zinc-800">Brands</h4>
                     <button
                       className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                      onClick={() => {
-                        setSelectedBrands([]);
-                      }}
+                      onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
                       Reset
@@ -3101,15 +3100,17 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
-                                }`}
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                             >
                               ({b.count})
                             </span>
@@ -3126,9 +3127,7 @@ export default function Catalog() {
                   <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => {
-                      setSelectedBucketIdxs([]);
-                    }}
+                    onClick={() => setSelectedBucketIdxs([])}
                     disabled={selectedBucketIdxs.length === 0}
                   >
                     Reset
@@ -3143,15 +3142,17 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                            checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                          }`}
                         >
                           <span>{bucket.label}</span>
                           <span
-                            className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                            className={`ml-2 text-[11px] ${
+                              checked ? "text-white/90" : "text-zinc-600"
+                            }`}
                           >
                             ({count})
                           </span>
@@ -3195,7 +3196,10 @@ export default function Catalog() {
                   </div>
                 )}
 
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                <Search
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+                  size={18}
+                />
                 <input
                   ref={desktopInputRef}
                   value={query}
@@ -3288,7 +3292,7 @@ export default function Catalog() {
                   <div className="rounded-xl border border-zinc-200 bg-white/85 p-2 shadow-sm backdrop-blur md:hidden">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0 text-[10px] font-semibold tracking-tight text-zinc-800">
-                        Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                        Showing {displayFrom}-{displayTo} of {totalProducts} products
                       </div>
                       <div className="shrink-0 text-[9px] text-zinc-500">
                         Page {currentPage} / {totalPages}
@@ -3299,36 +3303,40 @@ export default function Catalog() {
                       <button
                         type="button"
                         onClick={() => goTo(1)}
+                        disabled={!canGoPrev}
                         aria-label="First page"
                         title="First page"
-                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         «
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(currentPage - 1)}
+                        disabled={!canGoPrev}
                         aria-label="Previous page"
                         title="Previous page"
-                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         ‹
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(currentPage + 1)}
+                        disabled={!canGoNext}
                         aria-label="Next page"
                         title="Next page"
-                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         ›
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(totalPages)}
+                        disabled={!canGoNext}
                         aria-label="Last page"
                         title="Last page"
-                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         »
                       </button>
@@ -3359,19 +3367,28 @@ export default function Catalog() {
                       />
                       <button
                         type="submit"
-                        disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                        disabled={
+                          isPageFetching ||
+                          !jumpVal ||
+                          Number(jumpVal) < 1 ||
+                          Number(jumpVal) > totalPages
+                        }
                         className="h-7 shrink-0 rounded-md bg-zinc-900 px-2.5 text-[10px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
                       >
                         Go
                       </button>
                     </form>
-                  </div>
 
+                    {isPageFetching && (
+                      <div className="mt-2 text-center text-[10px] text-zinc-500">
+                        Loading page…
+                      </div>
+                    )}
+                  </div>
 
                   <div className="hidden flex-col gap-3 sm:flex-row sm:items-center sm:justify-between md:flex">
                     <div className="text-sm text-zinc-600">
-                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
-                      {sorted.length} products
+                      Showing {displayFrom}-{displayTo} of {totalProducts} products
                     </div>
 
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -3396,7 +3413,12 @@ export default function Catalog() {
                         <button
                           type="submit"
                           className="rounded-xl border border-zinc-200 bg-white px-3 py-1.5 hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-50"
-                          disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                          disabled={
+                            isPageFetching ||
+                            !jumpVal ||
+                            Number(jumpVal) < 1 ||
+                            Number(jumpVal) > totalPages
+                          }
                         >
                           Go
                         </button>
@@ -3405,15 +3427,18 @@ export default function Catalog() {
                       <div className="flex items-center gap-1 sm:gap-2">
                         <button
                           type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 sm:px-3 sm:py-1.5 sm:text-xs"
+                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:py-1.5 sm:text-xs"
                           onClick={() => goTo(1)}
+                          disabled={!canGoPrev}
                         >
                           First
                         </button>
+
                         <button
                           type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 sm:px-3 sm:py-1.5 sm:text-xs"
+                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:py-1.5 sm:text-xs"
                           onClick={() => goTo(currentPage - 1)}
+                          disabled={!canGoPrev}
                         >
                           Prev
                         </button>
@@ -3425,14 +3450,18 @@ export default function Catalog() {
 
                             return (
                               <span key={`d-${n}`} className="inline-flex items-center">
-                                {showEllipsis && <span className="px-1 text-sm text-zinc-500">…</span>}
+                                {showEllipsis && (
+                                  <span className="px-1 text-sm text-zinc-500">…</span>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
-                                  className={`rounded-xl px-3 py-1.5 text-xs ${n === currentPage
-                                    ? "border border-zinc-900 bg-zinc-900 text-white"
-                                    : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
-                                    }`}
+                                  disabled={isPageFetching || n === currentPage}
+                                  className={`rounded-xl px-3 py-1.5 text-xs disabled:cursor-not-allowed ${
+                                    n === currentPage
+                                      ? "border border-zinc-900 bg-zinc-900 text-white"
+                                      : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-40"
+                                  }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -3444,21 +3473,30 @@ export default function Catalog() {
 
                         <button
                           type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 sm:px-3 sm:py-1.5 sm:text-xs"
+                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:py-1.5 sm:text-xs"
                           onClick={() => goTo(currentPage + 1)}
+                          disabled={!canGoNext}
                         >
                           Next
                         </button>
+
                         <button
                           type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 sm:px-3 sm:py-1.5 sm:text-xs"
+                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:py-1.5 sm:text-xs"
                           onClick={() => goTo(totalPages)}
+                          disabled={!canGoNext}
                         >
                           Last
                         </button>
                       </div>
                     </div>
                   </div>
+
+                  {isPageFetching && (
+                    <div className="mt-3 hidden text-center text-sm text-zinc-500 md:block">
+                      Loading page…
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -3527,9 +3565,7 @@ export default function Catalog() {
                   <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => {
-                      setSelectedCategories([]);
-                    }}
+                    onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
                     Reset
@@ -3546,20 +3582,22 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${checked
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${
+                              checked
+                                ? "border-zinc-900 bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
-                                  ? "text-white/90 hover:bg-white/10"
-                                  : "text-zinc-600 hover:bg-black/5"
-                                  }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
+                                  checked
+                                    ? "text-white/90 hover:bg-white/10"
+                                    : "text-zinc-600 hover:bg-black/5"
+                                }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -3578,8 +3616,9 @@ export default function Catalog() {
                             </button>
 
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
-                                }`}
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                             >
                               ({count})
                             </span>
@@ -3597,15 +3636,17 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
-                                }`}
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                             >
                               ({c.count})
                             </span>
@@ -3623,9 +3664,7 @@ export default function Catalog() {
                     <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
                     <button
                       className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                      onClick={() => {
-                        setSelectedBrands([]);
-                      }}
+                      onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
                       Reset
@@ -3639,15 +3678,17 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
-                                }`}
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                             >
                               ({b.count})
                             </span>
@@ -3664,9 +3705,7 @@ export default function Catalog() {
                   <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => {
-                      setSelectedBucketIdxs([]);
-                    }}
+                    onClick={() => setSelectedBucketIdxs([])}
                     disabled={selectedBucketIdxs.length === 0}
                   >
                     Reset
@@ -3681,15 +3720,17 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                            checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                          }`}
                         >
                           <span>{bucket.label}</span>
                           <span
-                            className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                            className={`ml-2 text-[11px] ${
+                              checked ? "text-white/90" : "text-zinc-600"
+                            }`}
                           >
                             ({count})
                           </span>

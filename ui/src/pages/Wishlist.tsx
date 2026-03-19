@@ -7,7 +7,20 @@ import api from "../api/client";
 import { useAuthStore } from "../store/auth";
 
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
-import { upsertCartLine, readCartLines, toMiniCartRows, qtyInCart } from "../utils/cartModel";
+import {
+  upsertCartLine,
+  readCartLines,
+  toMiniCartRows,
+  qtyInCart,
+} from "../utils/cartModel";
+
+type WishlistEnvelope = {
+  items: WishlistItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
 
 type WishlistItem = {
   id: string;
@@ -61,12 +74,114 @@ type CatalogProductLite = {
 };
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+const PAGE_SIZE = 12;
 
 const NGN = new Intl.NumberFormat("en-NG", {
   style: "currency",
   currency: "NGN",
   maximumFractionDigits: 2,
 });
+
+function WishlistPagination({
+  page,
+  totalPages,
+  onChange,
+}: {
+  page: number;
+  totalPages: number;
+  onChange: (page: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+
+  const go = (p: number) => {
+    if (p < 1 || p > totalPages || p === page) return;
+    onChange(p);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const pages: number[] = [];
+  const maxButtons = 5;
+
+  let start = Math.max(1, page - 2);
+  let end = Math.min(totalPages, start + maxButtons - 1);
+
+  if (end - start + 1 < maxButtons) {
+    start = Math.max(1, end - maxButtons + 1);
+  }
+
+  for (let i = start; i <= end; i++) pages.push(i);
+
+  return (
+    <div className="mt-5 flex items-center justify-center gap-2">
+      <button
+        type="button"
+        onClick={() => go(page - 1)}
+        disabled={page <= 1}
+        className="rounded-lg border bg-white px-3 py-2 text-xs font-semibold text-zinc-700 disabled:opacity-40"
+      >
+        Prev
+      </button>
+
+      {start > 1 && (
+        <>
+          <button
+            type="button"
+            onClick={() => go(1)}
+            className={`rounded-lg px-3 py-2 text-xs font-semibold border ${
+              page === 1
+                ? "bg-zinc-900 text-white border-zinc-900"
+                : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+            }`}
+          >
+            1
+          </button>
+          {start > 2 && <span className="px-1 text-xs text-zinc-500">…</span>}
+        </>
+      )}
+
+      {pages.map((p) => (
+        <button
+          key={p}
+          type="button"
+          onClick={() => go(p)}
+          className={`rounded-lg px-3 py-2 text-xs font-semibold border ${
+            p === page
+              ? "bg-zinc-900 text-white border-zinc-900"
+              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+          }`}
+        >
+          {p}
+        </button>
+      ))}
+
+      {end < totalPages && (
+        <>
+          {end < totalPages - 1 && <span className="px-1 text-xs text-zinc-500">…</span>}
+          <button
+            type="button"
+            onClick={() => go(totalPages)}
+            className={`rounded-lg px-3 py-2 text-xs font-semibold border ${
+              page === totalPages
+                ? "bg-zinc-900 text-white border-zinc-900"
+                : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+            }`}
+          >
+            {totalPages}
+          </button>
+        </>
+      )}
+
+      <button
+        type="button"
+        onClick={() => go(page + 1)}
+        disabled={page >= totalPages}
+        className="rounded-lg border bg-white px-3 py-2 text-xs font-semibold text-zinc-700 disabled:opacity-40"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
 
 function getApiOrigin(): string {
   const base = String((api as any)?.defaults?.baseURL || "").trim();
@@ -331,14 +446,42 @@ function getProductImageCandidates(p: CatalogProductLite): string[] {
   return out;
 }
 
-async function fetchWishlist(): Promise<WishlistItem[]> {
-  const { data } = await api.get("/api/favorites", AXIOS_COOKIE_CFG);
+async function fetchWishlist(args: {
+  page: number;
+  pageSize: number;
+}): Promise<WishlistEnvelope> {
+  const { page, pageSize } = args;
 
-  if (data && Array.isArray((data as any).items)) return (data as any).items;
-  if (data && Array.isArray((data as any).data)) return (data as any).data;
-  if (Array.isArray(data)) return data as any;
+  const { data } = await api.get("/api/favorites", {
+    ...AXIOS_COOKIE_CFG,
+    params: {
+      page,
+      pageSize,
+    },
+  });
 
-  return [];
+  const items = Array.isArray((data as any)?.items)
+    ? (data as any).items
+    : Array.isArray((data as any)?.data)
+    ? (data as any).data
+    : Array.isArray(data)
+    ? (data as any)
+    : [];
+
+  const total = Number((data as any)?.total);
+  const currentPage = Number((data as any)?.page);
+  const currentPageSize = Number((data as any)?.pageSize);
+  const totalPages = Number((data as any)?.totalPages);
+
+  return {
+    items,
+    total: Number.isFinite(total) ? total : items.length,
+    page: Number.isFinite(currentPage) ? currentPage : page,
+    pageSize: Number.isFinite(currentPageSize) ? currentPageSize : pageSize,
+    totalPages: Number.isFinite(totalPages)
+      ? totalPages
+      : Math.max(1, Math.ceil((Number.isFinite(total) ? total : items.length) / pageSize)),
+  };
 }
 
 async function fetchCatalogProductsLite(): Promise<CatalogProductLite[]> {
@@ -485,6 +628,7 @@ export default function Wishlist() {
   const isLoggedIn = !!useAuthStore.getState().user?.id;
 
   const fromHere = `${location.pathname}${location.search}`;
+  const [page, setPage] = React.useState(1);
 
   const goToCatalogHard = React.useCallback(() => {
     window.location.assign("/");
@@ -498,12 +642,9 @@ export default function Wishlist() {
   );
 
   const q = useQuery({
-    queryKey: ["favorites"],
-    queryFn: fetchWishlist,
-    placeholderData: () => {
-      const cached = qc.getQueryData(["favorites"]) as WishlistItem[] | undefined;
-      return cached;
-    },
+    queryKey: ["favorites", { page, pageSize: PAGE_SIZE }],
+    queryFn: () => fetchWishlist({ page, pageSize: PAGE_SIZE }),
+    placeholderData: (prev) => prev,
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: "always",
@@ -525,21 +666,38 @@ export default function Wishlist() {
     return map;
   }, [catalogProductsQ.data]);
 
-  const rows = Array.isArray(q.data) ? q.data : [];
-  const hasRows = rows.length > 0;
+  const envelope = q.data;
+  const rows = Array.isArray(envelope?.items) ? envelope.items : [];
+  const totalItems = Number(envelope?.total ?? 0) || 0;
+  const totalPages = Math.max(1, Number(envelope?.totalPages ?? 1) || 1);
+  const currentPage = Math.max(1, Number(envelope?.page ?? page) || page);
 
+  const hasRows = rows.length > 0;
   const showInitialLoading = q.isLoading && !hasRows;
-  const showEmpty = !q.isLoading && !q.isError && rows.length === 0;
+  const showEmpty = !q.isLoading && !q.isError && totalItems === 0;
+
+  React.useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
 
   const toggleFavMut = useMutation({
     mutationFn: async (productId: string) => {
       await api.post("/api/favorites/toggle", { productId }, AXIOS_COOKIE_CFG);
       return productId;
     },
-    onSuccess: (productId) => {
-      qc.setQueryData<WishlistItem[]>(["favorites"], (prev) =>
-        (prev ?? []).filter((it) => it.productId !== productId)
-      );
+    onSuccess: async () => {
+      const nextTotal = Math.max(0, totalItems - 1);
+      const nextTotalPages = Math.max(1, Math.ceil(nextTotal / PAGE_SIZE));
+
+      await qc.invalidateQueries({ queryKey: ["favorites"] });
+
+      if (currentPage > nextTotalPages) {
+        setPage(nextTotalPages);
+      } else {
+        await q.refetch();
+      }
     },
   });
 
@@ -625,9 +783,9 @@ export default function Wishlist() {
             </p>
           </div>
 
-          {hasRows && (
+          {totalItems > 0 && (
             <div className="text-xs text-zinc-500 text-right">
-              Items: <span className="font-semibold">{rows.length}</span>
+              Items: <span className="font-semibold">{totalItems}</span>
             </div>
           )}
         </div>
@@ -635,7 +793,7 @@ export default function Wishlist() {
         <div className="rounded-2xl border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)] p-4 md:p-5">
           <div className="flex items-center justify-between mb-3">
             <div className="text-sm font-semibold text-zinc-900">
-              Wishlist ({showInitialLoading ? "…" : rows.length})
+              Wishlist ({showInitialLoading ? "…" : totalItems})
             </div>
 
             {!showInitialLoading && !q.isError && hasRows && (
@@ -678,130 +836,150 @@ export default function Wishlist() {
           )}
 
           {!showInitialLoading && !q.isError && hasRows && (
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {rows.map((it) => {
-                const p = it.product;
-                const title = p?.title || "Product";
-                const href = p?.id ? `/products/${p.id}` : "#";
+            <>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {rows.map((it) => {
+                  const p = it.product;
+                  const title = p?.title || "Product";
+                  const href = p?.id ? `/products/${p.id}` : "#";
 
-                const catalogProduct = catalogProductMap.get(String(it.productId));
+                  const catalogProduct = catalogProductMap.get(String(it.productId));
 
-                const img =
-                  (catalogProduct ? pickImageValue(getProductImageCandidates(catalogProduct)) : null) ??
-                  pickImageValue(p?.images ?? p?.imagesJson ?? null);
+                  const img =
+                    (catalogProduct ? pickImageValue(getProductImageCandidates(catalogProduct)) : null) ??
+                    pickImageValue(p?.images ?? p?.imagesJson ?? null);
 
-                const priceRaw =
-                  catalogProduct != null
-                    ? getDisplayRetailPrice(catalogProduct)
-                    : (it as any).computedRetailPrice ?? p?.retailPrice ?? null;
+                  const priceRaw =
+                    catalogProduct != null
+                      ? getDisplayRetailPrice(catalogProduct)
+                      : (it as any).computedRetailPrice ?? p?.retailPrice ?? null;
 
-                const price =
-                  typeof priceRaw === "number" && Number.isFinite(priceRaw) ? priceRaw : null;
+                  const price =
+                    typeof priceRaw === "number" && Number.isFinite(priceRaw) ? priceRaw : null;
 
-                const hasVariants =
-                  Array.isArray(catalogProduct?.variants) && catalogProduct.variants.length > 0;
+                  const hasVariants =
+                    Array.isArray(catalogProduct?.variants) && catalogProduct.variants.length > 0;
 
-                const removing =
-                  toggleFavMut.isPending && toggleFavMut.variables === it.productId;
+                  const removing =
+                    toggleFavMut.isPending && toggleFavMut.variables === it.productId;
 
-                const adding =
-                  addToCartMut.isPending && addToCartMut.variables?.id === it.id;
+                  const adding =
+                    addToCartMut.isPending && addToCartMut.variables?.id === it.id;
 
-                return (
-                  <div
-                    key={it.id}
-                    className="flex flex-col rounded-xl border bg-zinc-50 hover:bg-zinc-50/80 transition overflow-hidden shadow-sm"
-                  >
-                    <Link
-                      to={href}
-                      state={{ from: fromHere }}
-                      className="block bg-zinc-100 overflow-hidden"
+                  return (
+                    <div
+                      key={it.id}
+                      className="flex flex-col rounded-xl border bg-zinc-50 hover:bg-zinc-50/80 transition overflow-hidden shadow-sm"
                     >
-                      {img ? (
-                        <img
-                          src={img}
-                          alt={title}
-                          className="w-full h-[160px] object-cover"
-                          loading="lazy"
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.display = "none";
-                          }}
-                        />
-                      ) : (
-                        <div className="w-full h-[160px] grid place-items-center text-[11px] text-zinc-500">
-                          No image
-                        </div>
-                      )}
-                    </Link>
-
-                    <div className="flex flex-col p-2.5">
                       <Link
                         to={href}
                         state={{ from: fromHere }}
-                        className="text-sm font-semibold text-zinc-900 line-clamp-2 hover:underline"
+                        className="block bg-zinc-100 overflow-hidden"
                       >
-                        {title}
+                        {img ? (
+                          <img
+                            src={img}
+                            alt={title}
+                            className="w-full h-[160px] object-cover"
+                            loading="lazy"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = "none";
+                            }}
+                          />
+                        ) : (
+                          <div className="w-full h-[160px] grid place-items-center text-[11px] text-zinc-500">
+                            No image
+                          </div>
+                        )}
                       </Link>
 
-                      {price !== null && (
-                        <div className="mt-1 text-sm font-bold text-zinc-900">
-                          {NGN.format(price)}
-                        </div>
-                      )}
+                      <div className="flex flex-col p-2.5">
+                        <Link
+                          to={href}
+                          state={{ from: fromHere }}
+                          className="text-sm font-semibold text-zinc-900 line-clamp-2 hover:underline"
+                        >
+                          {title}
+                        </Link>
 
-                      {it.createdAt && (
-                        <div className="mt-0.5 text-[11px] text-zinc-500">
-                          Saved on{" "}
-                          {new Date(it.createdAt).toLocaleDateString("en-GB", {
-                            day: "2-digit",
-                            month: "short",
-                            year: "numeric",
-                          })}
-                        </div>
-                      )}
-
-                      <div className="mt-2 flex gap-2">
-                        {hasVariants ? (
-                          <button
-                            type="button"
-                            onClick={() => goToProductWithBack(href)}
-                            className="flex-1 text-xs font-semibold px-3 py-1.5 rounded-lg text-white bg-zinc-900 hover:bg-zinc-800"
-                          >
-                            Choose options
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => addToCartMut.mutate(it)}
-                            disabled={adding}
-                            className={`flex-1 text-xs font-semibold px-3 py-1.5 rounded-lg text-white ${
-                              adding
-                                ? "bg-zinc-400 cursor-not-allowed"
-                                : "bg-fuchsia-600 hover:bg-fuchsia-700"
-                            }`}
-                          >
-                            {adding ? "Adding…" : "Add to cart"}
-                          </button>
+                        {price !== null && (
+                          <div className="mt-1 text-sm font-bold text-zinc-900">
+                            {NGN.format(price)}
+                          </div>
                         )}
 
-                        <button
-                          type="button"
-                          onClick={() => toggleFavMut.mutate(it.productId)}
-                          disabled={removing}
-                          className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${
-                            removing
-                              ? "bg-zinc-100 text-zinc-400 cursor-not-allowed"
-                              : "bg-white text-zinc-700 hover:bg-zinc-50"
-                          }`}
-                        >
-                          {removing ? "Removing…" : "Remove"}
-                        </button>
+                        {it.createdAt && (
+                          <div className="mt-0.5 text-[11px] text-zinc-500">
+                            Saved on{" "}
+                            {new Date(it.createdAt).toLocaleDateString("en-GB", {
+                              day: "2-digit",
+                              month: "short",
+                              year: "numeric",
+                            })}
+                          </div>
+                        )}
+
+                        <div className="mt-2 flex gap-2">
+                          {hasVariants ? (
+                            <button
+                              type="button"
+                              onClick={() => goToProductWithBack(href)}
+                              className="flex-1 text-xs font-semibold px-3 py-1.5 rounded-lg text-white bg-zinc-900 hover:bg-zinc-800"
+                            >
+                              Choose options
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => addToCartMut.mutate(it)}
+                              disabled={adding}
+                              className={`flex-1 text-xs font-semibold px-3 py-1.5 rounded-lg text-white ${
+                                adding
+                                  ? "bg-zinc-400 cursor-not-allowed"
+                                  : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                              }`}
+                            >
+                              {adding ? "Adding…" : "Add to cart"}
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => toggleFavMut.mutate(it.productId)}
+                            disabled={removing}
+                            className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${
+                              removing
+                                ? "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+                                : "bg-white text-zinc-700 hover:bg-zinc-50"
+                            }`}
+                          >
+                            {removing ? "Removing…" : "Remove"}
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 flex items-center justify-between gap-3 text-xs text-zinc-500">
+                <div>
+                  Showing {(currentPage - 1) * PAGE_SIZE + 1}-
+                  {Math.min(totalItems, (currentPage - 1) * PAGE_SIZE + rows.length)} of {totalItems}
+                </div>
+                <div>
+                  Page {currentPage} of {totalPages}
+                </div>
+              </div>
+
+              <WishlistPagination
+                page={currentPage}
+                totalPages={totalPages}
+                onChange={(nextPage) => {
+                  setPage(nextPage);
+                }}
+              />
+            </>
           )}
         </div>
       </div>

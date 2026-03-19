@@ -109,6 +109,9 @@ type SupplierMeLite = {
   } | null;
 };
 
+type ProductSortBy = "title" | "status" | "basePrice" | "updatedAt";
+type SortDir = "asc" | "desc";
+
 function Badge({
   children,
   tone = "neutral",
@@ -550,17 +553,15 @@ export default function SupplierProductsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(24);
 
+  const [sortBy, setSortBy] = useState<ProductSortBy>("updatedAt");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
   const { categories, brands } = useCatalogMeta({ enabled: hydrated && !supplierLocked });
   const debouncedQ = useDebouncedValue(q, 300);
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedQ, status, categoryId, brandId, adminSupplierId]);
-
-  const [sortBy, setSortBy] = useState<"title" | "status" | "basePrice" | "updatedAt">(
-    "updatedAt"
-  );
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  }, [debouncedQ, status, categoryId, brandId, adminSupplierId, sortBy, sortDir]);
 
   const productsQ = useQuery({
     queryKey: [
@@ -574,6 +575,8 @@ export default function SupplierProductsPage() {
         supplierId: adminSupplierId,
         page,
         pageSize,
+        sortBy,
+        sortDir,
       },
     ],
     enabled: hydrated && !supplierLocked && (!isAdmin || !!adminSupplierId),
@@ -592,6 +595,8 @@ export default function SupplierProductsPage() {
           brandId: brandId || undefined,
           take: pageSize,
           skip,
+          sortBy,
+          sortDir,
           supplierId: adminSupplierId,
         },
       });
@@ -728,58 +733,7 @@ export default function SupplierProductsPage() {
     nav(withSupplierCtx(`/supplier/products/${productId}/edit`));
   };
 
-  useEffect(() => {
-    setSortBy("updatedAt");
-    setSortDir("desc");
-  }, [debouncedQ, status, categoryId, brandId, adminSupplierId]);
-
-  const sortedItems = useMemo(() => {
-    const list = [...items];
-
-    const statusRank = (status?: string | null) => {
-      const s = String(status ?? "").toUpperCase();
-      if (s === "PENDING") return 1;
-      if (s === "REJECTED") return 2;
-      if (s === "APPROVED") return 3;
-      if (s === "LIVE") return 4;
-      if (s === "PUBLISHED") return 5;
-      return 99;
-    };
-
-    list.sort((a, b) => {
-      let cmp = 0;
-
-      if (sortBy === "title") {
-        cmp = String(a.title ?? "").localeCompare(String(b.title ?? ""), undefined, {
-          sensitivity: "base",
-          numeric: true,
-        });
-      } else if (sortBy === "status") {
-        cmp = statusRank(a.status) - statusRank(b.status);
-        if (cmp === 0) {
-          cmp = String(a.title ?? "").localeCompare(String(b.title ?? ""));
-        }
-      } else if (sortBy === "basePrice") {
-        cmp = Number(a.basePrice ?? 0) - Number(b.basePrice ?? 0);
-        if (cmp === 0) {
-          cmp = String(a.title ?? "").localeCompare(String(b.title ?? ""));
-        }
-      } else {
-        const ta = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime();
-        const tb = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime();
-        cmp = ta - tb;
-        if (cmp === 0) {
-          cmp = String(a.title ?? "").localeCompare(String(b.title ?? ""));
-        }
-      }
-
-      return sortDir === "asc" ? cmp : -cmp;
-    });
-
-    return list;
-  }, [items, sortBy, sortDir]);
-
-  const toggleSort = (field: "title" | "status" | "basePrice" | "updatedAt") => {
+  const toggleSort = (field: ProductSortBy) => {
     if (sortBy === field) {
       setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
       return;
@@ -850,7 +804,8 @@ export default function SupplierProductsPage() {
                 </motion.h1>
 
                 <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
-                  Finish the remaining supplier onboarding steps before you can add, edit or manage products.
+                  Finish the remaining supplier onboarding steps before you can add, edit or
+                  manage products.
                 </p>
 
                 <div className="mt-4 flex flex-wrap gap-2">
@@ -873,7 +828,8 @@ export default function SupplierProductsPage() {
                   <div className="mt-3 text-[12px] text-white/80">Checking onboarding status…</div>
                 ) : (
                   <div className="mt-3 text-[12px] text-white/90">
-                    Product access unlocks after contact, business, address and documents are completed.
+                    Product access unlocks after contact, business, address and documents are
+                    completed.
                   </div>
                 )}
               </div>
@@ -1045,14 +1001,11 @@ export default function SupplierProductsPage() {
                     onClick={() => setShowFilters((v) => !v)}
                     className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm hover:bg-black/5"
                   >
-                    <SlidersHorizontal size={16} />{" "}
-                    {showFilters ? "Hide filters" : "Filters"}
+                    <SlidersHorizontal size={16} /> {showFilters ? "Hide filters" : "Filters"}
                   </button>
                 </div>
 
-                {(showFilters ||
-                  typeof window === "undefined" ||
-                  window.matchMedia("(min-width: 640px)").matches) && (
+                <div className={`${showFilters ? "block" : "hidden"} sm:block`}>
                   <div className="px-3 sm:px-5 pb-4 sm:pb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
                     <select
                       value={status}
@@ -1093,7 +1046,7 @@ export default function SupplierProductsPage() {
                       ))}
                     </select>
                   </div>
-                )}
+                </div>
               </Card>
 
               <Card>
@@ -1155,7 +1108,7 @@ export default function SupplierProductsPage() {
                     </div>
                   ) : (
                     <div className="grid gap-3">
-                      {sortedItems.map((p) => {
+                      {items.map((p) => {
                         const img = (p.imagesJson || [])[0] || "/placeholder.svg";
                         const cat = p.categoryId
                           ? categoryNameById.get(p.categoryId) ?? "—"
@@ -1196,8 +1149,7 @@ export default function SupplierProductsPage() {
                                   {p.moderationStatus === "REJECTED" && (
                                     <Badge tone="danger">Rejected</Badge>
                                   )}
-                                  {(p.moderationStatus === "PENDING" ||
-                                    p.hasPendingChanges) && (
+                                  {(p.moderationStatus === "PENDING" || p.hasPendingChanges) && (
                                     <Badge tone="warning">Pending review</Badge>
                                   )}
                                 </div>
@@ -1219,11 +1171,15 @@ export default function SupplierProductsPage() {
                               </div>
                               <div className="rounded-xl border bg-zinc-50 px-3 py-2">
                                 <div className="opacity-70">Modified</div>
-                                <div className="font-medium text-zinc-900">{fmtDateShort(modifiedAt)}</div>
+                                <div className="font-medium text-zinc-900">
+                                  {fmtDateShort(modifiedAt)}
+                                </div>
                               </div>
                               <div className="rounded-xl border bg-zinc-50 px-3 py-2">
                                 <div className="opacity-70">Price</div>
-                                <div className="font-medium text-zinc-900">₦{fmtPrice(p.basePrice)}</div>
+                                <div className="font-medium text-zinc-900">
+                                  ₦{fmtPrice(p.basePrice)}
+                                </div>
                               </div>
                             </div>
 
@@ -1258,12 +1214,11 @@ export default function SupplierProductsPage() {
                                 disabled={!del.canDelete || deleteM.isPending}
                                 title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
                                 onClick={() => confirmAndDelete(p)}
-                                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition
-                                  ${
-                                    del.canDelete && !deleteM.isPending
-                                      ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
-                                      : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
-                                  }`}
+                                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition ${
+                                  del.canDelete && !deleteM.isPending
+                                    ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                    : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                }`}
                               >
                                 <Trash2 size={14} /> Delete
                               </button>
@@ -1338,7 +1293,7 @@ export default function SupplierProductsPage() {
                     </thead>
 
                     <tbody className="text-zinc-800">
-                      {sortedItems.map((p) => {
+                      {items.map((p) => {
                         const del = canDeleteOf(p.id);
                         const modifiedAt = p.updatedAt ?? p.createdAt;
                         const low =
@@ -1439,12 +1394,11 @@ export default function SupplierProductsPage() {
                                     disabled={!del.canDelete || deleteM.isPending}
                                     title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
                                     onClick={() => confirmAndDelete(p)}
-                                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition
-                                      ${
-                                        del.canDelete && !deleteM.isPending
-                                          ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
-                                          : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
-                                      }`}
+                                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition ${
+                                      del.canDelete && !deleteM.isPending
+                                        ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                        : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                    }`}
                                   >
                                     <Trash2 size={12} /> Delete
                                   </button>
