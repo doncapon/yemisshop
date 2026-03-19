@@ -1821,7 +1821,7 @@ export default function Catalog() {
           include: includeStr,
           status: "LIVE",
           take: 20,
-          page: 1,
+          page,
         },
       });
 
