@@ -1,4 +1,3 @@
-// src/lib/email.ts
 import { Resend } from "resend";
 
 const NODE_ENV = process.env.NODE_ENV ?? "development";
@@ -9,19 +8,20 @@ const FROM =
   process.env.RESEND_FROM ||
   process.env.EMAIL_FROM ||
   "DaySpring <no-reply@dayspring.com>";
-const DEFAULT_REPLY_TO = process.env.EMAIL_REPLY_TO; // optional
+const DEFAULT_REPLY_TO = process.env.EMAIL_REPLY_TO || undefined;
+
+// Optional sandbox override for dev/testing
+const EMAIL_SANDBOX_TO = (process.env.EMAIL_SANDBOX_TO || "").trim();
 
 export const canSendRealEmail = Boolean(RESEND_API_KEY);
 
-// IMPORTANT: do NOT instantiate Resend when the key is missing
 let resendClient: Resend | null = null;
+
+const MAIL_FORCE_TO = String(process.env.MAIL_FORCE_TO || "").trim();
 
 function getResend(): Resend {
   if (!RESEND_API_KEY) {
-    // In prod, treat as a config error; in dev, we won't call this anyway
-    throw new Error(
-      "Missing RESEND_API_KEY. Set RESEND_API_KEY=re_... in your environment."
-    );
+    throw new Error("Missing RESEND_API_KEY. Set RESEND_API_KEY in your environment.");
   }
   if (!resendClient) {
     resendClient = new Resend(RESEND_API_KEY);
@@ -44,71 +44,163 @@ type BasicMail = {
   attachments?: MailAttachment[];
 };
 
-export async function safeSend({ to, subject, html, text, replyTo, attachments }: BasicMail) {
-  // Normalize recipients
-  const originalTo = to;
-  to = "lordshegz@gmail.com";
-  const toList = Array.isArray(to) ? to : [to];
+function resolveRecipients(to: string | string[]) {
+  const originalTo = Array.isArray(to) ? to : [to];
 
-  // If no key, do a dev-preview and don't crash the API
+  if (MAIL_FORCE_TO) {
+    const forced = [MAIL_FORCE_TO];
+    console.log("[mail] recipient override active", {
+      originalTo,
+      forcedTo: forced,
+      env: NODE_ENV,
+    });
+    return {
+      originalTo,
+      effectiveTo: forced,
+      mode: "forced" as const,
+    };
+  }
+
+  if (EMAIL_SANDBOX_TO) {
+    const sandboxed = [EMAIL_SANDBOX_TO];
+    console.log("[mail] sandbox recipient override active", {
+      originalTo,
+      sandboxTo: sandboxed,
+      env: NODE_ENV,
+    });
+    return {
+      originalTo,
+      effectiveTo: sandboxed,
+      mode: "sandbox" as const,
+    };
+  }
+
+  return {
+    originalTo,
+    effectiveTo: originalTo,
+    mode: "normal" as const,
+  };
+}
+
+export async function safeSend({
+  to,
+  subject,
+  html,
+  text,
+  replyTo,
+  attachments,
+}: BasicMail) {
+  const { originalTo, effectiveTo, mode } = resolveRecipients(to);
+  const shouldDecorate = mode === "forced" || mode === "sandbox";
+
+  const overrideBannerHtml = shouldDecorate
+    ? `
+      <div style="margin:0 0 12px 0;padding:10px 12px;border:1px solid #f59e0b;border-radius:10px;background:#fffbeb;color:#92400e;font-size:12px;line-height:1.5;">
+        <div><strong>TEST OVERRIDE ACTIVE</strong></div>
+        <div><strong>Original recipient(s):</strong> ${originalTo.join(", ")}</div>
+        <div><strong>Actual recipient:</strong> ${effectiveTo.join(", ")}</div>
+        <div><strong>Environment:</strong> ${NODE_ENV}</div>
+        <div><strong>Original subject:</strong> ${subject}</div>
+        <div><strong>Mode:</strong> ${mode}</div>
+      </div>
+    `
+    : "";
+
+  const overrideBannerText = shouldDecorate
+    ? [
+        "TEST OVERRIDE ACTIVE",
+        `Original recipient(s): ${originalTo.join(", ")}`,
+        `Actual recipient: ${effectiveTo.join(", ")}`,
+        `Environment: ${NODE_ENV}`,
+        `Original subject: ${subject}`,
+        `Mode: ${mode}`,
+        "",
+      ].join("\n")
+    : "";
+
+  const decoratedHtml =
+    shouldDecorate && html ? `${overrideBannerHtml}${html}` : html;
+
+  const decoratedText =
+    shouldDecorate && text ? `${overrideBannerText}${text}` : text;
+
+  const effectiveSubject = shouldDecorate
+    ? `[TEST→${originalTo.join(", ")}] ${subject}`
+    : subject;
+
   if (!canSendRealEmail) {
-    const preview = {
+    console.log("[mail][dev] would send", {
       from: FROM,
-      to: toList,
-      subject,
+      to: effectiveTo,
+      originalTo,
+      subject: effectiveSubject,
       replyTo: replyTo ?? DEFAULT_REPLY_TO ?? undefined,
-      htmlPreview: html?.slice(0, 200),
-      textPreview: text?.slice(0, 200),
+      htmlPreview: decoratedHtml?.slice(0, 200),
+      textPreview: decoratedText?.slice(0, 200),
       attachments: attachments?.map((a) => ({
         filename: a.filename,
         contentType: a.contentType,
         size: typeof a.content === "string" ? a.content.length : a.content.byteLength,
       })),
       env: NODE_ENV,
-    };
-    console.log("[mail][dev] would send", preview);
+      mode,
+    });
 
     return { id: "dev-preview" };
   }
 
   const resend = getResend();
-  html = originalTo + "\n" + html;
 
   const base = {
     from: FROM,
-    to: toList,
-    subject,
+    to: effectiveTo,
+    subject: effectiveSubject,
     replyTo: replyTo ?? DEFAULT_REPLY_TO ?? undefined,
   } as const;
 
-  if (html && html.trim().length > 0) {
+  if (decoratedHtml && decoratedHtml.trim()) {
     const { data, error } = await resend.emails.send({
       ...base,
-      html,
-      // @ts-ignore - Resend supports attachments; TS type may differ
-      attachments,
-    });
-    if (error) throw error;
-    console.log("[mail] sent", { to: toList, subject, id: data?.id, from: FROM });
-    return data;
-  }
-
-  if (text && text.trim().length > 0) {
-    const { data, error } = await resend.emails.send({
-      ...base,
-      text,
+      html: decoratedHtml,
       // @ts-ignore
       attachments,
     });
     if (error) throw error;
-    console.log("[mail] sent", { to: toList, subject, id: data?.id });
+    console.log("[mail] sent", {
+      to: effectiveTo,
+      originalTo,
+      subject: effectiveSubject,
+      id: data?.id,
+      mode,
+    });
+    return data;
+  }
+
+  if (decoratedText && decoratedText.trim()) {
+    const { data, error } = await resend.emails.send({
+      ...base,
+      text: decoratedText,
+      // @ts-ignore
+      attachments,
+    });
+    if (error) throw error;
+    console.log("[mail] sent", {
+      to: effectiveTo,
+      originalTo,
+      subject: effectiveSubject,
+      id: data?.id,
+      mode,
+    });
     return data;
   }
 
   throw new Error("safeSend: either html or text must be provided");
 }
 
-/** Verify-email message */
+export async function sendMail(opts: BasicMail) {
+  return safeSend(opts);
+}
+
 export async function sendVerifyEmail(to: string, verifyUrl: string) {
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
@@ -124,12 +216,6 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
   return safeSend({ to, subject: "Verify your email — DaySpring", html });
 }
 
-/** Generic helper so routes can send adhoc emails */
-export async function sendMail(opts: BasicMail) {
-  return safeSend(opts);
-}
-
-/** Password reset email */
 export async function sendResetorForgotPasswordEmail(
   to: string,
   resetUrl: string,
@@ -151,16 +237,12 @@ export async function sendResetorForgotPasswordEmail(
   return safeSend({ to, subject, html });
 }
 
-// Alias to match any existing imports
 export const sendResetOrForgotPasswordEmail = sendResetorForgotPasswordEmail;
 
-
-// Add at bottom of src/lib/email.ts (keep everything else as-is)
-
 type OtpEmailMeta = {
-  brand?: string;        // DaySpring
-  expiresMins?: number;  // 5
-  purposeLabel?: string; // "Payment verification"
+  brand?: string;
+  expiresMins?: number;
+  purposeLabel?: string;
   orderId?: string;
 };
 
@@ -168,7 +250,7 @@ export async function sendOtpEmail(to: string, code: string, meta: OtpEmailMeta 
   const brand = meta.brand || "DaySpring";
   const expiresMins = Math.max(1, Number(meta.expiresMins ?? 5));
   const purpose = meta.purposeLabel || "Verification";
-  
+
   const orderLine = meta.orderId
     ? `<p style="margin:8px 0;color:#444">Order: <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">${meta.orderId}</span></p>`
     : "";
@@ -195,12 +277,10 @@ export async function sendOtpEmail(to: string, code: string, meta: OtpEmailMeta 
   });
 }
 
-
 type RiderInviteEmailMeta = {
-  brand?: string;        // DaySpring
-  supplierName?: string; // optional display
-  invitedName?: string;  // optional greeting
-  // show intended recipient in body (useful since sandbox forces to lordshegz)
+  brand?: string;
+  supplierName?: string;
+  invitedName?: string;
   intendedTo?: string;
   replyTo?: string | string[];
 };
@@ -214,7 +294,6 @@ export async function sendRiderInviteEmail(
   const supplierName = meta.supplierName ? ` from ${meta.supplierName}` : "";
   const invitedName = meta.invitedName ? `Hi ${meta.invitedName},` : "Hi,";
 
-  // In sandbox, keep visibility of the intended recipient
   const intendedLine =
     !IS_PROD && (meta.intendedTo || to)
       ? `<p style="margin:10px 0 0 0;color:#6b7280;font-size:12px">
@@ -253,15 +332,10 @@ export async function sendRiderInviteEmail(
     </div>
   `;
 
-  // optional replyTo override
-  const replyTo = meta.replyTo ?? DEFAULT_REPLY_TO ?? undefined;
-
-
-
   return safeSend({
-    to: to,
+    to,
     subject: `Rider invite — ${brand}`,
     html,
-    replyTo,
+    replyTo: meta.replyTo ?? DEFAULT_REPLY_TO,
   });
 }

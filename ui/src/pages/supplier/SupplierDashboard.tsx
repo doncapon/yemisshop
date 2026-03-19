@@ -61,7 +61,9 @@ function Stat({
       <div className="mt-0.5 text-zinc-700 shrink-0">{icon}</div>
       <div className="min-w-0">
         <div className="text-[11px] sm:text-xs text-zinc-500 leading-tight">{label}</div>
-        <div className="text-base sm:text-lg font-semibold text-zinc-900 leading-tight">{value}</div>
+        <div className="text-base sm:text-lg font-semibold text-zinc-900 leading-tight">
+          {value}
+        </div>
         {hint && <div className="text-[11px] text-zinc-500 mt-1 leading-tight">{hint}</div>}
       </div>
     </div>
@@ -84,8 +86,10 @@ type SupplierDocumentLite = {
 type AuthMeLite = {
   id?: string;
   role?: string;
-  emailVerified?: boolean;
-  phoneVerified?: boolean;
+  emailVerified?: boolean | null;
+  phoneVerified?: boolean | null;
+  emailVerifiedAt?: string | null;
+  phoneVerifiedAt?: string | null;
 };
 
 type SupplierMeLite = {
@@ -153,6 +157,26 @@ function hasAddress(addr: any) {
   );
 }
 
+function isTruthyVerificationFlag(value: unknown) {
+  if (value === true) return true;
+  if (typeof value === "string" && value.trim()) return true;
+  return false;
+}
+
+function isEmailVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag(authMe?.emailVerified) ||
+    isTruthyVerificationFlag(authMe?.emailVerifiedAt)
+  );
+}
+
+function isPhoneVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag(authMe?.phoneVerified) ||
+    isTruthyVerificationFlag(authMe?.phoneVerifiedAt)
+  );
+}
+
 function isRegisteredBusiness(registrationType?: string | null) {
   return String(registrationType ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
 }
@@ -174,10 +198,6 @@ export default function SupplierDashboard() {
   const isAdmin = roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN";
   const isRider = roleNorm === "SUPPLIER_RIDER";
   const isSupplier = roleNorm === "SUPPLIER";
-
-  useEffect(() => {
-    useAuthStore.getState().bootstrap?.().catch?.(() => null);
-  }, []);
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -232,7 +252,7 @@ export default function SupplierDashboard() {
       if (!pickerOpen) return;
       const el = pickerRef.current;
       if (!el) return;
-      if (!el.contains(e.target as any)) setPickerOpen(false);
+      if (!el.contains(e.target as Node)) setPickerOpen(false);
     }
     document.addEventListener("mousedown", onDocDown);
     return () => document.removeEventListener("mousedown", onDocDown);
@@ -337,10 +357,14 @@ export default function SupplierDashboard() {
           .catch(() => ({ data: { data: [] } })),
       ]);
 
-      const authMe = ((authRes.data as any)?.data ??
-        (authRes.data as any)?.user ??
-        authRes.data ??
-        {}) as AuthMeLite;
+      const authPayload = authRes.data as any;
+      const authMe = (
+        authPayload?.data?.user ??
+        authPayload?.user ??
+        authPayload?.data ??
+        authPayload ??
+        {}
+      ) as AuthMeLite;
 
       const supplierMe = ((supplierRes.data as any)?.data ??
         supplierRes.data ??
@@ -349,7 +373,7 @@ export default function SupplierDashboard() {
       const rawDocs = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
       const docs = Array.isArray(rawDocs) ? (rawDocs as SupplierDocumentLite[]) : [];
 
-      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
+      const contactDone = isEmailVerified(authMe) && isPhoneVerified(authMe);
 
       const businessDone = Boolean(
         String(supplierMe?.legalName ?? "").trim() &&
@@ -783,7 +807,9 @@ export default function SupplierDashboard() {
                         <div className="flex items-center gap-3">
                           <div
                             className={`inline-flex h-8 w-8 items-center justify-center rounded-full ${
-                              item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                              item.done
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-amber-100 text-amber-700"
                             }`}
                           >
                             {item.done ? <CheckCircle2 size={16} /> : <ArrowRight size={16} />}
@@ -793,7 +819,9 @@ export default function SupplierDashboard() {
 
                         <span
                           className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                            item.done
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-amber-100 text-amber-700"
                           }`}
                         >
                           {item.done ? "Done" : "Pending"}
@@ -864,41 +892,90 @@ export default function SupplierDashboard() {
           <>
             <div className="mt-4 sm:mt-6 grid gap-3 sm:gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
               <Stat label="Live products" value={`${kpis.liveProducts}`} icon={<Package size={16} />} />
-              <Stat label="Low stock" value={`${kpis.lowStock}`} icon={<Box size={16} />} hint="Restock soon" />
-              <Stat label="Pending orders" value={`${kpis.pendingOrders}`} icon={<ShoppingBag size={16} />} />
-              <Stat label="Shipped today" value={`${kpis.shippedToday}`} icon={<Truck size={16} />} />
-              <Stat label="Available balance" value={ngn.format(kpis.balance)} icon={<CircleDollarSign size={16} />} />
-              <Stat label="Paid out" value={ngn.format(kpis.paidOutTotal)} icon={<CircleDollarSign size={16} />} />
-              <Stat label="Store rating" value={kpis.rating ? `${kpis.rating.toFixed(1)}` : "—"} icon={<BadgeCheck size={16} />} />
+              <Stat
+                label="Low stock"
+                value={`${kpis.lowStock}`}
+                icon={<Box size={16} />}
+                hint="Restock soon"
+              />
+              <Stat
+                label="Pending orders"
+                value={`${kpis.pendingOrders}`}
+                icon={<ShoppingBag size={16} />}
+              />
+              <Stat
+                label="Shipped today"
+                value={`${kpis.shippedToday}`}
+                icon={<Truck size={16} />}
+              />
+              <Stat
+                label="Available balance"
+                value={ngn.format(kpis.balance)}
+                icon={<CircleDollarSign size={16} />}
+              />
+              <Stat
+                label="Paid out"
+                value={ngn.format(kpis.paidOutTotal)}
+                icon={<CircleDollarSign size={16} />}
+              />
+              <Stat
+                label="Store rating"
+                value={kpis.rating ? `${kpis.rating.toFixed(1)}` : "—"}
+                icon={<BadgeCheck size={16} />}
+              />
             </div>
 
             {!isRider ? (
               <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
                 <Card className="lg:col-span-2">
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
-                    <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Today’s checklist</div>
-                    <div className="text-[11px] sm:text-xs text-zinc-500">Fast actions suppliers do daily</div>
+                    <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                      Today’s checklist
+                    </div>
+                    <div className="text-[11px] sm:text-xs text-zinc-500">
+                      Fast actions suppliers do daily
+                    </div>
                   </div>
 
                   <div className="p-3 sm:p-5 space-y-2.5">
                     {[
-                      { title: "Confirm stock levels", desc: "Update inventory for popular SKUs.", to: "/supplier/products" },
-                      { title: "Fulfill pending orders", desc: "Pack and mark orders as shipped.", to: "/supplier/orders" },
-                      { title: "Review payouts", desc: "Check balance and payout schedule.", to: "/supplier/payouts" },
+                      {
+                        title: "Confirm stock levels",
+                        desc: "Update inventory for popular SKUs.",
+                        to: "/supplier/products",
+                      },
+                      {
+                        title: "Fulfill pending orders",
+                        desc: "Pack and mark orders as shipped.",
+                        to: "/supplier/orders",
+                      },
+                      {
+                        title: "Review payouts",
+                        desc: "Check balance and payout schedule.",
+                        to: "/supplier/payouts",
+                      },
                       {
                         title: "Request catalog items",
                         desc: "Need a new brand/category/attribute? Submit a request for admin approval.",
                         to: "/supplier/catalog-requests",
                       },
-                      { title: "Update store settings", desc: "Pickup address, payout details & notifications.", to: "/supplier/settings" },
+                      {
+                        title: "Update store settings",
+                        desc: "Pickup address, payout details & notifications.",
+                        to: "/supplier/settings",
+                      },
                     ].map((x) => (
                       <Link
                         key={x.title}
                         to={withSupplierCtx(x.to)}
                         className="block rounded-2xl border bg-white hover:bg-black/5 transition p-3 sm:p-4"
                       >
-                        <div className="font-semibold text-[13px] sm:text-sm text-zinc-900">{x.title}</div>
-                        <div className="text-[12px] sm:text-sm text-zinc-600 leading-snug mt-0.5">{x.desc}</div>
+                        <div className="font-semibold text-[13px] sm:text-sm text-zinc-900">
+                          {x.title}
+                        </div>
+                        <div className="text-[12px] sm:text-sm text-zinc-600 leading-snug mt-0.5">
+                          {x.desc}
+                        </div>
                       </Link>
                     ))}
                   </div>
@@ -906,8 +983,12 @@ export default function SupplierDashboard() {
 
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
-                    <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Quick insights</div>
-                    <div className="text-[11px] sm:text-xs text-zinc-500">Placeholder (wire to analytics)</div>
+                    <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                      Quick insights
+                    </div>
+                    <div className="text-[11px] sm:text-xs text-zinc-500">
+                      Placeholder (wire to analytics)
+                    </div>
                   </div>
 
                   <div className="p-3 sm:p-5 space-y-3 text-[13px] sm:text-sm text-zinc-700">
@@ -916,7 +997,9 @@ export default function SupplierDashboard() {
                         Select a supplier above to load insights.
                       </div>
                     ) : insightsQ.isFetching ? (
-                      <div className="rounded-xl border bg-white p-3 text-zinc-600">Loading insights…</div>
+                      <div className="rounded-xl border bg-white p-3 text-zinc-600">
+                        Loading insights…
+                      </div>
                     ) : insightsQ.isError ? (
                       <div className="rounded-xl border bg-white p-3 text-rose-700">
                         Failed to load insights.{" "}
@@ -967,16 +1050,24 @@ export default function SupplierDashboard() {
                       to={withSupplierCtx("/supplier/catalog-requests")}
                       className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
                     >
-                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">Catalog requests</div>
-                      <div className="text-[11px] sm:text-xs text-zinc-600">Ask admin to add new brands, categories or attributes</div>
+                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
+                        Catalog requests
+                      </div>
+                      <div className="text-[11px] sm:text-xs text-zinc-600">
+                        Ask admin to add new brands, categories or attributes
+                      </div>
                     </Link>
 
                     <Link
                       to={withSupplierCtx("/supplier/settings")}
                       className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
                     >
-                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">Settings</div>
-                      <div className="text-[11px] sm:text-xs text-zinc-600">Edit payout, pickup and notifications</div>
+                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
+                        Settings
+                      </div>
+                      <div className="text-[11px] sm:text-xs text-zinc-600">
+                        Edit payout, pickup and notifications
+                      </div>
                     </Link>
                   </div>
                 </Card>
@@ -986,7 +1077,9 @@ export default function SupplierDashboard() {
                 <Card>
                   <div className="px-5 py-4 border-b bg-white/70">
                     <div className="text-sm font-semibold text-zinc-900">Rider access</div>
-                    <div className="text-xs text-zinc-500">You can only view and deliver assigned orders.</div>
+                    <div className="text-xs text-zinc-500">
+                      You can only view and deliver assigned orders.
+                    </div>
                   </div>
                   <div className="p-5">
                     <Link

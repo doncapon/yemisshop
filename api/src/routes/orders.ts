@@ -74,15 +74,17 @@ type CreateOrderBody = {
   billingAddress?: Address;
   notes?: string | null;
 
-  // ✅ selected shipping quote (preferred)
+  // new
+  shippingQuoteIds?: string[] | null;
+  selectedUserShippingAddressId?: string;
+
+  // legacy fallback
   shippingQuoteId?: string | null;
 
-  // ✅ fallback/manual shipping (when no quote id is sent)
   shippingFee?: number;
   shippingCurrency?: string;
   shippingRateSource?: string;
 
-  // optional snapshot fields from checkout (ignored for billing)
   serviceFeeBase?: number;
   serviceFeeComms?: number;
   serviceFeeGateway?: number;
@@ -148,11 +150,266 @@ function truthySetting(v: any) {
   return ["1", "true", "yes", "y", "on"].includes(s);
 }
 
+type SelectedShippingQuoteMap = Record<string, SelectedShippingQuote>;
+
+async function getSelectedShippingQuotesTx(
+  tx: any,
+  args: { shippingQuoteIds?: string[] | null; shippingQuoteId?: string | null; userId: string }
+): Promise<SelectedShippingQuoteMap> {
+  const rawIds = [
+    ...(Array.isArray(args.shippingQuoteIds) ? args.shippingQuoteIds : []),
+    ...(args.shippingQuoteId ? [args.shippingQuoteId] : []),
+  ]
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean);
+
+  const uniqueIds = Array.from(new Set(rawIds));
+  if (!uniqueIds.length) return {};
+
+  const rows = await tx.shippingQuote.findMany({
+    where: {
+      id: { in: uniqueIds },
+      userId: args.userId,
+      status: { in: ["DRAFT", "SELECTED"] as any },
+    },
+    select: {
+      id: true,
+      supplierId: true,
+      rateSource: true,
+      status: true,
+      expiresAt: true,
+      serviceLevel: true,
+      zoneCode: true,
+      zoneName: true,
+      currency: true,
+      shippingFee: true,
+      remoteSurcharge: true,
+      fuelSurcharge: true,
+      handlingFee: true,
+      insuranceFee: true,
+      totalFee: true,
+      etaMinDays: true,
+      etaMaxDays: true,
+      pickupAddressId: true,
+      destinationAddressId: true,
+      pricingMetaJson: true,
+    },
+  });
+
+  if (rows.length !== uniqueIds.length) {
+    throw new Error("One or more selected shipping quotes were not found.");
+  }
+
+  const out: SelectedShippingQuoteMap = {};
+
+  for (const q of rows) {
+    if (q.expiresAt && new Date(q.expiresAt) <= new Date()) {
+      throw new Error(`Selected shipping quote ${q.id} has expired.`);
+    }
+
+    out[String(q.supplierId)] = {
+      id: String(q.id),
+      supplierId: String(q.supplierId),
+      rateSource: String(q.rateSource) as any,
+      serviceLevel: String(q.serviceLevel ?? "STANDARD"),
+      zoneCode: q.zoneCode ? String(q.zoneCode) : null,
+      zoneName: q.zoneName ? String(q.zoneName) : null,
+      currency: String(q.currency ?? "NGN"),
+      shippingFee: asNumber(q.shippingFee, 0),
+      remoteSurcharge: asNumber(q.remoteSurcharge, 0),
+      fuelSurcharge: asNumber(q.fuelSurcharge, 0),
+      handlingFee: asNumber(q.handlingFee, 0),
+      insuranceFee: asNumber(q.insuranceFee, 0),
+      totalFee: asNumber(q.totalFee, 0),
+      etaMinDays: q.etaMinDays == null ? null : Number(q.etaMinDays),
+      etaMaxDays: q.etaMaxDays == null ? null : Number(q.etaMaxDays),
+      pickupAddressId: q.pickupAddressId ? String(q.pickupAddressId) : null,
+      destinationAddressId: q.destinationAddressId ? String(q.destinationAddressId) : null,
+      pricingMetaJson: q.pricingMetaJson ?? null,
+    };
+  }
+
+  return out;
+}
+
+
+type UserShippingAddressSnapshot = {
+  id: string;
+  label: string | null;
+  recipientName: string | null;
+  phone: string;
+  whatsappPhone: string | null;
+  houseNumber: string | null;
+  streetName: string | null;
+  postCode: string | null;
+  town: string | null;
+  city: string;
+  state: string;
+  country: string;
+  lga: string | null;
+  landmark: string | null;
+  directionsNote: string | null;
+
+  // NEW
+  phoneVerifiedAt: Date | null;
+  phoneVerifiedBy: string | null;
+  verificationMeta: any;
+};
+
+function normalizePhoneLoose(phone?: string | null) {
+  return String(phone ?? "").replace(/[^\d+]/g, "").replace(/^\+/, "").trim();
+}
+
+function isSavedShippingAddressVerifiedForCheckout(args: {
+  saved: UserShippingAddressSnapshot | null | undefined;
+  userPhone?: string | null;
+  userPhoneVerifiedAt?: Date | string | null;
+}) {
+  const saved = args.saved;
+  if (!saved) return false;
+
+  if (saved.phoneVerifiedAt) return true;
+
+  const savedPhone = normalizePhoneLoose(saved.phone);
+  const userPhone = normalizePhoneLoose(args.userPhone);
+
+  if (
+    savedPhone &&
+    userPhone &&
+    savedPhone === userPhone &&
+    args.userPhoneVerifiedAt
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+async function getUserShippingAddressForCheckoutTx(
+  tx: any,
+  args: { userId: string; selectedUserShippingAddressId: string }
+): Promise<UserShippingAddressSnapshot> {
+  const row = await tx.userShippingAddress.findFirst({
+    where: {
+      id: String(args.selectedUserShippingAddressId),
+      userId: String(args.userId),
+      isActive: true,
+    },
+    select: {
+      id: true,
+      label: true,
+      recipientName: true,
+      phone: true,
+      whatsappPhone: true,
+      houseNumber: true,
+      streetName: true,
+      postCode: true,
+      town: true,
+      city: true,
+      state: true,
+      country: true,
+      lga: true,
+      landmark: true,
+      directionsNote: true,
+
+      // NEW
+      phoneVerifiedAt: true,
+      phoneVerifiedBy: true,
+      verificationMeta: true,
+    },
+  });
+
+  if (!row) {
+    throw new Error("Selected delivery address was not found for this user.");
+  }
+
+  return row;
+}
+
+async function createOrderAddressSnapshotFromUserShippingAddressTx(
+  tx: any,
+  saved: UserShippingAddressSnapshot
+) {
+  return tx.address.create({
+    data: {
+      houseNumber: saved.houseNumber ?? null,
+      streetName: saved.streetName ?? null,
+      postCode: saved.postCode ?? null,
+      town: saved.town ?? null,
+      city: saved.city ?? null,
+      state: saved.state ?? null,
+      country: saved.country ?? null,
+      lga: saved.lga ?? null,
+      landmark: saved.landmark ?? null,
+      directionsNote: saved.directionsNote ?? null,
+      isValidated: false,
+    },
+    select: { id: true },
+  });
+}
+
+function buildOrderShippingBreakdownFromQuotes(quotesBySupplier: SelectedShippingQuoteMap) {
+  const quotes = Object.values(quotesBySupplier);
+
+  const currency = quotes[0]?.currency ?? "NGN";
+
+  const totals = quotes.reduce(
+    (acc, q) => {
+      acc.shippingFee += round2(q.shippingFee);
+      acc.remoteSurcharge += round2(q.remoteSurcharge);
+      acc.fuelSurcharge += round2(q.fuelSurcharge);
+      acc.handlingFee += round2(q.handlingFee);
+      acc.insuranceFee += round2(q.insuranceFee);
+      acc.totalFee += round2(q.totalFee);
+      return acc;
+    },
+    {
+      shippingFee: 0,
+      remoteSurcharge: 0,
+      fuelSurcharge: 0,
+      handlingFee: 0,
+      insuranceFee: 0,
+      totalFee: 0,
+    }
+  );
+
+  return {
+    currency,
+    quoteIds: quotes.map((q) => q.id),
+    suppliers: quotes.map((q) => ({
+      supplierId: q.supplierId,
+      quoteId: q.id,
+      serviceLevel: q.serviceLevel,
+      zoneCode: q.zoneCode,
+      zoneName: q.zoneName,
+      rateSource: q.rateSource,
+      components: {
+        shippingFee: round2(q.shippingFee),
+        remoteSurcharge: round2(q.remoteSurcharge),
+        fuelSurcharge: round2(q.fuelSurcharge),
+        handlingFee: round2(q.handlingFee),
+        insuranceFee: round2(q.insuranceFee),
+      },
+      totalFee: round2(q.totalFee),
+      etaMinDays: q.etaMinDays,
+      etaMaxDays: q.etaMaxDays,
+      pickupAddressId: q.pickupAddressId,
+      destinationAddressId: q.destinationAddressId,
+      pricingMeta: q.pricingMetaJson ?? null,
+    })),
+    totals,
+  };
+}
+
 type CheckoutSettingsSnapshot = {
   taxMode: "INCLUDED" | "ADDED" | "NONE";
   taxRatePct: number;
   baseServiceFeeNGN: number;
   commsUnitCostNGN: number;
+
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
 
   supplierMinBayesRating: number;
   supplierPriceBandPct: number;
@@ -172,12 +429,14 @@ async function loadCheckoutSettingsTx(tx: any): Promise<CheckoutSettingsSnapshot
           "taxMode",
           "taxRatePct",
           "baseServiceFeeNGN",
-          "serviceFeeBaseNGN",
           "platformBaseFeeNGN",
           "commsServiceFeeNGN",
           "commsUnitCostNGN",
           "commsServiceFeeUnitNGN",
           "commsUnitFeeNGN",
+          "gatewayFeePercent",
+          "gatewayFixedFeeNGN",
+          "gatewayFeeCapNGN",
           "supplierMinBayesRating",
           "supplierPriceBandPct",
           "supplierBayesM",
@@ -208,7 +467,6 @@ async function loadCheckoutSettingsTx(tx: any): Promise<CheckoutSettingsSnapshot
     0,
     num(
       map.get("baseServiceFeeNGN") ??
-      map.get("serviceFeeBaseNGN") ??
       map.get("platformBaseFeeNGN") ??
       map.get("commsServiceFeeNGN"),
       0
@@ -251,6 +509,10 @@ async function loadCheckoutSettingsTx(tx: any): Promise<CheckoutSettingsSnapshot
     taxRatePct: Math.max(0, num(map.get("taxRatePct"), 0)),
     baseServiceFeeNGN,
     commsUnitCostNGN,
+
+    gatewayFeePercent: Math.max(0, num(map.get("gatewayFeePercent"), 0)),
+    gatewayFixedFeeNGN: Math.max(0, num(map.get("gatewayFixedFeeNGN"), 0)),
+    gatewayFeeCapNGN: Math.max(0, num(map.get("gatewayFeeCapNGN"), 0)),
 
     supplierMinBayesRating: Math.max(0, num(map.get("supplierMinBayesRating"), 3.8)),
     supplierPriceBandPct: Math.max(0, num(map.get("supplierPriceBandPct"), 2)),
@@ -359,69 +621,6 @@ type SelectedShippingQuote = {
   pricingMetaJson: any;
 };
 
-async function getSelectedShippingQuoteTx(
-  tx: any,
-  args: { shippingQuoteId?: string | null; userId: string }
-): Promise<SelectedShippingQuote | null> {
-  const qid = String(args.shippingQuoteId ?? "").trim();
-  if (!qid) return null;
-
-  const q = await tx.shippingQuote.findFirst({
-    where: {
-      id: qid,
-      userId: args.userId,
-      status: { in: ["DRAFT", "SELECTED"] as any },
-    },
-    select: {
-      id: true,
-      supplierId: true,
-      rateSource: true,
-      status: true,
-      expiresAt: true,
-      serviceLevel: true,
-      zoneCode: true,
-      zoneName: true,
-      currency: true,
-      shippingFee: true,
-      remoteSurcharge: true,
-      fuelSurcharge: true,
-      handlingFee: true,
-      insuranceFee: true,
-      totalFee: true,
-      etaMinDays: true,
-      etaMaxDays: true,
-      pickupAddressId: true,
-      destinationAddressId: true,
-      pricingMetaJson: true,
-    },
-  });
-
-  if (!q) throw new Error("Selected shipping quote not found.");
-  if (q.expiresAt && new Date(q.expiresAt) <= new Date()) {
-    throw new Error("Selected shipping quote has expired.");
-  }
-
-  return {
-    id: String(q.id),
-    supplierId: String(q.supplierId),
-    rateSource: String(q.rateSource) as any,
-    serviceLevel: String(q.serviceLevel ?? "STANDARD"),
-    zoneCode: q.zoneCode ? String(q.zoneCode) : null,
-    zoneName: q.zoneName ? String(q.zoneName) : null,
-    currency: String(q.currency ?? "NGN"),
-    shippingFee: asNumber(q.shippingFee, 0),
-    remoteSurcharge: asNumber(q.remoteSurcharge, 0),
-    fuelSurcharge: asNumber(q.fuelSurcharge, 0),
-    handlingFee: asNumber(q.handlingFee, 0),
-    insuranceFee: asNumber(q.insuranceFee, 0),
-    totalFee: asNumber(q.totalFee, 0),
-    etaMinDays: q.etaMinDays == null ? null : Number(q.etaMinDays),
-    etaMaxDays: q.etaMaxDays == null ? null : Number(q.etaMaxDays),
-    pickupAddressId: q.pickupAddressId ? String(q.pickupAddressId) : null,
-    destinationAddressId: q.destinationAddressId ? String(q.destinationAddressId) : null,
-    pricingMetaJson: q.pricingMetaJson ?? null,
-  };
-}
 
 async function attachShippingQuoteToOrderTx(
   tx: any,
@@ -521,12 +720,30 @@ async function assertSupplierPurchasableTx(tx: any, supplierId: string) {
   if (!ok) throw new Error(`Supplier ${sid} is not available for checkout.`);
 }
 
-function estimateGatewayFee(amountNaira: number): number {
+function estimateGatewayFee(
+  amountNaira: number,
+  settings?: {
+    gatewayFeePercent?: number;
+    gatewayFixedFeeNGN?: number;
+    gatewayFeeCapNGN?: number;
+  }
+) {
   if (!Number.isFinite(amountNaira) || amountNaira <= 0) return 0;
-  const percent = amountNaira * 0.015;
-  const extra = amountNaira > 2500 ? 100 : 0;
-  return Math.min(percent + extra, 2000);
+
+  const gatewayFeePercent = Number(settings?.gatewayFeePercent ?? 0);
+  const gatewayFixedFeeNGN = Number(settings?.gatewayFixedFeeNGN ?? 0);
+  const gatewayFeeCapNGN = Number(settings?.gatewayFeeCapNGN ?? 0);
+
+  const percentFee = amountNaira * (gatewayFeePercent / 100);
+  const gross = percentFee + gatewayFixedFeeNGN;
+
+  if (gatewayFeeCapNGN > 0) {
+    return Math.min(gross, gatewayFeeCapNGN);
+  }
+
+  return gross;
 }
+
 
 function toNumber(v: any, def = 0) {
   const n = Number(v);
@@ -1468,9 +1685,13 @@ async function clearActiveCartForUserTx(tx: any, userId: string) {
 
 /* ---------------- Purchase Orders ---------------- */
 
-async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
+async function ensurePurchaseOrdersForOrderTx(
+  tx: any,
+  orderId: string,
+  quotesBySupplier?: SelectedShippingQuoteMap
+) {
   const order = await tx.order.findUnique({
-    where: { id: orderId }, // ✅ use id, not orderId
+    where: { id: orderId },
     select: {
       id: true,
       shippingFee: true,
@@ -1478,6 +1699,10 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
       shippingBreakdownJson: true,
     },
   });
+
+  if (!order) {
+    throw new Error(`Order ${orderId} not found.`);
+  }
 
   const items = await tx.orderItem.findMany({
     where: { orderId },
@@ -1493,7 +1718,12 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
 
   const bySupplier = new Map<
     string,
-    { supplierId: string; supplierAmount: number; customerSubtotal: number; itemIds: string[] }
+    {
+      supplierId: string;
+      supplierAmount: number;
+      customerSubtotal: number;
+      itemIds: string[];
+    }
   >();
 
   for (const it of items) {
@@ -1501,39 +1731,116 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     if (!sid) continue;
 
     const qty = Math.max(0, Number(it.quantity ?? 0));
+
     const supplierUnit = money(it.chosenSupplierUnitPrice);
-    const supplierLine = supplierUnit * qty;
+    const supplierLine = round2(supplierUnit * qty);
 
     const customerUnit = money(it.unitPrice);
-    const customerLine =
-      it.lineTotal != null ? money(it.lineTotal) : customerUnit * qty;
+    const customerLine = round2(
+      it.lineTotal != null ? money(it.lineTotal) : customerUnit * qty
+    );
 
     const cur =
-      bySupplier.get(sid) ??
-      { supplierId: sid, supplierAmount: 0, customerSubtotal: 0, itemIds: [] };
-    cur.supplierAmount += supplierLine;
-    cur.customerSubtotal += customerLine;
+      bySupplier.get(sid) ?? {
+        supplierId: sid,
+        supplierAmount: 0,
+        customerSubtotal: 0,
+        itemIds: [],
+      };
+
+    cur.supplierAmount = round2(cur.supplierAmount + supplierLine);
+    cur.customerSubtotal = round2(cur.customerSubtotal + customerLine);
     cur.itemIds.push(String(it.id));
     bySupplier.set(sid, cur);
   }
 
   const supplierIds = Array.from(bySupplier.keys());
+
   const suppliers = await tx.supplier.findMany({
     where: { id: { in: supplierIds } },
     select: { id: true, name: true },
   });
+
   const supplierNameById = new Map(
     suppliers.map((s: any) => [String(s.id), String(s.name)])
   );
 
-  // shipping breakdown from selected quote (if present)
-  const orderShippingFee = round2(Number(order?.shippingFee ?? 0));
-  const shippingCurrency = String(order?.shippingCurrency ?? "NGN");
-  const breakdown = (order?.shippingBreakdownJson ?? {}) as any;
-  const quotedSupplierId = breakdown?.quoteId ? String(breakdown?.supplierId ?? "") : ""; // optional if stored
-  const totalCustomerSubtotal = Array.from(bySupplier.values()).reduce(
-    (s, x) => s + x.customerSubtotal,
-    0
+  const quotes = quotesBySupplier ?? {};
+
+  // Build fallback shipping map from order.shippingBreakdownJson
+  // so this still works even when quotesBySupplier is not passed in.
+  const breakdown = (order.shippingBreakdownJson ?? null) as any;
+
+  const breakdownQuoteMap = new Map<
+    string,
+    {
+      shippingFeeChargedToCustomer: number;
+      shippingCurrency: string;
+      shippingServiceLevel: string | null;
+      shippedFromAddressId: string | null;
+      shippedToAddressId: string | null;
+      shippingCarrierName: string | null;
+    }
+  >();
+
+  if (breakdown && Array.isArray(breakdown.suppliers)) {
+    for (const row of breakdown.suppliers) {
+      const sid = String(row?.supplierId ?? "").trim();
+      if (!sid) continue;
+
+      const totalFee = round2(
+        Number(
+          row?.totalFee ??
+          row?.totals?.totalFee ??
+          0
+        )
+      );
+
+      const shippingCurrency = String(
+        row?.currency ??
+        breakdown?.currency ??
+        order.shippingCurrency ??
+        "NGN"
+      );
+
+      const shippingServiceLevel = row?.serviceLevel
+        ? String(row.serviceLevel)
+        : null;
+
+      const shippedFromAddressId = row?.pickupAddressId
+        ? String(row.pickupAddressId)
+        : null;
+
+      const shippedToAddressId = row?.destinationAddressId
+        ? String(row.destinationAddressId)
+        : null;
+
+      const shippingCarrierName =
+        String(row?.rateSource ?? "").toUpperCase() === "LIVE_CARRIER"
+          ? String(
+            row?.pricingMeta?.carrierName ??
+            row?.pricingMetaJson?.carrierName ??
+            ""
+          ).trim() || null
+          : null;
+
+      breakdownQuoteMap.set(sid, {
+        shippingFeeChargedToCustomer: totalFee,
+        shippingCurrency,
+        shippingServiceLevel,
+        shippedFromAddressId,
+        shippedToAddressId,
+        shippingCarrierName,
+      });
+    }
+  }
+
+  const totalOrderShippingFee = round2(Number(order.shippingFee ?? 0));
+  const totalCustomerSubtotal = round2(
+    Array.from(bySupplier.values()).reduce(
+      (sum, g) => sum + round2(g.customerSubtotal),
+      0
+    )
   );
 
   const createdPOs: any[] = [];
@@ -1545,18 +1852,40 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     const customerSubtotal = round2(g.customerSubtotal);
     const platformFee = round2(Math.max(0, customerSubtotal - supplierAmount));
 
-    // ✅ shipping allocation strategy:
-    // - if shipping quote supplier matches PO supplier: assign full shipping to that PO
-    // - otherwise prorate by customer subtotal
+    const directQuote = quotes[sid] ?? null;
+    const fallbackQuote = breakdownQuoteMap.get(sid) ?? null;
+
     let shippingFeeChargedToCustomer = 0;
-    if (orderShippingFee > 0) {
-      if (quotedSupplierId && sid === quotedSupplierId) {
-        shippingFeeChargedToCustomer = orderShippingFee;
-      } else if (!quotedSupplierId && totalCustomerSubtotal > 0) {
-        shippingFeeChargedToCustomer = round2(
-          (customerSubtotal / totalCustomerSubtotal) * orderShippingFee
-        );
-      }
+    let shippingCurrency = String(order.shippingCurrency ?? "NGN");
+    let shippingServiceLevel: string | null = null;
+    let shippedFromAddressId: string | null = null;
+    let shippedToAddressId: string | null = null;
+    let shippingCarrierName: string | null = null;
+
+    if (directQuote) {
+      shippingFeeChargedToCustomer = round2(directQuote.totalFee);
+      shippingCurrency = directQuote.currency ?? shippingCurrency;
+      shippingServiceLevel = directQuote.serviceLevel ?? null;
+      shippedFromAddressId = directQuote.pickupAddressId ?? null;
+      shippedToAddressId = directQuote.destinationAddressId ?? null;
+      shippingCarrierName =
+        directQuote.rateSource === "LIVE_CARRIER"
+          ? String(directQuote?.pricingMetaJson?.carrierName ?? "").trim() || null
+          : null;
+    } else if (fallbackQuote) {
+      shippingFeeChargedToCustomer = round2(
+        fallbackQuote.shippingFeeChargedToCustomer
+      );
+      shippingCurrency = fallbackQuote.shippingCurrency ?? shippingCurrency;
+      shippingServiceLevel = fallbackQuote.shippingServiceLevel ?? null;
+      shippedFromAddressId = fallbackQuote.shippedFromAddressId ?? null;
+      shippedToAddressId = fallbackQuote.shippedToAddressId ?? null;
+      shippingCarrierName = fallbackQuote.shippingCarrierName ?? null;
+    } else if (totalOrderShippingFee > 0 && totalCustomerSubtotal > 0) {
+      // final fallback: prorate order-level shipping if no per-supplier breakdown exists
+      shippingFeeChargedToCustomer = round2(
+        (customerSubtotal / totalCustomerSubtotal) * totalOrderShippingFee
+      );
     }
 
     const po = await tx.purchaseOrder.upsert({
@@ -1569,32 +1898,51 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
         supplierAmount,
         status: "CREATED",
 
-        // ✅ new schema fields
         shippingFeeChargedToCustomer,
         shippingCurrency,
+        shippingServiceLevel,
+        shippedFromAddressId,
+        shippedToAddressId,
+        shippingCarrierName,
       },
       update: {
         subtotal: customerSubtotal,
         platformFee,
         supplierAmount,
+
         shippingFeeChargedToCustomer,
         shippingCurrency,
+        shippingServiceLevel,
+        shippedFromAddressId,
+        shippedToAddressId,
+        shippingCarrierName,
       },
       select: { id: true, supplierId: true },
     });
 
-    await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
+    await tx.purchaseOrderItem.deleteMany({
+      where: { purchaseOrderId: po.id },
+    });
 
     for (const orderItemId of g.itemIds) {
-      await tx.purchaseOrderItem.create({ data: { purchaseOrderId: po.id, orderItemId } });
+      await tx.purchaseOrderItem.create({
+        data: { purchaseOrderId: po.id, orderItemId },
+      });
     }
 
     createdPOs.push({
       id: po.id,
       supplierId: sid,
       supplierName: supplierNameById.get(sid) ?? null,
+      subtotal: customerSubtotal,
+      supplierAmount,
+      platformFee,
       shippingFeeChargedToCustomer,
       shippingCurrency,
+      shippingServiceLevel,
+      shippedFromAddressId,
+      shippedToAddressId,
+      shippingCarrierName,
     });
   }
 
@@ -1657,53 +2005,20 @@ function computeSupplierPayoutFromRetail(
   };
 }
 
-async function computeServiceFeeForOrderTx(
-  tx: any,
-  settings: CheckoutSettingsSnapshot,
-  orderId: string,
-  itemsSubtotal: number
-) {
-  const base = settings.baseServiceFeeNGN;
-  const unitFee = settings.commsUnitCostNGN;
 
-  const rows = await tx.orderItem.findMany({
-    where: { orderId },
-    select: { quantity: true },
-  });
+function resolveServiceFeeBaseSnapshot(
+  body: CreateOrderBody,
+  settings: CheckoutSettingsSnapshot
+): number {
+  const fromBody = Number(body?.serviceFeeBase);
 
-  const totalUnits = rows.reduce(
-    (s: number, r: any) => s + Math.max(0, Number(r.quantity ?? 0)),
-    0
-  );
+  if (Number.isFinite(fromBody) && fromBody >= 0) {
+    return round2(fromBody);
+  }
 
-  const taxMode = settings.taxMode;
-  const taxRatePct = settings.taxRatePct;
-
-  const vatAddOn =
-    taxMode === "ADDED" && taxRatePct > 0
-      ? (itemsSubtotal * taxRatePct) / 100
-      : 0;
-
-  const serviceFeeBase = round2(Math.max(0, base));
-  const serviceFeeComms = round2(Math.max(0, unitFee * totalUnits));
-
-  const grossBeforeGateway =
-    itemsSubtotal + vatAddOn + serviceFeeBase + serviceFeeComms;
-  const serviceFeeGateway = round2(estimateGatewayFee(grossBeforeGateway));
-  const serviceFeeTotal = round2(
-    serviceFeeBase + serviceFeeComms + serviceFeeGateway
-  );
-
-  return {
-    serviceFeeBase,
-    serviceFeeComms,
-    serviceFeeGateway,
-    serviceFeeTotal,
-    serviceFee: serviceFeeTotal,
-    meta: { totalUnits, unitFee, taxMode, taxRatePct, vatAddOn, grossBeforeGateway },
-  };
+  // fallback only at order creation time if checkout forgot to send it
+  return round2(Math.max(0, Number(settings.baseServiceFeeNGN ?? 0)));
 }
-
 
 
 /**
@@ -1828,10 +2143,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return res.status(400).json({ error: "No items." });
   }
 
-  if (shippingEnabled && !body.shippingAddressId && !body.shippingAddress) {
-    return res
-      .status(400)
-      .json({ error: "shippingAddress or shippingAddressId is required." });
+  if (
+    !body.selectedUserShippingAddressId &&
+    !body.shippingAddressId &&
+    !body.shippingAddress
+  ) {
+    return res.status(400).json({
+      error:
+        "selectedUserShippingAddressId, shippingAddress, or shippingAddressId is required.",
+    });
   }
 
   const userId = getUserId(req);
@@ -1854,149 +2174,169 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return null;
   };
 
-  const getFallbackCustomerUnitFromSupplierCost = (
-    supplierUnitCost: number,
-    settings: CheckoutSettingsSnapshot,
-    ctx: { productId: string; variantId: string | null }
-  ): number => {
-    const cfg = getMarginConfig(settings);
-    const marginPercent = resolveMarginPercentForItem(settings);
-
-    const percentMarginValue = round2(supplierUnitCost * (marginPercent / 100));
-    const actualMargin = Math.max(cfg.minMarginNGN, percentMarginValue);
-
-    const customerUnit = round2(supplierUnitCost + actualMargin);
-
-    if (!(customerUnit > 0)) {
-      throw new Error(
-        `Could not compute customer unit price for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
-        }.`
-      );
-    }
-
-    return customerUnit;
-  };
-
-  const assertClientCheckoutUnitReasonable = (
-    clientUnit: number,
-    supplierUnitCost: number,
-    settings: CheckoutSettingsSnapshot,
-    ctx: { productId: string; variantId: string | null }
-  ) => {
-    if (!(clientUnit > 0)) {
-      throw new Error(
-        `Invalid checkout unit price for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
-        }.`
-      );
-    }
-
-    if (clientUnit + 1 < supplierUnitCost) {
-      throw new Error(
-        `Checkout unit price is below supplier cost for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
-        }.`
-      );
-    }
-
-    const maxMarginPct = Math.max(0, Number(settings.maxMarginPct ?? 100));
-    const maxReasonable =
-      supplierUnitCost > 0
-        ? round2(
-          supplierUnitCost * (1 + maxMarginPct / 100) +
-          Math.max(0, settings.minMarginNGN)
-        )
-        : clientUnit;
-
-    if (supplierUnitCost > 0 && clientUnit - maxReasonable > 5) {
-      throw new Error(
-        `Checkout unit price is outside allowed margin bounds for product ${ctx.productId}${ctx.variantId ? ` variant ${ctx.variantId}` : ""
-        }.`
-      );
-    }
-  };
-
   try {
     const created = await prisma.$transaction(
       async (tx: any) => {
         const settings = await loadCheckoutSettingsTx(tx);
         const shippingEnabledTxVal = shippingEnabled;
 
-        let selectedShippingQuote: SelectedShippingQuote | null = null;
+        let selectedShippingQuotesBySupplier: SelectedShippingQuoteMap = {};
         let shippingFeeFinal = 0;
         let shippingCurrencyFinal = "NGN";
         let shippingRateSourceFinal: string | null = null;
 
         if (shippingEnabledTxVal) {
-          selectedShippingQuote = await getSelectedShippingQuoteTx(tx, {
+          selectedShippingQuotesBySupplier = await getSelectedShippingQuotesTx(tx, {
+            shippingQuoteIds: body.shippingQuoteIds ?? null,
             shippingQuoteId: body.shippingQuoteId ?? null,
             userId,
           });
+
+          const selectedQuotes = Object.values(selectedShippingQuotesBySupplier);
 
           const clientShippingFee = round2(
             Math.max(0, toNumberLocal((body as any).shippingFee, 0))
           );
 
-          shippingFeeFinal = round2(selectedShippingQuote?.totalFee ?? clientShippingFee);
+          shippingFeeFinal = round2(
+            selectedQuotes.length
+              ? selectedQuotes.reduce((s, q) => s + round2(q.totalFee), 0)
+              : clientShippingFee
+          );
+
           shippingCurrencyFinal = String(
-            selectedShippingQuote?.currency ?? (body as any).shippingCurrency ?? "NGN"
+            selectedQuotes[0]?.currency ?? (body as any).shippingCurrency ?? "NGN"
           );
 
           const rawRate =
-            (selectedShippingQuote?.rateSource as any) ||
-            (body as any).shippingRateSource ||
-            (selectedShippingQuote ? "LIVE_CARRIER" : "MANUAL");
+            selectedQuotes.length === 1
+              ? selectedQuotes[0].rateSource
+              : selectedQuotes.length > 1
+                ? "MANUAL"
+                : (body as any).shippingRateSource || "MANUAL";
 
           shippingRateSourceFinal = normalizeShippingRateSource(rawRate);
         }
 
-        const data: any = {
-          subtotal: 0,
-          tax: 0,
-          total: 0,
-          status: "CREATED",
-          user: { connect: { id: userId } },
+        let shippingAddressId: string | null = null;
+        let billingAddressId: string | null = null;
+        let selectedUserShippingAddressId: string | null = null;
 
-          shippingFee: shippingEnabledTxVal ? shippingFeeFinal : 0,
-          shippingCurrency: shippingCurrencyFinal,
-          ...(shippingEnabledTxVal && shippingRateSourceFinal
-            ? { shippingRateSource: shippingRateSourceFinal as any }
-            : {}),
-          shippingBreakdownJson:
-            shippingEnabledTxVal && selectedShippingQuote
-              ? {
-                ...buildOrderShippingBreakdownJson(selectedShippingQuote),
-                supplierId: selectedShippingQuote.supplierId,
-              }
-              : shippingEnabledTxVal && shippingFeeFinal > 0
-                ? {
-                  quoteId: null,
-                  serviceLevel: "STANDARD",
-                  zoneCode: null,
-                  zoneName: null,
-                  currency: shippingCurrencyFinal,
-                  rateSource:
-                    (shippingRateSourceFinal as any) ??
-                    normalizeShippingRateSource("MANUAL"),
-                  components: {
-                    shippingFee: shippingFeeFinal,
-                    remoteSurcharge: 0,
-                    fuelSurcharge: 0,
-                    handlingFee: 0,
-                    insuranceFee: 0,
-                  },
-                  totalFee: shippingFeeFinal,
-                  etaMinDays: null,
-                  etaMaxDays: null,
-                  pricingMeta: { source: "checkout_fallback" },
-                }
-                : null,
-        };
+        const buyer = await tx.user.findUnique({
+          where: { id: String(userId) },
+          select: {
+            id: true,
+            phone: true,
+            phoneVerifiedAt: true,
+          },
+        });
 
-        if (body.shippingAddressId) {
-          data.shippingAddress = { connect: { id: body.shippingAddressId } };
+        if (!buyer) {
+          throw new Error("User not found.");
+        }
+
+        const DELIVERY_PHONE_UNVERIFIED_MSG =
+          "The selected delivery phone is not verified. Please verify it before placing your order.";
+
+        /* ------------------------------------------------------------------ */
+        /* SHIPPING ADDRESS RESOLUTION + VERIFICATION ENFORCEMENT              */
+        /* ------------------------------------------------------------------ */
+
+        if (body.selectedUserShippingAddressId) {
+          const saved = await getUserShippingAddressForCheckoutTx(tx, {
+            userId,
+            selectedUserShippingAddressId: body.selectedUserShippingAddressId,
+          });
+
+          const verified = isSavedShippingAddressVerifiedForCheckout({
+            saved,
+            userPhone: buyer.phone,
+            userPhoneVerifiedAt: buyer.phoneVerifiedAt,
+          });
+
+          if (!verified) {
+            throw new Error(DELIVERY_PHONE_UNVERIFIED_MSG);
+          }
+
+          const snapshot = await createOrderAddressSnapshotFromUserShippingAddressTx(
+            tx,
+            saved
+          );
+
+          if (!snapshot?.id) {
+            throw new Error("Could not create shipping address snapshot.");
+          }
+
+          shippingAddressId = String(snapshot.id);
+          selectedUserShippingAddressId = String(saved.id);
+        } else if (body.shippingAddressId) {
+          const rawShippingAddressId = String(body.shippingAddressId).trim();
+
+          // Backward-compatible path:
+          // Treat shippingAddressId primarily as a saved user shipping address id.
+          const savedUserShipping = await tx.userShippingAddress.findFirst({
+            where: {
+              id: rawShippingAddressId,
+              userId,
+              isActive: true,
+            },
+            select: {
+              id: true,
+              label: true,
+              recipientName: true,
+              phone: true,
+              whatsappPhone: true,
+              houseNumber: true,
+              streetName: true,
+              postCode: true,
+              town: true,
+              city: true,
+              state: true,
+              country: true,
+              lga: true,
+              landmark: true,
+              directionsNote: true,
+              phoneVerifiedAt: true,
+              phoneVerifiedBy: true,
+              verificationMeta: true,
+            },
+          });
+
+          if (savedUserShipping) {
+            const verified = isSavedShippingAddressVerifiedForCheckout({
+              saved: savedUserShipping,
+              userPhone: buyer.phone,
+              userPhoneVerifiedAt: buyer.phoneVerifiedAt,
+            });
+
+            if (!verified) {
+              throw new Error(DELIVERY_PHONE_UNVERIFIED_MSG);
+            }
+
+            const snapshot = await createOrderAddressSnapshotFromUserShippingAddressTx(
+              tx,
+              savedUserShipping
+            );
+
+            if (!snapshot?.id) {
+              throw new Error("Could not create shipping address snapshot.");
+            }
+
+            shippingAddressId = String(snapshot.id);
+            selectedUserShippingAddressId = String(savedUserShipping.id);
+          } else {
+            // Optional strictness:
+            // do not allow raw Address.id shopper checkout bypass anymore
+            throw new Error(
+              "Selected delivery address was not found. Please reselect your saved delivery detail."
+            );
+          }
         } else if (body.shippingAddress) {
+          // Legacy/manual fallback. For your modern shopper flow, you may remove this entirely.
           const a = body.shippingAddress;
-          data.shippingAddress = {
-            create: {
+
+          const createdShipping = await tx.address.create({
+            data: {
               houseNumber: a.houseNumber ?? null,
               streetName: a.streetName ?? null,
               postCode: a.postCode ?? null,
@@ -2004,16 +2344,49 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               city: a.city ?? null,
               state: a.state ?? null,
               country: a.country ?? null,
+              lga: (a as any).lga ?? null,
+              landmark: (a as any).landmark ?? null,
+              directionsNote: (a as any).directionsNote ?? null,
+              placeId: (a as any).placeId ?? null,
+              validationSource: (a as any).validationSource ?? null,
+              isValidated: Boolean((a as any).isValidated ?? false),
+              latitude:
+                (a as any).latitude != null && `${(a as any).latitude}` !== ""
+                  ? Number((a as any).latitude)
+                  : null,
+              longitude:
+                (a as any).longitude != null && `${(a as any).longitude}` !== ""
+                  ? Number((a as any).longitude)
+                  : null,
+              validatedAt:
+                (a as any).validatedAt ? new Date((a as any).validatedAt) : null,
             },
-          };
+            select: { id: true },
+          });
+
+          shippingAddressId = String(createdShipping.id);
+        }
+
+        if (!shippingAddressId) {
+          throw new Error("A shipping address is required to create this order.");
         }
 
         if (body.billingAddressId) {
-          data.billingAddress = { connect: { id: body.billingAddressId } };
+          const existingBilling = await tx.address.findUnique({
+            where: { id: String(body.billingAddressId) },
+            select: { id: true },
+          });
+
+          if (!existingBilling) {
+            throw new Error("Billing address not found.");
+          }
+
+          billingAddressId = String(existingBilling.id);
         } else if (body.billingAddress) {
           const b = body.billingAddress;
-          data.billingAddress = {
-            create: {
+
+          const createdBilling = await tx.address.create({
+            data: {
               houseNumber: b.houseNumber ?? null,
               streetName: b.streetName ?? null,
               postCode: b.postCode ?? null,
@@ -2021,9 +2394,72 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               city: b.city ?? null,
               state: b.state ?? null,
               country: b.country ?? null,
+              lga: (b as any).lga ?? null,
+              landmark: (b as any).landmark ?? null,
+              directionsNote: (b as any).directionsNote ?? null,
+              placeId: (b as any).placeId ?? null,
+              validationSource: (b as any).validationSource ?? null,
+              isValidated: Boolean((b as any).isValidated ?? false),
+              latitude:
+                (b as any).latitude != null && `${(b as any).latitude}` !== ""
+                  ? Number((b as any).latitude)
+                  : null,
+              longitude:
+                (b as any).longitude != null && `${(b as any).longitude}` !== ""
+                  ? Number((b as any).longitude)
+                  : null,
+              validatedAt:
+                (b as any).validatedAt ? new Date((b as any).validatedAt) : null,
             },
-          };
+            select: { id: true },
+          });
+
+          billingAddressId = String(createdBilling.id);
         }
+
+        const data: any = {
+          userId,
+          shippingAddressId,
+          selectedUserShippingAddressId,
+          billingAddressId,
+
+          subtotal: 0,
+          tax: 0,
+          total: 0,
+          status: "CREATED",
+
+          shippingFee: shippingEnabledTxVal ? shippingFeeFinal : 0,
+          shippingCurrency: shippingCurrencyFinal,
+          ...(shippingEnabledTxVal && shippingRateSourceFinal
+            ? { shippingRateSource: shippingRateSourceFinal as any }
+            : {}),
+          shippingBreakdownJson:
+            shippingEnabledTxVal && Object.keys(selectedShippingQuotesBySupplier).length
+              ? buildOrderShippingBreakdownFromQuotes(selectedShippingQuotesBySupplier)
+              : shippingEnabledTxVal && shippingFeeFinal > 0
+                ? {
+                    quoteId: null,
+                    serviceLevel: "STANDARD",
+                    zoneCode: null,
+                    zoneName: null,
+                    currency: shippingCurrencyFinal,
+                    rateSource:
+                      (shippingRateSourceFinal as any) ??
+                      normalizeShippingRateSource("MANUAL"),
+                    components: {
+                      shippingFee: shippingFeeFinal,
+                      remoteSurcharge: 0,
+                      fuelSurcharge: 0,
+                      handlingFee: 0,
+                      insuranceFee: 0,
+                    },
+                    totalFee: shippingFeeFinal,
+                    etaMinDays: null,
+                    etaMaxDays: null,
+                    pricingMeta: { source: "checkout_fallback" },
+                  }
+                : null,
+        };
 
         const order = await tx.order.create({ data });
 
@@ -2225,7 +2661,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             need -= take;
           }
 
-                    const checkoutUnit = getClientCheckoutUnitPrice(line);
+          const checkoutUnit = getClientCheckoutUnitPrice(line);
 
           if (!(Number.isFinite(checkoutUnit) && Number(checkoutUnit) > 0)) {
             throw new Error(
@@ -2251,12 +2687,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
                 chosenSupplierId: alloc.supplierId,
 
-                // keep actual supplier allocation cost
                 chosenSupplierUnitPrice: supplierUnitCost,
 
                 title: productTitle,
-
-                // customer-facing billed price must match checkout
                 unitPrice: round2(Number(checkoutUnit)),
                 quantity: alloc.qty,
                 lineTotal: round2(Number(checkoutUnit) * alloc.qty),
@@ -2302,10 +2735,13 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         const vatAddOn =
           taxMode === "ADDED" && rate > 0 ? subtotal * rate : 0;
 
-        const svc = await computeServiceFeeForOrderTx(tx, settings, order.id, subtotal);
+        const serviceFeeBaseSnapshot = resolveServiceFeeBaseSnapshot(body, settings);
+        const serviceFeeCommsSnapshot = 0;
+        const serviceFeeGatewaySnapshot = 0;
+        const serviceFeeTotalSnapshot = serviceFeeBaseSnapshot;
 
         const shippingFee = shippingEnabledTxVal ? shippingFeeFinal : 0;
-        const total = round2(subtotal + vatAddOn + svc.serviceFeeTotal + shippingFee);
+        const total = round2(subtotal + vatAddOn + shippingFee);
 
         const updatedOrder = await tx.order.update({
           where: { id: order.id },
@@ -2320,11 +2756,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             ),
             total,
 
-            serviceFeeBase: svc.serviceFeeBase,
-            serviceFeeComms: svc.serviceFeeComms,
-            serviceFeeGateway: svc.serviceFeeGateway,
-            serviceFeeTotal: svc.serviceFeeTotal,
-            serviceFee: svc.serviceFeeTotal,
+            serviceFeeBase: serviceFeeBaseSnapshot,
+            serviceFeeComms: serviceFeeCommsSnapshot,
+            serviceFeeGateway: serviceFeeGatewaySnapshot,
+            serviceFeeTotal: serviceFeeTotalSnapshot,
+            serviceFee: serviceFeeTotalSnapshot,
 
             shippingFee,
             shippingCurrency: shippingCurrencyFinal,
@@ -2332,33 +2768,30 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               ? { shippingRateSource: shippingRateSourceFinal as any }
               : { shippingRateSource: undefined }),
             shippingBreakdownJson:
-              shippingEnabledTxVal && selectedShippingQuote
-                ? {
-                  ...buildOrderShippingBreakdownJson(selectedShippingQuote),
-                  supplierId: selectedShippingQuote.supplierId,
-                }
+              shippingEnabledTxVal && Object.keys(selectedShippingQuotesBySupplier).length
+                ? buildOrderShippingBreakdownFromQuotes(selectedShippingQuotesBySupplier)
                 : shippingEnabledTxVal && shippingFee > 0
                   ? {
-                    quoteId: null,
-                    serviceLevel: "STANDARD",
-                    zoneCode: null,
-                    zoneName: null,
-                    currency: shippingCurrencyFinal,
-                    rateSource:
-                      (shippingRateSourceFinal as any) ??
-                      normalizeShippingRateSource("MANUAL"),
-                    components: {
-                      shippingFee,
-                      remoteSurcharge: 0,
-                      fuelSurcharge: 0,
-                      handlingFee: 0,
-                      insuranceFee: 0,
-                    },
-                    totalFee: shippingFee,
-                    etaMinDays: null,
-                    etaMaxDays: null,
-                    pricingMeta: { source: "checkout_fallback" },
-                  }
+                      quoteId: null,
+                      serviceLevel: "STANDARD",
+                      zoneCode: null,
+                      zoneName: null,
+                      currency: shippingCurrencyFinal,
+                      rateSource:
+                        (shippingRateSourceFinal as any) ??
+                        normalizeShippingRateSource("MANUAL"),
+                      components: {
+                        shippingFee,
+                        remoteSurcharge: 0,
+                        fuelSurcharge: 0,
+                        handlingFee: 0,
+                        insuranceFee: 0,
+                      },
+                      totalFee: shippingFee,
+                      etaMinDays: null,
+                      etaMaxDays: null,
+                      pricingMeta: { source: "checkout_fallback" },
+                    }
                   : null,
           },
           select: {
@@ -2379,13 +2812,19 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           },
         });
 
-        const purchaseOrders = await ensurePurchaseOrdersForOrderTx(tx, order.id);
+        const purchaseOrders = await ensurePurchaseOrdersForOrderTx(
+          tx,
+          order.id,
+          selectedShippingQuotesBySupplier
+        );
 
-        if (shippingEnabledTxVal && selectedShippingQuote?.id) {
-          await attachShippingQuoteToOrderTx(tx, {
-            quoteId: selectedShippingQuote.id,
-            orderId: updatedOrder.id,
-          });
+        if (shippingEnabledTxVal) {
+          for (const q of Object.values(selectedShippingQuotesBySupplier)) {
+            await attachShippingQuoteToOrderTx(tx, {
+              quoteId: q.id,
+              orderId: updatedOrder.id,
+            });
+          }
         }
 
         try {
@@ -2433,7 +2872,17 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             taxRatePct,
             vatIncluded: round2(vatIncluded),
             vatAddOn: round2(vatAddOn),
-            serviceFeeMeta: svc.meta,
+            serviceFeeMeta: {
+              source: Number.isFinite(Number(body?.serviceFeeBase))
+                ? "checkout_snapshot"
+                : "settings_fallback",
+              serviceFeeBase: serviceFeeBaseSnapshot,
+              serviceFeeComms: serviceFeeCommsSnapshot,
+              serviceFeeGateway: serviceFeeGatewaySnapshot,
+              serviceFeeTotal: serviceFeeTotalSnapshot,
+              includedInRetailPrice: true,
+              addedAgainToOrderTotal: false,
+            },
             purchaseOrders,
             pricing: {
               mode: "retail-price-with-supplier-cost-allocation",

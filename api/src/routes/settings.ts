@@ -35,12 +35,26 @@ function toTaxMode(v: any): "INCLUDED" | "ADDED" | "NONE" {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-function estimateGatewayFee(amountNaira: number): number {
+function estimateGatewayFee(
+  amountNaira: number,
+  settings: {
+    gatewayFeePercent: number
+    gatewayFixedFeeNGN: number
+    gatewayFeeCapNGN: number
+  }
+) {
   if (!Number.isFinite(amountNaira) || amountNaira <= 0) return 0;
-  const percent = amountNaira * 0.015;
-  const extra = amountNaira > 2500 ? 100 : 0;
-  return Math.min(percent + extra, 2000);
+
+  const percentFee = amountNaira * (settings.gatewayFeePercent / 100);
+  const gross = percentFee + settings.gatewayFixedFeeNGN;
+
+  if (settings.gatewayFeeCapNGN > 0) {
+    return Math.min(gross, settings.gatewayFeeCapNGN);
+  }
+
+  return gross;
 }
+
 
 /* ------------------------- FEATURE FLAG helpers -------------------------- */
 
@@ -142,7 +156,6 @@ router.get("/public", async (_req, res) => {
   try {
     const baseRaw =
       (await readSetting("baseServiceFeeNGN")) ??
-      (await readSetting("serviceFeeBaseNGN")) ??
       (await readSetting("platformBaseFeeNGN")) ??
       (await readSetting("commsServiceFeeNGN")); // legacy fallback
 
@@ -166,6 +179,41 @@ router.get("/public", async (_req, res) => {
     const maxMarginPctRaw =
       (await readSetting("maxMarginPct"));
 
+    const gatewayFeePercentRaw =
+      (await readSetting("gatewayFeePercent")) ??
+      (await readSetting("paystackFeePercent")) ??
+      "1.5";
+
+    const gatewayFixedFeeNGNRaw =
+      (await readSetting("gatewayFixedFeeNGN")) ??
+      (await readSetting("paystackFixedFeeNGN")) ??
+      "100";
+
+    const gatewayFeeCapNGNRaw =
+      (await readSetting("gatewayFeeCapNGN")) ??
+      (await readSetting("paystackFeeCapNGN")) ??
+      "2000";
+
+    const opsBufferNGNRaw =
+      (await readSetting("opsBufferNGN")) ??
+      "0";
+
+    const pricingRoundStepNGNRaw =
+      (await readSetting("pricingRoundStepNGN")) ??
+      "100";
+
+    const pricingRoundCharmNGNRaw =
+      (await readSetting("pricingRoundCharmNGN")) ??
+      "1";
+
+    const absorbGatewayFeesRaw =
+      (await readSetting("absorbGatewayFees")) ??
+      "true";
+
+    const absorbCommsCostsRaw =
+      (await readSetting("absorbCommsCosts")) ??
+      "true";
+
     const baseServiceFeeNGN = toNumber(baseRaw, 0);
     const commsUnitCostNGN = toNumber(unitRaw, 0);
     const taxMode = toTaxMode(modeRaw);
@@ -176,6 +224,16 @@ router.get("/public", async (_req, res) => {
 
     const maxMarginPercent = Math.max(0, toNumber(maxMarginPctRaw, 0));
 
+    const gatewayFeePercent = Math.max(0, toNumber(gatewayFeePercentRaw, 1.5));
+    const gatewayFixedFeeNGN = Math.max(0, toNumber(gatewayFixedFeeNGNRaw, 100));
+    const gatewayFeeCapNGN = Math.max(0, toNumber(gatewayFeeCapNGNRaw, 2000));
+    const opsBufferNGN = Math.max(0, toNumber(opsBufferNGNRaw, 0));
+    const pricingRoundStepNGN = Math.max(1, toNumber(pricingRoundStepNGNRaw, 100));
+    const pricingRoundCharmNGN = Math.max(0, toNumber(pricingRoundCharmNGNRaw, 1));
+    const absorbGatewayFees = parseBool(absorbGatewayFeesRaw, true);
+    const absorbCommsCosts = parseBool(absorbCommsCostsRaw, true);
+
+
     // ✅ DB-only runtime flags (no env)
     const { shippingEnabled, shippingMode } = await resolveShippingFlags();
 
@@ -185,16 +243,24 @@ router.get("/public", async (_req, res) => {
       taxMode,
       taxRatePct,
 
-      // ✅ include BOTH names for compatibility
       marginPercent,
       pricingMarkupPercent: marginPercent,
       minMarginNGN,
       maxMarginPercent,
 
-      // ✅ NEW flags for UI
+      gatewayFeePercent,
+      gatewayFixedFeeNGN,
+      gatewayFeeCapNGN,
+      opsBufferNGN,
+      pricingRoundStepNGN,
+      pricingRoundCharmNGN,
+      absorbGatewayFees,
+      absorbCommsCosts,
+
       shippingEnabled,
       shippingMode,
     });
+
   } catch (e) {
     console.error("GET /api/settings/public failed:", e);
     res.status(500).json({ error: "Failed to load public settings" });
@@ -220,7 +286,6 @@ router.get("/checkout/service-fee", async (req, res) => {
 
     const baseRaw =
       (await readSetting("baseServiceFeeNGN")) ??
-      (await readSetting("serviceFeeBaseNGN")) ??
       (await readSetting("platformBaseFeeNGN")) ??
       (await readSetting("commsServiceFeeNGN")); // legacy base fallback
 
@@ -291,8 +356,30 @@ router.get("/checkout/service-fee", async (req, res) => {
     const serviceFeeBase = round2(base);
     const serviceFeeComms = round2(unitFee * units);
 
+    const gatewayFeePercentRaw =
+      (await readSetting("gatewayFeePercent")) ??
+      (await readSetting("paystackFeePercent")) ??
+      "1.5";
+
+    const gatewayFixedFeeNGNRaw =
+      (await readSetting("gatewayFixedFeeNGN")) ??
+      (await readSetting("paystackFixedFeeNGN")) ??
+      "100";
+
+    const gatewayFeeCapNGNRaw =
+      (await readSetting("gatewayFeeCapNGN")) ??
+      (await readSetting("paystackFeeCapNGN")) ??
+      "2000";
+
+    const gatewaySettings = {
+      gatewayFeePercent: Math.max(0, toNumber(gatewayFeePercentRaw, 1.5)),
+      gatewayFixedFeeNGN: Math.max(0, toNumber(gatewayFixedFeeNGNRaw, 100)),
+      gatewayFeeCapNGN: Math.max(0, toNumber(gatewayFeeCapNGNRaw, 2000)),
+    };
+
     const grossBeforeGateway = itemsSubtotal + vatAddOn + serviceFeeBase + serviceFeeComms;
-    const serviceFeeGateway = round2(estimateGatewayFee(grossBeforeGateway));
+    const serviceFeeGateway = round2(estimateGatewayFee(grossBeforeGateway, gatewaySettings));
+
     const serviceFeeTotal = round2(serviceFeeBase + serviceFeeComms + serviceFeeGateway);
 
     return res.json({

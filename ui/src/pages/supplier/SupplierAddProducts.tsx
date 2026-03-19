@@ -112,8 +112,14 @@ type SupplierDocumentLite = {
 type AuthMeLite = {
   id?: string;
   role?: string;
-  emailVerified?: boolean;
-  phoneVerified?: boolean;
+  email?: string | null;
+  phone?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  emailVerified?: boolean | null;
+  phoneVerified?: boolean | null;
+  emailVerifiedAt?: string | null;
+  phoneVerifiedAt?: string | null;
 };
 
 type SupplierMeLite = {
@@ -142,6 +148,11 @@ type SupplierMeLite = {
     country?: string | null;
     postCode?: string | null;
   } | null;
+};
+
+type FilePreview = {
+  file: File;
+  url: string;
 };
 
 /* =========================
@@ -242,11 +253,11 @@ function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
     String(addr.houseNumber ?? "").trim() ||
-      String(addr.streetName ?? "").trim() ||
-      String(addr.city ?? "").trim() ||
-      String(addr.state ?? "").trim() ||
-      String(addr.country ?? "").trim() ||
-      String(addr.postCode ?? "").trim()
+    String(addr.streetName ?? "").trim() ||
+    String(addr.city ?? "").trim() ||
+    String(addr.state ?? "").trim() ||
+    String(addr.country ?? "").trim() ||
+    String(addr.postCode ?? "").trim()
   );
 }
 
@@ -260,6 +271,39 @@ function docSatisfied(docs: SupplierDocumentLite[], kind: string) {
     const s = String(d.status ?? "").trim().toUpperCase();
     return k === kind && (s === "PENDING" || s === "APPROVED");
   });
+}
+
+function pickString(v: unknown) {
+  return String(v ?? "").trim();
+}
+
+function isTruthyVerificationFlag(value: unknown) {
+  if (value === true) return true;
+  if (typeof value === "string" && value.trim()) return true;
+  return false;
+}
+
+function isEmailVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag(authMe?.emailVerified) ||
+    isTruthyVerificationFlag(authMe?.emailVerifiedAt)
+  );
+}
+
+function isPhoneVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag(authMe?.phoneVerified) ||
+    isTruthyVerificationFlag(authMe?.phoneVerifiedAt)
+  );
+}
+
+function normStatus(value: unknown) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function isApprovedLikeStatus(value: unknown) {
+  const s = normStatus(value);
+  return s === "APPROVED" || s === "ACTIVE" || s === "VERIFIED" || s === "COMPLETED";
 }
 
 /* =========================
@@ -408,7 +452,7 @@ export default function SupplierAddProduct() {
 
   const [flashBaseCombo, setFlashBaseCombo] = useState(false);
   const [flashVariantRowId, setFlashVariantRowId] = useState<string | null>(null);
-  const flashTimerRef = useRef<number | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const [attrsSaved, setAttrsSaved] = useState(false);
   const [editingAttrs, setEditingAttrs] = useState(false);
   const [editingVariantRowId, setEditingVariantRowId] = useState<string | null>(null);
@@ -443,34 +487,53 @@ export default function SupplierAddProduct() {
     enabled: hydrated && isSupplier,
     queryFn: async () => {
       const [authRes, supplierRes, docsRes] = await Promise.all([
-        api.get("/api/auth/me", { withCredentials: true }),
-        api.get("/api/supplier/me", { withCredentials: true }),
+        api.get("/api/auth/me", { withCredentials: true }).catch(() => ({ data: {} })),
+        api.get("/api/supplier/me", { withCredentials: true }).catch(() => ({ data: {} })),
         api
           .get("/api/supplier/documents", { withCredentials: true })
           .catch(() => ({ data: { data: [] } })),
       ]);
 
-      const authMe = ((authRes.data as any)?.data ??
-        (authRes.data as any)?.user ??
-        authRes.data ??
-        {}) as AuthMeLite;
+      const authPayload = authRes.data as any;
+      const authMe = (
+        authPayload?.data?.user ??
+        authPayload?.user ??
+        authPayload?.data ??
+        authPayload ??
+        {}
+      ) as AuthMeLite;
 
-      const supplierMe = ((supplierRes.data as any)?.data ??
-        supplierRes.data ??
-        {}) as SupplierMeLite;
+      const supplierPayload = supplierRes.data as any;
+      const supplierMe = (
+        supplierPayload?.data ??
+        supplierPayload?.supplier ??
+        supplierPayload ??
+        {}
+      ) as SupplierMeLite;
 
       const rawDocs = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
       const docs = Array.isArray(rawDocs) ? (rawDocs as SupplierDocumentLite[]) : [];
 
-      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
+      const supplierStatus = normStatus(supplierMe?.status);
+      const kycStatus = normStatus(supplierMe?.kycStatus);
 
-      const businessDone = Boolean(
-        String(supplierMe?.legalName ?? "").trim() &&
-          String(supplierMe?.registrationType ?? "").trim() &&
-          String(supplierMe?.registrationCountryCode ?? "").trim()
-      );
+      const supplierApproved =
+        isApprovedLikeStatus(supplierStatus) || isApprovedLikeStatus(kycStatus);
 
-      const addressDone = hasAddress(supplierMe?.registeredAddress) || hasAddress(supplierMe?.pickupAddress);
+      const contactDone = isEmailVerified(authMe) && isPhoneVerified(authMe);
+
+      const businessDone =
+        supplierApproved ||
+        Boolean(
+          pickString(supplierMe?.legalName) &&
+          pickString(supplierMe?.registrationType) &&
+          pickString(supplierMe?.registrationCountryCode)
+        );
+
+      const addressDone =
+        supplierApproved ||
+        hasAddress(supplierMe?.registeredAddress) ||
+        hasAddress(supplierMe?.pickupAddress);
 
       const requiredKinds = [
         ...(isRegisteredBusiness(supplierMe?.registrationType)
@@ -480,7 +543,11 @@ export default function SupplierAddProduct() {
         "PROOF_OF_ADDRESS",
       ];
 
-      const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
+      const docsDone =
+        supplierApproved ||
+        requiredKinds.every((kind) => docSatisfied(docs, kind));
+
+      const onboardingDone = contactDone && businessDone && addressDone && docsDone;
 
       const nextPath = !contactDone
         ? "/supplier/verify-contact"
@@ -507,11 +574,11 @@ export default function SupplierAddProduct() {
         businessDone,
         addressDone,
         docsDone,
-        onboardingDone: contactDone && businessDone && addressDone && docsDone,
+        onboardingDone,
         nextPath,
         progressItems,
-        supplierStatus: supplierMe?.status ?? "PENDING",
-        kycStatus: supplierMe?.kycStatus ?? "PENDING",
+        supplierStatus: supplierStatus || "PENDING",
+        kycStatus: kycStatus || "PENDING",
       };
     },
     staleTime: 15_000,
@@ -519,7 +586,12 @@ export default function SupplierAddProduct() {
     retry: 1,
   });
 
-  const onboardingBlocked = isSupplier && !!onboardingQ.data && !onboardingQ.data.onboardingDone;
+  const onboardingBlocked =
+    isSupplier &&
+    !onboardingQ.isLoading &&
+    !!onboardingQ.data &&
+    !onboardingQ.data.onboardingDone;
+
   const onboardingProgressItems = onboardingQ.data?.progressItems ?? [];
   const onboardingPct = useMemo(() => {
     if (!onboardingProgressItems.length) return 0;
@@ -700,6 +772,7 @@ export default function SupplierAddProduct() {
   );
 
   const baseComboHasAny = useMemo(() => rowHasAnySelection(baseComboSelections), [baseComboSelections]);
+  const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES), [imageUrls]);
 
   useEffect(() => {
     if (!selectableAttrs.length) return;
@@ -707,7 +780,9 @@ export default function SupplierAddProduct() {
     setVariantRows((rows) =>
       rows.map((row) => {
         const next: Record<string, string> = {};
-        ids.forEach((id) => (next[id] = row.selections[id] || ""));
+        ids.forEach((id) => {
+          next[id] = row.selections[id] || "";
+        });
         return { ...row, selections: next };
       })
     );
@@ -807,6 +882,7 @@ export default function SupplierAddProduct() {
     }
 
     setSelectedAttrs(nextSelectedAttrs);
+
     const nextVariantRows: VariantRow[] = sourceVariants.map((v) => {
       const selections: Record<string, string> = {};
       selectableAttrs.forEach((attr) => {
@@ -839,7 +915,6 @@ export default function SupplierAddProduct() {
 
   const UPLOAD_ENDPOINT = "/api/uploads";
 
-  const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES), [imageUrls]);
 
   useEffect(() => {
     const wanted = new Set(files.map(fileKey));
@@ -878,15 +953,21 @@ export default function SupplierAddProduct() {
     };
   }, []);
 
-  const filePreviews = useMemo(() => {
+  const filePreviews = useMemo<FilePreview[]>(() => {
     const map = filePreviewMapRef.current;
-    return files
-      .map((f) => {
-        const k = fileKey(f);
-        return { file: f, url: map[k] };
-      })
-      .filter((x) => !!x.url);
+    const out: FilePreview[] = [];
+
+    for (const f of files) {
+      const k = fileKey(f);
+      const url = map[k];
+      if (typeof url === "string" && url) {
+        out.push({ file: f, url });
+      }
+    }
+
+    return out;
   }, [files]);
+
 
   const claimedByTextAndUploaded = useMemo(() => {
     const merged = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
@@ -1008,7 +1089,9 @@ export default function SupplierAddProduct() {
   function addVariantRow() {
     if (onboardingBlocked) return;
     const selections: Record<string, string> = {};
-    selectableAttrs.forEach((a) => (selections[a.id] = ""));
+    selectableAttrs.forEach((a) => {
+      selections[a.id] = "";
+    });
 
     const newRow: VariantRow = {
       id: uid("vr"),
@@ -1057,6 +1140,11 @@ export default function SupplierAddProduct() {
       return next;
     });
   }
+
+
+  const remainingSlotsPreview = useMemo(() => {
+    return Math.max(0, MAX_IMAGES - (allUrlPreviews.length + files.length));
+  }, [files.length, allUrlPreviews.length]);
 
   function updateVariantQty(rowId: string, v: string) {
     if (onboardingBlocked) return;
@@ -1535,8 +1623,7 @@ export default function SupplierAddProduct() {
     </div>
   ) : null;
 
-
-    return (
+  return (
     <SiteLayout>
       <SupplierLayout>
         <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
@@ -1675,11 +1762,10 @@ export default function SupplierAddProduct() {
                     {onboardingProgressItems.map((item: any) => (
                       <span
                         key={item.key}
-                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                          item.done
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-amber-100 text-amber-800"
-                        }`}
+                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${item.done
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-amber-100 text-amber-800"
+                          }`}
                       >
                         {item.label}: {item.done ? "Done" : "Pending"}
                       </span>
@@ -1830,7 +1916,7 @@ export default function SupplierAddProduct() {
                         disabled={onboardingBlocked}
                       >
                         <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
-                        {categories.map((c) => (
+                        {categories.map((c: any) => (
                           <option key={c.id} value={c.id}>
                             {c.name}
                           </option>
@@ -1854,7 +1940,7 @@ export default function SupplierAddProduct() {
                         disabled={onboardingBlocked}
                       >
                         <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
-                        {brands.map((b) => (
+                        {brands.map((b: any) => (
                           <option key={b.id} value={b.id}>
                             {b.name}
                           </option>
@@ -1882,9 +1968,8 @@ export default function SupplierAddProduct() {
                 className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
-                      onboardingBlocked ? "opacity-60 pointer-events-none" : ""
-                    }`}
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${onboardingBlocked ? "opacity-60 pointer-events-none" : ""
+                      }`}
                   >
                     <ImagePlus size={16} /> Add files
                     <input
@@ -1917,8 +2002,7 @@ export default function SupplierAddProduct() {
                       )}
                     </div>
                     <div className="text-zinc-500">
-                      Remaining slots:{" "}
-                      <b>{Math.max(0, MAX_IMAGES - limitImages([...urlPreviews, ...uploadedUrls, ...files], MAX_IMAGES).length)}</b>
+                      Remaining slots: <b>{remainingSlotsPreview}</b>
                     </div>
                   </div>
 
@@ -2219,9 +2303,8 @@ export default function SupplierAddProduct() {
                                 return (
                                   <label
                                     key={x.id}
-                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                      checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                    } ${onboardingBlocked ? "opacity-60 cursor-not-allowed" : ""}`}
+                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                      } ${onboardingBlocked ? "opacity-60 cursor-not-allowed" : ""}`}
                                   >
                                     <input
                                       type="checkbox"

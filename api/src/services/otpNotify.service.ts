@@ -1,6 +1,6 @@
 // src/services/otpNotify.service.ts
-import { sendWhatsAppOtp } from "../lib/sms.js";
 import { sendOtpEmail } from "../lib/email.js";
+import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
 
 type OtpNotifyParams = {
   userEmail?: string | null;
@@ -42,9 +42,11 @@ export async function sendOrderOtpNotifications(p: OtpNotifyParams) {
     report.attempted.push("WHATSAPP");
     tasks.push(
       (async () => {
-        return sendWhatsAppOtp(p.userPhoneE164!, p.code, {
+        return sendOtpWhatsappViaTermii({
+          to: p.userPhoneE164!,
+          code: p.code,
+          expiresMinutes: p.expiresMins,
           brand,
-          expiresMins: p.expiresMins,
           purposeLabel: p.purposeLabel,
         });
       })()

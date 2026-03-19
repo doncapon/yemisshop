@@ -109,7 +109,12 @@ type ProductView = Product & {
 };
 
 type PublicSettings = {
-  marginPercent?: number;
+  baseServiceFeeNGN?: number;
+  commsUnitCostNGN?: number;
+  gatewayFeePercent?: number;
+  gatewayFixedFeeNGN?: number;
+  gatewayFeeCapNGN?: number;
+  marginPercent?: number; // keep optional only for backward compatibility
 };
 
 type CategoryNode = {
@@ -406,120 +411,205 @@ function availableNow(p: Product): boolean {
 }
 
 /* =========================================================
-   Pricing
+   Pricing — aligned with admin
+   retail = supplierPrice + baseServiceFeeNGN + commsUnitCostNGN + gatewayFee
 ========================================================= */
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+function estimateGatewayFeeFromSettings(args: {
+  amountNaira: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const amount = Number(args.amountNaira);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
 
-function applyMargin(raw: number | null | undefined, marginPercent: number): number | null {
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const m = Math.max(0, Number(marginPercent) || 0);
-  const out = round2(n * (1 + m / 100));
-  return Number.isFinite(out) && out > 0 ? out : null;
+  const percentFee = amount * (Number(args.gatewayFeePercent || 0) / 100);
+  const gross = percentFee + Number(args.gatewayFixedFeeNGN || 0);
+  const cap = Number(args.gatewayFeeCapNGN || 0);
+
+  if (cap > 0) return Math.min(gross, cap);
+  return gross;
 }
 
-function cheapestActiveBaseOfferPrice(p: Product): number | null {
+function computeRetailPriceFromSupplierPrice(args: {
+  supplierPrice: number;
+  baseServiceFeeNGN: number;
+  commsUnitCostNGN: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const supplierPrice = Number(args.supplierPrice);
+  if (!Number.isFinite(supplierPrice) || supplierPrice <= 0) return 0;
+
+  const gatewayFeeNGN = estimateGatewayFeeFromSettings({
+    amountNaira: supplierPrice,
+    gatewayFeePercent: args.gatewayFeePercent,
+    gatewayFixedFeeNGN: args.gatewayFixedFeeNGN,
+    gatewayFeeCapNGN: args.gatewayFeeCapNGN,
+  });
+
+  const extras =
+    Number(args.baseServiceFeeNGN || 0) +
+    Number(args.commsUnitCostNGN || 0) +
+    Number(gatewayFeeNGN || 0);
+
+  return Math.round(supplierPrice + extras);
+}
+
+function getOfferSupplierPrice(o?: SupplierOfferLite | null): number | null {
+  if (!o || o.isActive === false || !offerStockOk(o)) return null;
+
+  const n = Number(o.unitPrice ?? o.basePrice ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return null;
+
+  return n;
+}
+
+function firstActiveBaseOfferSupplierPrice(p: Product): number | null {
   const offers = Array.isArray(p.supplierProductOffers) ? p.supplierProductOffers : [];
-  let best: number | null = null;
 
   for (const o of offers) {
-    if (!o || o.isActive === false || !offerStockOk(o)) continue;
-    const raw = o.basePrice ?? o.unitPrice ?? null;
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) continue;
-    if (best == null || n < best) best = n;
+    const price = getOfferSupplierPrice(o);
+    if (price != null) return price;
   }
 
-  return best;
+  return null;
 }
 
-function cheapestActiveVariantOfferPrice(p: Product): number | null {
-  let best: number | null = null;
-
+function firstActiveVariantOfferSupplierPrice(p: Product): number | null {
   const variants = Array.isArray(p.variants) ? p.variants : [];
+
   for (const v of variants) {
     const offers = Array.isArray(v.offers) ? v.offers : [];
     for (const o of offers) {
-      if (!o || o.isActive === false || !offerStockOk(o)) continue;
-      const raw = o.unitPrice ?? o.basePrice ?? null;
-      const n = Number(raw);
-      if (!Number.isFinite(n) || n <= 0) continue;
-      if (best == null || n < best) best = n;
+      const price = getOfferSupplierPrice(o);
+      if (price != null) return price;
     }
   }
 
-  return best;
+  return null;
 }
 
-function cheapestActiveAnyOfferPrice(p: Product): number | null {
+function firstActiveAnyOfferSupplierPrice(p: Product): number | null {
   const offers = collectAllOffers(p);
-  let best: number | null = null;
 
   for (const o of offers) {
-    if (!o || o.isActive === false || !offerStockOk(o)) continue;
-    const raw = o.unitPrice ?? o.basePrice ?? null;
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) continue;
-    if (best == null || n < best) best = n;
+    const price = getOfferSupplierPrice(o);
+    if (price != null) return price;
   }
 
-  return best;
+  return null;
 }
 
-function getDisplayRetailPrice(p: Product, marginPercent: number): number {
-  const apiComputed = Number(p.computedRetailPrice);
-  if (Number.isFinite(apiComputed) && apiComputed > 0) return apiComputed;
+function getDisplayRetailPrice(
+  p: Product,
+  pricing: {
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }
+): number {
+  // 1) Prefer raw supplier-side price sources, then compute retail locally
+  const offersFromPrice =
+    Number.isFinite(Number(p.offersFrom)) && Number(p.offersFrom) > 0
+      ? Number(p.offersFrom)
+      : null;
+
+  const displayBaseSupplierPrice =
+    Number.isFinite(Number(p.displayBasePrice)) && Number(p.displayBasePrice) > 0
+      ? Number(p.displayBasePrice)
+      : null;
 
   const hasOptions = Array.isArray(p.variants) && p.variants.length > 0;
 
-  if (hasOptions) {
-    const baseRaw = cheapestActiveBaseOfferPrice(p);
-    const baseRetail = applyMargin(baseRaw, marginPercent);
-    if (baseRetail != null) return baseRetail;
+  let sourceSupplierPrice: number | null = null;
 
-    const varRaw = cheapestActiveVariantOfferPrice(p);
-    const varRetail = applyMargin(varRaw, marginPercent);
-    if (varRetail != null) return varRetail;
+  if (offersFromPrice != null) {
+    sourceSupplierPrice = offersFromPrice;
+  } else if (hasOptions) {
+    const baseSupplierPrice = firstActiveBaseOfferSupplierPrice(p);
+    const variantSupplierPrice = firstActiveVariantOfferSupplierPrice(p);
+
+    if (baseSupplierPrice != null && variantSupplierPrice != null) {
+      sourceSupplierPrice = Math.min(baseSupplierPrice, variantSupplierPrice);
+    } else if (baseSupplierPrice != null) {
+      sourceSupplierPrice = baseSupplierPrice;
+    } else if (variantSupplierPrice != null) {
+      sourceSupplierPrice = variantSupplierPrice;
+    } else if (displayBaseSupplierPrice != null) {
+      sourceSupplierPrice = displayBaseSupplierPrice;
+    }
   } else {
-    const anyRaw = cheapestActiveAnyOfferPrice(p);
-    const anyRetail = applyMargin(anyRaw, marginPercent);
-    if (anyRetail != null) return anyRetail;
+    sourceSupplierPrice =
+      firstActiveAnyOfferSupplierPrice(p) ??
+      displayBaseSupplierPrice ??
+      null;
   }
 
-  const offersFromRetail = applyMargin(p.offersFrom, marginPercent);
-  if (offersFromRetail != null) return offersFromRetail;
+  if (sourceSupplierPrice != null && sourceSupplierPrice > 0) {
+    return computeRetailPriceFromSupplierPrice({
+      supplierPrice: sourceSupplierPrice,
+      baseServiceFeeNGN: pricing.baseServiceFeeNGN,
+      commsUnitCostNGN: pricing.commsUnitCostNGN,
+      gatewayFeePercent: pricing.gatewayFeePercent,
+      gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
+      gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
+    });
+  }
+
+  // 2) Only fallback to already-computed retail from API when we do NOT have supplier price
+  const apiComputed = Number(p.computedRetailPrice);
+  if (Number.isFinite(apiComputed) && apiComputed > 0) return apiComputed;
 
   const raw =
     Number(p.retailPrice) > 0
       ? Number(p.retailPrice)
       : Number(p.autoPrice) > 0
         ? Number(p.autoPrice)
-        : Number(p.displayBasePrice) > 0
-          ? Number(p.displayBasePrice)
-          : 0;
+        : 0;
 
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
 
-function priceForFiltering(p: Product, marginPercent: number): number {
-  return getDisplayRetailPrice(p, marginPercent);
+function priceForFiltering(
+  p: Product,
+  pricing: {
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }
+): number {
+  return getDisplayRetailPrice(p, pricing);
 }
 
 /* =========================================================
    Sellable flag
 ========================================================= */
 
-function productSellable(p: Product, marginPercent: number): boolean {
+function productSellable(
+  p: Product,
+  pricing: {
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }
+): boolean {
   if (!isLive(p)) return false;
 
   const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
 
   if (!hasVariants && !getActiveBaseOffer(p)) return false;
-
   if (!availableNow(p)) return false;
 
-  const price = getDisplayRetailPrice(p, marginPercent);
+  const price = getDisplayRetailPrice(p, pricing);
   return Number.isFinite(price) && price > 0;
 }
 
@@ -1061,8 +1151,9 @@ const SuggestionItem = memo(function SuggestionItem({
           />
 
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">{p.title}</div>
-            <div className="truncate text-xs opacity-80">
+            <div className="truncate text-[11px] font-semibold md:text-sm">{p.title}</div>
+            <div className="truncate text-[10px] opacity-80 md:text-xs">
+
               {ngn.format(p._displayPrice || 0)}
               {p.categoryName ? ` • ${p.categoryName}` : ""}
               {p.brand?.name ? ` • ${p.brand.name}` : ""}
@@ -1217,15 +1308,16 @@ const ProductCard = memo(
               <button
                 type="button"
                 data-stop-card-nav="true"
-                className="inline-flex items-center rounded-full bg-black/40 px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-black/55 md:text-xs"
+                className="inline-flex items-center rounded-full bg-black/40 px-2.5 py-1 text-[10px] font-medium text-white transition hover:bg-black/55 md:px-3 md:py-1.5 md:text-xs"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   onGoToProduct(p.id);
                 }}
               >
-                Choose options
+                Preview
               </button>
+
             ) : (
               <div data-stop-card-nav="true">
                 {baseQtyInCart > 0 ? (
@@ -1277,8 +1369,8 @@ const ProductCard = memo(
                     type="button"
                     data-stop-card-nav="true"
                     disabled={!inStock}
-                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium shadow-sm transition md:text-xs ${inStock
-                      ? "bg-black text-white hover:bg-black/90"
+                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium shadow-sm transition md:px-3 md:py-1.5 md:text-xs ${inStock
+                      ? "bg-zinc-700 text-white hover:bg-black/90"
                       : "cursor-not-allowed bg-zinc-200 text-zinc-500"
                       }`}
                     onClick={(e) => {
@@ -1290,6 +1382,7 @@ const ProductCard = memo(
                   >
                     Add to cart
                   </button>
+
                 )}
               </div>
             )}
@@ -1404,20 +1497,39 @@ export default function Catalog() {
   }, []);
 
   /* ---------------- Settings ---------------- */
-  const settingsQ = useQuery<number>({
-    queryKey: ["settings", "public", "marginPercent"],
+  /* ---------------- Settings ---------------- */
+  const settingsQ = useQuery<{
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }>({
+    queryKey: ["settings", "public", "pricing"],
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: 0,
     queryFn: async () => {
       const { data } = await api.get<PublicSettings>("/api/settings/public");
-      const v = Number((data as any)?.marginPercent);
-      return Math.max(0, Number.isFinite(v) ? v : 0);
+
+      const root = (data as any)?.data ?? data ?? {};
+
+      return {
+        baseServiceFeeNGN: Number(root?.baseServiceFeeNGN ?? 0) || 0,
+        commsUnitCostNGN: Number(root?.commsUnitCostNGN ?? 0) || 0,
+        gatewayFeePercent: Number(root?.gatewayFeePercent ?? 1.5) || 1.5,
+        gatewayFixedFeeNGN: Number(root?.gatewayFixedFeeNGN ?? 100) || 100,
+        gatewayFeeCapNGN: Number(root?.gatewayFeeCapNGN ?? 2000) || 2000,
+      };
     },
   });
 
-  const marginPercent = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
+  const baseServiceFeeNGN = Number(settingsQ.data?.baseServiceFeeNGN ?? 0) || 0;
+  const commsUnitCostNGN = Number(settingsQ.data?.commsUnitCostNGN ?? 0) || 0;
+  const gatewayFeePercent = Number(settingsQ.data?.gatewayFeePercent ?? 1.5) || 1.5;
+  const gatewayFixedFeeNGN = Number(settingsQ.data?.gatewayFixedFeeNGN ?? 100) || 100;
+  const gatewayFeeCapNGN = Number(settingsQ.data?.gatewayFeeCapNGN ?? 2000) || 2000;
 
   /* ---------------- UI state ---------------- */
 
@@ -1432,7 +1544,7 @@ export default function Catalog() {
   );
   const [sortKey, setSortKey] = useState<SortKey>(initialPersisted?.sortKey ?? "relevance");
 
-  const [query, setQuery] = useState(initialPersisted?.query ?? "");
+  const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
@@ -1475,7 +1587,7 @@ export default function Catalog() {
       selectedBucketIdxs,
       selectedBrands,
       sortKey,
-      query,
+      query: "",
       inStockOnly,
       expandedCats,
       page,
@@ -1496,11 +1608,13 @@ export default function Catalog() {
 
   const goToProduct = useCallback(
     (productId: string) => {
+      setQuery("");
       persistSnapshot();
       setCatalogReturning(true);
 
       setRefineOpen(false);
       setSearchFocused(false);
+      setActiveIdx(0);
       setTouchStartX(null);
 
       nav(`/products/${productId}`, {
@@ -1511,7 +1625,6 @@ export default function Catalog() {
     },
     [persistSnapshot, nav, locationStateFrom]
   );
-
   const closeRefine = useCallback(() => {
     setRefineOpen(false);
     setSearchFocused(false);
@@ -1547,10 +1660,30 @@ export default function Catalog() {
     };
   }, [refineOpen]);
 
+
+  useEffect(() => {
+    const clearSearchUi = () => {
+      setQuery("");
+      setSearchFocused(false);
+      setActiveIdx(0);
+    };
+
+    clearSearchUi();
+
+    const onPageShow = () => {
+      clearSearchUi();
+    };
+
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
   useEffect(() => {
     const resetUiOnly = () => {
       setRefineOpen(false);
       setSearchFocused(false);
+      setActiveIdx(0);
+      setQuery("");
       setTouchStartX(null);
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
@@ -1583,7 +1716,7 @@ export default function Catalog() {
         selectedBucketIdxs,
         selectedBrands,
         sortKey,
-        query,
+        query: "",
         inStockOnly,
         expandedCats,
         page,
@@ -1687,7 +1820,7 @@ export default function Catalog() {
         params: {
           include: includeStr,
           status: "LIVE",
-          take: 200,
+          take: 20,
           page: 1,
         },
       });
@@ -1819,16 +1952,23 @@ export default function Catalog() {
   const productViews = useMemo<ProductView[]>(() => {
     const out: ProductView[] = new Array(products.length);
 
+    const pricing = {
+      baseServiceFeeNGN,
+      commsUnitCostNGN,
+      gatewayFeePercent,
+      gatewayFixedFeeNGN,
+      gatewayFeeCapNGN,
+    };
+
     for (let i = 0; i < products.length; i++) {
       const p = products[i];
       const imageCandidates = getProductImageCandidates(p);
 
       const brandName = cleanText(p.brand?.name);
       const categoryLabel = cleanText(p.categoryName) || "Uncategorized";
-      const displayPrice = priceForFiltering(p, marginPercent);
+      const displayPrice = priceForFiltering(p, pricing);
       const available = availableNow(p);
-
-      const sellable = productSellable(p, marginPercent);
+      const sellable = productSellable(p, pricing);
 
       out[i] = {
         ...p,
@@ -1847,8 +1987,14 @@ export default function Catalog() {
     }
 
     return out;
-  }, [products, marginPercent]);
-
+  }, [
+    products,
+    baseServiceFeeNGN,
+    commsUnitCostNGN,
+    gatewayFeePercent,
+    gatewayFixedFeeNGN,
+    gatewayFeeCapNGN,
+  ]);
   /* ---------------- Categories ---------------- */
 
   const categoriesTreeQ = useQuery<CategoryNode[]>({
@@ -2601,21 +2747,13 @@ export default function Catalog() {
           </div>
         </div>
 
-        <div className="mb-2 flex items-center justify-between gap-2 md:hidden">
+        <div className="mb-2 md:hidden">
           <div className="min-w-0">
             <h1 className="text-lg font-semibold text-zinc-900">Products</h1>
             <p className="text-xs text-zinc-600">Search and filter quickly.</p>
           </div>
-
-          <button
-            type="button"
-            onClick={() => setRefineOpen(true)}
-            className="inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-zinc-800 shadow-sm transition hover:border-zinc-300 active:scale-[0.97]"
-          >
-            <SlidersHorizontal size={14} />
-            Filter categories & brands
-          </button>
         </div>
+
 
         {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700 md:hidden">
@@ -2657,7 +2795,7 @@ export default function Catalog() {
           </div>
         )}
 
-        <div className="mb-3 rounded-2xl border border-zinc-200 bg-white/90 p-3 shadow-sm md:hidden">
+        <div className="mb-1 rounded-lg border border-zinc-200 bg-white/95 p-2 shadow-sm md:hidden">
           <form
             className="relative"
             onSubmit={(e) => {
@@ -2665,7 +2803,11 @@ export default function Catalog() {
               submitSearch();
             }}
           >
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+            <Search
+              className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-400"
+              size={11}
+            />
+
             <input
               ref={mobileInputRef}
               value={query}
@@ -2675,120 +2817,68 @@ export default function Catalog() {
                 setActiveIdx(0);
               }}
               onFocus={() => setSearchFocused(true)}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown" && shouldShowSuggest && hasSuggestionResults) {
-                  e.preventDefault();
-                  setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                  return;
-                }
-
-                if (e.key === "ArrowUp" && shouldShowSuggest && hasSuggestionResults) {
-                  e.preventDefault();
-                  setActiveIdx((i) => Math.max(i - 1, 0));
-                  return;
-                }
-
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitSearch();
-                  return;
-                }
-
-                if (e.key === "Escape") {
-                  setSearchFocused(false);
-                  return;
-                }
-              }}
-              placeholder="Search products, brands, or categories…"
-              className="w-full rounded-2xl border border-zinc-200 bg-white py-2.5 pl-10 pr-24 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
+              placeholder="Search products..."
+              className="h-8 w-full rounded-lg border border-zinc-200 bg-white pl-7 pr-[4.5rem] text-[11px] placeholder:text-[10px] placeholder:text-zinc-400 focus:border-fuchsia-400 focus:ring-1 focus:ring-fuchsia-100"
               aria-label="Search products"
             />
 
             <button
               type="submit"
-              className="absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center rounded-full bg-zinc-900 px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-zinc-800"
+              className="absolute right-1 top-1/2 inline-flex h-6 -translate-y-1/2 items-center rounded-full bg-zinc-900 px-2.5 text-[10px] font-medium text-white transition hover:bg-zinc-800"
             >
               Search
             </button>
-
-            {shouldShowSuggest && (
-              <div
-                ref={mobileSuggestRef}
-                className="relative z-10 mt-2 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl"
-              >
-                {hasSuggestionResults ? (
-                  <ul className="max-h-[45vh] overflow-auto p-2">
-                    {suggestions.map((p, i) => (
-                      <SuggestionItem
-                        key={p.id}
-                        p={p}
-                        active={i === activeIdx}
-                        onClick={applySuggestionToFilter}
-                      />
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="p-3 text-sm text-zinc-500">No matching products found.</div>
-                )}
-              </div>
-            )}
           </form>
+          <div className="mt-1 flex items-center gap-2">
 
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div className="min-w-0">
-              <label className="mb-1 block text-[11px] font-medium text-zinc-700">Sort</label>
-              <select
-                value={sortKey}
-                onChange={(e) => {
-                  setSortKey(e.target.value as SortKey);
-                }}
-                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[12px]"
-              >
-                <option value="relevance">Relevance</option>
-                <option value="price-asc">Price: Low → High</option>
-                <option value="price-desc">Price: High → Low</option>
-              </select>
-            </div>
+            <select
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value as SortKey)}
+              className="h-7 flex-1 rounded-md border border-zinc-200 bg-white px-2 text-[11px] text-zinc-700"
+            >
+              <option value="relevance">Relevance</option>
+              <option value="price-asc">Low → High</option>
+              <option value="price-desc">High → Low</option>
+            </select>
 
-            <div className="min-w-0">
-              <label className="mb-1 block text-[11px] font-medium text-zinc-700">Per page</label>
-              <select
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value) as 8 | 12 | 16);
-                }}
-                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[12px]"
-              >
-                <option value={8}>8</option>
-                <option value={12}>12</option>
-                <option value={16}>16</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-3 flex items-center justify-between gap-3">
-            <label className="inline-flex select-none items-center gap-2 text-[12px] font-medium text-zinc-800">
-              <input
-                type="checkbox"
-                checked={inStockOnly}
-                onChange={(e) => {
-                  setInStockOnly(e.target.checked);
-                }}
-                className="h-4 w-4 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
-              />
-              In stock
-            </label>
+            <select
+              value={pageSize}
+              onChange={(e) =>
+                setPageSize(Number(e.target.value) as 8 | 12 | 16)
+              }
+              className="h-7 w-[64px] rounded-md border border-zinc-200 bg-white px-1 text-[11px] text-zinc-700"
+            >
+              <option value={8}>8</option>
+              <option value={12}>12</option>
+              <option value={16}>16</option>
+            </select>
 
             <button
               type="button"
               onClick={() => setRefineOpen(true)}
-              className="inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-medium text-zinc-800 shadow-sm hover:border-zinc-300"
+              className="inline-flex h-7 items-center gap-1 rounded-full border border-zinc-200 bg-white px-2 text-[11px] font-medium text-zinc-700 shadow-sm"
             >
-              <SlidersHorizontal size={14} />
-              Filter categories & brands
+              <SlidersHorizontal size={11} />
+              Filters
             </button>
+
           </div>
+
+          <div className="mt-1 flex items-center">
+            <label className="inline-flex items-center gap-1 text-[11px] text-zinc-700">
+              <input
+                type="checkbox"
+                checked={inStockOnly}
+                onChange={(e) => setInStockOnly(e.target.checked)}
+                className="h-3 w-3 accent-purple-600"
+              />
+              In stock
+            </label>
+          </div>
+
         </div>
+
+
 
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
           <aside className="hidden md:block">
@@ -2849,7 +2939,7 @@ export default function Catalog() {
                     onChange={(e) => {
                       setInStockOnly(e.target.checked);
                     }}
-                    className="h-4 w-4 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
+                    className="h-3 w-3 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
                   />
                   In stock
                 </label>
@@ -3106,7 +3196,7 @@ export default function Catalog() {
 
                 <button
                   type="submit"
-                  className="absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center rounded-full bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-800"
+                  className="absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center rounded-full bg-zinc-400 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-800"
                 >
                   Search
                 </button>
@@ -3155,59 +3245,64 @@ export default function Catalog() {
                 </div>
 
                 <div className="mt-5 md:mt-8">
-                  <div className="rounded-2xl border border-zinc-200 bg-white/85 p-3 shadow-sm backdrop-blur md:hidden">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
-                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
-                          {sorted.length}
-                        </div>
-                        <div className="text-[11px] text-zinc-500">
-                          Page {currentPage} / {totalPages}
-                        </div>
+                  <div className="rounded-xl border border-zinc-200 bg-white/85 p-2 shadow-sm backdrop-blur md:hidden">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 text-[10px] font-semibold tracking-tight text-zinc-800">
+                        Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                      </div>
+                      <div className="shrink-0 text-[9px] text-zinc-500">
+                        Page {currentPage} / {totalPages}
                       </div>
                     </div>
 
-                    <div className="mt-3 grid grid-cols-4 gap-2">
+                    <div className="mt-2 grid grid-cols-4 gap-1.5">
                       <button
                         type="button"
                         onClick={() => goTo(1)}
-                        className="h-9 rounded-xl border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        aria-label="First page"
+                        title="First page"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
-                        First
+                        «
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(currentPage - 1)}
-                        className="h-9 rounded-xl border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        aria-label="Previous page"
+                        title="Previous page"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
-                        Prev
+                        ‹
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(currentPage + 1)}
-                        className="h-9 rounded-xl border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        aria-label="Next page"
+                        title="Next page"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
-                        Next
+                        ›
                       </button>
                       <button
                         type="button"
                         onClick={() => goTo(totalPages)}
-                        className="h-9 rounded-xl border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
+                        aria-label="Last page"
+                        title="Last page"
+                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99]"
                       >
-                        Last
+                        »
                       </button>
                     </div>
 
                     <form
-                      className="mt-3 flex items-center gap-2"
+                      className="mt-2 flex items-center gap-1.5"
                       onSubmit={(e) => {
                         e.preventDefault();
                         const n = Number(jumpVal);
                         if (Number.isFinite(n)) goTo(n);
                       }}
                     >
-                      <label className="shrink-0 text-[11px] font-semibold tracking-tight text-zinc-700">
+                      <label className="shrink-0 text-[9px] font-semibold tracking-tight text-zinc-700">
                         Go to
                       </label>
                       <input
@@ -3219,18 +3314,19 @@ export default function Catalog() {
                         value={jumpVal}
                         onChange={(e) => setJumpVal(e.target.value)}
                         placeholder={`${currentPage}`}
-                        className="h-9 w-full min-w-0 rounded-xl border border-zinc-200 bg-white px-3 text-[12px] font-semibold focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
+                        className="h-7 w-full min-w-0 rounded-md border border-zinc-200 bg-white px-2 text-[10px] font-semibold focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-100"
                         aria-label="Jump to page"
                       />
                       <button
                         type="submit"
                         disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
-                        className="h-9 shrink-0 rounded-xl bg-zinc-900 px-4 text-[12px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
+                        className="h-7 shrink-0 rounded-md bg-zinc-900 px-2.5 text-[10px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
                       >
                         Go
                       </button>
                     </form>
                   </div>
+
 
                   <div className="hidden flex-col gap-3 sm:flex-row sm:items-center sm:justify-between md:flex">
                     <div className="text-sm text-zinc-600">

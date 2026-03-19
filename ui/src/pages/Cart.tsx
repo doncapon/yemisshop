@@ -335,8 +335,9 @@ async function serverSetQty(item: CartItem, qty: number) {
 ========================================================= */
 
 export default function Cart() {
-  const userId = useAuthStore((s) => s.user?.id ?? null);
-  const isAuthed = !!userId;
+  const authHydrated = useAuthStore((s) => s.hydrated);
+  const storeUser = useAuthStore((s) => s.user);
+  const isAuthed = !!storeUser?.id;
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
@@ -433,13 +434,20 @@ export default function Cart() {
     writeCartLines(lines as any);
   }, []);
 
+
   const loadCart = useCallback(async () => {
     const requestId = ++activeRequestIdRef.current;
+
+    const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+
+    // Wait until auth store hydration is done before deciding guest vs authed.
+    if (!authHydrated) return;
 
     if (isAuthed) {
       try {
         const serverItems = await fetchServerCart();
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+
         safeSetCart(serverItems);
         mirrorAuthedCartToLocal(serverItems);
         setHydrated(true);
@@ -449,34 +457,52 @@ export default function Cart() {
 
         const status = Number(err?.response?.status || 0);
 
-        // Session expired / invalid auth
-        if (status === 401) {
-          try {
-            writeCartLines([]);
-          } catch {
-            //
-          }
-
-          safeSetCart([]);
+        // Important:
+        // Cart page must NEVER force logout / auth expiry.
+        // On Railway, auth/cart cookie reads can wobble; keep local mirror instead.
+        if (status === 401 || status === 403) {
+          safeSetCart(localItems);
           setHydrated(true);
-          window.dispatchEvent(new Event("cart:updated"));
-          window.dispatchEvent(new Event("auth:expired"));
           return;
         }
 
-        // Non-auth failure: keep local fallback if you really want resilience
-        const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
         safeSetCart(localItems);
         setHydrated(true);
         return;
       }
     }
 
-    const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
     if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
-    safeSetCart(guestItems);
+    safeSetCart(localItems);
     setHydrated(true);
-  }, [isAuthed, mirrorAuthedCartToLocal, safeSetCart]);
+  }, [authHydrated, isAuthed, mirrorAuthedCartToLocal, safeSetCart]);
+
+  useEffect(() => {
+    const onAuthReset = () => {
+      activeRequestIdRef.current += 1;
+      focusedQtyKeyRef.current = null;
+      clearAllNotes();
+
+      try {
+        writeCartLines([] as any);
+      } catch {
+        //
+      }
+
+      safeSetCart([]);
+      setQtyDraft({});
+      setExpanded({});
+      setHydrated(true);
+    };
+
+    window.addEventListener("auth:logout", onAuthReset as EventListener);
+    window.addEventListener("auth:expired", onAuthReset as EventListener);
+
+    return () => {
+      window.removeEventListener("auth:logout", onAuthReset as EventListener);
+      window.removeEventListener("auth:expired", onAuthReset as EventListener);
+    };
+  }, [clearAllNotes, safeSetCart]);
 
   useEffect(() => {
     isMountedRef.current = true;

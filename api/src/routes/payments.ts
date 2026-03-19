@@ -177,6 +177,7 @@ async function ensureSupplierOrderRef(tx: any, orderId: string, supplierId: stri
   return ref;
 }
 
+
 async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
   const items = await tx.orderItem.findMany({
     where: { orderId },
@@ -248,7 +249,6 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     });
 
     if (!po) {
-      // ✅ Create idempotently (safe on webhook retries)
       try {
         po = await tx.purchaseOrder.create({
           data: {
@@ -282,15 +282,19 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
       },
     });
 
-    await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
-    for (const orderItemId of g.itemIds) {
-      await tx.purchaseOrderItem.create({
-        data: {
-          purchaseOrderId: po.id,
+    await tx.purchaseOrderItem.deleteMany({
+      where: { purchaseOrderId: po.id },
+    });
+
+    if (g.itemIds.length) {
+      await tx.purchaseOrderItem.createMany({
+        data: g.itemIds.map((orderItemId) => ({
+          purchaseOrderId: po!.id,
           orderItemId,
           externalRef: null,
           externalStatus: null,
-        },
+        })),
+        skipDuplicates: true,
       });
     }
 
@@ -299,6 +303,7 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
 
   return createdOrUpdated;
 }
+
 
 /**
  * ✅ Record supplier allocations when payment is PAID.
@@ -483,7 +488,7 @@ async function recomputeProfitForPayment(paymentId: string) {
 
   const baseServiceFee =
     Number(
-      (await readSetting("serviceFeeBaseNGN")) ??
+      (await readSetting("baseServiceFeeNGN")) ??
       (await readSetting("platformBaseFeeNGN")) ??
       0
     ) || 0;
@@ -534,85 +539,120 @@ async function recomputeProfitForPayment(paymentId: string) {
 async function finalizePaidFlow(paymentId: string) {
   console.log("[finalizePaidFlow] start", { paymentId });
 
-  // ✅ Do NOT call prisma (global) inside the transaction callback indirectly.
-  // We'll track later after commit.
   let trackPaymentId: string | null = null;
 
-  const result = await prisma.$transaction(async (tx: any) => {
-    const p = await tx.payment.findUnique({
-      where: { id: paymentId },
-      select: {
-        id: true,
-        orderId: true,
-        status: true,
-        amount: true,
-        feeAmount: true,
-        reference: true,
-        channel: true,
-        order: {
-          select: {
-            id: true,
-            total: true,
-            serviceFeeTotal: true,
+  const claimed = await prisma.$transaction(
+    async (tx: any) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: paymentId },
+        select: {
+          id: true,
+          orderId: true,
+          status: true,
+          purchaseEventSentAt: true,
+          amount: true,
+          feeAmount: true,
+          reference: true,
+          channel: true,
+          order: {
+            select: {
+              id: true,
+              total: true,
+              serviceFeeTotal: true,
+            },
           },
         },
-      },
-    });
+      });
 
-    if (!p || p.status !== "PAID" || !p.orderId) return null;
+      if (!payment || payment.status !== "PAID" || !payment.orderId) {
+        return null;
+      }
 
+      if (payment.purchaseEventSentAt) {
+        console.log("[finalizePaidFlow] already finalized, skipping", {
+          paymentId,
+          purchaseEventSentAt: payment.purchaseEventSentAt,
+        });
 
-    const next =
-      process.env.TURN_OFF_AWAIT_CONF === "true" ? "PAID" : "AWAITING_FULFILLMENT";
+        return {
+          skipped: true as const,
+          orderId: payment.orderId,
+          paymentId: payment.id,
+        };
+      }
 
-    await tx.order.update({
-      where: { id: p.orderId },
-      data: { status: next as any },
-    });
-
-    const total = Number(p.order?.total) || 0;
-    const svc = Number(p.order?.serviceFeeTotal) || 0;
-    const amt = Number(p.amount) || 0;
-
-    // NOTE: This upsert uses paymentId as unique; ensure you have @@unique([paymentId]) or paymentId @unique on OrderComms
-    if (total > 0 && svc > 0 && amt > 0) {
-      const slice = svc * Math.max(0, Math.min(1, amt / total));
-      await tx.orderComms.upsert({
-        where: { paymentId: p.id },
-        create: {
-          orderId: p.orderId,
-          paymentId: p.id,
-          amount: slice,
-          channel: p.channel ?? null,
-          reason: "SUPPLIER_NOTIFY",
-        },
-        update: {
-          amount: slice,
-          channel: p.channel ?? null,
-          reason: "SUPPLIER_NOTIFY",
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          purchaseEventSentAt: new Date(),
         },
       });
+
+      const next =
+        process.env.TURN_OFF_AWAIT_CONF === "true"
+          ? "PAID"
+          : "AWAITING_FULFILLMENT";
+
+      await tx.order.update({
+        where: { id: payment.orderId },
+        data: { status: next as any },
+      });
+
+      const total = Number(payment.order?.total) || 0;
+      const svc = Number(payment.order?.serviceFeeTotal) || 0;
+      const amt = Number(payment.amount) || 0;
+
+      if (total > 0 && svc > 0 && amt > 0) {
+        const slice = svc * Math.max(0, Math.min(1, amt / total));
+
+        await tx.orderComms.upsert({
+          where: { paymentId: payment.id },
+          create: {
+            orderId: payment.orderId,
+            paymentId: payment.id,
+            amount: slice,
+            channel: payment.channel ?? null,
+            reason: "SUPPLIER_NOTIFY",
+          },
+          update: {
+            amount: slice,
+            channel: payment.channel ?? null,
+            reason: "SUPPLIER_NOTIFY",
+          },
+        });
+      }
+
+      await tx.paymentEvent.create({
+        data: {
+          paymentId: payment.id,
+          type: "FINALIZE_PAID",
+          data: { reference: payment.reference },
+        },
+      });
+
+      await ensurePurchaseOrdersForOrderTx(tx, payment.orderId);
+      await recordSupplierAllocationsOnPaidTx(tx, payment.id, payment.orderId);
+
+      trackPaymentId = payment.id;
+
+      return {
+        skipped: false as const,
+        orderId: payment.orderId,
+        paymentId: payment.id,
+      };
+    },
+    {
+      maxWait: 10_000,
+      timeout: 20_000,
     }
+  );
 
-    await tx.paymentEvent.create({
-      data: {
-        paymentId: p.id,
-        type: "FINALIZE_PAID",
-        data: { reference: p.reference },
-      },
-    });
+  if (!claimed) return;
+  if (claimed.skipped) return;
 
-    await ensurePurchaseOrdersForOrderTx(tx, p.orderId);
-    await recordSupplierAllocationsOnPaidTx(tx, p.id, p.orderId);
+  const finalized = claimed;
+  const { orderId } = finalized;
 
-    trackPaymentId = p.id;
-
-    return { orderId: p.orderId, paymentId: p.id };
-  });
-
-  if (!result) return;
-
-  // ✅ after commit
   if (trackPaymentId) {
     try {
       await trackPurchaseIfNeeded(trackPaymentId);
@@ -621,75 +661,58 @@ async function finalizePaidFlow(paymentId: string) {
     }
   }
 
-  const { orderId } = result;
-
-  // Supplier notifications (idempotent)
-  const alreadyNotified = await prisma.paymentEvent.findFirst({
-    where: {
-      paymentId: result.paymentId,
-      type: "SUPPLIER_NOTIFIED",
-    },
-  });
-
-  if (!alreadyNotified) {
-    try {
-      await notifySuppliersForOrder(orderId);
-      await prisma.paymentEvent.create({
-        data: {
-          paymentId: result.paymentId,
-          type: "SUPPLIER_NOTIFIED",
-        },
-      });
-    } catch (e) {
-      console.error("notifySuppliersForOrder failed", e);
-    }
+  try {
+    await notifySuppliersForOrder(orderId);
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId: finalized.paymentId,
+        type: "SUPPLIER_NOTIFIED",
+      },
+    });
+  } catch (e) {
+    console.error("notifySuppliersForOrder failed", e);
   }
 
-  await prisma.paymentEvent.create({
-    data: {
-      paymentId: result.paymentId,
-      type: "SUPPLIER_PAYOUTS_HELD",
-      data: { orderId, reason: "awaiting_delivery_otp" },
-    },
-  });
+  try {
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId: finalized.paymentId,
+        type: "SUPPLIER_PAYOUTS_HELD",
+        data: { orderId, reason: "awaiting_delivery_otp" },
+      },
+    });
+  } catch (e) {
+    console.error("SUPPLIER_PAYOUTS_HELD event failed", e);
+  }
 
   try {
-    await issueReceiptIfNeeded(result.paymentId);
+    await issueReceiptIfNeeded(finalized.paymentId);
   } catch (e) {
     console.error("issueReceiptIfNeeded failed", e);
   }
 
   try {
-    await recomputeProfitForPayment(result.paymentId);
+    await recomputeProfitForPayment(finalized.paymentId);
   } catch (e) {
     console.error("recomputeProfitForPayment failed", e);
   }
 
-  // Customer email (idempotent)
-  const alreadyEmailed = await prisma.paymentEvent.findFirst({
-    where: {
-      paymentId: result.paymentId,
-      type: "ORDER_PAID_EMAIL_SENT",
-    },
-  });
-
-  if (!alreadyEmailed) {
-    try {
-      await notifyCustomerOrderPaid(orderId, result.paymentId);
-      await prisma.paymentEvent.create({
-        data: {
-          paymentId: result.paymentId,
-          type: "ORDER_PAID_EMAIL_SENT",
-          data: { orderId },
-        },
-      });
-    } catch (e) {
-      console.error("notifyCustomerOrderPaid failed", e);
-    }
+  try {
+    await notifyCustomerOrderPaid(orderId, finalized.paymentId);
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId: finalized.paymentId,
+        type: "ORDER_PAID_EMAIL_SENT",
+        data: { orderId },
+      },
+    });
+  } catch (e) {
+    console.error("notifyCustomerOrderPaid failed", e);
   }
 
-  console.log("[finalizePaidFlow] done", result);
+  console.log("[finalizePaidFlow] done", finalized);
 }
+
 
 /* ----------------------------- Public endpoints ----------------------------- */
 
@@ -718,15 +741,74 @@ const asNum = (v: any, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label = "Operation timed out"
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(httpErr(504, label)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(id);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(id);
+        reject(err);
+      }
+    );
+  });
+}
+
+function isGatewayTimeoutOrNetworkError(err: any): boolean {
+  const msg = String(err?.message || "").toLowerCase();
+  const code = String(err?.code || "").toLowerCase();
+  const status = Number(err?.response?.status || 0);
+
+  return (
+    status === 408 ||
+    status === 504 ||
+    code === "econNaborted".toLowerCase() ||
+    code === "etimedout" ||
+    code === "ecconnreset".toLowerCase() ||
+    msg.includes("timeout") ||
+    msg.includes("timed out") ||
+    msg.includes("network")
+  );
+}
+
+async function initPaystackWithHardTimeout(payload: any, ms = 12000) {
+  return await withTimeout(
+    ps.post("/transaction/initialize", payload, {
+      timeout: ms,
+    } as any),
+    ms + 1000,
+    "Paystack initialization timed out"
+  );
+}
+
+/**
+ * POST /api/payments/init  { orderId, channel?, otpToken?, expectedTotal? }
+ */
 /**
  * POST /api/payments/init  { orderId, channel?, otpToken?, expectedTotal? }
  */
 router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next) => {
+  const startedAt = Date.now();
+
   try {
     const orderId = String(req.body?.orderId ?? "").trim();
     let channel = String(req.body?.channel ?? "").trim();
     const userId = String(req.user!.id);
     const userEmail = String(req.user!.email || "").trim();
+
+    console.log("[payments/init] start", {
+      orderId,
+      userId,
+      channel,
+      expectedTotal: req.body?.expectedTotal ?? null,
+    });
 
     if (!orderId) {
       return res.status(400).json({ error: "Missing orderId" });
@@ -758,10 +840,14 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
       },
     });
 
+    console.log("[payments/init] order-loaded", {
+      orderId,
+      found: !!order,
+      ms: Date.now() - startedAt,
+    });
+
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // ✅ payments route must not introduce any extra uplift.
-    // We use the persisted order total only, as-is.
     const payableTotal = round2(asNum(order.total, 0));
     const subtotal = round2(asNum((order as any).subtotal, 0));
     const tax = round2(asNum((order as any).tax, 0));
@@ -807,7 +893,10 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
             }
           );
 
-          if (String(process.env.NODE_ENV || "").toLowerCase() !== "production") {
+          // IMPORTANT:
+          // In dev/local, do not block payment init.
+          // Just continue using the backend persisted total.
+          if (String(process.env.NODE_ENV || "").toLowerCase() === "production") {
             return res.status(409).json({
               error: "Order total changed. Please refresh checkout and try again.",
               code: "TOTAL_MISMATCH",
@@ -824,7 +913,10 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
       where: { orderId, status: "PAID" },
       select: { id: true },
     });
-    if (paid) return res.status(409).json({ error: "Order already paid" });
+    if (paid) {
+      console.log("[payments/init] already-paid", { orderId });
+      return res.status(409).json({ error: "Order already paid" });
+    }
 
     let pay = await prisma.payment.findFirst({
       where: { orderId, status: "PENDING", channel },
@@ -855,13 +947,36 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           }
         );
 
+        try {
+          await prisma.payment.update({
+            where: { id: pay.id },
+            data: {
+              status: "CANCELED",
+              providerPayload: {
+                ...(pay.providerPayload as any),
+                note: "Canceled because pending amount no longer matched current order total",
+              },
+            } as any,
+          });
+        } catch {
+          //
+        }
+
         pay = null as any;
       }
     }
 
     if (pay && isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) && channel === "paystack") {
       const authUrl = (pay.providerPayload as any)?.authorization_url;
+
       if (authUrl) {
+        console.log("[payments/init] resume-existing", {
+          orderId,
+          paymentId: pay.id,
+          reference: pay.reference,
+          ms: Date.now() - startedAt,
+        });
+
         await logOrderActivity(orderId, "PAYMENT_RESUME", "Resumed existing Paystack attempt", {
           reference: pay.reference,
           amount: payableTotal,
@@ -875,6 +990,33 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           authorization_url: authUrl,
         });
       }
+
+      await logOrderActivity(
+        orderId,
+        "PAYMENT_INIT",
+        "Pending payment had no authorization_url yet; creating fresh attempt",
+        {
+          staleReference: pay.reference,
+          createdAt: pay.createdAt,
+        }
+      );
+
+      try {
+        await prisma.payment.update({
+          where: { id: pay.id },
+          data: {
+            status: "CANCELED",
+            providerPayload: {
+              ...(pay.providerPayload as any),
+              note: "Canceled because initialization was retried before auth URL was stored",
+            },
+          } as any,
+        });
+      } catch {
+        //
+      }
+
+      pay = null as any;
     }
 
     if (pay && !isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN)) {
@@ -888,6 +1030,21 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           ttlMinutes: ACTIVE_PENDING_TTL_MIN,
         }
       );
+
+      try {
+        await prisma.payment.update({
+          where: { id: pay.id },
+          data: {
+            status: "CANCELED",
+            providerPayload: {
+              ...(pay.providerPayload as any),
+              note: "Canceled because pending payment expired",
+            },
+          } as any,
+        });
+      } catch {
+        //
+      }
 
       pay = null as any;
     }
@@ -914,6 +1071,13 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
         status: created.status,
         amount: created.amount,
       } as any;
+
+      console.log("[payments/init] payment-created", {
+        orderId,
+        paymentId: pay!.id,
+        reference: pay!.reference,
+        amount: payableTotal,
+      });
     }
 
     if (TRIAL_MODE) {
@@ -962,7 +1126,7 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           },
         });
       } catch (e: any) {
-        console.error("paystack split create failed", e?.response?.data || e?.message);
+        console.error("[payments/init] paystack split create failed", e?.response?.data || e?.message);
       }
 
       const initPayload: any = {
@@ -993,8 +1157,87 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
 
       if (split_code) initPayload.split_code = split_code;
 
-      const resp = await ps.post("/transaction/initialize", initPayload);
-      const data = resp.data?.data;
+      console.log("[payments/init] before-paystack", {
+        orderId,
+        paymentId: pay!.id,
+        reference: pay!.reference,
+        amount: payableTotal,
+      });
+
+      let resp: any;
+      try {
+        resp = await initPaystackWithHardTimeout(initPayload, 12000);
+      } catch (e: any) {
+        console.error("[payments/init] paystack-init-failed", {
+          orderId,
+          paymentId: pay!.id,
+          reference: pay!.reference,
+          message: e?.message,
+          code: e?.code,
+          status: e?.response?.status,
+          data: e?.response?.data,
+          ms: Date.now() - startedAt,
+        });
+
+        try {
+          await prisma.payment.update({
+            where: { id: pay!.id },
+            data: {
+              status: isGatewayTimeoutOrNetworkError(e) ? "CANCELED" : "FAILED",
+              providerPayload: {
+                ...(pay!.providerPayload as any),
+                initError: e?.message || "Paystack init failed",
+                initErrorAt: new Date().toISOString(),
+              },
+              initPayload,
+              provider: "PAYSTACK",
+              channel: "paystack",
+            } as any,
+          });
+        } catch {
+          //
+        }
+
+        return res.status(502).json({
+          error: isGatewayTimeoutOrNetworkError(e)
+            ? "Payment gateway timed out. Please retry."
+            : "Could not initialize Paystack. Please retry.",
+        });
+      }
+
+      const data = resp?.data?.data;
+
+      if (!data?.authorization_url) {
+        console.error("[payments/init] paystack-missing-auth-url", {
+          orderId,
+          paymentId: pay!.id,
+          reference: pay!.reference,
+          raw: resp?.data,
+        });
+
+        try {
+          await prisma.payment.update({
+            where: { id: pay!.id },
+            data: {
+              status: "FAILED",
+              providerPayload: {
+                ...(resp?.data?.data || {}),
+                initError: "authorization_url missing from Paystack response",
+                initErrorAt: new Date().toISOString(),
+              },
+              initPayload,
+              provider: "PAYSTACK",
+              channel: "paystack",
+            } as any,
+          });
+        } catch {
+          //
+        }
+
+        return res.status(502).json({
+          error: "Payment link was not returned by gateway. Please retry.",
+        });
+      }
 
       await prisma.payment.update({
         where: { id: pay!.id },
@@ -1003,7 +1246,16 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           initPayload,
           provider: "PAYSTACK",
           channel: "paystack",
+          status: "PENDING",
         } as any,
+      });
+
+      console.log("[payments/init] success", {
+        orderId,
+        paymentId: pay!.id,
+        reference: pay!.reference,
+        authorization_url: !!data?.authorization_url,
+        ms: Date.now() - startedAt,
       });
 
       await logOrderActivity(orderId, "PAYMENT_INIT", "Paystack init", {
@@ -1045,14 +1297,46 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
         account_number: BANK_ACCOUNT_NUMBER || "0123456789",
       },
     });
-  } catch (err) {
+  } catch (err: any) {
+    console.error("[payments/init] fatal", {
+      message: err?.message,
+      stack: err?.stack,
+      orderId: req.body?.orderId ?? null,
+    });
     next(err);
   }
 });
-
 /* ----------------------------- Verification ----------------------------- */
 
 async function verifyPaystack(reference: string) {
+  const existing = await prisma.payment.findUnique({
+    where: { reference },
+    select: {
+      id: true,
+      status: true,
+      orderId: true,
+      amount: true,
+      feeAmount: true,
+      paidAt: true,
+      providerPayload: true,
+      order: { select: { total: true } },
+    },
+  });
+
+  if (!existing?.id || !existing.orderId) {
+    throw new Error("Payment not found");
+  }
+
+  // ✅ idempotent short-circuit
+  if (existing.status === "PAID") {
+    return {
+      amountNaira: Number(existing.amount ?? 0),
+      feeNaira: Number(existing.feeAmount ?? 0),
+      tx: existing.providerPayload ?? null,
+      alreadyPaid: true as const,
+    };
+  }
+
   const vr = await ps.get(`/transaction/verify/${encodeURIComponent(reference)}`);
   const tx = vr.data?.data;
 
@@ -1072,28 +1356,12 @@ async function verifyPaystack(reference: string) {
     feeNaira = calcPaystackFee(amountNaira, { international: !!isIntl });
   }
 
-  // ✅ Load the payment + order total before marking PAID, and block underpayment.
-  const current = await prisma.payment.findUnique({
-    where: { reference },
-    select: {
-      id: true,
-      orderId: true,
-      order: { select: { total: true } },
-    },
-  });
+  const orderTotal = Number(existing.order?.total ?? 0);
 
-  if (!current?.id || !current.orderId) {
-    throw new Error("Payment not found");
-  }
-
-  const orderTotal = Number(current.order?.total ?? 0);
-
-  // ✅ Prevent accepting underpayment if order total includes shipping/service fees
-  // 1 naira tolerance for rounding
   if (amountNaira + 1 < orderTotal) {
     await prisma.paymentEvent.create({
       data: {
-        paymentId: current.id,
+        paymentId: existing.id,
         type: "VERIFY_UNDERPAID",
         data: { reference, paidAmount: amountNaira, orderTotal },
       },
@@ -1119,9 +1387,8 @@ async function verifyPaystack(reference: string) {
     },
   });
 
-  return { amountNaira, feeNaira, tx };
+  return { amountNaira, feeNaira, tx, alreadyPaid: false as const };
 }
-
 // POST /api/payments/verify  { orderId, reference }
 router.post("/verify", requireAuth, async (req: AuthedRequest, res: Response) => {
   const orderId = String(req.body?.orderId ?? "").trim();
@@ -1146,6 +1413,7 @@ router.post("/verify", requireAuth, async (req: AuthedRequest, res: Response) =>
   }
 
   if (pay.status === "PAID") {
+    await finalizePaidFlow(pay.id);
     return res.json({ ok: true, status: "PAID", message: "Already verified" });
   }
 
@@ -1196,7 +1464,7 @@ router.post("/verify", requireAuth, async (req: AuthedRequest, res: Response) =>
   }
 
   try {
-    const { tx } = await verifyPaystack(reference);
+    const { tx, alreadyPaid } = await verifyPaystack(reference);
 
     await prisma.paymentEvent.create({
       data: {

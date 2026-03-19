@@ -14,7 +14,7 @@ export const COUNTRIES: CountryConfig[] = [
   { code: "BJ", name: "Benin Republic", phoneCode: "229", allowSupplierRegistration: true },
   { code: "TG", name: "Togo", phoneCode: "228", allowSupplierRegistration: true },
   { code: "BF", name: "Burkina Faso", phoneCode: "226", allowSupplierRegistration: true },
-  { code: "CD", name: "Congo", phoneCode: "243", allowSupplierRegistration: true },
+  { code: "CD", name: "Democratic Republic of the Congo", phoneCode: "243", allowSupplierRegistration: true },
 ];
 
 export const SUPPLIER_REGISTRATION_COUNTRIES = COUNTRIES.filter(

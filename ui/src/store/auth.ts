@@ -1,4 +1,3 @@
-// src/store/auth.ts
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import api from "../api/client";
@@ -30,6 +29,7 @@ function loadCartV2(key: string): any[] {
 function saveCartV2(key: string, items: any[]) {
   const now = Date.now();
   const isUser = key.startsWith(USER_CART_KEY_PREFIX);
+
   localStorage.setItem(
     key,
     JSON.stringify({
@@ -39,6 +39,7 @@ function saveCartV2(key: string, items: any[]) {
       expiresAt: now + (isUser ? 90 : 14) * 24 * 60 * 60 * 1000,
     })
   );
+
   try {
     localStorage.removeItem("cart");
   } catch {}
@@ -113,7 +114,10 @@ type AuthState = {
   bootstrap: () => Promise<void>;
 };
 
-const is401 = (e: any) => Number(e?.response?.status) === 401;
+const is401or403 = (e: any) => {
+  const s = Number(e?.response?.status);
+  return s === 401 || s === 403;
+};
 
 function normRole(role: unknown): Role {
   let r = String(role ?? "").trim().toUpperCase();
@@ -128,9 +132,25 @@ function normRole(role: unknown): Role {
   return "SHOPPER";
 }
 
-function normalizeUser(u: AuthUser | null): AuthUser | null {
+function normalizeUser(u: any): AuthUser | null {
   if (!u?.id) return null;
-  return { ...u, role: normRole((u as any).role) };
+
+  return {
+    ...u,
+    role: normRole(u?.role),
+  } as AuthUser;
+}
+
+function pickAuthUser(payload: any): AuthUser | null {
+  const candidate =
+    payload?.data?.user ??
+    payload?.data?.data ??
+    payload?.data ??
+    payload?.user ??
+    payload ??
+    null;
+
+  return normalizeUser(candidate);
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -143,38 +163,93 @@ export const useAuthStore = create<AuthState>()(
       needsVerification: false,
       sessionExpired: false,
 
-      setUser: (u) => set({ user: normalizeUser(u), sessionExpired: false }),
-      setNeedsVerification: (v) => set({ needsVerification: !!v }),
+      setUser: (u) =>
+        set({
+          user: normalizeUser(u),
+          sessionExpired: false,
+        }),
 
-      markSessionExpired: () => set({ user: null, needsVerification: false, sessionExpired: true }),
+      setNeedsVerification: (v) =>
+        set({
+          needsVerification: !!v,
+        }),
 
-      clear: () => set({ user: null, needsVerification: false, sessionExpired: false }),
+      markSessionExpired: () =>
+        set({
+          user: null,
+          needsVerification: false,
+          sessionExpired: true,
+          hydrated: true,
+          bootstrapping: false,
+        }),
+
+      clear: () =>
+        set({
+          user: null,
+          needsVerification: false,
+          sessionExpired: false,
+          hydrated: true,
+          bootstrapping: false,
+        }),
 
       bootstrap: async () => {
         if (get().bootstrapping) return;
 
-        // ✅ CRITICAL: prevents the instant “re-login” after clicking Logout
         if (wasJustLoggedOut(3000)) {
-          set({ hydrated: true, bootstrapping: false, user: null, sessionExpired: false });
+          set({
+            user: null,
+            needsVerification: false,
+            sessionExpired: false,
+            hydrated: true,
+            bootstrapping: false,
+          });
           return;
         }
 
-        set({ bootstrapping: true });
+        set({
+          bootstrapping: true,
+          hydrated: false,
+        });
+
+        const previousUser = get().user;
 
         try {
-          const r = await api.get("/api/auth/me", { withCredentials: true });
-          const me = r.data as AuthUser | null;
+          const response = await api.get("/api/auth/me", { withCredentials: true });
+          const me = pickAuthUser(response);
 
           if (me?.id) {
-            set({ user: normalizeUser(me), sessionExpired: false });
+            set({
+              user: me,
+              needsVerification: false,
+              sessionExpired: false,
+            });
             mergeGuestCartIntoUserCart(String(me.id));
           } else {
-            set({ user: null, sessionExpired: false });
+            set({
+              user: null,
+              needsVerification: false,
+              sessionExpired: false,
+            });
           }
         } catch (e: any) {
-          if (is401(e)) set({ user: null, needsVerification: false, sessionExpired: true });
+          if (is401or403(e)) {
+            set({
+              user: null,
+              needsVerification: false,
+              sessionExpired: true,
+            });
+          } else {
+            // Keep previous good session on transient/network issues.
+            set({
+              user: previousUser ?? get().user,
+              sessionExpired: false,
+            });
+          }
         } finally {
-          set({ hydrated: true, bootstrapping: false });
+          set({
+            hydrated: true,
+            bootstrapping: false,
+          });
         }
       },
     }),
@@ -187,7 +262,11 @@ export const useAuthStore = create<AuthState>()(
         sessionExpired: s.sessionExpired,
       }),
       onRehydrateStorage: () => (state) => {
-        if (state) state.hydrated = true;
+        // Do not mark hydrated=true here.
+        // Hydrated should mean the live /api/auth/me check has completed.
+        if (state) {
+          state.bootstrapping = false;
+        }
       },
     }
   )

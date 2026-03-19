@@ -12,65 +12,12 @@ type RegisterResponse = {
   emailSent?: boolean;
 };
 
-type Country = { name: string; code: string; dial: string };
-
-const COUNTRIES: Country[] = [
-  { name: "Select country", code: "", dial: "" },
-  { name: "Nigeria", code: "NG", dial: "+234" },
-  { name: "United States", code: "US", dial: "+1" },
-  { name: "United Kingdom", code: "GB", dial: "+44" },
-  { name: "Canada", code: "CA", dial: "+1" },
-  { name: "Ghana", code: "GH", dial: "+233" },
-  { name: "Kenya", code: "KE", dial: "+254" },
-  { name: "South Africa", code: "ZA", dial: "+27" },
-  { name: "India", code: "IN", dial: "+91" },
-  { name: "Ireland", code: "IE", dial: "+353" },
-  { name: "Germany", code: "DE", dial: "+49" },
-  { name: "France", code: "FR", dial: "+33" },
-  { name: "Finland", code: "FI", dial: "+358" },
-  { name: "Spain", code: "ES", dial: "+34" },
-  { name: "Italy", code: "IT", dial: "+39" },
-  { name: "Netherlands", code: "NL", dial: "+31" },
-  { name: "Sweden", code: "SE", dial: "+46" },
-  { name: "Norway", code: "NO", dial: "+47" },
-  { name: "Denmark", code: "DK", dial: "+45" },
-  { name: "Switzerland", code: "CH", dial: "+41" },
-  { name: "Brazil", code: "BR", dial: "+55" },
-  { name: "Mexico", code: "MX", dial: "+52" },
-  { name: "Australia", code: "AU", dial: "+61" },
-  { name: "New Zealand", code: "NZ", dial: "+64" },
-  { name: "UAE", code: "AE", dial: "+971" },
-  { name: "Saudi Arabia", code: "SA", dial: "+966" },
-  { name: "Turkey", code: "TR", dial: "+90" },
-  { name: "Egypt", code: "EG", dial: "+20" },
-  { name: "Morocco", code: "MA", dial: "+212" },
-  { name: "Côte d’Ivoire", code: "CI", dial: "+225" },
-  { name: "Cameroon", code: "CM", dial: "+237" },
-  { name: "Ethiopia", code: "ET", dial: "+251" },
-];
-
-function normalizeLocalPhone(input: string): string {
-  return String(input ?? "").replace(/\D/g, "");
-}
-
-function buildE164Phone(countryDial: string, localPhone: string): string | null {
-  const dial = String(countryDial ?? "").trim();
-  const localDigits = normalizeLocalPhone(localPhone);
-
-  if (!dial || !localDigits) return null;
-
-  const safeDial = dial.startsWith("+") ? dial : `+${dial}`;
-  return `${safeDial}${localDigits}`;
-}
-
 export default function Register() {
   const [form, setForm] = useState({
     email: "",
     firstName: "",
     middleName: "",
     lastName: "",
-    countryDial: "",
-    localPhone: "",
     password: "",
     confirmPassword: "",
     role: "SHOPPER" as Role,
@@ -109,18 +56,6 @@ export default function Register() {
     if (!form.email.trim()) return "Please enter your email";
     if (!/^\S+@\S+\.\S+$/.test(form.email)) return "Please enter a valid email";
 
-    if (!form.countryDial.trim()) {
-      return "Please select your country code";
-    }
-
-    const localDigits = normalizeLocalPhone(form.localPhone);
-    if (!localDigits) {
-      return "Please enter your phone number";
-    }
-    if (localDigits.length < 6) {
-      return "Please enter a valid phone number";
-    }
-
     const pwd = form.password ?? "";
     const hasMinLen = pwd.length >= 8;
     const hasLetter = /[A-Za-z]/.test(pwd);
@@ -157,7 +92,7 @@ export default function Register() {
 
     const age = getAgeYears(dob, today);
 
-    if (age < 18) return "You must be at least 18 years old to register";
+    if (age < 16) return "You must be at least 16 years old to register";
     if (age > 125) return "Please enter a valid date of birth (age must be 125 or younger)";
 
     return null;
@@ -185,25 +120,13 @@ export default function Register() {
     try {
       setSubmitting(true);
 
-      const localDigits = normalizeLocalPhone(form.localPhone);
-      const phone = buildE164Phone(form.countryDial, localDigits);
-
-      if (!phone) {
-        setErr("Please enter a valid phone number");
-        scrollTopOnError();
-        return;
-      }
-
       const payload = {
         email: form.email.trim().toLowerCase(),
         firstName: form.firstName.trim(),
         middleName: form.middleName.trim() || undefined,
         lastName: form.lastName.trim(),
-        phone,
         password: form.password,
         role: form.role,
-        dialCode: form.countryDial,
-        localPhone: localDigits,
         dateOfBirth: form.dateOfBirth
           ? new Date(`${form.dateOfBirth}T00:00:00`).toISOString()
           : undefined,
@@ -249,11 +172,6 @@ export default function Register() {
 
   const toggleBtnBase =
     "absolute inset-y-0 right-2 flex items-center text-xs font-medium text-slate-500 hover:text-slate-700";
-
-  const phonePreview = useMemo(() => {
-    const built = buildE164Phone(form.countryDial, form.localPhone);
-    return built || "—";
-  }, [form.countryDial, form.localPhone]);
 
   return (
     <SiteLayout>
@@ -330,40 +248,8 @@ export default function Register() {
                     onChange={onDateChange}
                     className={inputBase}
                   />
-                  <p className="mt-1 text-xs text-slate-500">Must be 18+ years old.</p>
+                  <p className="mt-1 text-xs text-slate-500">Must be 16+ years old.</p>
                 </div>
-              </div>
-
-              <div>
-                <label className={labelBase}>Phone</label>
-                <div className="grid grid-cols-[9rem,1fr] gap-2">
-                  <select
-                    value={form.countryDial}
-                    onChange={(e) => setForm((f) => ({ ...f, countryDial: e.target.value }))}
-                    className={inputBase}
-                    aria-label="Country code"
-                  >
-                    {COUNTRIES.map((c) => (
-                      <option key={`${c.code}-${c.dial}-${c.name}`} value={c.dial}>
-                        {c.name} {c.dial ? `(${c.dial})` : ""}
-                      </option>
-                    ))}
-                  </select>
-
-                  <input
-                    value={form.localPhone}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, localPhone: e.target.value.replace(/[^\d\s()-]/g, "") }))
-                    }
-                    inputMode="tel"
-                    autoComplete="tel-national"
-                    className={inputBase}
-                    placeholder="Local number"
-                  />
-                </div>
-                <p className="mt-1 text-xs text-slate-500">
-                  Format: {phonePreview}
-                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

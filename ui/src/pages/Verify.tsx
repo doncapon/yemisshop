@@ -12,8 +12,6 @@ import {
   ChevronRight,
   ExternalLink,
   Inbox,
-  UserCog,
-  Smartphone,
   CheckCircle2,
 } from "lucide-react";
 import api from "../api/client";
@@ -36,8 +34,71 @@ type MeResponse = {
   firstName?: string | null;
   lastName?: string | null;
   emailVerifiedAt?: string | null;
-  phoneVerifiedAt?: string | null;
+  emailVerified?: boolean;
+  status?: string | null;
 };
+
+type NormalizedMe = {
+  id: string;
+  email: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  emailVerifiedAt?: string | null;
+  emailVerified: boolean;
+  status?: string | null;
+};
+
+function unwrapUserPayload(raw: any): any {
+  if (!raw || typeof raw !== "object") return raw;
+
+  if (raw.data && typeof raw.data === "object") return raw.data;
+  if (raw.profile && typeof raw.profile === "object") return raw.profile;
+  if (raw.user && typeof raw.user === "object") return raw.user;
+
+  return raw;
+}
+
+function normalizeMe(raw: any): NormalizedMe | null {
+  const src = unwrapUserPayload(raw);
+  if (!src || typeof src !== "object") return null;
+
+  const id = String(src.id ?? "").trim();
+  const email = String(src.email ?? "").trim();
+
+  if (!id && !email) return null;
+
+  const emailVerified = src.emailVerified === true || !!src.emailVerifiedAt;
+
+  return {
+    id,
+    email,
+    firstName: src.firstName ?? null,
+    lastName: src.lastName ?? null,
+    emailVerifiedAt: src.emailVerifiedAt ?? null,
+    emailVerified,
+    status: src.status ?? null,
+  };
+}
+
+function mergeVerifiedState(
+  prev: NormalizedMe | null,
+  next: NormalizedMe | null
+): NormalizedMe | null {
+  if (!prev) return next;
+  if (!next) return prev;
+
+  const keepVerified = prev.emailVerified || next.emailVerified;
+  const keepVerifiedAt = prev.emailVerifiedAt || next.emailVerifiedAt || null;
+
+  return {
+    ...prev,
+    ...next,
+    email: next.email || prev.email,
+    id: next.id || prev.id,
+    emailVerified: keepVerified,
+    emailVerifiedAt: keepVerifiedAt,
+  };
+}
 
 function StatChip({
   tone = "amber",
@@ -47,19 +108,32 @@ function StatChip({
   children: React.ReactNode;
 }) {
   const tones = {
-    amber: "bg-amber-50 text-amber-700 border-amber-200",
-    green: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    zinc: "bg-zinc-50 text-zinc-700 border-zinc-200",
+    amber: "border-amber-200 bg-amber-50 text-amber-700",
+    green: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    zinc: "border-zinc-200 bg-zinc-50 text-zinc-700",
   } as const;
+
   return (
-    <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 border rounded-full ${tones[tone]}`}>
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] sm:text-xs font-medium ${tones[tone]}`}
+    >
       {children}
     </span>
   );
 }
 
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`rounded-2xl border border-border bg-white shadow-sm overflow-hidden ${className}`}>{children}</div>;
+function Card({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm ${className}`}>
+      {children}
+    </div>
+  );
 }
 
 function CardHeader({
@@ -74,16 +148,40 @@ function CardHeader({
   right?: React.ReactNode;
 }) {
   return (
-    <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-b from-surface to-white flex items-center justify-between">
+    <div className="flex flex-col gap-3 border-b bg-gradient-to-b from-zinc-50 to-white px-4 py-4 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
       <div className="flex items-start gap-3">
-        {icon && <div className="mt-[2px] text-primary-700">{icon}</div>}
-        <div>
-          <h3 className="text-ink font-semibold">{title}</h3>
-          {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
+        {icon ? (
+          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary-50 text-primary-700">
+            {icon}
+          </div>
+        ) : null}
+
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-zinc-900 sm:text-base">{title}</h3>
+          {subtitle ? <p className="mt-1 text-xs text-zinc-500 sm:text-sm">{subtitle}</p> : null}
         </div>
       </div>
-      {right}
+
+      {right ? <div className="w-full md:w-auto">{right}</div> : null}
     </div>
+  );
+}
+
+function ActionButton({
+  children,
+  className = "",
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <button
+      {...props}
+      className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -93,11 +191,10 @@ export default function VerifyEmail() {
 
   const qs = new URLSearchParams(location.search);
   const eParam = (qs.get("e") || "").toLowerCase();
-  const okParam = qs.get("ok"); // "1" if server confirmed success
-  const errParam = qs.get("err"); // e.g.,when invalid/expired
+  const okParam = qs.get("ok");
+  const errParam = qs.get("err");
 
-  // ---------- State ----------
-  const [me, setMe] = useState<MeResponse | null>(null);
+  const [me, setMe] = useState<NormalizedMe | null>(null);
   const [targetEmail, setTargetEmail] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
@@ -108,172 +205,227 @@ export default function VerifyEmail() {
   const [emailCooldown, setEmailCooldown] = useState(0);
   const emailTimerRef = useRef<number | null>(null);
 
-  // OTP
-  const [otp, setOtp] = useState("");
-  const [verifyingOtp, setVerifyingOtp] = useState(false);
-  const [otpMsg, setOtpMsg] = useState<string | null>(null);
-  const [otpErr, setOtpErr] = useState<string | null>(null);
-  const [otpCooldown, setOtpCooldown] = useState(0);
-  const otpTimerRef = useRef<number | null>(null);
+  const [statusChecked, setStatusChecked] = useState(false);
 
-  const phoneVerified = !!me?.phoneVerifiedAt;
-
-  // ---------- Derivations ----------
-  const headerTitle = useMemo(() => (me?.emailVerifiedAt ? "Email verified" : "Verify your email"), [me?.emailVerifiedAt]);
-
-  // ✅ Cookie auth: we consider "logged in" if /api/auth/me succeeds.
+  const emailVerified = !!me?.emailVerified;
   const isLoggedIn = !!me?.id;
-  const showOtpBlock = isLoggedIn && !phoneVerified;
 
-  // ---------- Prime targetEmail (param -> localStorage -> profile) ----------
+  const headerTitle = useMemo(() => {
+    return emailVerified ? "Email verified" : "Verify your email";
+  }, [emailVerified]);
+
   useEffect(() => {
     const stored = (localStorage.getItem("verifyEmail") || "").toLowerCase();
     const fromParam = eParam || stored;
     setTargetEmail(fromParam);
   }, [eParam]);
 
-  // ---------- Banner from redirect params ----------
+  useEffect(() => {
+    setStatusChecked(false);
+  }, [targetEmail]);
+
   useEffect(() => {
     if (okParam === "1") {
-      setBanner("Your email is now verified. You can continue.");
+      setBanner("Your email has been verified successfully. You can continue.");
       setErr(null);
-      setMe((m) => ({
-        ...(m || ({} as any)),
-        email: m?.email || targetEmail,
-        emailVerifiedAt: new Date().toISOString(),
-      }));
-    } else if (errParam) {
-      setErr("That verification link could not be validated. Please resend a new one below.");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [okParam, errParam]);
 
-  // ---------- Load profile via cookie session ----------
+      setMe((prev) =>
+        mergeVerifiedState(
+          prev,
+          normalizeMe({
+            ...(prev || {}),
+            email: prev?.email || targetEmail,
+            emailVerifiedAt: new Date().toISOString(),
+            emailVerified: true,
+          })
+        )
+      );
+    } else if (errParam) {
+      setErr("That verification link could not be validated. Please request a new email below.");
+    }
+  }, [okParam, errParam, targetEmail]);
+
   useEffect(() => {
     let alive = true;
+
     (async () => {
       try {
         setLoading(true);
 
-        // Prefer /api/profile/me if you have it; fallback to /api/auth/me
         try {
-          const { data } = await api.get<MeResponse>("/api/profile/me", AXIOS_COOKIE_CFG);
+          const profileRes = await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
           if (!alive) return;
-          setMe(data);
-          if (!targetEmail) setTargetEmail((data?.email || "").toLowerCase());
+
+          const normalized = normalizeMe(profileRes.data);
+          setMe((prev) => mergeVerifiedState(prev, normalized));
+
+          if (!targetEmail && normalized?.email) {
+            setTargetEmail(normalized.email.toLowerCase());
+          }
+
           return;
         } catch (e: any) {
-          // If /api/profile/me doesn't exist or requires email verified, fallback
           if (!isAuthError(e)) {
-            // continue fallback
+            // continue to auth/me fallback
           }
         }
 
-        const { data } = await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG);
+        const authRes = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
         if (!alive) return;
-        setMe(data);
-        if (!targetEmail) setTargetEmail((data?.email || "").toLowerCase());
+
+        const normalized = normalizeMe(authRes.data);
+        setMe((prev) => mergeVerifiedState(prev, normalized));
+
+        if (!targetEmail && normalized?.email) {
+          setTargetEmail(normalized.email.toLowerCase());
+        }
       } catch {
-        // Not logged in (cookie missing/expired) -> keep page usable as "public" verify checker
-        if (alive) setMe(null);
+        if (alive) {
+          setMe((prev) => prev ?? null);
+        }
       } finally {
         if (alive) setLoading(false);
       }
     })();
+
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key]);
 
-  // ---------- One-time public email status check ----------
-  const [statusChecked, setStatusChecked] = useState(false);
   useEffect(() => {
     if (!targetEmail || statusChecked) return;
+
     let alive = true;
+
     (async () => {
       try {
-        const { data } = await api.get("/api/auth/email-status", { params: { email: targetEmail } });
+        const { data } = await api.get("/api/auth/email-status", {
+          params: { email: targetEmail },
+        });
+
         if (!alive) return;
+
         if (data?.emailVerifiedAt) {
-          setMe((m) => ({ ...(m || ({} as any)), email: targetEmail, emailVerifiedAt: data.emailVerifiedAt }));
+          setMe((prev) =>
+            mergeVerifiedState(
+              prev,
+              normalizeMe({
+                ...(prev || {}),
+                email: targetEmail,
+                emailVerifiedAt: data.emailVerifiedAt,
+                emailVerified: true,
+              })
+            )
+          );
         }
       } catch {
-        // not fatal (user may not exist if not logged in)
+        //
       } finally {
         if (alive) setStatusChecked(true);
       }
     })();
+
     return () => {
       alive = false;
     };
   }, [targetEmail, statusChecked]);
 
-  // ---------- Cooldown tickers ----------
   useEffect(() => {
     if (emailCooldown <= 0) return;
-    emailTimerRef.current = window.setTimeout(() => setEmailCooldown((s) => Math.max(0, s - 1)), 1000) as unknown as number;
+
+    emailTimerRef.current = window.setTimeout(() => {
+      setEmailCooldown((s) => Math.max(0, s - 1));
+    }, 1000) as unknown as number;
+
     return () => {
       if (emailTimerRef.current) window.clearTimeout(emailTimerRef.current);
       emailTimerRef.current = null;
     };
   }, [emailCooldown]);
 
-  useEffect(() => {
-    if (otpCooldown <= 0) return;
-    otpTimerRef.current = window.setTimeout(() => setOtpCooldown((s) => Math.max(0, s - 1)), 1000) as unknown as number;
-    return () => {
-      if (otpTimerRef.current) window.clearTimeout(otpTimerRef.current);
-      otpTimerRef.current = null;
-    };
-  }, [otpCooldown]);
-
-  // ---------- Actions ----------
   const refreshStatus = async () => {
     setErr(null);
     setBanner(null);
+
     try {
-      // public status check (works even if logged out)
+      let foundVerified = false;
+
       if (targetEmail) {
-        const { data } = await api.get("/api/auth/email-status", { params: { email: targetEmail } });
+        const { data } = await api.get("/api/auth/email-status", {
+          params: { email: targetEmail },
+        });
+
         if (data?.emailVerifiedAt) {
-          setMe((m) => ({ ...(m || ({} as any)), email: targetEmail, emailVerifiedAt: data.emailVerifiedAt }));
-          setBanner("Your email is verified. You can continue.");
-        } else {
-          setBanner("Still waiting for confirmation. Check your inbox or resend below.");
+          foundVerified = true;
+          setMe((prev) =>
+            mergeVerifiedState(
+              prev,
+              normalizeMe({
+                ...(prev || {}),
+                email: targetEmail,
+                emailVerifiedAt: data.emailVerifiedAt,
+                emailVerified: true,
+              })
+            )
+          );
         }
       }
 
-      // cookie-auth status refresh (if logged in)
       try {
-        const r = await api.get<MeResponse>("/api/profile/me", AXIOS_COOKIE_CFG);
-        setMe(r.data);
-        if (r.data?.emailVerifiedAt) setBanner("Your email is verified. You can continue.");
+        const r = await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
+        const normalized = normalizeMe(r.data);
+        setMe((prev) => mergeVerifiedState(prev, normalized));
+
+        const finalVerified = foundVerified || !!normalized?.emailVerified;
+        setBanner(
+          finalVerified
+            ? "Your email is verified. You can continue."
+            : "Still waiting for confirmation. Check your inbox or resend the email below."
+        );
+        return;
       } catch (e: any) {
-        // fallback to /api/auth/me
         if (!isAuthError(e)) {
           try {
-            const r2 = await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG);
-            setMe(r2.data);
-            if (r2.data?.emailVerifiedAt) setBanner("Your email is verified. You can continue.");
+            const r2 = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
+            const normalized = normalizeMe(r2.data);
+            setMe((prev) => mergeVerifiedState(prev, normalized));
+
+            const finalVerified = foundVerified || !!normalized?.emailVerified;
+            setBanner(
+              finalVerified
+                ? "Your email is verified. You can continue."
+                : "Still waiting for confirmation. Check your inbox or resend the email below."
+            );
+            return;
           } catch {
-            /* ignore */
+            //
           }
         }
       }
+
+      setBanner(
+        foundVerified
+          ? "Your email is verified. You can continue."
+          : "Still waiting for confirmation. Check your inbox or resend the email below."
+      );
     } catch (e: any) {
       setErr(e?.response?.data?.error || "Failed to refresh status");
     }
   };
 
-  // Email resend (public)
   const resendPublic = async () => {
     if (!targetEmail || sendingEmail || emailCooldown > 0) return;
+
     setSendingEmail(true);
     setErr(null);
     setBanner(null);
+
     try {
-      const { data } = await api.post<ResendResp>("/api/auth/resend-verification", { email: targetEmail });
+      const { data } = await api.post<ResendResp>("/api/auth/resend-verification", {
+        email: targetEmail,
+      });
+
       setEmailCooldown(Math.max(0, Number(data?.nextResendAfterSec ?? 60)));
       setBanner("Verification email sent. Please check your inbox.");
     } catch (e: any) {
@@ -285,12 +437,13 @@ export default function VerifyEmail() {
     }
   };
 
-  // Email resend (authed via cookie)
   const resendAuthed = async () => {
     if (!isLoggedIn || sendingEmail || emailCooldown > 0) return;
+
     setSendingEmail(true);
     setErr(null);
     setBanner(null);
+
     try {
       const { data } = await api.post<ResendResp>("/api/auth/resend-email", {}, AXIOS_COOKIE_CFG);
       setEmailCooldown(Math.max(0, Number(data?.nextResendAfterSec ?? 60)));
@@ -301,6 +454,7 @@ export default function VerifyEmail() {
         nav("/login", { state: { from: location.pathname + location.search } });
         return;
       }
+
       const retryAfter = e?.response?.data?.retryAfterSec;
       if (retryAfter) setEmailCooldown(retryAfter);
       setErr(e?.response?.data?.error || "Could not resend verification email");
@@ -309,299 +463,208 @@ export default function VerifyEmail() {
     }
   };
 
-  // OTP: verify (authed via cookie)
-  const submitOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setOtpErr(null);
-    setOtpMsg(null);
-
-    if (!isLoggedIn) {
-      setOtpErr("Please sign in first.");
-      nav("/login", { state: { from: location.pathname + location.search } });
-      return;
-    }
-    if (!otp.trim()) {
-      setOtpErr("Enter the code we sent to your phone.");
-      return;
-    }
-
-    try {
-      setVerifyingOtp(true);
-      await api.post("/api/auth/verify-otp", { otp: otp.trim() }, AXIOS_COOKIE_CFG);
-
-      setOtp("");
-      setOtpMsg("Phone verified!");
-      setOtpErr(null);
-
-      await refreshStatus();
-    } catch (e: any) {
-      if (isAuthError(e)) {
-        setOtpErr("Your session expired. Please sign in again.");
-        nav("/login", { state: { from: location.pathname + location.search } });
-        return;
-      }
-      setOtpErr(e?.response?.data?.error || "Could not verify the code");
-      setOtpMsg(null);
-    } finally {
-      setVerifyingOtp(false);
-    }
-  };
-
-  // OTP: resend (authed via cookie)
-  const resendOtp = async () => {
-    setOtpErr(null);
-    setOtpMsg(null);
-
-    if (!isLoggedIn) {
-      setOtpErr("Please sign in first.");
-      nav("/login", { state: { from: location.pathname + location.search } });
-      return;
-    }
-    if (otpCooldown > 0) return;
-
-    try {
-      const { data } = await api.post("/api/auth/resend-otp", {}, AXIOS_COOKIE_CFG);
-      setOtpCooldown(Math.max(0, Number(data?.nextResendAfterSec ?? 60)));
-      setOtpMsg("A new verification code was sent to your phone.");
-    } catch (e: any) {
-      if (isAuthError(e)) {
-        setOtpErr("Your session expired. Please sign in again.");
-        nav("/login", { state: { from: location.pathname + location.search } });
-        return;
-      }
-      const retry = e?.response?.data?.retryAfterSec;
-      if (retry) setOtpCooldown(retry);
-      setOtpErr(e?.response?.data?.error || "Could not resend the code");
-    }
-  };
-
   const nextStepPath = "/dashboard";
+  const shownEmail = targetEmail || me?.email || "—";
 
   return (
     <SiteLayout>
-      <div className="min-h-[80vh]">
-        {/* Hero */}
-        <div className="relative overflow-hidden border-b">
-          <div className="bg-gradient-to-br from-primary-300 via-primary-600 to-indigo-300 text-white">
-            <div className="max-w-5xl mx-auto px-3 sm:px-4 md:px-8 py-6 md:py-8">
-              <motion.h1
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight"
-              >
-                {headerTitle}
-              </motion.h1>
-              <p className="mt-1 text-white/85 text-xs sm:text-sm">
-                We sent a confirmation link to your email. Please click it to continue.
+      <div className="min-h-[80vh] bg-zinc-50/60">
+        <div className="relative overflow-hidden border-b border-zinc-200 bg-gradient-to-br from-primary-300 via-primary-600 to-indigo-400 text-white">
+          <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 sm:py-10">
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">
+                {emailVerified ? <CheckCircle2 size={14} /> : <Clock size={14} />}
+                <span>{emailVerified ? "Verified" : "Action needed"}</span>
+              </div>
+
+              <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{headerTitle}</h1>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-white/90 sm:text-base">
+                {emailVerified
+                  ? "Your account email is confirmed."
+                  : "Please verify your email address to continue using your account."}
               </p>
-              {!me?.emailVerifiedAt && (
-                <div className="mt-3">
+
+              {!emailVerified ? (
+                <div className="mt-4 flex flex-wrap gap-2">
                   <StatChip tone="amber">
                     <Clock size={14} />
-                    <span>Link expires soon</span>
+                    <span>Email pending</span>
                   </StatChip>
                 </div>
-              )}
-            </div>
+              ) : null}
+            </motion.div>
           </div>
         </div>
 
-        {/* Content */}
-        <div className="max-w-5xl mx-auto px-3 sm:px-4 md:px-8 py-6 md:py-8 space-y-6">
+        <div className="mx-auto max-w-4xl space-y-5 px-4 py-5 sm:px-6 sm:py-8">
           <Card>
             <CardHeader
               title="Verification status"
-              subtitle={me?.emailVerifiedAt ? "Your email is verified—nice!" : "Awaiting verification"}
-              icon={me?.emailVerifiedAt ? <MailCheck size={18} /> : <MailWarning size={18} />}
+              subtitle={
+                emailVerified
+                  ? "Your email has been verified successfully."
+                  : "Follow the steps below to verify your email."
+              }
+              icon={emailVerified ? <MailCheck size={18} /> : <MailWarning size={18} />}
               right={
-                <div className="hidden sm:flex items-center gap-2">
-                  <button
+                <div className="flex w-full flex-col gap-2 sm:flex-row md:w-auto">
+                  <ActionButton
                     onClick={refreshStatus}
-                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs sm:text-sm hover:bg-black/5"
+                    className="border border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-50"
                   >
-                    <RefreshCcw size={16} /> Check status
-                  </button>
-                  {me?.emailVerifiedAt ? (
+                    <RefreshCcw size={16} />
+                    Check status
+                  </ActionButton>
+
+                  {emailVerified ? (
                     <Link
                       to={nextStepPath}
-                      className="inline-flex items-center gap-2 rounded-xl bg-white/10 text-white px-3 py-2 text-xs sm:text-sm hover:bg-white/20"
+                      className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-primary-700"
                     >
-                      Continue <ChevronRight size={16} />
+                      Continue
+                      <ChevronRight size={16} />
                     </Link>
                   ) : null}
                 </div>
               }
             />
+
             <div className="p-4 sm:p-5">
               {loading ? (
-                <div className="animate-pulse space-y-2">
-                  <div className="h-4 w-2/3 bg-zinc-200 rounded" />
-                  <div className="h-3 w-1/2 bg-zinc-200 rounded" />
+                <div className="animate-pulse space-y-3">
+                  <div className="h-4 w-2/3 rounded bg-zinc-200" />
+                  <div className="h-3 w-1/2 rounded bg-zinc-200" />
+                  <div className="h-20 w-full rounded-2xl bg-zinc-100" />
                 </div>
               ) : (
                 <>
-                  {banner && (
-                    <div className="mb-3 text-xs sm:text-sm text-emerald-700 border border-emerald-200 bg-emerald-50 px-3 py-2 rounded">
+                  {banner ? (
+                    <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
                       {banner}
                     </div>
-                  )}
-                  {err && (
-                    <div className="mb-3 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+                  ) : null}
+
+                  {err ? (
+                    <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                       {err}
                     </div>
-                  )}
+                  ) : null}
 
-                  {/* Email chip + status */}
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm px-2.5 py-1.5 rounded-xl border bg-surface max-w-full">
-                      <Mail size={16} className="text-primary-700 shrink-0" />
-                      <span className="font-medium text-ink truncate max-w-[200px] sm:max-w-none text-[10px] sm:text-xs leading-tight">
-                        {targetEmail || me?.email || "—"}
-                      </span>
-                    </span>
+                  <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-50 text-primary-700">
+                          <Mail size={18} />
+                        </div>
 
-                    {me?.emailVerifiedAt ? (
-                      <StatChip tone="green">
-                        <ShieldCheck size={14} />
-                        <span className="truncate">
-                          Verified at {new Date(me.emailVerifiedAt).toLocaleString()}
-                        </span>
-                      </StatChip>
-                    ) : (
-                      <StatChip tone="zinc">
-                        <Inbox size={14} />
-                        <span>Waiting for confirmation</span>
-                      </StatChip>
-                    )}
-                  </div>
-
-                  {/* Email actions */}
-                  {!me?.emailVerifiedAt && (
-                    <div className="mt-4 flex flex-wrap items-center gap-2">
-                      <button
-                        onClick={resendPublic}
-                        disabled={sendingEmail || emailCooldown > 0 || !targetEmail}
-                        className="inline-flex items-center gap-2 rounded-xl bg-accent-500 text-white px-3 py-2 text-xs sm:text-sm hover:bg-accent-600 disabled:opacity-50"
-                      >
-                        {sendingEmail ? (
-                          <>
-                            <RefreshCcw size={16} className="animate-spin" />
-                            Sending…
-                          </>
-                        ) : emailCooldown > 0 ? (
-                          <>
-                            <Clock size={16} />
-                            Resend in {emailCooldown}s
-                          </>
-                        ) : (
-                          <>
-                            <Mail size={16} />
-                            Resend email
-                          </>
-                        )}
-                      </button>
-
-                      {/* Logged-in resend uses cookie session */}
-                      {isLoggedIn && (
-                        <button
-                          onClick={resendAuthed}
-                          disabled={sendingEmail || emailCooldown > 0}
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs sm:text-sm hover:bg-black/5"
-                        >
-                          <RefreshCcw size={16} />
-                          Resend (logged in)
-                        </button>
-                      )}
-
-                      <button
-                        onClick={refreshStatus}
-                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs sm:text-sm hover:bg-black/5"
-                      >
-                        <RefreshCcw size={16} />
-                        I’ve verified — Check again
-                      </button>
-
-                      <Link
-                        to="/profile"
-                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs sm:text-sm hover:bg-black/5"
-                        title="Change or correct your email address"
-                      >
-                        <UserCog size={16} />
-                        Update email
-                      </Link>
-                    </div>
-                  )}
-
-                  {/* Phone OTP block (cookie auth only, when not verified) */}
-                  {showOtpBlock && (
-                    <div className="mt-6 rounded-xl border bg-white p-4 sm:p-5">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Smartphone size={18} className="text-primary-700" />
-                        <div className="text-sm font-medium text-ink">Phone verification</div>
-                        {me?.phoneVerifiedAt && (
-                          <span className="ml-2 inline-flex items-center gap-1 text-xs text-emerald-700">
-                            <CheckCircle2 size={14} /> Verified
-                          </span>
-                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                            Email address
+                          </p>
+                          <p className="mt-1 break-all text-sm font-semibold text-zinc-900 sm:text-base">
+                            {shownEmail}
+                          </p>
+                        </div>
                       </div>
 
-                      {otpMsg && (
-                        <div className="mb-2 text-xs rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 px-3 py-2">
-                          {otpMsg}
-                        </div>
-                      )}
-                      {otpErr && (
-                        <div className="mb-2 text-xs rounded-md border border-rose-300/60 bg-rose-50/90 text-rose-700 px-3 py-2">
-                          {otpErr}
-                        </div>
-                      )}
-
-                      <form
-                        onSubmit={submitOtp}
-                        className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2"
-                      >
-                        <input
-                          value={otp}
-                          onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
-                          inputMode="numeric"
-                          pattern="\d*"
-                          placeholder="Enter the 6-digit code"
-                          className="flex-1 rounded-xl border border-slate-300/80 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
-                        />
-                        <button
-                          type="submit"
-                          disabled={verifyingOtp || !otp.trim()}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 text-xs sm:text-sm hover:bg-primary-700 disabled:opacity-50"
-                        >
-                          {verifyingOtp ? "Verifying…" : "Verify code"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={resendOtp}
-                          disabled={otpCooldown > 0}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-2 text-xs sm:text-sm hover:bg-black/5 disabled:opacity-50"
-                          title="Resend verification code"
-                        >
-                          <RefreshCcw size={16} className={otpCooldown > 0 ? "opacity-70" : ""} />
-                          {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : "Resend code"}
-                        </button>
-                      </form>
-                      <p className="mt-1 text-[11px] text-ink-soft">
-                        Codes expire quickly. If it doesn’t arrive, try resending after the cooldown.
-                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {emailVerified ? (
+                          <StatChip tone="green">
+                            <ShieldCheck size={14} />
+                            <span>
+                              Verified
+                              {me?.emailVerifiedAt
+                                ? ` on ${new Date(me.emailVerifiedAt).toLocaleString()}`
+                                : ""}
+                            </span>
+                          </StatChip>
+                        ) : (
+                          <StatChip tone="zinc">
+                            <Inbox size={14} />
+                            <span>Waiting for confirmation</span>
+                          </StatChip>
+                        )}
+                      </div>
                     </div>
-                  )}
+                  </div>
+
+                  {!emailVerified ? (
+                    <div className="mt-5 rounded-2xl border border-zinc-200 bg-white p-4 sm:p-5">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-50 text-primary-700">
+                          <Mail size={18} />
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <h4 className="text-sm font-semibold text-zinc-900 sm:text-base">
+                            Check your email
+                          </h4>
+                          <p className="mt-1 text-sm leading-6 text-zinc-600">
+                            We sent a verification link to your email address. Open it, click the
+                            link, then return here and tap <b>Check status</b>.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                        <ActionButton
+                          onClick={resendPublic}
+                          disabled={sendingEmail || emailCooldown > 0 || !targetEmail}
+                          className="bg-primary-600 text-white hover:bg-primary-700"
+                        >
+                          {sendingEmail ? (
+                            <>
+                              <RefreshCcw size={16} className="animate-spin" />
+                              Sending...
+                            </>
+                          ) : emailCooldown > 0 ? (
+                            <>
+                              <Clock size={16} />
+                              Resend in {emailCooldown}s
+                            </>
+                          ) : (
+                            <>
+                              <Mail size={16} />
+                              Resend email
+                            </>
+                          )}
+                        </ActionButton>
+
+                        {isLoggedIn ? (
+                          <ActionButton
+                            onClick={resendAuthed}
+                            disabled={sendingEmail || emailCooldown > 0}
+                            className="border border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-50"
+                          >
+                            <RefreshCcw size={16} />
+                            Resend (logged in)
+                          </ActionButton>
+                        ) : null}
+
+                        <ActionButton
+                          onClick={refreshStatus}
+                          className="border border-zinc-200 bg-purple-300 text-zinc-800 hover:bg-purple-200"
+                        >
+                          <RefreshCcw size={16} />
+                          I’ve verified - Refresh status
+                        </ActionButton>
+                      </div>
+                    </div>
+                  ) : null}
                 </>
               )}
             </div>
           </Card>
 
-          {/* Help / links while email is unverified */}
-          {!me?.emailVerifiedAt && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-6">
+          {!emailVerified ? (
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
               <Card>
-                <CardHeader title="Open your inbox" subtitle="Jump straight to your provider" icon={<Mail size={18} />} />
-                <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <CardHeader
+                  title="Open your inbox"
+                  subtitle="Go directly to your email provider"
+                  icon={<Mail size={18} />}
+                />
+                <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3 sm:p-5">
                   {[
                     { name: "Gmail", href: "https://mail.google.com/", color: "text-rose-600" },
                     { name: "Outlook", href: "https://outlook.live.com/mail/", color: "text-sky-700" },
@@ -612,32 +675,42 @@ export default function VerifyEmail() {
                       href={x.href}
                       target="_blank"
                       rel="noreferrer"
-                      className="group rounded-xl border bg-white px-3 py-3 flex items-center justify-between hover:bg-black/5"
+                      className="group flex min-h-[52px] items-center justify-between rounded-xl border border-zinc-200 bg-white px-4 py-3 transition hover:bg-zinc-50"
                     >
-                      <span className={`font-medium text-sm ${x.color}`}>{x.name}</span>
-                      <ExternalLink size={16} className="text-zinc-500 group-hover:translate-x-0.5 transition" />
+                      <span className={`text-sm font-semibold ${x.color}`}>{x.name}</span>
+                      <ExternalLink
+                        size={16}
+                        className="text-zinc-500 transition group-hover:translate-x-0.5"
+                      />
                     </a>
                   ))}
                 </div>
               </Card>
 
               <Card>
-                <CardHeader title="Troubleshooting tips" subtitle="Didn’t get the email?" icon={<MailWarning size={18} />} />
-                <div className="p-4 sm:p-5 text-xs sm:text-sm text-ink">
-                  <ul className="list-disc pl-5 space-y-2">
-                    <li>
+                <CardHeader
+                  title="Troubleshooting tips"
+                  subtitle="If you still can’t find the email"
+                  icon={<MailWarning size={18} />}
+                />
+                <div className="p-4 sm:p-5">
+                  <ul className="space-y-3 text-sm leading-6 text-zinc-700">
+                    <li className="rounded-xl bg-zinc-50 px-3 py-2">
                       Check your <b>Spam</b> or <b>Promotions</b> folder.
                     </li>
-                    <li>Wait a minute — some providers can be a bit slow.</li>
-                    <li>
-                      Add <code className="px-1 rounded bg-zinc-100">no-reply@dayspring.com</code> to your contacts.
+                    <li className="rounded-xl bg-zinc-50 px-3 py-2">
+                      Wait a minute and try again — some providers can be slow.
                     </li>
-                    <li>
-                      Use the <b>Resend email</b> button above (cooldown applies).
+                    <li className="rounded-xl bg-zinc-50 px-3 py-2">
+                      Add <code className="rounded bg-zinc-200 px-1.5 py-0.5">no-reply@dayspring.com</code>{" "}
+                      to your contacts.
                     </li>
-                    <li>
+                    <li className="rounded-xl bg-zinc-50 px-3 py-2">
+                      Use the <b>Resend email</b> button above.
+                    </li>
+                    <li className="rounded-xl bg-zinc-50 px-3 py-2">
                       Still stuck?{" "}
-                      <Link to="/contact" className="text-primary-700 underline">
+                      <Link to="/contact" className="font-medium text-primary-700 underline">
                         Contact support
                       </Link>
                       .
@@ -646,25 +719,26 @@ export default function VerifyEmail() {
                 </div>
               </Card>
             </div>
-          )}
+          ) : null}
 
-          {/* Footer CTA when fully verified */}
-          {me?.emailVerifiedAt && (
-            <div className="flex flex-wrap items-center gap-3">
+          {emailVerified ? (
+            <div className="flex flex-col gap-3 sm:flex-row">
               <Link
                 to={nextStepPath}
-                className="inline-flex items-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 text-sm hover:bg-primary-700"
+                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-primary-700"
               >
-                Continue <ChevronRight size={16} />
+                Continue
+                <ChevronRight size={16} />
               </Link>
+
               <Link
                 to="/"
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-medium text-zinc-800 transition hover:bg-zinc-50"
               >
                 Back to home
               </Link>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </SiteLayout>

@@ -2,7 +2,7 @@
 import { prisma } from "../lib/prisma.js";
 import { Prisma } from "@prisma/client";
 import { sendMail } from "../lib/email.js";
-import { sendWhatsApp } from "../lib/sms.js";
+import { sendWhatsappViaTermii } from "../lib/termii.js";
 
 /* ----------------------------- Helpers ----------------------------- */
 
@@ -16,6 +16,15 @@ const formatAddress = (a?: any) => {
   const parts = [a.houseNumber, a.streetName, a.town, a.city, a.state, a.country].filter(Boolean);
   return parts.join(", ");
 };
+
+function pickOrderShippingAddress(order: any) {
+  return (
+    order?.shippingAddressJson ??
+    order?.shippingAddressSnapshotJson ??
+    order?.deliveryAddressJson ??
+    null
+  );
+}
 
 async function getCommsUnitCostNGN(): Promise<number> {
   const keys = ["commsUnitCostNGN", "commsServiceFeeNGN", "commsUnitCost"];
@@ -38,7 +47,6 @@ function generateSupplierOrderRef() {
  * Reuse from earliest PO, or from an activity, otherwise generate + log once.
  */
 async function ensureSupplierOrderRef(tx: any, orderId: string, supplierId: string): Promise<string> {
-  // 1) Reuse the oldest PO reference if it exists
   const existingPO = await tx.purchaseOrder.findFirst({
     where: { orderId, supplierId },
     orderBy: { createdAt: "asc" },
@@ -46,18 +54,16 @@ async function ensureSupplierOrderRef(tx: any, orderId: string, supplierId: stri
   });
   if (existingPO?.supplierOrderRef) return existingPO.supplierOrderRef;
 
-  // 2) Or reuse from activities
   const act = await tx.orderActivity.findFirst({
     where: { orderId, supplierId, type: "SUPPLIER_REF_CREATED" },
     orderBy: { createdAt: "asc" },
     select: { meta: true },
   });
-  const fromAct = (act?.meta as any)?.supplierOrderRef || (act?.meta as any)?.supplierRef; // legacy key
+  const fromAct = (act?.meta as any)?.supplierOrderRef || (act?.meta as any)?.supplierRef;
   if (fromAct && typeof fromAct === "string" && fromAct.trim()) {
     return fromAct.trim();
   }
 
-  // 3) Generate and store once
   const ref = generateSupplierOrderRef();
   try {
     await tx.orderActivity.create({
@@ -70,7 +76,7 @@ async function ensureSupplierOrderRef(tx: any, orderId: string, supplierId: stri
       },
     });
   } catch {
-    // ignore logging errors; still return ref
+    //
   }
   return ref;
 }
@@ -78,7 +84,6 @@ async function ensureSupplierOrderRef(tx: any, orderId: string, supplierId: stri
 /* ----------------------------- Main notify ----------------------------- */
 
 export async function notifySuppliersForOrder(orderId: string) {
-  // Pull order with all data we need to build per-supplier lines
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     include: {
@@ -89,13 +94,12 @@ export async function notifySuppliersForOrder(orderId: string) {
           variant: { select: { id: true, sku: true } },
         },
       },
-      shippingAddress: true,
     },
   });
+
   if (!order) throw new Error("Order not found");
   if (!order.items.length) return { ok: true, suppliers: [] };
 
-  // Build lines with chosen supplier data (set during /orders POST)
   type Chosen = {
     orderItemId: string;
     title: string;
@@ -105,7 +109,7 @@ export async function notifySuppliersForOrder(orderId: string) {
     supplierName?: string | null;
     supplierPhone?: string | null;
     supplierOfferId?: string | null;
-    supplierUnit: number; // chosenSupplierUnitPrice
+    supplierUnit: number;
   };
 
   const chosen: Chosen[] = [];
@@ -114,11 +118,9 @@ export async function notifySuppliersForOrder(orderId: string) {
     const supplierId = it.chosenSupplierId as string | null;
     if (!supplierId) continue;
 
-    // Use the saved supplier unit; fall back (rare) to cheapest active offer
     let supplierUnit = Number(it.chosenSupplierUnitPrice ?? 0);
 
     if (!(supplierUnit > 0)) {
-      // Prefer base offer by product; then variant offer by variant (if any)
       const cheapestBase = await prisma.supplierProductOffer.findFirst({
         where: { productId: it.productId ?? it.product?.id, isActive: true },
         orderBy: [{ basePrice: "asc" as any }],
@@ -137,7 +139,6 @@ export async function notifySuppliersForOrder(orderId: string) {
       if (cheapest) supplierUnit = Number(cheapest.unitPrice || 0);
     }
 
-    // get supplier profile
     const supplier = await prisma.supplier.findUnique({
       where: { id: supplierId },
       select: { id: true, name: true, whatsappPhone: true },
@@ -156,13 +157,11 @@ export async function notifySuppliersForOrder(orderId: string) {
     });
   }
 
-  // Group by supplier (one WhatsApp per supplier)
   const groups = chosen.reduce((m, c) => {
     (m[c.supplierId] ||= []).push(c);
     return m;
   }, {} as Record<string, Chosen[]>);
 
-  // Charge one comms row per supplier (idempotent)
   const unitCost = await getCommsUnitCostNGN();
   if (unitCost > 0) {
     const supplierIds = Object.keys(groups);
@@ -171,6 +170,7 @@ export async function notifySuppliersForOrder(orderId: string) {
       select: { supplierId: true },
     });
     const already = new Set(existing.map((e: { supplierId: any }) => e.supplierId));
+
     for (const supplierId of supplierIds) {
       if (already.has(supplierId)) continue;
       await prisma.orderComms.create({
@@ -187,15 +187,12 @@ export async function notifySuppliersForOrder(orderId: string) {
     }
   }
 
-  // Shopper/contact block (ALWAYS present in every message)
   const shopper = personName(order.user);
   const shopperPhone = order.user?.phone || "—";
   const shopperEmail = order.user?.email || "—";
-  const shipTo = formatAddress(order.shippingAddress);
+  const shipTo = formatAddress(pickOrderShippingAddress(order));
 
-  // For each supplier, ensure a stable supplierOrderRef, build lines, and send
   for (const [supplierId, items] of Object.entries(groups)) {
-    // supplier ref for this supplier
     const supplierOrderRef = await prisma.$transaction(async (tx) =>
       ensureSupplierOrderRef(tx, order.id, supplierId)
     );
@@ -203,7 +200,6 @@ export async function notifySuppliersForOrder(orderId: string) {
     const supplierPhone = items[0]?.supplierPhone || null;
     const supplierName = items[0]?.supplierName || "Supplier";
 
-    // Item lines (unit = supplier cost)
     const lines = items
       .map((c) => {
         const price = new Intl.NumberFormat("en-NG", {
@@ -216,18 +212,17 @@ export async function notifySuppliersForOrder(orderId: string) {
       })
       .join("\n");
 
-    // Sum of this supplier’s items at supplier unit
     const supplierTotal = items.reduce(
       (sum, c) => sum + Number(c.supplierUnit || 0) * Math.max(1, c.qty || 1),
       0
     );
+
     const supplierTotalFmt = new Intl.NumberFormat("en-NG", {
       style: "currency",
       currency: "NGN",
       maximumFractionDigits: 2,
     }).format(supplierTotal);
 
-    // Plaintext fallback message
     const msg = `New order from DaySpring
 
 Your ref: ${supplierOrderRef}
@@ -257,37 +252,10 @@ Please confirm availability and delivery timeline. Thank you!`;
     }
 
     try {
-      // Prefer a template if configured; otherwise send plaintext
-      const templateName = process.env.WABA_TEMPLATE_NAME_SUPPLIER || "supplier_notify";
-
-      const components = [
-        {
-          type: "body",
-          parameters: [
-            { type: "text", text: supplierOrderRef },
-            { type: "text", text: shopper },
-            { type: "text", text: shopperPhone },
-            { type: "text", text: shopperEmail },
-            { type: "text", text: shipTo },
-            { type: "text", text: lines },
-            { type: "text", text: supplierTotalFmt },
-          ],
-        },
-      ];
-
-      const usedTemplate = Boolean(process.env.WABA_PHONE_NUMBER_ID && process.env.WABA_TOKEN);
-
-      if (usedTemplate) {
-        await sendWhatsApp(supplierPhone, msg, {
-          useTemplate: true,
-          templateName,
-          langCode: process.env.WABA_TEMPLATE_LANG || "en",
-          components,
-        });
-      } else {
-        // fallback to plain text if WA Cloud not configured
-        await sendWhatsApp(supplierPhone, msg);
-      }
+      await sendWhatsappViaTermii({
+        to: supplierPhone,
+        message: msg,
+      });
 
       await prisma.orderActivity.create({
         data: {
@@ -318,59 +286,62 @@ Please confirm availability and delivery timeline. Thank you!`;
 /* ------------------------ Customer paid email ------------------------ */
 
 export async function notifyCustomerOrderPaid(orderId: string, paymentId: string) {
-  const payment = await prisma.payment.findUnique({
-    where: { id: paymentId },
-    select: {
-      id: true,
-      amount: true,
-      reference: true,
-      paidAt: true,
-      status: true,
-      order: {
-        select: {
-          id: true,
-          total: true,
-          status: true,
-          createdAt: true,
-
-          // ✅ pull service fee from Order
-          serviceFeeTotal: true,
-          serviceFeeBase: true,
-          serviceFeeComms: true,
-          serviceFeeGateway: true,
-          tax: true,
-
-          user: {
-            select: {
-              email: true,
-              firstName: true,
-              lastName: true,
-            },
+  const paymentSelect = {
+    id: true,
+    amount: true,
+    reference: true,
+    paidAt: true,
+    status: true,
+    order: {
+      select: {
+        id: true,
+        total: true,
+        status: true,
+        createdAt: true,
+        serviceFeeTotal: true,
+        shippingFee: true,
+        serviceFeeBase: true,
+        serviceFeeComms: true,
+        serviceFeeGateway: true,
+        tax: true,
+        shippingAddress: {
+          select: {
+            houseNumber: true,
+            streetName: true,
+            town: true,
+            city: true,
+            state: true,
+            country: true,
           },
-          shippingAddress: {
-            select: {
-              houseNumber: true,
-              streetName: true,
-              town: true,
-              city: true,
-              state: true,
-              country: true,
-            },
+        },
+        user: {
+          select: {
+            email: true,
+            firstName: true,
+            lastName: true,
           },
-          items: {
-            select: {
-              title: true,
-              quantity: true,
-              unitPrice: true,
-              lineTotal: true,
-            },
+        },
+        items: {
+          select: {
+            title: true,
+            quantity: true,
+            unitPrice: true,
+            lineTotal: true,
           },
         },
       },
     },
+  } satisfies Prisma.PaymentSelect;
+
+  type PaymentWithOrder = Prisma.PaymentGetPayload<{
+    select: typeof paymentSelect;
+  }>;
+
+  const payment: PaymentWithOrder | null = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: paymentSelect,
   });
 
-  // Safety checks
   if (!payment || !payment.order) return;
   if (payment.status !== "PAID") return;
 
@@ -380,14 +351,11 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
 
   const to = user.email;
   const displayName = [user.firstName, user.lastName].filter(Boolean).join(" ") || "Customer";
-
   const paidAt = payment.paidAt || new Date();
-
   const amountPaid = Number(payment.amount ?? 0);
 
-  // ✅ Compute items subtotal from items so it always matches the table
   const itemsSubtotal = Number(
-    (order.items || []).reduce((sum: number, it: any) => {
+    (order.items || []).reduce((sum: number, it) => {
       const qty = Number(it.quantity || 1);
       const unit = Number(it.unitPrice || 0);
       const line = it.lineTotal != null ? Number(it.lineTotal) : unit * qty;
@@ -395,16 +363,16 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     }, 0)
   );
 
-  const serviceFeeTotal = Number((order as any).serviceFeeTotal ?? 0);
-  const safeServiceFeeTotal = Number.isFinite(serviceFeeTotal) ? serviceFeeTotal : 0;
+  const shippingFee = Number(order.shippingFee ?? 0);
+  const safeShippingFee = Number.isFinite(shippingFee) ? shippingFee : 0;
 
-  const tax = Number((order as any).tax ?? 0);
+  const tax = Number(order.tax ?? 0);
   const safeTax = Number.isFinite(tax) ? tax : 0;
 
   const orderTotal =
     Number.isFinite(Number(order.total)) && Number(order.total) > 0
       ? Number(order.total)
-      : itemsSubtotal + safeServiceFeeTotal + safeTax;
+      : itemsSubtotal + safeShippingFee + safeTax;
 
   const safeAmountPaid = Number.isFinite(amountPaid) && amountPaid > 0 ? amountPaid : orderTotal;
 
@@ -424,7 +392,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
 
   const itemsHtml =
     (order.items || [])
-      .map((it: any) => {
+      .map((it) => {
         const qty = Number(it.quantity || 1);
         const unit = Number(it.unitPrice || 0);
         const line = it.lineTotal != null ? Number(it.lineTotal) : unit * qty;
@@ -484,8 +452,8 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
           </tr>
 
           <tr>
-            <td style="padding:4px 0;color:#374151;">Service fee</td>
-            <td style="padding:4px 0;text-align:right;color:#111827;">₦${safeServiceFeeTotal.toLocaleString()}</td>
+            <td style="padding:4px 0;color:#374151;">Shipping</td>
+            <td style="padding:4px 0;text-align:right;color:#111827;">₦${safeShippingFee.toLocaleString()}</td>
           </tr>
 
           <tr>
@@ -514,7 +482,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     `Paid at: ${paidAt.toLocaleString()}`,
     ``,
     `Items subtotal: ₦${itemsSubtotal.toLocaleString()}`,
-    `Service fee: ₦${safeServiceFeeTotal.toLocaleString()}`,
+    `Shipping: ₦${safeShippingFee.toLocaleString()}`,
     `Order total: ₦${orderTotal.toLocaleString()}`,
     ``,
     `You can view your order and receipt in your dashboard.`,
@@ -528,7 +496,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     paymentId: payment.id,
     preview,
     itemsSubtotal,
-    serviceFeeTotal: safeServiceFeeTotal,
+    shippingFee: safeShippingFee,
     orderTotal,
   });
 }

@@ -8,8 +8,7 @@ import { useAuthStore } from "../store/auth";
 import NotificationsBell from "../components/notifications/NotificationsBell";
 import DaySpringLogo from "../components/brand/DayspringLogo";
 import api from "../api/client";
-import { readCartLines } from "../utils/cartModel";
-
+import { readCartLines, writeCartLines } from "../utils/cartModel";
 import {
   Home,
   LayoutGrid,
@@ -59,6 +58,20 @@ function getCartQtyFromStorage(): number {
   }
 }
 
+function clearCartStorageAndBroadcast() {
+  try {
+    writeCartLines([] as any);
+  } catch {
+    //
+  }
+
+  try {
+    window.dispatchEvent(new Event("cart:updated"));
+  } catch {
+    //
+  }
+}
+
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
   const onAwayRef = useRef(onAway);
@@ -80,6 +93,10 @@ function useClickAway<T extends HTMLElement>(onAway: () => void) {
   return ref;
 }
 
+function isExternalHref(to: string) {
+  return /^(https?:)?\/\//i.test(String(to || ""));
+}
+
 function IconNavLink({
   to,
   end,
@@ -89,7 +106,7 @@ function IconNavLink({
   disabled,
   badgeCount,
   onPrefetch,
-  hardNavigate = true,
+  hardNavigate = false,
 }: {
   to: string;
   end?: boolean;
@@ -112,7 +129,7 @@ function IconNavLink({
 
       onClick?.();
 
-      if (!hardNavigate) return;
+      if (!hardNavigate || !isExternalHref(to)) return;
 
       e.preventDefault();
       window.location.assign(to);
@@ -200,6 +217,7 @@ function MobileMenuButton({
 
 export default function Navbar() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
@@ -265,11 +283,20 @@ export default function Navbar() {
     return init || "U";
   }, [firstName, lastName]);
 
-  const hardGo = useCallback((to: string) => {
-    setMenuOpen(false);
-    setMobileMoreOpen(false);
-    window.location.assign(to);
-  }, []);
+  const hardGo = useCallback(
+    (to: string) => {
+      setMenuOpen(false);
+      setMobileMoreOpen(false);
+
+      if (isExternalHref(to)) {
+        window.location.assign(to);
+        return;
+      }
+
+      navigate(to);
+    },
+    [navigate]
+  );
 
   const logout = useCallback(async () => {
     setMenuOpen(false);
@@ -278,7 +305,24 @@ export default function Navbar() {
     const target = `${loc.pathname}${loc.search}`;
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch { }
+    } catch {
+      //
+    }
+
+    clearCartStorageAndBroadcast();
+    setCartQty(0);
+
+    try {
+      useAuthStore.setState({ user: null });
+    } catch {
+      //
+    }
+
+    try {
+      window.dispatchEvent(new Event("auth:logout"));
+    } catch {
+      //
+    }
 
     const qp = encodeURIComponent(target);
     await performLogout(`/login?from=${qp}`);
@@ -299,7 +343,7 @@ export default function Navbar() {
 
   useEffect(() => {
     syncCartQty();
-  }, [loc.key, syncCartQty]);
+  }, [syncCartQty]);
 
   useEffect(() => {
     const onCartUpdated = () => syncCartQty();
@@ -357,28 +401,44 @@ export default function Navbar() {
     if (!st.user?.id) return;
 
     try {
-      const { data } = await api.get("/auth/me", AXIOS_COOKIE_CFG);
+      const res = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
+      const data = res?.data?.data ?? res?.data ?? null;
+
       if (data?.id) {
-        useAuthStore.setState({ user: data });
+        useAuthStore.setState({
+          user: {
+            ...(st.user ?? {}),
+            ...data,
+          },
+        });
       }
     } catch (e: any) {
-      if (isAuthError(e)) {
-        useAuthStore.setState({ user: null });
-        setMenuOpen(false);
-        setMobileMoreOpen(false);
-      }
+      if (!isAuthError(e)) return;
+      // Passive navbar verification must NEVER force logout or clear cart.
+      // Protected pages decide whether an actual redirect is needed.
     }
   }, [forced]);
-
-  useEffect(() => {
-    verifySession();
-  }, [loc.key, verifySession]);
 
   useEffect(() => {
     const onFocus = () => verifySession();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [verifySession]);
+
+  useEffect(() => {
+    const onLogout = () => {
+      setMenuOpen(false);
+      setMobileMoreOpen(false);
+      clearCartStorageAndBroadcast();
+      setCartQty(0);
+    };
+
+    window.addEventListener("auth:logout", onLogout as EventListener);
+
+    return () => {
+      window.removeEventListener("auth:logout", onLogout as EventListener);
+    };
+  }, []);
 
   const prefetchWishlist = useCallback(async () => {
     if (!useAuthStore.getState().user?.id) return;
@@ -463,7 +523,7 @@ export default function Navbar() {
                       end
                       icon={<ShoppingCart size={18} />}
                       label="Cart"
-                      badgeCount={cartQty}
+                      badgeCount={isLoggedIn ? cartQty : 0}
                     />
                   )}
 
@@ -495,7 +555,23 @@ export default function Navbar() {
                     />
                   )}
 
-                  {isAdmin && <IconNavLink to="/admin" end icon={<Shield size={18} />} label="Admin" />}
+                  {isAdmin && (
+                    <IconNavLink
+                      to="/admin/shipping"
+                      end
+                      icon={<Truck size={18} />}
+                      label="Shipping"
+                    />
+                  )}
+
+                  {isAdmin && (
+                    <IconNavLink
+                      to="/admin"
+                      end
+                      icon={<Shield size={18} />}
+                      label="Admin"
+                    />
+                  )}
                 </>
               )}
             </nav>
@@ -513,8 +589,8 @@ export default function Navbar() {
                     type="button"
                     onClick={() => hardGo("/register-supplier")}
                     className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isSupplierRegisterPage
-                        ? "bg-zinc-900 text-white border-zinc-900"
-                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      ? "bg-zinc-900 text-white border-zinc-900"
+                      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
                     title="Become a supplier"
                   >
@@ -530,8 +606,8 @@ export default function Navbar() {
                       hardGo(`/login?from=${qp}`);
                     }}
                     className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isLoginPage
-                        ? "bg-zinc-900 text-white border-zinc-900"
-                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      ? "bg-zinc-900 text-white border-zinc-900"
+                      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
                     title="Login"
                   >
@@ -543,8 +619,8 @@ export default function Navbar() {
                     type="button"
                     onClick={() => hardGo("/register")}
                     className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isRegisterPage
-                        ? "bg-zinc-900 text-white border-zinc-900"
-                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      ? "bg-zinc-900 text-white border-zinc-900"
+                      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
                     title="Register"
                   >
@@ -709,7 +785,7 @@ export default function Navbar() {
                   title="Cart"
                 >
                   <ShoppingCart size={18} className="pointer-events-none" />
-                  {cartQty > 0 && (
+                  {isLoggedIn && cartQty > 0 && (
                     <span className="pointer-events-none absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
                       {cartQty > 9 ? "9+" : cartQty}
                     </span>
@@ -826,13 +902,18 @@ export default function Navbar() {
                           />
 
                           <MobileMenuButton
+                            icon={<Truck size={18} />}
+                            label="Shipping"
+                            onClick={() => hardGo("/admin/shipping")}
+                          />
+
+                          <MobileMenuButton
                             icon={<Shield size={18} />}
                             label="Admin"
                             onClick={() => hardGo("/admin")}
                           />
                         </>
                       )}
-
                       <div className="h-px bg-zinc-100 my-2" />
 
                       {!isLoggedIn ? (

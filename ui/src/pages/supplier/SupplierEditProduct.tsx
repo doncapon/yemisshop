@@ -1,4 +1,3 @@
-// src/pages/supplier/SupplierEditProduct.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
@@ -83,6 +82,44 @@ function uid(prefix = "id") {
 
 function rowHasAnySelection(selections: Record<string, string>) {
   return Object.values(selections || {}).some((v) => !!String(v || "").trim());
+}
+
+function getTempToken() {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("tempToken") || "";
+}
+
+function getVerifyConfig() {
+  const tempToken = getTempToken();
+
+  return {
+    withCredentials: true,
+    headers: tempToken ? { Authorization: `Bearer ${tempToken}` } : {},
+  };
+}
+
+function hasDateValue(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isTruthyVerificationFlag(value: unknown) {
+  if (value === true) return true;
+  if (typeof value === "string" && value.trim()) return true;
+  return false;
+}
+
+function isEmailVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag((authMe as any)?.emailVerified) ||
+    hasDateValue(authMe?.emailVerifiedAt)
+  );
+}
+
+function isPhoneVerified(authMe?: AuthMeLite | null) {
+  return (
+    isTruthyVerificationFlag((authMe as any)?.phoneVerified) ||
+    hasDateValue(authMe?.phoneVerifiedAt)
+  );
 }
 
 function normalizeImageUrl(input: any): string | null {
@@ -522,6 +559,7 @@ type SupplierProductDetail = {
   retailPrice?: number | null;
   autoPrice?: any;
   hasPendingChanges?: boolean;
+  availableQty?: number | null;
 
   offer?: {
     id?: string;
@@ -591,8 +629,13 @@ type SupplierDocumentLite = {
 type AuthMeLite = {
   id?: string;
   role?: string;
-  emailVerified?: boolean;
-  phoneVerified?: boolean;
+  email?: string | null;
+  phone?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  emailVerifiedAt?: string | null;
+  phoneVerifiedAt?: string | null;
+  status?: string | null;
 };
 
 type SupplierMeLite = {
@@ -601,8 +644,12 @@ type SupplierMeLite = {
   name?: string | null;
   businessName?: string | null;
   legalName?: string | null;
+  registeredBusinessName?: string | null;
   registrationType?: string | null;
   registrationCountryCode?: string | null;
+  contactEmail?: string | null;
+  whatsappPhone?: string | null;
+  pickupContactPhone?: string | null;
   status?: string | null;
   kycStatus?: string | null;
   registeredAddress?: {
@@ -652,9 +699,22 @@ export default function SupplierEditProduct() {
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role) as string | undefined;
 
+  function normRole(role: unknown) {
+    let r = String(role ?? "").trim().toUpperCase();
+    r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+    if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+    if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+    return r;
+  }
+
+  const roleNorm = normRole(role);
+  const isSupplier = roleNorm === "SUPPLIER";
+
   useEffect(() => {
-    useAuthStore.getState().bootstrap?.().catch?.(() => null);
-  }, []);
+    if (!hydrated) {
+      useAuthStore.getState().bootstrap?.().catch?.(() => null);
+    }
+  }, [hydrated]);
 
   const offersOnly = String(searchParams.get("scope") ?? "") === "offers_mine";
 
@@ -719,102 +779,44 @@ export default function SupplierEditProduct() {
   const hydratedBaseForIdRef = useRef<string | null>(null);
   const hydratedAttrsForIdRef = useRef<string | null>(null);
 
-  const isSupplier = role === "SUPPLIER";
-
-  const onboardingQ = useQuery({
-    queryKey: ["supplier", "edit-product", "onboarding-state"],
-    enabled: hydrated && isSupplier,
-    queryFn: async () => {
-      const [authRes, supplierRes, docsRes] = await Promise.all([
-        api.get("/api/auth/me", { withCredentials: true }),
-        api.get("/api/supplier/me", { withCredentials: true }),
-        api
-          .get("/api/supplier/documents", { withCredentials: true })
-          .catch(() => ({ data: { data: [] } })),
-      ]);
-
-      const authMe = ((authRes.data as any)?.data ??
-        (authRes.data as any)?.user ??
-        authRes.data ??
-        {}) as AuthMeLite;
-
-      const supplierMe = ((supplierRes.data as any)?.data ??
-        supplierRes.data ??
-        {}) as SupplierMeLite;
-
-      const rawDocs = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
-      const docs = Array.isArray(rawDocs) ? (rawDocs as SupplierDocumentLite[]) : [];
-
-      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
-
-      const businessDone = Boolean(
-        String(supplierMe?.legalName ?? "").trim() &&
-        String(supplierMe?.registrationType ?? "").trim() &&
-        String(supplierMe?.registrationCountryCode ?? "").trim()
-      );
-
-      const addressDone =
-        hasAddress(supplierMe?.registeredAddress) || hasAddress(supplierMe?.pickupAddress);
-
-      const requiredKinds = [
-        ...(isRegisteredBusiness(supplierMe?.registrationType)
-          ? ["BUSINESS_REGISTRATION_CERTIFICATE"]
-          : []),
-        "GOVERNMENT_ID",
-        "PROOF_OF_ADDRESS",
-      ];
-
-      const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
-
-      const onboardingDone = contactDone && businessDone && addressDone && docsDone;
-
-      const nextPath = !contactDone
-        ? "/supplier/verify-contact"
-        : !businessDone
-          ? "/supplier/onboarding"
-          : !addressDone
-            ? "/supplier/onboarding/address"
-            : !docsDone
-              ? "/supplier/onboarding/documents"
-              : "/supplier";
-
-      return {
-        contactDone,
-        businessDone,
-        addressDone,
-        docsDone,
-        onboardingDone,
-        nextPath,
-        supplierStatus: supplierMe?.status ?? null,
-        kycStatus: supplierMe?.kycStatus ?? null,
-      };
-    },
-    staleTime: 15_000,
-    refetchOnWindowFocus: false,
-    retry: 1,
+  const [onboardingState, setOnboardingState] = useState({
+    contactDone: true,
+    businessDone: true,
+    addressDone: true,
+    docsDone: true,
+    onboardingDone: true,
+    nextPath: "/supplier",
+    supplierStatus: null as string | null,
+    kycStatus: null as string | null,
+    loading: false,
+    failed: false,
   });
 
-  const onboardingBlocked = isSupplier && !!onboardingQ.data && !onboardingQ.data.onboardingDone;
+  const onboardingBlocked =
+    isSupplier && !onboardingState.failed && !onboardingState.loading && !onboardingState.onboardingDone;
 
   const nextStepLabel = useMemo(() => {
-    const p = onboardingQ.data?.nextPath;
+    const p = onboardingState.nextPath;
     if (p === "/supplier/verify-contact") return "Continue contact verification";
     if (p === "/supplier/onboarding") return "Continue business onboarding";
     if (p === "/supplier/onboarding/address") return "Continue address setup";
     if (p === "/supplier/onboarding/documents") return "Continue document upload";
     return "Continue onboarding";
-  }, [onboardingQ.data?.nextPath]);
+  }, [onboardingState.nextPath]);
 
   const onboardingProgressItems = useMemo(() => {
-    const d = onboardingQ.data;
-    if (!d) return [];
     return [
-      { key: "contact", label: "Contact verified", done: d.contactDone },
-      { key: "business", label: "Business details", done: d.businessDone },
-      { key: "address", label: "Address details", done: d.addressDone },
-      { key: "documents", label: "Documents uploaded", done: d.docsDone },
+      { key: "contact", label: "Contact verified", done: onboardingState.contactDone },
+      { key: "business", label: "Business details", done: onboardingState.businessDone },
+      { key: "address", label: "Address details", done: onboardingState.addressDone },
+      { key: "documents", label: "Documents uploaded", done: onboardingState.docsDone },
     ];
-  }, [onboardingQ.data]);
+  }, [
+    onboardingState.contactDone,
+    onboardingState.businessDone,
+    onboardingState.addressDone,
+    onboardingState.docsDone,
+  ]);
 
   const onboardingPct = useMemo(() => {
     if (!onboardingProgressItems.length) return 0;
@@ -845,10 +847,16 @@ export default function SupplierEditProduct() {
     return { pathname: CATALOG_REQUESTS_PATH, search: `?${sp.toString()}` };
   }
 
-  const { categories, brands, attributes, categoriesQ, brandsQ, attributesQ } = useCatalogMeta({
+  const {
+    categories = [],
+    brands = [],
+    attributes = [],
+    categoriesQ,
+    brandsQ,
+    attributesQ,
+  } = useCatalogMeta({
     enabled: hydrated,
-  });
-
+  }) as any;
 
   function getInitialVariantPriceMap(rows: VariantRow[]) {
     const out: Record<string, number> = {};
@@ -859,14 +867,17 @@ export default function SupplierEditProduct() {
     return out;
   }
 
-  const activeAttrs = useMemo(() => (attributes ?? []).filter((a) => a?.isActive !== false), [attributes]);
-
-  const selectableAttrs = useMemo(
-    () => (attributes ?? []).filter((a) => a.type === "SELECT" && a.isActive !== false),
+  const activeAttrs = useMemo(
+    () => (Array.isArray(attributes) ? attributes : []).filter((a: any) => a?.isActive !== false),
     [attributes]
   );
 
-  const attrOrder = useMemo(() => selectableAttrs.map((a) => a.id), [selectableAttrs]);
+  const selectableAttrs = useMemo(
+    () => activeAttrs.filter((a: any) => a.type === "SELECT" && a.isActive !== false),
+    [activeAttrs]
+  );
+
+  const attrOrder = useMemo(() => selectableAttrs.map((a: any) => a.id), [selectableAttrs]);
 
   const attrNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -903,12 +914,12 @@ export default function SupplierEditProduct() {
 
   useEffect(() => {
     if (!selectableAttrs.length) return;
-    const ids = selectableAttrs.map((a) => a.id);
+    const ids = selectableAttrs.map((a: any) => a.id);
 
     setVariantRows((rows) =>
       rows.map((row) => {
         const next: Record<string, string> = {};
-        ids.forEach((aid) => {
+        ids.forEach((aid: string) => {
           next[aid] = row.selections?.[aid] || "";
         });
 
@@ -953,6 +964,7 @@ export default function SupplierEditProduct() {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
+
   const productStatusUpper = useMemo(
     () => String(detailQ.data?.status ?? "").toUpperCase(),
     [detailQ.data?.status]
@@ -982,10 +994,6 @@ export default function SupplierEditProduct() {
     );
   }, [offersOnly, productStatusUpper]);
 
-  /**
-   * Review-managed means backend moderation rules apply.
-   * Title/SKU stay locked here.
-   */
   const isReviewManaged = useMemo(() => {
     if (offersOnly) return false;
     return isPublishedLike || isPendingReview || isRejected;
@@ -1107,13 +1115,129 @@ export default function SupplierEditProduct() {
   const canEditCore = !offersOnly && !onboardingBlocked;
   const canEditAttributes = !offersOnly && !onboardingBlocked;
   const canEditTitleSku = !offersOnly && !titleSkuLocked && !onboardingBlocked;
-
-  /**
-   * Keep current variant-row creation rule conservative:
-   * existing LIVE / ACTIVE / PENDING / REJECTED review-managed products
-   * should not let supplier think they can freely create local combos.
-   */
   const canAddNewCombos = !offersOnly && !isReviewManaged && !onboardingBlocked;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadOnboardingState() {
+      if (!hydrated || !isSupplier) return;
+
+      setOnboardingState((prev) => ({
+        ...prev,
+        loading: true,
+        failed: false,
+      }));
+
+      const verifyCfg = getVerifyConfig();
+
+      try {
+        let profileMe: AuthMeLite = {};
+        let supplierMe: SupplierMeLite = {};
+        let docs: SupplierDocumentLite[] = [];
+
+        try {
+          const profileRes = await api.get("/api/profile/me", verifyCfg);
+          const profilePayload = profileRes.data as any;
+          profileMe = (profilePayload?.data ?? profilePayload ?? {}) as AuthMeLite;
+        } catch {
+          profileMe = {};
+        }
+
+        try {
+          const supplierRes = await api.get("/api/supplier/me", verifyCfg);
+          const supplierPayload = supplierRes.data as any;
+          supplierMe = (
+            supplierPayload?.data ??
+            supplierPayload?.user ??
+            supplierPayload ??
+            {}
+          ) as SupplierMeLite;
+        } catch {
+          supplierMe = {};
+        }
+
+        try {
+          const docsRes = await api.get("/api/supplier/documents", verifyCfg);
+          const rawDocs = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
+          docs = Array.isArray(rawDocs) ? rawDocs : [];
+        } catch {
+          docs = [];
+        }
+
+        const emailDone = isEmailVerified(profileMe);
+        const phoneDone = isPhoneVerified(profileMe);
+        const contactDone = emailDone && phoneDone;
+
+        const businessDone = Boolean(
+          String(supplierMe?.legalName ?? "").trim() &&
+          String(supplierMe?.registrationType ?? "").trim() &&
+          String(supplierMe?.registrationCountryCode ?? "").trim()
+        );
+
+        const addressDone =
+          hasAddress(supplierMe?.registeredAddress) ||
+          hasAddress(supplierMe?.pickupAddress);
+
+        const requiredKinds = [
+          ...(isRegisteredBusiness(supplierMe?.registrationType)
+            ? ["BUSINESS_REGISTRATION_CERTIFICATE"]
+            : []),
+          "GOVERNMENT_ID",
+          "PROOF_OF_ADDRESS",
+        ];
+
+        const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
+        const onboardingDone = contactDone && businessDone && addressDone && docsDone;
+
+        const nextPath = !contactDone
+          ? "/supplier/verify-contact"
+          : !businessDone
+            ? "/supplier/onboarding"
+            : !addressDone
+              ? "/supplier/onboarding/address"
+              : !docsDone
+                ? "/supplier/onboarding/documents"
+                : "/supplier";
+
+        if (cancelled) return;
+
+        setOnboardingState({
+          contactDone,
+          businessDone,
+          addressDone,
+          docsDone,
+          onboardingDone,
+          nextPath,
+          supplierStatus: supplierMe?.status ?? null,
+          kycStatus: supplierMe?.kycStatus ?? null,
+          loading: false,
+          failed: false,
+        });
+      } catch {
+        if (cancelled) return;
+
+        setOnboardingState({
+          contactDone: true,
+          businessDone: true,
+          addressDone: true,
+          docsDone: true,
+          onboardingDone: true,
+          nextPath: "/supplier",
+          supplierStatus: null,
+          kycStatus: null,
+          loading: false,
+          failed: true,
+        });
+      }
+    }
+
+    loadOnboardingState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, isSupplier]);
 
   useEffect(() => {
     const p = detailQ.data as any;
@@ -1140,22 +1264,12 @@ export default function SupplierEditProduct() {
 
     let displayedBasePrice = approvedBasePrice;
 
-    if (offersOnly) {
-      const { base } = getPendingOfferMaps(p);
-      const basePatch = base?.proposedPatch ?? base?.patchJson ?? null;
+    const { base } = getPendingOfferMaps(p);
+    const basePatch = base?.proposedPatch ?? base?.patchJson ?? null;
+    const requestedBasePrice = Number(basePatch?.basePrice ?? NaN);
 
-      const requested = Number(basePatch?.basePrice ?? NaN);
-      if (Number.isFinite(requested) && requested > 0) {
-        displayedBasePrice = requested;
-      }
-    } else {
-      const { base } = getPendingOfferMaps(p);
-      const basePatch = base?.proposedPatch ?? base?.patchJson ?? null;
-
-      const requestedBasePrice = Number(basePatch?.basePrice ?? NaN);
-      if (Number.isFinite(requestedBasePrice) && requestedBasePrice > 0) {
-        displayedBasePrice = requestedBasePrice;
-      }
+    if (Number.isFinite(requestedBasePrice) && requestedBasePrice > 0) {
+      displayedBasePrice = requestedBasePrice;
     }
 
     setRetailPrice(String(displayedBasePrice));
@@ -1192,7 +1306,7 @@ export default function SupplierEditProduct() {
       const rawOptions = extractVariantOptions(v);
 
       const selections: Record<string, string> = {};
-      selectableAttrs.forEach((a) => {
+      selectableAttrs.forEach((a: any) => {
         selections[a.id] = "";
       });
 
@@ -1313,10 +1427,6 @@ export default function SupplierEditProduct() {
     }
   }, [detailQ.data?.id, detailQ.data, attributes]);
 
-  /* =========================================================
-     Image UX
-  ========================================================= */
-
   useEffect(() => {
     const wanted = new Set(files.map(fileKey));
     const map = filePreviewMapRef.current;
@@ -1330,9 +1440,7 @@ export default function SupplierEditProduct() {
       if (!wanted.has(k)) {
         try {
           URL.revokeObjectURL(map[k]);
-        } catch {
-          //
-        }
+        } catch { }
         delete map[k];
       }
     }
@@ -1346,9 +1454,7 @@ export default function SupplierEditProduct() {
       for (const k of Object.keys(map)) {
         try {
           URL.revokeObjectURL(map[k]);
-        } catch {
-          //
-        }
+        } catch { }
         delete map[k];
       }
     };
@@ -1362,15 +1468,20 @@ export default function SupplierEditProduct() {
     return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
   }, [urlPreviews, uploadedUrls]);
 
-  const filePreviews = useMemo(() => {
-    const map = filePreviewMapRef.current;
-    return files
-      .map((f) => {
-        const k = fileKey(f);
-        return { file: f, url: map[k] };
-      })
-      .filter((x) => !!x.url);
-  }, [files]);
+const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
+  const map = filePreviewMapRef.current;
+  const out: Array<{ file: File; url: string }> = [];
+
+  for (const f of files) {
+    const k = fileKey(f);
+    const url = map[k];
+    if (typeof url === "string" && url) {
+      out.push({ file: f, url });
+    }
+  }
+
+  return out;
+}, [files]);
 
   const imagesCount = allUrlPreviews.length;
   const fileCount = files.length;
@@ -1409,7 +1520,7 @@ export default function SupplierEditProduct() {
   }
 
   function onPickFiles(nextPicked: File[]) {
-    if (offersOnly) return;
+    if (offersOnly || onboardingBlocked) return;
     setErr(null);
     if (!nextPicked.length) return;
 
@@ -1454,7 +1565,7 @@ export default function SupplierEditProduct() {
   }
 
   async function uploadLocalFiles(): Promise<string[]> {
-    if (offersOnly) return [];
+    if (offersOnly || onboardingBlocked) return [];
     if (!files.length) return [];
 
     const already = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
@@ -1495,10 +1606,6 @@ export default function SupplierEditProduct() {
     }
   }
 
-  /* =========================================================
-     Variant helpers
-  ========================================================= */
-
   function getVariantRowLabel(row: VariantRow) {
     return formatComboLabel(row.selections, attrOrder, attrNameById, valueNameById);
   }
@@ -1531,11 +1638,11 @@ export default function SupplierEditProduct() {
       setErr("This product is in review-managed flow. You can’t create new variant combinations here.");
       return;
     }
-
+    if (onboardingBlocked) return;
     if (!selectableAttrs.length) return;
 
     const selections: Record<string, string> = {};
-    selectableAttrs.forEach((a) => (selections[a.id] = ""));
+    selectableAttrs.forEach((a: any) => (selections[a.id] = ""));
 
     const newRow: VariantRow = {
       id: uid("vr"),
@@ -1560,9 +1667,10 @@ export default function SupplierEditProduct() {
       setErr("This product is in review-managed flow. You can’t generate new variant combinations here.");
       return;
     }
+    if (onboardingBlocked) return;
 
     const pickedAttrs = selectableAttrs
-      .map((attr) => {
+      .map((attr: any) => {
         const selectedValueId = String(selectedAttrs[attr.id] ?? "").trim();
         if (!selectedValueId) return null;
 
@@ -1600,7 +1708,7 @@ export default function SupplierEditProduct() {
         const currentValueId = String(nextSelections[attr.id] || "").trim();
         if (!currentValueId) continue;
 
-        const alternative = (attr.values || []).find((v) => {
+        const alternative = (attr.values || []).find((v: any) => {
           if (String(v.id) === currentValueId) return false;
 
           const candidate = { ...nextSelections, [attr.id]: String(v.id) };
@@ -1621,7 +1729,7 @@ export default function SupplierEditProduct() {
       }
 
       if (!adjusted) {
-        const firstSelectedAttr = selectableAttrs.find((a) => String(nextSelections[a.id] || "").trim());
+        const firstSelectedAttr = selectableAttrs.find((a: any) => String(nextSelections[a.id] || "").trim());
         if (firstSelectedAttr) {
           nextSelections = { ...nextSelections, [firstSelectedAttr.id]: "" };
           setErr("The generated combo matched your BaseCombo, so one selection was cleared. Choose a different value and save combo.");
@@ -1674,7 +1782,7 @@ export default function SupplierEditProduct() {
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
     setErr(null);
-    if (offersOnly || isReviewManaged) return;
+    if (offersOnly || isReviewManaged || onboardingBlocked) return;
 
     setVariantRows((rows) => {
       const next = rows.map((r) =>
@@ -1734,6 +1842,7 @@ export default function SupplierEditProduct() {
   function removeVariantRow(rowId: string) {
     const row = variantRows.find((r) => r.id === rowId);
     if (!row) return;
+    if (onboardingBlocked) return;
 
     if (offersOnly) {
       if (row.variantOfferId) {
@@ -1792,6 +1901,7 @@ export default function SupplierEditProduct() {
   function saveVariantRow(rowId: string) {
     const row = variantRows.find((r) => r.id === rowId);
     if (!row) return;
+    if (onboardingBlocked) return;
 
     const validationError = validateVariantRow(row);
     if (validationError) {
@@ -1836,7 +1946,7 @@ export default function SupplierEditProduct() {
   const setAttr = (attributeId: string, value: string | string[]) => {
     if (!canEditAttributes) return;
 
-    const attr = activeAttrs.find((a) => a.id === attributeId);
+    const attr = activeAttrs.find((a: any) => a.id === attributeId);
     if (attr?.type === "SELECT" && typeof value === "string") {
       setBaseSelectAttr(attributeId, value);
       return;
@@ -1851,9 +1961,7 @@ export default function SupplierEditProduct() {
   };
 
   function getAttrVal(attributeId: string) {
-    const v = selectedAttrs?.[attributeId];
-    if (Array.isArray(v)) return v;
-    return String(v ?? "");
+    return selectedAttrs?.[attributeId];
   }
 
   const nonStockChangesRequireReview = useMemo(() => {
@@ -1930,31 +2038,28 @@ export default function SupplierEditProduct() {
     variantRows,
   ]);
 
-  /* =========================================================
-     Payload builders
-  ========================================================= */
-
   function buildAttributeSelectionsPayload() {
     const out: Array<{ attributeId: string; text?: string; valueId?: string; valueIds?: string[] }> = [];
 
     for (const a of (attributes ?? []) as CatalogAttribute[]) {
       if (!a?.id) continue;
       const aid = String(a.id);
+      const raw = getAttrVal(aid);
 
       if (a.type === "TEXT") {
-        const v = String(getAttrVal(aid) ?? "").trim();
+        const v = String(raw ?? "").trim();
         if (v) out.push({ attributeId: aid, text: v });
         continue;
       }
 
       if (a.type === "SELECT") {
-        const v = String(getAttrVal(aid) ?? "").trim();
+        const v = String(raw ?? "").trim();
         if (v) out.push({ attributeId: aid, valueId: v });
         continue;
       }
 
       if (a.type === "MULTISELECT") {
-        const vals = Array.isArray(getAttrVal(aid)) ? (getAttrVal(aid) as string[]) : [];
+        const vals = Array.isArray(raw) ? raw : [];
         const clean = vals.map(String).map((x) => x.trim()).filter(Boolean);
         if (clean.length) out.push({ attributeId: aid, valueIds: clean });
       }
@@ -2061,14 +2166,14 @@ export default function SupplierEditProduct() {
     return core;
   }
 
-  /* =========================================================
-     Save mutation
-  ========================================================= */
-
   const updateM = useMutation({
     mutationFn: async () => {
       setErr(null);
       setOkMsg(null);
+
+      if (onboardingBlocked) {
+        throw new Error("Complete supplier onboarding first before editing products.");
+      }
 
       if (imageOverLimit || hasBaseComboConflict || hasDuplicates) {
         throw new Error(
@@ -2232,7 +2337,6 @@ export default function SupplierEditProduct() {
   });
 
   const hasBlockingError = imageOverLimit || hasBaseComboConflict || hasDuplicates;
-
   const isSubmitting = updateM.isPending;
 
   const hasPendingBase =
@@ -2248,8 +2352,8 @@ export default function SupplierEditProduct() {
     requestedBasePriceForDisplay !== activeBasePriceForDisplay;
 
   const guardMsg = !hydrated ? "Loading session…" : !isSupplier ? "This page is for suppliers only." : null;
-
   const hasPendingNonStockBlock = false;
+
   const saveButtonLabel = useMemo(() => {
     if (isSubmitting) return "Submitting…";
     if (offersOnly) return "Save offer";
@@ -2262,7 +2366,7 @@ export default function SupplierEditProduct() {
     isSubmitting ||
     uploading ||
     detailQ.isLoading ||
-    onboardingQ.isLoading ||
+    onboardingState.loading ||
     !hydrated ||
     !isSupplier ||
     onboardingBlocked ||
@@ -2316,7 +2420,6 @@ export default function SupplierEditProduct() {
     );
   }, [detailQ.data, offersOnly]);
 
-
   const latestPendingBasePatch = useMemo(
     () => getPendingBasePatchFromDetail(detailQ.data),
     [detailQ.data]
@@ -2332,6 +2435,7 @@ export default function SupplierEditProduct() {
     const n = Number(raw);
     return Number.isFinite(n) && n > 0 ? n : null;
   }, [latestPendingBasePatch]);
+
   const hasPendingBaseForUi = useMemo(() => {
     return !offersOnly && pendingBaseValue != null;
   }, [offersOnly, pendingBaseValue]);
@@ -2345,802 +2449,843 @@ export default function SupplierEditProduct() {
 
 
     return (
-    <SiteLayout>
-      <SupplierLayout>
-        <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
-          <div className="px-4 py-3 flex items-center gap-3">
-            <button
-              type="button"
-              disabled={submitDisabled}
-              onClick={doSave}
-              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
-            >
-              <Save size={16} />
-              {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setSummaryOpen((v) => !v)}
-              className="shrink-0 inline-flex items-center gap-2 rounded-full border bg-white px-3 py-2 text-sm font-semibold"
-              aria-expanded={summaryOpen}
-            >
-              <Package size={16} />
-              <ChevronDown
-                size={16}
-                className={summaryOpen ? "rotate-180 transition" : "transition"}
-              />
-            </button>
-          </div>
-
-          {hasPendingNonStockBlock && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-              <b>Pending approval:</b> You already have a change request under review for this product.
-              You can still update stock/qty, but other changes must wait until admin approves or rejects the pending request.
-            </div>
-          )}
-
-          {summaryOpen && (
-            <div className="px-4 pb-4">
-              <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-700 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-500">Mode</span>
-                  <b className="text-zinc-900">
-                    {offersOnly
-                      ? "Attach existing"
-                      : isPendingReview
-                        ? "Update pending submission"
-                        : isRejected
-                          ? "Resubmit for approval"
-                          : isReviewManaged
-                            ? "Review-managed product"
-                            : "Create new"}
-                  </b>
-                </div>
-
-                {!offersOnly ? (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-500">Base price</span>
-                      <b className="text-zinc-900">
-                        {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
-                      </b>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-500">Stock</span>
-                      <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
-                        {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
-                      </b>
-                    </div>
-                    <div className="text-[11px] text-zinc-600">
-                      Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-500">Images</span>
-                      <b className="text-zinc-900">
-                        {imagesCount}/{MAX_IMAGES}
-                      </b>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-500">Selected product</span>
-                      <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-500">Base offer</span>
-                      <b className="text-zinc-900">
-                        {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
-                      </b>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-500">Total qty</span>
-                      <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-6 space-y-4 pb-28 sm:pb-10">
-          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-            <div>
-              <motion.h1
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="text-2xl font-bold tracking-tight text-zinc-900"
-              >
-                {offersOnly ? "Edit offer" : "Edit product"}
-              </motion.h1>
-
-              <p className="text-sm text-zinc-600 mt-1">
-                {offersOnly
-                  ? "Update your supplier offer on an existing catalog product."
-                  : isPendingReview
-                    ? "A submission is already pending. You can keep editing eligible fields and your next save will update that pending submission."
-                    : isRejected
-                      ? "This product was previously rejected. Update the eligible fields below and save to resubmit for approval."
-                      : isLive
-                        ? "Edit your product. Stock updates are immediate; some other changes may need review."
-                        : "Edit your product details, attributes, images and variant combinations."}
-              </p>
-
-              <div className="mt-2 text-xs text-zinc-500">
-                Status: <span className="font-medium text-zinc-800">{productStatusUpper || "—"}</span>
-              </div>
-            </div>
-
-            <div className="hidden sm:flex gap-2">
-              <Link
-                to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
-              >
-                <ArrowLeft size={16} /> Back
-              </Link>
-
+      <SiteLayout>
+        <SupplierLayout>
+          <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
+            <div className="px-4 py-3 flex items-center gap-3">
               <button
                 type="button"
                 disabled={submitDisabled}
                 onClick={doSave}
-                className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
-                title={onboardingBlocked ? "Complete onboarding first" : undefined}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
               >
                 {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
                 {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
               </button>
-            </div>
 
-            <div className="sm:hidden">
-              <Link
-                to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+              <button
+                type="button"
+                onClick={() => setSummaryOpen((v) => !v)}
+                className="shrink-0 inline-flex items-center gap-2 rounded-full border bg-white px-3 py-2 text-sm font-semibold"
+                aria-expanded={summaryOpen}
               >
-                <ArrowLeft size={16} /> Back
-              </Link>
+                <Package size={16} />
+                <ChevronDown
+                  size={16}
+                  className={summaryOpen ? "rotate-180 transition" : "transition"}
+                />
+              </button>
             </div>
-          </div>
 
-          {guardMsg && (
-            <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
-              {guardMsg}
-            </div>
-          )}
+            {hasPendingNonStockBlock && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+                <b>Pending approval:</b> You already have a change request under review for this product.
+                You can still update stock/qty, but other changes must wait until admin approves or rejects the pending request.
+              </div>
+            )}
 
-          {isSupplier && onboardingQ.isLoading && (
-            <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
-              Checking onboarding status…
-            </div>
-          )}
-
-          {onboardingBlocked && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div className="min-w-0">
-                  <div className="font-semibold">Onboarding in progress</div>
-                  <div className="mt-1 text-amber-800">
-                    You need to complete supplier onboarding before editing products.
-                    Your product form is visible for context, but editing and saving are locked until onboarding is complete.
+            {summaryOpen && (
+              <div className="px-4 pb-4">
+                <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-700 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-500">Mode</span>
+                    <b className="text-zinc-900">
+                      {offersOnly
+                        ? "Attach existing"
+                        : isPendingReview
+                        ? "Update pending submission"
+                        : isRejected
+                        ? "Resubmit for approval"
+                        : isReviewManaged
+                        ? "Review-managed product"
+                        : "Edit product"}
+                    </b>
                   </div>
 
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
-                    <div
-                      className="h-full rounded-full bg-amber-500 transition-all"
-                      style={{ width: `${onboardingPct}%` }}
-                    />
-                  </div>
-
-                  <div className="mt-2 text-[12px] text-amber-800">
-                    Progress: <b>{onboardingPct}%</b>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {onboardingProgressItems.map((item) => (
-                      <span
-                        key={item.key}
-                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                          item.done
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-amber-100 text-amber-800"
-                        }`}
-                      >
-                        {item.label}: {item.done ? "Done" : "Pending"}
-                      </span>
-                    ))}
-                  </div>
-
-                  <div className="mt-3 text-[12px] text-amber-800">
-                    Supplier status: <b>{String(onboardingQ.data?.supplierStatus ?? "PENDING")}</b>
-                    {" • "}
-                    KYC: <b>{String(onboardingQ.data?.kycStatus ?? "PENDING")}</b>
-                  </div>
-                </div>
-
-                <div className="shrink-0">
-                  <Link
-                    to={onboardingQ.data?.nextPath || "/supplier/verify-contact"}
-                    className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
-                  >
-                    {nextStepLabel}
-                    <ArrowLeft className="ml-2 h-4 w-4 rotate-180" />
-                  </Link>
+                  {!offersOnly ? (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Base price</span>
+                        <b className="text-zinc-900">
+                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                        </b>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Stock</span>
+                        <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                          {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
+                        </b>
+                      </div>
+                      <div className="text-[11px] text-zinc-600">
+                        Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Images</span>
+                        <b className="text-zinc-900">
+                          {imagesCount}/{MAX_IMAGES}
+                        </b>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Selected product</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Base offer</span>
+                        <b className="text-zinc-900">
+                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                        </b>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Total qty</span>
+                        <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          {!offersOnly && pendingSubmissionNotice && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-              <b>
-                {isPendingReview
-                  ? "Pending approval:"
-                  : isRejected
-                    ? "Rejected previously:"
-                    : "Review notice:"}
-              </b>{" "}
-              {pendingSubmissionNotice}
-            </div>
-          )}
+          <div className="mt-6 space-y-4 pb-28 sm:pb-10">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+              <div>
+                <motion.h1
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-2xl font-bold tracking-tight text-zinc-900"
+                >
+                  {offersOnly ? "Edit offer" : "Edit product"}
+                </motion.h1>
 
-          {!offersOnly && titleSkuLocked && (
-            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 text-zinc-800 px-4 py-3 text-sm">
-              <b>Locked fields:</b> Title and SKU can’t be changed while this product is in the review-managed flow.
-            </div>
-          )}
+                <p className="text-sm text-zinc-600 mt-1">
+                  {offersOnly
+                    ? "Update your supplier offer on an existing catalog product."
+                    : isPendingReview
+                    ? "A submission is already pending. You can keep editing eligible fields and your next save will update that pending submission."
+                    : isRejected
+                    ? "This product was previously rejected. Update the eligible fields below and save to resubmit for approval."
+                    : isLive
+                    ? "Edit your product. Stock updates are immediate; some other changes may need review."
+                    : "Edit your product details, attributes, images and variant combinations."}
+                </p>
 
-          {offersOnly && hasPendingBase && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-              <b>Pending approval:</b> Active price remains <b>{ngn.format(activeBasePriceForDisplay)}</b>.
-            </div>
-          )}
+                <div className="mt-2 text-xs text-zinc-500">
+                  Status: <span className="font-medium text-zinc-800">{productStatusUpper || "—"}</span>
+                </div>
+              </div>
 
-          {imageOverLimit && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              Max {MAX_IMAGES} images allowed. Remove extra images before saving.
-            </div>
-          )}
+              <div className="hidden sm:flex gap-2">
+                <Link
+                  to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
+                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                >
+                  <ArrowLeft size={16} /> Back
+                </Link>
 
-          {baseComboWarn && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              {baseComboWarn}
-            </div>
-          )}
+                <button
+                  type="button"
+                  disabled={submitDisabled}
+                  onClick={doSave}
+                  className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                  title={onboardingBlocked ? "Complete onboarding first" : undefined}
+                >
+                  {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
+                  {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
+                </button>
+              </div>
 
-          {dupWarn && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              {dupWarn}
+              <div className="sm:hidden">
+                <Link
+                  to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
+                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                >
+                  <ArrowLeft size={16} /> Back
+                </Link>
+              </div>
             </div>
-          )}
 
-          {err && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              {err}
-            </div>
-          )}
+            {guardMsg && (
+              <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+                {guardMsg}
+              </div>
+            )}
 
-          {okMsg && (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
-              {okMsg}
-            </div>
-          )}
+            {isSupplier && onboardingState.loading && (
+              <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+                Checking onboarding status…
+              </div>
+            )}
 
-          {detailQ.isError && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              Could not load product.
-            </div>
-          )}
+            {isSupplier && onboardingState.failed && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                Could not check onboarding status right now. The page is still available, but onboarding lock detection may be incomplete.
+              </div>
+            )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-2 space-y-4">
-              <Card
-                title="Basic information"
-                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
-                subtitle={
-                  offersOnly
-                    ? "Catalog product details are read-only. Update your supplier offer values below."
-                    : "What customers will see in the catalog"
-                }
-              >
-                <div className="space-y-3">
-                  {onboardingBlocked && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                      Editing is temporarily locked until supplier onboarding is complete.
+            {onboardingBlocked && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="font-semibold">Onboarding in progress</div>
+                    <div className="mt-1 text-amber-800">
+                      You need to complete supplier onboarding before editing products.
+                      Your product form is visible for context, but editing and saving are locked until onboarding is complete.
                     </div>
-                  )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <Label>
-                        Title *{" "}
-                        {titleSkuLocked ? (
-                          <span className="text-zinc-400 font-normal">(locked during review flow)</span>
-                        ) : null}
-                      </Label>
-                      <Input
-                        value={title}
-                        onChange={(e) => {
-                          if (!canEditTitleSku) return;
-                          const nextTitle = e.target.value;
-                          setTitle(nextTitle);
-                          if (!offersOnly && !isReviewManaged && !skuTouched) {
-                            setSku(autoSkuFromTitle(nextTitle));
-                          }
-                        }}
-                        disabled={!canEditTitleSku}
-                        readOnly={!canEditTitleSku}
-                        className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
-                        placeholder="e.g. Air Fryer 4L"
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
+                      <div
+                        className="h-full rounded-full bg-amber-500 transition-all"
+                        style={{ width: `${onboardingPct}%` }}
                       />
-                      {titleSkuLocked && (
-                        <div className="text-[11px] text-zinc-500 mt-1">
-                          Title is locked while this product is LIVE, PENDING, or under review.
-                        </div>
-                      )}
                     </div>
 
-                    <div>
-                      <Label>
-                        SKU{" "}
-                        <span className="text-zinc-400 font-normal">
-                          {titleSkuLocked ? "(locked during review flow)" : ""}
+                    <div className="mt-2 text-[12px] text-amber-800">
+                      Progress: <b>{onboardingPct}%</b>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {onboardingProgressItems.map((item) => (
+                        <span
+                          key={item.key}
+                          className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                            item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
+                          }`}
+                        >
+                          {item.label}: {item.done ? "Done" : "Pending"}
                         </span>
-                      </Label>
-                      <Input
-                        value={sku}
-                        onChange={(e) => {
-                          if (!canEditTitleSku) return;
-                          const v = e.target.value;
-                          setSku(v);
-                          setSkuTouched(!!v.trim());
-                        }}
-                        disabled={!canEditTitleSku}
-                        readOnly={!canEditTitleSku}
-                        className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
-                        placeholder="e.g. AFRY-4L-BLK"
-                      />
-                      {titleSkuLocked && (
-                        <div className="text-[11px] text-zinc-500 mt-1">
-                          SKU is locked while this product is LIVE, PENDING, or under review.
-                        </div>
-                      )}
+                      ))}
+                    </div>
+
+                    <div className="mt-3 text-[12px] text-amber-800">
+                      Supplier status: <b>{String(onboardingState.supplierStatus ?? "PENDING")}</b>
+                      {" • "}
+                      KYC: <b>{String(onboardingState.kycStatus ?? "PENDING")}</b>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                    <div>
-                      <Label>{offersOnly ? "Base offer price (NGN) *" : "Base price (NGN) *"}</Label>
-                      <Input
-                        value={retailPrice}
-                        onChange={onChangeBasePrice}
-                        inputMode="decimal"
-                        placeholder="e.g. 25000"
-                        disabled={onboardingBlocked}
-                      />
+                  <div className="shrink-0">
+                    <Link
+                      to={onboardingState.nextPath || "/supplier/verify-contact"}
+                      className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                    >
+                      {nextStepLabel}
+                      <ArrowLeft className="ml-2 h-4 w-4 rotate-180" />
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            )}
 
-                      {!offersOnly && isReviewManaged && (
-                        <div className="text-[11px] text-zinc-600 mt-1">
-                          Approved: <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
-                        </div>
-                      )}
+            {!offersOnly && pendingSubmissionNotice && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+                <b>
+                  {isPendingReview
+                    ? "Pending approval:"
+                    : isRejected
+                    ? "Rejected previously:"
+                    : "Review notice:"}
+                </b>{" "}
+                {pendingSubmissionNotice}
+              </div>
+            )}
 
-                      {hasPendingBaseForUi && pendingBaseValue != null && (
-                        <div className="text-[11px] text-amber-700 mt-1">
-                          Pending approval price: <b>{ngn.format(pendingBaseValue)}</b>
-                          {pendingBaseMatchesForm
-                            ? " — this matches your current input."
-                            : " — change the amount if you want to replace the pending request."}
-                        </div>
-                      )}
+            {!offersOnly && titleSkuLocked && (
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 text-zinc-800 px-4 py-3 text-sm">
+                <b>Locked fields:</b> Title and SKU can’t be changed while this product is in the review-managed flow.
+              </div>
+            )}
 
-                      {pendingBaseMatchesForm && (
-                        <div className="text-[11px] text-amber-700 mt-1">
-                          This price is already pending approval. Saving again will not change the pending price unless you enter a different amount.
-                        </div>
-                      )}
+            {offersOnly && hasPendingBase && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+                <b>Pending approval:</b> Active price remains <b>{ngn.format(activeBasePriceForDisplay)}</b>.
+              </div>
+            )}
 
-                      {!offersOnly &&
-                        isReviewManaged &&
-                        pendingBasePatch?.basePrice != null &&
-                        Number(pendingBasePatch.basePrice) !== Number(activeBasePriceForDisplay) && (
-                          <div className="text-[11px] text-amber-700 mt-1">
-                            Pending: <b>{ngn.format(Number(pendingBasePatch.basePrice ?? 0))}</b>
+            {imageOverLimit && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+                Max {MAX_IMAGES} images allowed. Remove extra images before saving.
+              </div>
+            )}
+
+            {baseComboWarn && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+                {baseComboWarn}
+              </div>
+            )}
+
+            {dupWarn && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+                {dupWarn}
+              </div>
+            )}
+
+            {err && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+                {err}
+              </div>
+            )}
+
+            {okMsg && (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
+                {okMsg}
+              </div>
+            )}
+
+            {detailQ.isError && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+                Could not load product.
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2 space-y-4">
+                <Card
+                  title="Basic information"
+                  className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+                  subtitle={
+                    offersOnly
+                      ? "Catalog product details are read-only. Update your supplier offer values below."
+                      : "What customers will see in the catalog"
+                  }
+                >
+                  <div className="space-y-3">
+                    {onboardingBlocked && (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                        Editing is temporarily locked until supplier onboarding is complete.
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <Label>
+                          Title *{" "}
+                          {titleSkuLocked ? (
+                            <span className="text-zinc-400 font-normal">(locked during review flow)</span>
+                          ) : null}
+                        </Label>
+                        <Input
+                          value={title}
+                          onChange={(e) => {
+                            if (!canEditTitleSku) return;
+                            const nextTitle = e.target.value;
+                            setTitle(nextTitle);
+                            if (!offersOnly && !isReviewManaged && !skuTouched) {
+                              setSku(autoSkuFromTitle(nextTitle));
+                            }
+                          }}
+                          disabled={!canEditTitleSku}
+                          readOnly={!canEditTitleSku}
+                          className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
+                          placeholder="e.g. Air Fryer 4L"
+                        />
+                        {titleSkuLocked && (
+                          <div className="text-[11px] text-zinc-500 mt-1">
+                            Title is locked while this product is LIVE, PENDING, or under review.
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <Label>
+                          SKU{" "}
+                          <span className="text-zinc-400 font-normal">
+                            {titleSkuLocked ? "(locked during review flow)" : ""}
+                          </span>
+                        </Label>
+                        <Input
+                          value={sku}
+                          onChange={(e) => {
+                            if (!canEditTitleSku) return;
+                            const v = e.target.value;
+                            setSku(v);
+                            setSkuTouched(!!v.trim());
+                          }}
+                          disabled={!canEditTitleSku}
+                          readOnly={!canEditTitleSku}
+                          className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
+                          placeholder="e.g. AFRY-4L-BLK"
+                        />
+                        {titleSkuLocked && (
+                          <div className="text-[11px] text-zinc-500 mt-1">
+                            SKU is locked while this product is LIVE, PENDING, or under review.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div>
+                        <Label>{offersOnly ? "Base offer price (NGN) *" : "Base price (NGN) *"}</Label>
+                        <Input
+                          value={retailPrice}
+                          onChange={onChangeBasePrice}
+                          inputMode="decimal"
+                          placeholder="e.g. 25000"
+                          disabled={onboardingBlocked}
+                        />
+
+                        {!offersOnly && isReviewManaged && (
+                          <div className="text-[11px] text-zinc-600 mt-1">
+                            Approved: <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
                           </div>
                         )}
 
-                      {!!retailPrice && (
+                        {hasPendingBaseForUi && pendingBaseValue != null && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            Pending approval price: <b>{ngn.format(pendingBaseValue)}</b>
+                            {pendingBaseMatchesForm
+                              ? " — this matches your current input."
+                              : " — change the amount if you want to replace the pending request."}
+                          </div>
+                        )}
+
+                        {pendingBaseMatchesForm && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            This price is already pending approval. Saving again will not change the pending price unless you enter a different amount.
+                          </div>
+                        )}
+
+                        {!offersOnly &&
+                          isReviewManaged &&
+                          pendingBasePatch?.basePrice != null &&
+                          Number(pendingBasePatch.basePrice) !== Number(activeBasePriceForDisplay) && (
+                            <div className="text-[11px] text-amber-700 mt-1">
+                              Pending: <b>{ngn.format(Number(pendingBasePatch.basePrice ?? 0))}</b>
+                            </div>
+                          )}
+
+                        {!!retailPrice && (
+                          <div className="text-[11px] text-zinc-500 mt-1">
+                            Preview: <b>{ngn.format(basePriceForPreview)}</b>
+                          </div>
+                        )}
+
+                        {offersOnly && (
+                          <div className="text-[11px] text-zinc-600 mt-1">
+                            Active (approved): <b>{ngn.format(activeBasePriceForDisplay)}</b>
+                          </div>
+                        )}
+
+                        {offersOnly && hasPendingBase && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            Pending: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
+                          </div>
+                        )}
+
+                        {offersOnly && showRequestedButNotPending && (
+                          <div className="text-[11px] text-zinc-500 mt-1">
+                            Will submit for approval: <b>{ngn.format(requestedBasePriceForDisplay)}</b>
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <Label>Base quantity</Label>
+                        <Input
+                          value={availableQty}
+                          onChange={(e) => setAvailableQty(e.target.value)}
+                          inputMode="numeric"
+                          placeholder="e.g. 20"
+                          disabled={onboardingBlocked}
+                        />
                         <div className="text-[11px] text-zinc-500 mt-1">
-                          Preview: <b>{ngn.format(basePriceForPreview)}</b>
+                          Total: <b>{baseQtyPreview}</b> + <b>{variantQtyTotal}</b> = <b>{totalQty}</b>
                         </div>
-                      )}
-
-                      {offersOnly && (
-                        <div className="text-[11px] text-zinc-600 mt-1">
-                          Active (approved): <b>{ngn.format(activeBasePriceForDisplay)}</b>
-                        </div>
-                      )}
-
-                      {offersOnly && hasPendingBase && (
-                        <div className="text-[11px] text-amber-700 mt-1">
-                          Pending: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
-                        </div>
-                      )}
-
-                      {offersOnly && showRequestedButNotPending && (
                         <div className="text-[11px] text-zinc-500 mt-1">
-                          Will submit for approval: <b>{ngn.format(requestedBasePriceForDisplay)}</b>
+                          In-stock:{" "}
+                          <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                            {inStockPreview ? "YES" : "NO"}
+                          </b>
                         </div>
-                      )}
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <Label>Category</Label>
+                          <AddNewLink
+                            label="Add new category"
+                            onClick={() => nav(goToCatalogRequests("categories", "category"))}
+                            title="Request a new category"
+                          />
+                        </div>
+                        <Select
+                          value={categoryId}
+                          onChange={(e) => setCategoryId(e.target.value)}
+                          disabled={!canEditCore}
+                          className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
+                        >
+                          <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
+                          {(categories as any[]).map((c: any) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </Select>
+
+                        {!offersOnly && isReviewManaged && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            Category changes will update the pending submission, not the live product immediately.
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <Label>Brand *</Label>
+                          <AddNewLink
+                            label="Add new brand"
+                            onClick={() => nav(goToCatalogRequests("brands", "brand"))}
+                            title="Request a new brand"
+                          />
+                        </div>
+                        <Select
+                          value={brandId}
+                          onChange={(e) => setBrandId(e.target.value)}
+                          disabled={!canEditCore}
+                          className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
+                        >
+                          <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
+                          {(brands as any[]).map((b: any) => (
+                            <option key={b.id} value={b.id}>
+                              {b.name}
+                            </option>
+                          ))}
+                        </Select>
+
+                        {!offersOnly && isReviewManaged && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            Brand changes will update the pending submission, not the live product immediately.
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     <div>
-                      <Label>Base quantity</Label>
-                      <Input
-                        value={availableQty}
-                        onChange={(e) => setAvailableQty(e.target.value)}
-                        inputMode="numeric"
-                        placeholder="e.g. 20"
-                        disabled={onboardingBlocked}
+                      <Label>Description *</Label>
+                      <Textarea
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        className={`min-h-[110px] ${!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}`}
+                        disabled={!canEditCore}
+                        placeholder="Write a clear, detailed description…"
                       />
-                      <div className="text-[11px] text-zinc-500 mt-1">
-                        Total: <b>{baseQtyPreview}</b> + <b>{variantQtyTotal}</b> = <b>{totalQty}</b>
-                      </div>
-                      <div className="text-[11px] text-zinc-500 mt-1">
-                        In-stock:{" "}
-                        <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
-                          {inStockPreview ? "YES" : "NO"}
-                        </b>
-                      </div>
                     </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <Label>Category</Label>
-                        <AddNewLink
-                          label="Add new category"
-                          onClick={() => nav(goToCatalogRequests("categories", "category"))}
-                          title="Request a new category"
-                        />
-                      </div>
-                      <Select
-                        value={categoryId}
-                        onChange={(e) => setCategoryId(e.target.value)}
-                        disabled={!canEditCore}
-                        className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
-                      >
-                        <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </Select>
-
-                      {!offersOnly && isReviewManaged && (
-                        <div className="text-[11px] text-amber-700 mt-1">
-                          Category changes will update the pending submission, not the live product immediately.
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <Label>Brand *</Label>
-                        <AddNewLink
-                          label="Add new brand"
-                          onClick={() => nav(goToCatalogRequests("brands", "brand"))}
-                          title="Request a new brand"
-                        />
-                      </div>
-                      <Select
-                        value={brandId}
-                        onChange={(e) => setBrandId(e.target.value)}
-                        disabled={!canEditCore}
-                        className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
-                      >
-                        <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
-                        {brands.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name}
-                          </option>
-                        ))}
-                      </Select>
-
-                      {!offersOnly && isReviewManaged && (
-                        <div className="text-[11px] text-amber-700 mt-1">
-                          Brand changes will update the pending submission, not the live product immediately.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <Label>Description *</Label>
-                    <Textarea
-                      value={description}
-                      onChange={(e) => setDescription(e.target.value)}
-                      className={`min-h-[110px] ${!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}`}
-                      disabled={!canEditCore}
-                      placeholder="Write a clear, detailed description…"
-                    />
-                  </div>
-
-                  {!offersOnly && isReviewManaged && (
-                    <div className="text-[11px] text-amber-700 mt-1">
-                      Description edits are allowed, but they will go through approval before appearing live.
-                    </div>
-                  )}
-                </div>
-              </Card>
-
-              <Card
-                title="Images"
-                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
-                subtitle={
-                  offersOnly
-                    ? "Catalog images are read-only here."
-                    : isReviewManaged
-                      ? `Paste URLs or upload images (max ${MAX_IMAGES}). Image changes will update the pending submission.`
-                      : `Paste URLs or upload images (max ${MAX_IMAGES}).`
-                }
-                right={
-                  <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
-                      offersOnly || onboardingBlocked ? "opacity-60 pointer-events-none" : ""
-                    }`}
-                  >
-                    <ImagePlus size={16} /> Add files
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => onPickFiles(Array.from(e.target.files || []))}
-                      disabled={offersOnly || onboardingBlocked}
-                    />
-                  </label>
-                }
-              >
-                <div className="space-y-3">
-                  {onboardingBlocked && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                      Image changes are locked until onboarding is complete.
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between text-xs">
-                    <div className="text-zinc-600">
-                      Images used: <b>{imagesCount}</b> / {MAX_IMAGES}
-                      {fileCount > 0 && (
-                        <>
-                          {" "}
-                          • Selected files: <b>{fileCount}</b>
-                        </>
-                      )}
-                    </div>
-
-                    {!offersOnly && (
-                      <div className="text-zinc-500">
-                        Remaining slots: <b>{remainingSlots}</b>
+                    {!offersOnly && isReviewManaged && (
+                      <div className="text-[11px] text-amber-700 mt-1">
+                        Description edits are allowed, but they will go through approval before appearing live.
                       </div>
                     )}
                   </div>
+                </Card>
 
-                  <div>
-                    <Label>Image URLs (one per line)</Label>
-                    <Textarea
-                      value={imageUrls}
-                      onChange={(e) => {
-                        if (offersOnly || onboardingBlocked) return;
-                        setErr(null);
-                        const raw = parseUrlList(e.target.value);
-                        const capped = limitImages(raw, MAX_IMAGES);
-                        setImageUrls(capped.join("\n"));
-                      }}
-                      className="min-h-[90px] text-xs"
-                      disabled={offersOnly || onboardingBlocked}
-                      placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
-                    />
-                  </div>
+                <Card
+                  title="Images"
+                  className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+                  subtitle={
+                    offersOnly
+                      ? "Catalog images are read-only here."
+                      : isReviewManaged
+                      ? `Paste URLs or upload images (max ${MAX_IMAGES}). Image changes will update the pending submission.`
+                      : `Paste URLs or upload images (max ${MAX_IMAGES}).`
+                  }
+                  right={
+                    <label
+                      className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
+                        offersOnly || onboardingBlocked ? "opacity-60 pointer-events-none" : ""
+                      }`}
+                    >
+                      <ImagePlus size={16} /> Add files
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => onPickFiles(Array.from(e.target.files || []))}
+                        disabled={offersOnly || onboardingBlocked}
+                      />
+                    </label>
+                  }
+                >
+                  <div className="space-y-3">
+                    {onboardingBlocked && (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                        Image changes are locked until onboarding is complete.
+                      </div>
+                    )}
 
-                  {(allUrlPreviews.length > 0 || filePreviews.length > 0) && (
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="text-zinc-600">
+                        Images used: <b>{imagesCount}</b> / {MAX_IMAGES}
+                        {fileCount > 0 && (
+                          <>
+                            {" "}
+                            • Selected files: <b>{fileCount}</b>
+                          </>
+                        )}
+                      </div>
+
+                      {!offersOnly && (
+                        <div className="text-zinc-500">
+                          Remaining slots: <b>{remainingSlots}</b>
+                        </div>
+                      )}
+                    </div>
+
                     <div>
-                      <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
+                      <Label>Image URLs (one per line)</Label>
+                      <Textarea
+                        value={imageUrls}
+                        onChange={(e) => {
+                          if (offersOnly || onboardingBlocked) return;
+                          setErr(null);
+                          const raw = parseUrlList(e.target.value);
+                          const capped = limitImages(raw, MAX_IMAGES);
+                          setImageUrls(capped.join("\n"));
+                        }}
+                        className="min-h-[90px] text-xs"
+                        disabled={offersOnly || onboardingBlocked}
+                        placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
+                      />
+                    </div>
 
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {allUrlPreviews.slice(0, MAX_IMAGES).map((u) => (
-                          <div key={u} className="rounded-xl border overflow-hidden bg-white">
-                            <div className="aspect-[4/3] bg-zinc-100 relative">
-                              <img
-                                src={toPublicImageSrc(u) ?? ""}
-                                alt=""
-                                className="w-full h-full object-cover"
-                                loading="lazy"
-                                onError={(e) => {
-                                  const img = e.currentTarget as HTMLImageElement;
-                                  const current = img.getAttribute("data-try") ?? "";
-                                  const list = imageSrcCandidates(u);
-                                  const idx = current ? list.indexOf(current) : 0;
-                                  const next = list[idx + 1];
+                    {(allUrlPreviews.length > 0 || filePreviews.length > 0) && (
+                      <div>
+                        <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
 
-                                  if (next) {
-                                    img.src = next;
-                                    img.setAttribute("data-try", next);
-                                    img.style.display = "block";
-                                    return;
-                                  }
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                          {allUrlPreviews.slice(0, MAX_IMAGES).map((u) => (
+                            <div key={u} className="rounded-xl border overflow-hidden bg-white">
+                              <div className="aspect-[4/3] bg-zinc-100 relative">
+                                <img
+                                  src={toPublicImageSrc(u) ?? ""}
+                                  alt=""
+                                  className="w-full h-full object-cover"
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    const img = e.currentTarget as HTMLImageElement;
+                                    const current = img.getAttribute("data-try") ?? "";
+                                    const list = imageSrcCandidates(u);
+                                    const idx = current ? list.indexOf(current) : 0;
+                                    const next = list[idx + 1];
 
-                                  img.style.display = "none";
-                                }}
-                              />
+                                    if (next) {
+                                      img.src = next;
+                                      img.setAttribute("data-try", next);
+                                      img.style.display = "block";
+                                      return;
+                                    }
 
-                              {!offersOnly && !onboardingBlocked && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const inText = parseUrlList(imageUrls).some(
-                                      (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
-                                    );
-                                    if (inText) removeTextUrl(u);
-                                    else removeUploadedUrl(u);
+                                    img.style.display = "none";
                                   }}
-                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
-                                  aria-label="Remove image"
-                                  title="Remove"
-                                >
-                                  <X size={18} className="text-rose-700" />
-                                </button>
-                              )}
-                            </div>
-                            <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
-                          </div>
-                        ))}
+                                />
 
-                        {!offersOnly &&
-                          !onboardingBlocked &&
-                          filePreviews
-                            .slice(0, Math.max(0, MAX_IMAGES - allUrlPreviews.length))
-                            .map(({ file, url }) => (
-                              <div key={url} className="rounded-xl border overflow-hidden bg-white">
-                                <div className="aspect-[4/3] bg-zinc-100 relative">
-                                  <img src={url} alt={file.name} className="w-full h-full object-cover" />
+                                {!offersOnly && !onboardingBlocked && (
                                   <button
                                     type="button"
-                                    onClick={() => removeSelectedFile(file)}
+                                    onClick={() => {
+                                      const inText = parseUrlList(imageUrls).some(
+                                        (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
+                                      );
+                                      if (inText) removeTextUrl(u);
+                                      else removeUploadedUrl(u);
+                                    }}
                                     className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
-                                    aria-label="Remove selected file"
+                                    aria-label="Remove image"
                                     title="Remove"
                                   >
                                     <X size={18} className="text-rose-700" />
                                   </button>
-                                </div>
-                                <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
+                                )}
                               </div>
-                            ))}
+                              <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
+                            </div>
+                          ))}
+
+                          {!offersOnly &&
+                            !onboardingBlocked &&
+                            filePreviews
+                              .slice(0, Math.max(0, MAX_IMAGES - allUrlPreviews.length))
+                              .map(({ file, url }) => (
+                                <div key={url} className="rounded-xl border overflow-hidden bg-white">
+                                  <div className="aspect-[4/3] bg-zinc-100 relative">
+                                    <img src={url} alt={file.name} className="w-full h-full object-cover" />
+                                    <button
+                                      type="button"
+                                      onClick={() => removeSelectedFile(file)}
+                                      className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                      aria-label="Remove selected file"
+                                      title="Remove"
+                                    >
+                                      <X size={18} className="text-rose-700" />
+                                    </button>
+                                  </div>
+                                  <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
+                                </div>
+                              ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {!offersOnly && !onboardingBlocked && files.length > 0 && (
-                    <div className="rounded-2xl border bg-white p-3">
-                      <div className="text-xs font-semibold text-zinc-800">
-                        Selected files: <span className="font-mono">{files.length}</span>
+                    {!offersOnly && !onboardingBlocked && files.length > 0 && (
+                      <div className="rounded-2xl border bg-white p-3">
+                        <div className="text-xs font-semibold text-zinc-800">
+                          Selected files: <span className="font-mono">{files.length}</span>
+                        </div>
+
+                        <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                setErr(null);
+                                await uploadLocalFiles();
+                              } catch (e: any) {
+                                setErr(e?.message || "Upload failed");
+                              }
+                            }}
+                            disabled={uploading || !files.length}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                          >
+                            {uploading ? "Uploading…" : "Upload now"}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFiles([]);
+                              if (fileInputRef.current) fileInputRef.current.value = "";
+                            }}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                          >
+                            <Trash2 size={16} /> Clear files
+                          </button>
+                        </div>
                       </div>
+                    )}
+                  </div>
+                </Card>
 
-                      <div className="mt-3 flex flex-col sm:flex-row gap-2">
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              setErr(null);
-                              await uploadLocalFiles();
-                            } catch (e: any) {
-                              setErr(e?.message || "Upload failed");
-                            }
-                          }}
-                          disabled={uploading || !files.length}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
-                        >
-                          {uploading ? "Uploading…" : "Upload now"}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFiles([]);
-                            if (fileInputRef.current) fileInputRef.current.value = "";
-                          }}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                        >
-                          <Trash2 size={16} /> Clear files
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </Card>
-
-              <Card
-                title="Attributes"
-                subtitle={
-                  offersOnly
-                    ? "Catalog product attributes are read-only."
-                    : isReviewManaged
+                <Card
+                  title="Attributes"
+                  subtitle={
+                    offersOnly
+                      ? "Catalog product attributes are read-only."
+                      : isReviewManaged
                       ? "Optional details used for filtering and variant setup. Attribute changes will update the pending submission."
                       : "Optional details used for filtering and variant setup."
-                }
-                className={[
-                  hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : "",
-                  onboardingBlocked ? "border-amber-200 bg-amber-50/30" : "",
-                ].join(" ")}
-                right={
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <AddNewLink
-                      label="Add new attribute"
-                      onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
-                    />
-                  </div>
-                }
-              >
-                <div className="space-y-3">
-                  {onboardingBlocked && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                      Attribute editing is locked until onboarding is complete.
+                  }
+                  className={[
+                    hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : "",
+                    onboardingBlocked ? "border-amber-200 bg-amber-50/30" : "",
+                  ].join(" ")}
+                  right={
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <AddNewLink
+                        label="Add new attribute"
+                        onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
+                      />
                     </div>
-                  )}
+                  }
+                >
+                  <div className="space-y-3">
+                    {onboardingBlocked && (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                        Attribute editing is locked until onboarding is complete.
+                      </div>
+                    )}
 
-                  {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
+                    {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
 
-                  {!attributesQ.isLoading && activeAttrs.length === 0 && (
-                    <div className="text-sm text-zinc-500">No active attributes configured.</div>
-                  )}
+                    {!attributesQ.isLoading && activeAttrs.length === 0 && (
+                      <div className="text-sm text-zinc-500">No active attributes configured.</div>
+                    )}
 
-                  {selectableAttrs.length > 0 && (
-                    <div
-                      className={[
-                        "rounded-xl border px-3 py-2 text-[12px]",
-                        hasBaseComboConflict || flashBaseCombo
-                          ? "bg-rose-50 border-rose-200 text-rose-800"
-                          : "bg-amber-50 border-amber-200 text-amber-800",
-                      ].join(" ")}
-                    >
-                      The selected <b>SELECT</b> attributes here form your <b>BaseCombo</b>. Variant combos below must be different.
-                      {(hasBaseComboConflict || flashBaseCombo) && (
-                        <>
-                          {" "}
-                          <b>Fix:</b> change either the base selection or the highlighted variant row(s).
-                        </>
-                      )}
-                    </div>
-                  )}
+                    {selectableAttrs.length > 0 && (
+                      <div
+                        className={[
+                          "rounded-xl border px-3 py-2 text-[12px]",
+                          hasBaseComboConflict || flashBaseCombo
+                            ? "bg-rose-50 border-rose-200 text-rose-800"
+                            : "bg-amber-50 border-amber-200 text-amber-800",
+                        ].join(" ")}
+                      >
+                        The selected <b>SELECT</b> attributes here form your <b>BaseCombo</b>. Variant combos below must be different.
+                        {(hasBaseComboConflict || flashBaseCombo) && (
+                          <>
+                            {" "}
+                            <b>Fix:</b> change either the base selection or the highlighted variant row(s).
+                          </>
+                        )}
+                      </div>
+                    )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {activeAttrs.map((a: CatalogAttribute) => {
-                      if (a.type === "TEXT") {
-                        const v = String(getAttrVal(a.id) ?? "");
-                        return (
-                          <div key={a.id}>
-                            <Label>{a.name}</Label>
-                            <Input
-                              value={v}
-                              onChange={(e) => setAttr(a.id, e.target.value)}
-                              disabled={!canEditAttributes}
-                              placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
-                            />
-                          </div>
-                        );
-                      }
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {activeAttrs.map((a: CatalogAttribute) => {
+                        if (a.type === "TEXT") {
+                          const v = String(getAttrVal(a.id) ?? "");
+                          return (
+                            <div key={a.id}>
+                              <Label>{a.name}</Label>
+                              <Input
+                                value={v}
+                                onChange={(e) => setAttr(a.id, e.target.value)}
+                                disabled={!canEditAttributes}
+                                placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
+                              />
+                            </div>
+                          );
+                        }
 
-                      if (a.type === "SELECT") {
-                        const v = String(getAttrVal(a.id) ?? "");
+                        if (a.type === "SELECT") {
+                          const v = String(getAttrVal(a.id) ?? "");
+                          const label = "add new " + a.name.toLowerCase();
+
+                          return (
+                            <div key={a.id}>
+                              <div className="flex items-center justify-between mb-1">
+                                <Label>{a.name}</Label>
+                                <AddNewLink
+                                  label={label}
+                                  onClick={() =>
+                                    nav(
+                                      goToCatalogRequests("attribute-values", "value", {
+                                        attributeId: String(a.id || ""),
+                                      })
+                                    )
+                                  }
+                                  title={`Request new values for ${a.name}`}
+                                />
+                              </div>
+
+                              <Select
+                                value={v}
+                                onChange={(e) => setAttr(a.id, e.target.value)}
+                                disabled={!canEditAttributes}
+                                className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
+                              >
+                                <option value="">— Select —</option>
+                                {(a.values || []).map((x) => (
+                                  <option key={x.id} value={x.id}>
+                                    {x.name}
+                                  </option>
+                                ))}
+                              </Select>
+                            </div>
+                          );
+                        }
+
+                        const arr = Array.isArray(getAttrVal(a.id)) ? (getAttrVal(a.id) as string[]) : [];
                         const label = "add new " + a.name.toLowerCase();
 
                         return (
-                          <div key={a.id}>
-                            <div className="flex items-center justify-between mb-1">
-                              <Label>{a.name}</Label>
+                          <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs font-semibold text-zinc-700">{a.name}</div>
                               <AddNewLink
                                 label={label}
                                 onClick={() =>
@@ -3154,266 +3299,273 @@ export default function SupplierEditProduct() {
                               />
                             </div>
 
-                            <Select
-                              value={v}
-                              onChange={(e) => setAttr(a.id, e.target.value)}
-                              disabled={!canEditAttributes}
-                              className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
-                            >
-                              <option value="">— Select —</option>
-                              {(a.values || []).map((x) => (
-                                <option key={x.id} value={x.id}>
-                                  {x.name}
-                                </option>
-                              ))}
-                            </Select>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {(a.values || []).map((x) => {
+                                const checked = arr.includes(x.id);
+                                return (
+                                  <label
+                                    key={x.id}
+                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
+                                      checked
+                                        ? "bg-zinc-900 text-white border-zinc-900"
+                                        : "bg-white hover:bg-black/5"
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="hidden"
+                                      checked={checked}
+                                      onChange={() => {
+                                        if (!canEditAttributes) return;
+                                        setSelectedAttrs((s) => {
+                                          const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
+                                          const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
+                                          return { ...s, [a.id]: next };
+                                        });
+                                      }}
+                                    />
+                                    {x.name}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </Card>
+
+                <Card
+                  title="Variant combinations"
+                  className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+                  subtitle={
+                    offersOnly
+                      ? "Set supplier-specific stock and price for each existing variant."
+                      : isReviewManaged
+                      ? "Review-managed listing: existing combos stay fixed here; qty updates are immediate, and price edits update the pending submission."
+                      : "Add combinations of SELECT attributes with qty and price."
+                  }
+                  right={
+                    <div className="flex gap-2 flex-wrap">
+                      {!offersOnly && canAddNewCombos && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={generateVariantMatrix}
+                            disabled={
+                              onboardingBlocked ||
+                              !selectableAttrs.some((a: any) => String(selectedAttrs[a.id] ?? "").trim() !== "")
+                            }
+                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                          >
+                            Generate combo
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={addVariantRow}
+                            disabled={onboardingBlocked || !selectableAttrs.length || !canAddNewCombos}
+                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
+                          >
+                            <Plus size={16} /> Add row
+                          </button>
+                        </>
+                      )}
+
+                      {offersOnly && (
+                        <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-700">
+                          {variantRows.length} variant(s)
+                        </div>
+                      )}
+                    </div>
+                  }
+                >
+                  <div className="space-y-2">
+                    {onboardingBlocked && (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                        Variant quantity and pricing updates are locked until onboarding is complete.
+                      </div>
+                    )}
+
+                    {!selectableAttrs.length && (
+                      <div className="text-sm text-zinc-500">
+                        No SELECT attributes available. Create SELECT attributes to enable variants.
+                      </div>
+                    )}
+
+                    {!offersOnly && isReviewManaged && (
+                      <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[12px] text-zinc-700">
+                        Existing variant rows can still have stock updated immediately. Any review-managed price changes will be submitted through the approval flow.
+                      </div>
+                    )}
+
+                    {variantRows.map((row) => {
+                      const isDup = duplicateRowIds.has(row.id);
+                      const isBaseConflict = baseComboConflictRowIds.has(row.id);
+                      const isFlashing = flashVariantRowId === row.id;
+                      const isEditing =
+                        editingVariantRowId === row.id &&
+                        !offersOnly &&
+                        !isReviewManaged &&
+                        !row.isExisting &&
+                        !onboardingBlocked;
+
+                      const variantPriceNum = toMoneyNumber(row.unitPrice);
+                      const effectiveVariantPrice = offersOnly
+                        ? Number(row.activeUnitPrice ?? activeBasePriceForDisplay)
+                        : variantPriceNum > 0
+                        ? variantPriceNum
+                        : toMoneyNumber(retailPrice);
+
+                      const label = row.comboLabel || getVariantRowLabel(row);
+                      const rowQty = toIntNonNeg(row.availableQty);
+
+                      const pendingVar = row.variantId
+                        ? pendingVariantPatchByVariantId.get(String(row.variantId))
+                        : null;
+
+                      const pendingPatch = pendingVar?.proposedPatch ?? pendingVar?.patchJson ?? null;
+                      const pendingVarUnitPrice = Number(pendingPatch?.unitPrice ?? NaN);
+
+                      const hasPendingVarPrice =
+                        offersOnly &&
+                        Number.isFinite(pendingVarUnitPrice) &&
+                        pendingVarUnitPrice > 0 &&
+                        pendingVarUnitPrice !== Number(row.activeUnitPrice ?? activeBasePriceForDisplay);
+
+                      if (!isEditing) {
+                        return (
+                          <div
+                            key={row.id}
+                            className={[
+                              "rounded-2xl border bg-zinc-50 p-3",
+                              isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
+                            ].join(" ")}
+                          >
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-zinc-900">{label}</div>
+                                <div className="text-xs text-zinc-600 mt-1">
+                                  Qty: <b>{rowQty || 0}</b> · Price:{" "}
+                                  <b>{row.unitPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
+                                </div>
+
+                                {!offersOnly &&
+                                  isLive &&
+                                  row.variantId &&
+                                  pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice != null &&
+                                  Number(
+                                    pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice
+                                  ) !== Number(row.activeUnitPrice ?? effectiveVariantPrice) && (
+                                    <div className="text-[11px] text-amber-700 mt-1">
+                                      Pending variant:{" "}
+                                      <b>
+                                        {ngn.format(
+                                          Number(
+                                            pendingProductVariantPatchByVariantId.get(String(row.variantId))
+                                              ?.unitPrice ?? 0
+                                          )
+                                        )}
+                                      </b>
+                                    </div>
+                                  )}
+
+                                {offersOnly && hasPendingVarPrice && (
+                                  <div className="text-[11px] text-amber-700 mt-1">
+                                    Requested variant: <b>{ngn.format(pendingVarUnitPrice)}</b> (pending)
+                                  </div>
+                                )}
+
+                                {(isDup || isBaseConflict) && (
+                                  <div className="text-[12px] text-rose-700 mt-2">
+                                    {isDup ? "Duplicate variant combination." : null}
+                                    {isDup && isBaseConflict ? " " : null}
+                                    {isBaseConflict ? "This VariantCombo matches your BaseCombo." : null}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {offersOnly || isReviewManaged || row.isExisting ? (
+                                  <>
+                                    <span className="text-xs text-zinc-500">Price</span>
+                                    <Input
+                                      value={row.unitPrice}
+                                      onChange={(e) => updateVariantPrice(row.id, e.target.value)}
+                                      inputMode="decimal"
+                                      className="w-28 text-xs"
+                                      placeholder="e.g. 25000"
+                                      disabled={onboardingBlocked}
+                                    />
+
+                                    <span className="text-xs text-zinc-500">Qty</span>
+                                    <Input
+                                      value={row.availableQty}
+                                      onChange={(e) => updateVariantQty(row.id, e.target.value)}
+                                      inputMode="numeric"
+                                      className="w-24 text-xs"
+                                      placeholder="e.g. 5"
+                                      disabled={onboardingBlocked}
+                                    />
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setErr(null);
+                                      setEditingVariantRowId(row.id);
+                                    }}
+                                    disabled={onboardingBlocked}
+                                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
+                                  >
+                                    Edit combo
+                                  </button>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => removeVariantRow(row.id)}
+                                  disabled={onboardingBlocked}
+                                  className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-60"
+                                >
+                                  <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
+                                </button>
+                              </div>
+                            </div>
                           </div>
                         );
                       }
 
-                      const arr = Array.isArray(getAttrVal(a.id)) ? (getAttrVal(a.id) as string[]) : [];
-                      const label = "add new " + a.name.toLowerCase();
-
-                      return (
-                        <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-xs font-semibold text-zinc-700">{a.name}</div>
-                            <AddNewLink
-                              label={label}
-                              onClick={() =>
-                                nav(
-                                  goToCatalogRequests("attribute-values", "value", {
-                                    attributeId: String(a.id || ""),
-                                  })
-                                )
-                              }
-                              title={`Request new values for ${a.name}`}
-                            />
-                          </div>
-
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {(a.values || []).map((x) => {
-                              const checked = arr.includes(x.id);
-                              return (
-                                <label
-                                  key={x.id}
-                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                    checked
-                                      ? "bg-zinc-900 text-white border-zinc-900"
-                                      : "bg-white hover:bg-black/5"
-                                  }`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    className="hidden"
-                                    checked={checked}
-                                    onChange={() => {
-                                      if (!canEditAttributes) return;
-                                      setSelectedAttrs((s) => {
-                                        const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
-                                        const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
-                                        return { ...s, [a.id]: next };
-                                      });
-                                    }}
-                                  />
-                                  {x.name}
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </Card>
-
-              <Card
-                title="Variant combinations"
-                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
-                subtitle={
-                  offersOnly
-                    ? "Set supplier-specific stock and price for each existing variant."
-                    : isReviewManaged
-                      ? "Review-managed listing: existing combos stay fixed here; qty updates are immediate, and price edits update the pending submission."
-                      : "Add combinations of SELECT attributes with qty and price."
-                }
-                right={
-                  <div className="flex gap-2 flex-wrap">
-                    {!offersOnly && canAddNewCombos && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={generateVariantMatrix}
-                          disabled={
-                            onboardingBlocked ||
-                            !selectableAttrs.some((a) => String(selectedAttrs[a.id] ?? "").trim() !== "")
-                          }
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
-                        >
-                          Generate combo
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={addVariantRow}
-                          disabled={onboardingBlocked || !selectableAttrs.length || !canAddNewCombos}
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
-                        >
-                          <Plus size={16} /> Add row
-                        </button>
-                      </>
-                    )}
-
-                    {offersOnly && (
-                      <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-700">
-                        {variantRows.length} variant(s)
-                      </div>
-                    )}
-                  </div>
-                }
-              >
-                <div className="space-y-2">
-                  {onboardingBlocked && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                      Variant quantity and pricing updates are locked until onboarding is complete.
-                    </div>
-                  )}
-
-                  {!selectableAttrs.length && (
-                    <div className="text-sm text-zinc-500">
-                      No SELECT attributes available. Create SELECT attributes to enable variants.
-                    </div>
-                  )}
-
-                  {!offersOnly && isReviewManaged && (
-                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[12px] text-zinc-700">
-                      Existing variant rows can still have stock updated immediately. Any review-managed price changes will be submitted through the approval flow.
-                    </div>
-                  )}
-
-                  {variantRows.map((row) => {
-                    const isDup = duplicateRowIds.has(row.id);
-                    const isBaseConflict = baseComboConflictRowIds.has(row.id);
-                    const isFlashing = flashVariantRowId === row.id;
-                    const isEditing =
-                      editingVariantRowId === row.id &&
-                      !offersOnly &&
-                      !isReviewManaged &&
-                      !row.isExisting &&
-                      !onboardingBlocked;
-
-                    const variantPriceNum = toMoneyNumber(row.unitPrice);
-                    const effectiveVariantPrice = offersOnly
-                      ? Number(row.activeUnitPrice ?? activeBasePriceForDisplay)
-                      : variantPriceNum > 0
-                        ? variantPriceNum
-                        : toMoneyNumber(retailPrice);
-
-                    const label = row.comboLabel || getVariantRowLabel(row);
-                    const rowQty = toIntNonNeg(row.availableQty);
-
-                    const pendingVar = row.variantId
-                      ? pendingVariantPatchByVariantId.get(String(row.variantId))
-                      : null;
-
-                    const pendingPatch = pendingVar?.proposedPatch ?? pendingVar?.patchJson ?? null;
-                    const pendingVarUnitPrice = Number(pendingPatch?.unitPrice ?? NaN);
-
-                    const hasPendingVarPrice =
-                      offersOnly &&
-                      Number.isFinite(pendingVarUnitPrice) &&
-                      pendingVarUnitPrice > 0 &&
-                      pendingVarUnitPrice !== Number(row.activeUnitPrice ?? activeBasePriceForDisplay);
-
-                    if (!isEditing) {
                       return (
                         <div
                           key={row.id}
                           className={[
-                            "rounded-2xl border bg-zinc-50 p-3",
+                            "rounded-2xl border bg-white p-3 space-y-3",
                             isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
                           ].join(" ")}
                         >
-                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-sm font-semibold text-zinc-900">{label}</div>
-                              <div className="text-xs text-zinc-600 mt-1">
-                                Qty: <b>{rowQty || 0}</b> · Price:{" "}
-                                <b>{row.unitPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
-                              </div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                            <div className="text-sm font-semibold text-zinc-900">Editing combo</div>
 
-                              {!offersOnly &&
-                                isLive &&
-                                row.variantId &&
-                                pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice != null &&
-                                Number(
-                                  pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice
-                                ) !== Number(row.activeUnitPrice ?? effectiveVariantPrice) && (
-                                  <div className="text-[11px] text-amber-700 mt-1">
-                                    Pending variant:{" "}
-                                    <b>
-                                      {ngn.format(
-                                        Number(
-                                          pendingProductVariantPatchByVariantId.get(String(row.variantId))
-                                            ?.unitPrice ?? 0
-                                        )
-                                      )}
-                                    </b>
-                                  </div>
-                                )}
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => saveVariantRow(row.id)}
+                                disabled={onboardingBlocked}
+                                className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                              >
+                                Save combo
+                              </button>
 
-                              {offersOnly && hasPendingVarPrice && (
-                                <div className="text-[11px] text-amber-700 mt-1">
-                                  Requested variant: <b>{ngn.format(pendingVarUnitPrice)}</b> (pending)
-                                </div>
-                              )}
-
-                              {(isDup || isBaseConflict) && (
-                                <div className="text-[12px] text-rose-700 mt-2">
-                                  {isDup ? "Duplicate variant combination." : null}
-                                  {isDup && isBaseConflict ? " " : null}
-                                  {isBaseConflict ? "This VariantCombo matches your BaseCombo." : null}
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="flex items-center gap-2 flex-wrap">
-                              {offersOnly || isReviewManaged || row.isExisting ? (
-                                <>
-                                  <span className="text-xs text-zinc-500">Price</span>
-                                  <Input
-                                    value={row.unitPrice}
-                                    onChange={(e) => updateVariantPrice(row.id, e.target.value)}
-                                    inputMode="decimal"
-                                    className="w-28 text-xs"
-                                    placeholder="e.g. 25000"
-                                    disabled={onboardingBlocked}
-                                  />
-
-                                  <span className="text-xs text-zinc-500">Qty</span>
-                                  <Input
-                                    value={row.availableQty}
-                                    onChange={(e) => updateVariantQty(row.id, e.target.value)}
-                                    inputMode="numeric"
-                                    className="w-24 text-xs"
-                                    placeholder="e.g. 5"
-                                    disabled={onboardingBlocked}
-                                  />
-                                </>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setErr(null);
-                                    setEditingVariantRowId(row.id);
-                                  }}
-                                  disabled={onboardingBlocked}
-                                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
-                                >
-                                  Edit combo
-                                </button>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() => setEditingVariantRowId(null)}
+                                disabled={onboardingBlocked}
+                                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
+                              >
+                                Done
+                              </button>
 
                               <button
                                 type="button"
@@ -3421,144 +3573,232 @@ export default function SupplierEditProduct() {
                                 disabled={onboardingBlocked}
                                 className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-60"
                               >
-                                <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
+                                <Trash2 size={14} /> Remove
                               </button>
                             </div>
                           </div>
+
+                          <div className="grid grid-cols-1 gap-3 items-start">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {selectableAttrs.map((attr: any) => {
+                                const valueId = row.selections[attr.id] || "";
+                                const label = "add new " + attr.name.toLowerCase();
+
+                                return (
+                                  <div key={attr.id}>
+                                    <div className="flex items-center justify-between mb-1">
+                                      <div className="text-[11px] font-semibold text-zinc-600">{attr.name}</div>
+                                      <AddNewLink
+                                        label={label}
+                                        onClick={() =>
+                                          nav(
+                                            goToCatalogRequests("attribute-values", "value", {
+                                              attributeId: String(attr.id || ""),
+                                            })
+                                          )
+                                        }
+                                        title={`Request new values for ${attr.name}`}
+                                      />
+                                    </div>
+
+                                    <Select
+                                      value={valueId}
+                                      onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
+                                      disabled={onboardingBlocked}
+                                      className={isBaseConflict || isFlashing ? "border-rose-300" : ""}
+                                    >
+                                      <option value="">Select…</option>
+                                      {(attr.values || []).map((v: any) => (
+                                        <option key={v.id} value={v.id}>
+                                          {v.name}
+                                        </option>
+                                      ))}
+                                    </Select>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              <div>
+                                <div className="text-[11px] font-semibold text-zinc-600 mb-1">Qty</div>
+                                <Input
+                                  value={row.availableQty}
+                                  onChange={(e) => updateVariantQty(row.id, e.target.value)}
+                                  inputMode="numeric"
+                                  placeholder="e.g. 5"
+                                  disabled={onboardingBlocked}
+                                />
+                              </div>
+
+                              <div>
+                                <div className="text-[11px] font-semibold text-zinc-600 mb-1">
+                                  Variant price (NGN)
+                                </div>
+                                <Input
+                                  value={row.unitPrice}
+                                  onChange={(e) => updateVariantPrice(row.id, e.target.value)}
+                                  inputMode="decimal"
+                                  placeholder={retailPrice ? `e.g. ${retailPrice}` : "e.g. 25000"}
+                                  disabled={onboardingBlocked}
+                                />
+                                <div className="text-[11px] text-zinc-500 mt-1">
+                                  Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {(isDup || isBaseConflict) && (
+                            <div className="text-[12px] text-rose-700">
+                              {isDup ? "Duplicate variant combination." : null}
+                              {isDup && isBaseConflict ? " " : null}
+                              {isBaseConflict ? "This VariantCombo matches your BaseCombo (Attributes section)." : null}
+                            </div>
+                          )}
                         </div>
                       );
-                    }
+                    })}
 
-                    return (
-                      <div
-                        key={row.id}
-                        className={[
-                          "rounded-2xl border bg-white p-3 space-y-3",
-                          isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
-                        ].join(" ")}
-                      >
-                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                          <div className="text-sm font-semibold text-zinc-900">Editing combo</div>
+                    {variantRows.length === 0 && (
+                      <div className="text-sm text-zinc-500">No variant rows found for this product.</div>
+                    )}
+                  </div>
+                </Card>
 
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => saveVariantRow(row.id)}
-                              disabled={onboardingBlocked}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
-                            >
-                              Save combo
-                            </button>
+                <div className="hidden sm:block">
+                  <button
+                    type="button"
+                    disabled={submitDisabled}
+                    onClick={doSave}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
+                  >
+                    {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
+                    {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
+                  </button>
+                </div>
+              </div>
 
-                            <button
-                              type="button"
-                              onClick={() => setEditingVariantRowId(null)}
-                              disabled={onboardingBlocked}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
-                            >
-                              Done
-                            </button>
+              <div className="hidden lg:block space-y-4">
+                <Card title="Submission summary" subtitle="What will be sent to the backend">
+                  <div className="text-sm text-zinc-700 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Flow</span>
+                      <b className="text-zinc-900">
+                        {offersOnly
+                          ? "Attach existing product"
+                          : isPendingReview
+                          ? "Update pending submission"
+                          : isRejected
+                          ? "Resubmit for approval"
+                          : isReviewManaged
+                          ? "Review-managed product"
+                          : "Edit product"}
+                      </b>
+                    </div>
 
-                            <button
-                              type="button"
-                              onClick={() => removeVariantRow(row.id)}
-                              disabled={onboardingBlocked}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-60"
-                            >
-                              <Trash2 size={14} /> Remove
-                            </button>
-                          </div>
+                    {!offersOnly ? (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Title</span>
+                          <b className="text-zinc-900 truncate max-w-[180px]">{title.trim() ? title.trim() : "—"}</b>
                         </div>
 
-                        <div className="grid grid-cols-1 gap-3 items-start">
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            {selectableAttrs.map((attr) => {
-                              const valueId = row.selections[attr.id] || "";
-                              const label = "add new " + attr.name.toLowerCase();
-
-                              return (
-                                <div key={attr.id}>
-                                  <div className="flex items-center justify-between mb-1">
-                                    <div className="text-[11px] font-semibold text-zinc-600">{attr.name}</div>
-                                    <AddNewLink
-                                      label={label}
-                                      onClick={() =>
-                                        nav(
-                                          goToCatalogRequests("attribute-values", "value", {
-                                            attributeId: String(attr.id || ""),
-                                          })
-                                        )
-                                      }
-                                      title={`Request new values for ${attr.name}`}
-                                    />
-                                  </div>
-
-                                  <Select
-                                    value={valueId}
-                                    onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                    disabled={onboardingBlocked}
-                                    className={isBaseConflict || isFlashing ? "border-rose-300" : ""}
-                                  >
-                                    <option value="">Select…</option>
-                                    {(attr.values || []).map((v) => (
-                                      <option key={v.id} value={v.id}>
-                                        {v.name}
-                                      </option>
-                                    ))}
-                                  </Select>
-                                </div>
-                              );
-                            })}
-                          </div>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                            <div>
-                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">Qty</div>
-                              <Input
-                                value={row.availableQty}
-                                onChange={(e) => updateVariantQty(row.id, e.target.value)}
-                                inputMode="numeric"
-                                placeholder="e.g. 5"
-                                disabled={onboardingBlocked}
-                              />
-                            </div>
-
-                            <div>
-                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">
-                                Variant price (NGN)
-                              </div>
-                              <Input
-                                value={row.unitPrice}
-                                onChange={(e) => updateVariantPrice(row.id, e.target.value)}
-                                inputMode="decimal"
-                                placeholder={retailPrice ? `e.g. ${retailPrice}` : "e.g. 25000"}
-                                disabled={onboardingBlocked}
-                              />
-                              <div className="text-[11px] text-zinc-500 mt-1">
-                                Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
-                              </div>
-                            </div>
-                          </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Base price</span>
+                          <b className="text-zinc-900">
+                            {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                          </b>
                         </div>
 
-                        {(isDup || isBaseConflict) && (
-                          <div className="text-[12px] text-rose-700">
-                            {isDup ? "Duplicate variant combination." : null}
-                            {isDup && isBaseConflict ? " " : null}
-                            {isBaseConflict ? "This VariantCombo matches your BaseCombo (Attributes section)." : null}
+                        {!offersOnly && isLive && (
+                          <div className="text-[11px] text-zinc-600 mt-1">
+                            Active (approved): <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
                           </div>
                         )}
-                      </div>
-                    );
-                  })}
 
-                  {variantRows.length === 0 && (
-                    <div className="text-sm text-zinc-500">No variant rows found for this product.</div>
-                  )}
-                </div>
-              </Card>
+                        {!offersOnly &&
+                          isLive &&
+                          pendingProductPatch?.basePrice != null &&
+                          Number(pendingProductPatch.basePrice) !== Number(activeBasePriceForDisplay) && (
+                            <div className="text-[11px] text-amber-700 mt-1">
+                              Pending: <b>{ngn.format(Number(pendingProductPatch.basePrice ?? 0))}</b>
+                            </div>
+                          )}
 
-              <div className="hidden sm:block">
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">SKU</span>
+                          <b className="text-zinc-900 truncate max-w-[180px]">{sku.trim() ? sku.trim() : "—"}</b>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500 inline-flex items-center gap-2">
+                            <Package size={14} /> Stock
+                          </span>
+                          <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                            {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
+                          </b>
+                        </div>
+
+                        <div className="text-[11px] text-zinc-600">
+                          Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Images</span>
+                          <b className="text-zinc-900">
+                            {imagesCount}/{MAX_IMAGES}
+                          </b>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Variant rows</span>
+                          <b className="text-zinc-900">{variantRows.length}</b>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Selected product</span>
+                          <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Existing SKU</span>
+                          <b className="text-zinc-900 truncate max-w-[180px]">{sku || "—"}</b>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Base offer</span>
+                          <b className="text-zinc-900">
+                            {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                          </b>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Total qty</span>
+                          <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
+                        </div>
+
+                        <div className="text-[11px] text-zinc-600">
+                          Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500">Variant offers</span>
+                          <b className="text-zinc-900">{variantRows.length}</b>
+                        </div>
+
+                        {offersOnly && hasPendingBase && (
+                          <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-[11px]">
+                            Pending approval: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </Card>
+
                 <button
                   type="button"
                   disabled={submitDisabled}
@@ -3568,160 +3808,29 @@ export default function SupplierEditProduct() {
                   {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
                   {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
                 </button>
+
+                {offersOnly && detailQ.data && (
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <CheckCircle2 size={16} />
+                      Existing product mode
+                    </div>
+                    <div className="mt-2 text-xs">
+                      Core product details stay read-only here. You are only updating supplier-specific offer and stock.
+                    </div>
+                  </div>
+                )}
+
+                {onboardingBlocked && (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    Complete onboarding first to unlock editing on this page.
+                  </div>
+                )}
               </div>
             </div>
-
-            <div className="hidden lg:block space-y-4">
-              <Card title="Submission summary" subtitle="What will be sent to the backend">
-                <div className="text-sm text-zinc-700 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-500">Flow</span>
-                    <b className="text-zinc-900">
-                      {offersOnly
-                        ? "Attach existing product"
-                        : isPendingReview
-                          ? "Update pending submission"
-                          : isRejected
-                            ? "Resubmit for approval"
-                            : isReviewManaged
-                              ? "Review-managed product"
-                              : "Create new product"}
-                    </b>
-                  </div>
-
-                  {!offersOnly ? (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Title</span>
-                        <b className="text-zinc-900 truncate max-w-[180px]">{title.trim() ? title.trim() : "—"}</b>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Base price</span>
-                        <b className="text-zinc-900">
-                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
-                        </b>
-                      </div>
-
-                      {!offersOnly && isLive && (
-                        <div className="text-[11px] text-zinc-600 mt-1">
-                          Active (approved): <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
-                        </div>
-                      )}
-
-                      {!offersOnly &&
-                        isLive &&
-                        pendingProductPatch?.basePrice != null &&
-                        Number(pendingProductPatch.basePrice) !== Number(activeBasePriceForDisplay) && (
-                          <div className="text-[11px] text-amber-700 mt-1">
-                            Pending: <b>{ngn.format(Number(pendingProductPatch.basePrice ?? 0))}</b>
-                          </div>
-                        )}
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">SKU</span>
-                        <b className="text-zinc-900 truncate max-w-[180px]">{sku.trim() ? sku.trim() : "—"}</b>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500 inline-flex items-center gap-2">
-                          <Package size={14} /> Stock
-                        </span>
-                        <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
-                          {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
-                        </b>
-                      </div>
-
-                      <div className="text-[11px] text-zinc-600">
-                        Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Images</span>
-                        <b className="text-zinc-900">
-                          {imagesCount}/{MAX_IMAGES}
-                        </b>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Variant rows</span>
-                        <b className="text-zinc-900">{variantRows.length}</b>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Selected product</span>
-                        <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Existing SKU</span>
-                        <b className="text-zinc-900 truncate max-w-[180px]">{sku || "—"}</b>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Base offer</span>
-                        <b className="text-zinc-900">
-                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
-                        </b>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Total qty</span>
-                        <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
-                      </div>
-
-                      <div className="text-[11px] text-zinc-600">
-                        Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Variant offers</span>
-                        <b className="text-zinc-900">{variantRows.length}</b>
-                      </div>
-
-                      {offersOnly && hasPendingBase && (
-                        <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-[11px]">
-                          Pending approval: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              </Card>
-
-              <button
-                type="button"
-                disabled={submitDisabled}
-                onClick={doSave}
-                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
-              >
-                {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
-              </button>
-
-              {offersOnly && detailQ.data && (
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
-                  <div className="flex items-center gap-2 font-semibold">
-                    <CheckCircle2 size={16} />
-                    Existing product mode
-                  </div>
-                  <div className="mt-2 text-xs">
-                    Core product details stay read-only here. You are only updating supplier-specific offer and stock.
-                  </div>
-                </div>
-              )}
-
-              {onboardingBlocked && (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  Complete onboarding first to unlock editing on this page.
-                </div>
-              )}
-            </div>
           </div>
-        </div>
-      </SupplierLayout>
-    </SiteLayout>
-  );
+        </SupplierLayout>
+      </SiteLayout>
+    );
+
 }

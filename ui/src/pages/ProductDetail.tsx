@@ -140,12 +140,47 @@ const toNum = (n: unknown, d = 0) => {
   const v = Number(n);
   return Number.isFinite(v) ? v : d;
 };
+function estimateGatewayFeeFromSettings(args: {
+  amountNaira: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const amount = Number(args.amountNaira);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+  const percentFee = amount * (Number(args.gatewayFeePercent || 0) / 100);
+  const gross = percentFee + Number(args.gatewayFixedFeeNGN || 0);
+  const cap = Number(args.gatewayFeeCapNGN || 0);
 
-function applyMargin(supplierPrice: number, marginPercent: number) {
-  const m = Math.max(0, Number(marginPercent) || 0);
-  return round2(supplierPrice * (1 + m / 100));
+  if (cap > 0) return Math.min(gross, cap);
+  return gross;
+}
+
+function computeRetailPriceFromSupplierPrice(args: {
+  supplierPrice: number;
+  baseServiceFeeNGN: number;
+  commsUnitCostNGN: number;
+  gatewayFeePercent: number;
+  gatewayFixedFeeNGN: number;
+  gatewayFeeCapNGN: number;
+}) {
+  const supplierPrice = Number(args.supplierPrice);
+  if (!Number.isFinite(supplierPrice) || supplierPrice <= 0) return 0;
+
+  const gatewayFeeNGN = estimateGatewayFeeFromSettings({
+    amountNaira: supplierPrice,
+    gatewayFeePercent: args.gatewayFeePercent,
+    gatewayFixedFeeNGN: args.gatewayFixedFeeNGN,
+    gatewayFeeCapNGN: args.gatewayFeeCapNGN,
+  });
+
+  const extras =
+    Number(args.baseServiceFeeNGN || 0) +
+    Number(args.commsUnitCostNGN || 0) +
+    Number(gatewayFeeNGN || 0);
+
+  return Math.round(supplierPrice + extras);
 }
 
 function getApiOrigin(): string {
@@ -422,34 +457,21 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
 function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
   const out: Record<string, string> = {};
 
-  const explicit =
-    (Array.isArray(p?.attributeSelections) && p.attributeSelections) ||
-    (Array.isArray(p?.baseAttributeSelections) && p.baseAttributeSelections) ||
-    (Array.isArray(p?.defaultAttributes) && p.defaultAttributes) ||
-    (Array.isArray(p?.productAttributeSelections) && p.productAttributeSelections) ||
-    null;
+  // Only explicit "selected/default/base" sources.
+  // Do NOT fall back to generic option pools like attributes.options / attributeOptions.
+  const explicitSources = [
+    Array.isArray(p?.baseAttributeSelections) ? p.baseAttributeSelections : null,
+    Array.isArray(p?.defaultAttributes) ? p.defaultAttributes : null,
+    Array.isArray(p?.productAttributeSelections) ? p.productAttributeSelections : null,
+    Array.isArray(p?.attributeSelections) ? p.attributeSelections : null,
+  ].filter(Boolean) as any[][];
 
-  if (explicit) {
-    for (const row of explicit) {
+  for (const rows of explicitSources) {
+    for (const row of rows) {
       const a = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
       const v = String(row?.valueId ?? row?.value?.id ?? "").trim();
-      if (a && v && !out[a]) out[a] = v;
+      if (a && v) out[a] = v;
     }
-    if (Object.keys(out).length) return out;
-  }
-
-  const opts: any[] = Array.isArray(p?.attributes?.options)
-    ? p.attributes.options
-    : Array.isArray(p?.attributeOptions)
-      ? p.attributeOptions
-      : Array.isArray(p?.ProductAttributeOption)
-        ? p.ProductAttributeOption
-        : [];
-
-  for (const row of opts) {
-    const a = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
-    const v = String(row?.valueId ?? row?.value?.id ?? "").trim();
-    if (a && v && !out[a]) out[a] = v;
   }
 
   return out;
@@ -683,25 +705,36 @@ export default function ProductDetail() {
   }, []);
 
   /* ---------------- Settings ---------------- */
-  const settingsQ = useQuery<number>({
-    queryKey: ["settings", "public", "marginPercent"],
+  /* ---------------- Settings ---------------- */
+  const settingsQ = useQuery<{
+    baseServiceFeeNGN: number;
+    commsUnitCostNGN: number;
+    gatewayFeePercent: number;
+    gatewayFixedFeeNGN: number;
+    gatewayFeeCapNGN: number;
+  }>({
+    queryKey: ["settings", "public", "pricing"],
     staleTime: 60_000,
     retry: 0,
     queryFn: async () => {
       const { data } = await api.get("/api/settings/public");
-      const s = (data as any) ?? {};
+      const s = (data as any)?.data ?? data ?? {};
 
-      const v = Number.isFinite(Number(s?.marginPercent))
-        ? Number(s.marginPercent)
-        : Number.isFinite(Number(s?.pricingMarkupPercent))
-          ? Number(s.pricingMarkupPercent)
-          : NaN;
-
-      return Math.max(0, Number.isFinite(v) ? v : 0);
+      return {
+        baseServiceFeeNGN: Number(s?.baseServiceFeeNGN ?? 0) || 0,
+        commsUnitCostNGN: Number(s?.commsUnitCostNGN ?? 0) || 0,
+        gatewayFeePercent: Number(s?.gatewayFeePercent ?? 1.5) || 1.5,
+        gatewayFixedFeeNGN: Number(s?.gatewayFixedFeeNGN ?? 100) || 100,
+        gatewayFeeCapNGN: Number(s?.gatewayFeeCapNGN ?? 2000) || 2000,
+      };
     },
   });
 
-  const marginPercent = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
+  const baseServiceFeeNGN = Number(settingsQ.data?.baseServiceFeeNGN ?? 0) || 0;
+  const commsUnitCostNGN = Number(settingsQ.data?.commsUnitCostNGN ?? 0) || 0;
+  const gatewayFeePercent = Number(settingsQ.data?.gatewayFeePercent ?? 1.5) || 1.5;
+  const gatewayFixedFeeNGN = Number(settingsQ.data?.gatewayFixedFeeNGN ?? 100) || 100;
+  const gatewayFeeCapNGN = Number(settingsQ.data?.gatewayFeeCapNGN ?? 2000) || 2000;
 
   /* ---------------- Product ---------------- */
   const productQ = useQuery<ProductQueryData>({
@@ -737,21 +770,24 @@ export default function ProductDetail() {
         baseQtyBySupplier[o.supplierId] = (baseQtyBySupplier[o.supplierId] ?? 0) + qty;
       }
 
-      for (const o of offers) {
-        if (o.model !== "VARIANT") continue;
-        if (!o.variantId) continue;
-        if (!o.isActive || !o.inStock) continue;
+      for (const v of variants) {
+        const vid = String(v.id);
 
-        const baseQty = baseQtyBySupplier[o.supplierId] ?? 0;
-        const vQtyRaw = Number(o.availableQty ?? 0) || 0;
+        const variantOffers = offers.filter(
+          (o) =>
+            o.model === "VARIANT" &&
+            String(o.variantId ?? "") === vid &&
+            o.isActive &&
+            o.inStock &&
+            (o.availableQty ?? 0) > 0
+        );
 
-        let effective = 0;
-        if (vQtyRaw > 0 && baseQty > 0) effective = Math.min(baseQty, vQtyRaw);
-        else if (vQtyRaw > 0) effective = vQtyRaw;
-        else if (baseQty > 0) effective = baseQty;
-
-        if (effective <= 0) continue;
-        stockByVariantId[o.variantId] = (stockByVariantId[o.variantId] ?? 0) + effective;
+        if (variantOffers.length) {
+          stockByVariantId[vid] = variantOffers.reduce(
+            (acc, o) => acc + (o.availableQty ?? 0),
+            0
+          );
+        }
       }
 
       const variantStockQty = Object.values(stockByVariantId).reduce((acc, n) => acc + (n ?? 0), 0);
@@ -903,7 +939,11 @@ export default function ProductDetail() {
 
   const saveReviewMutation = useMutation({
     mutationFn: async ({ rating, comment }: { rating: number; comment: string }) => {
-      const body = { rating, comment: comment.trim() || null };
+      const body = {
+        rating: Math.max(1, Math.min(5, Math.round(Number(rating) || 0))),
+        comment: String(comment ?? "").trim(),
+      };
+
       const { data } = await api.post(`/api/products/${id}/reviews`, body, AXIOS_COOKIE_CFG);
       return (data as any)?.data ?? data ?? {};
     },
@@ -911,6 +951,9 @@ export default function ProductDetail() {
       queryClient.invalidateQueries({ queryKey: ["product-my-review", id] });
       queryClient.invalidateQueries({ queryKey: ["product-reviews-summary", id] });
       queryClient.invalidateQueries({ queryKey: ["product", id] });
+    },
+    onError: (err: any) => {
+      console.error("save review failed", err?.response?.status, err?.response?.data || err);
     },
   });
 
@@ -960,6 +1003,19 @@ export default function ProductDetail() {
     product?.bestSupplierRating?.ratingAvg,
     product?.bestSupplierRating?.ratingCount,
   ]);
+
+
+  const reviewBlockedMessage = React.useMemo(() => {
+    const err: any = saveReviewMutation.error;
+    const status = Number(err?.response?.status ?? 0);
+
+    if (status !== 403) return "";
+
+    return (
+      err?.response?.data?.error ||
+      "You’ll be able to review this product after you buy it and your order is delivered."
+    );
+  }, [saveReviewMutation.error]);
 
   /* ---------------- Variants / Axes ---------------- */
   const allVariants = product?.variants ?? [];
@@ -1047,19 +1103,51 @@ export default function ProductDetail() {
   const [selected, setSelected] = React.useState<Record<string, string>>({});
   const [qty, setQty] = React.useState<number>(1);
 
+  const hasExplicitBaseDefaults = React.useMemo(() => {
+    return Object.keys(baseDefaults).length > 0 &&
+      Object.values(baseDefaults).some((v) => !!String(v ?? "").trim());
+  }, [baseDefaults]);
+
   const computeBaseSelection = React.useCallback(() => {
     if (!axes.length) return {};
-    return { ...baseDefaults };
-  }, [axes.length, baseDefaults]);
+
+    // If base attrs were explicitly configured, use them.
+    if (hasExplicitBaseDefaults) {
+      const out: Record<string, string> = {};
+      for (const ax of axes) {
+        const v = String(baseDefaults?.[ax.id] ?? "").trim();
+        if (v) out[ax.id] = v;
+      }
+      return out;
+    }
+
+    // Base exists but no base attrs configured => NOTHING selected.
+    return {};
+  }, [axes, hasExplicitBaseDefaults, hasBaseOffer, baseDefaults]);
 
   const computeInitialSelection = React.useCallback(() => {
     if (!axes.length) return {};
 
+    // Base attributes configured → always apply
+    if (hasExplicitBaseDefaults) {
+      const out: Record<string, string> = {};
+      for (const ax of axes) {
+        const v = String(baseDefaults?.[ax.id] ?? "").trim();
+        if (v) out[ax.id] = v;
+      }
+      return out;
+    }
+
+    // Base exists but no defaults configured
+    if (hasBaseOffer) {
+      return {};
+    }
+
+    // No base → preview cheapest variant
     if (cheapestOverallOffer?.model === "VARIANT" && cheapestOverallOffer.variantId) {
       const v = allVariants.find((x) => x.id === cheapestOverallOffer.variantId);
       if (v) {
         const out: Record<string, string> = {};
-        for (const ax of axes) out[ax.id] = "";
         for (const o of v.options || []) {
           const aId = String(o.attributeId ?? "").trim();
           const vId = String(o.valueId ?? "").trim();
@@ -1069,8 +1157,15 @@ export default function ProductDetail() {
       }
     }
 
-    return { ...baseDefaults };
-  }, [axes, baseDefaults, cheapestOverallOffer, allVariants]);
+    return {};
+  }, [
+    axes,
+    hasExplicitBaseDefaults,
+    hasBaseOffer,
+    baseDefaults,
+    cheapestOverallOffer,
+    allVariants,
+  ]);
 
   React.useEffect(() => {
     if (!product || !axes.length) {
@@ -1158,87 +1253,248 @@ export default function ProductDetail() {
     const offers = product?.offers ?? [];
     const retailFallbackProduct = toNum(product?.retailPrice, 0);
 
-    if (axes.length > 0 && isAtBaseDefaults(selected)) {
-      const baseBest = pickBestOffer({ offers, kind: "BASE" });
-      const chosenSupplier = baseStockQty > 0 ? baseBest?.unitPrice ?? null : null;
+    const hasFullSelection =
+      axes.length > 0 &&
+      axisIds.length > 0 &&
+      axisIds.every((aid) => !!String(selected?.[aid] ?? "").trim());
 
-      const retailFromSupplier = chosenSupplier != null ? applyMargin(chosenSupplier, marginPercent) : null;
+    const baseBest = pickBestOffer({ offers, kind: "BASE" });
+    const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
+
+    // 1) VALID MATCHED VARIANT ALWAYS WINS
+    if (matchedVariant && hasFullSelection) {
+      const bestVariant = pickBestOffer({
+        offers,
+        kind: "VARIANT",
+        variantId: matchedVariant.id,
+        sellableVariantIds,
+      });
+
+      const supplierVariantPrice =
+        bestVariant?.unitPrice != null && Number(bestVariant.unitPrice) > 0
+          ? Number(bestVariant.unitPrice)
+          : null;
+
+      // 3) PARTIAL / NO MATCH
+      // If base offer exists, base price should always win until
+      // a full variant combination is selected.
+
+      if (baseBest) {
+        const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+          supplierPrice: Number(baseBest.unitPrice ?? 0),
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        });
+
+        return {
+          mode: "BASE" as const,
+          supplierPrice: baseBest.unitPrice ?? null,
+          supplierId: baseBest.supplierId ?? product?.supplier?.id ?? null,
+          supplierName: baseBest.supplierName ?? product?.supplier?.name ?? null,
+          offerId: baseBest.offerId ?? null,
+          final: retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+          matchedVariant: null as VariantWire | null,
+          exactMatch: false,
+          exactSellable: false,
+          source: "BASE_OFFER",
+        };
+      }
+
+      // Only fall back to variant when NO base offer exists
+      const retailFromSupplier =
+        bestAny?.unitPrice != null
+          ? computeRetailPriceFromSupplierPrice({
+            supplierPrice: bestAny.unitPrice,
+            baseServiceFeeNGN,
+            commsUnitCostNGN,
+            gatewayFeePercent,
+            gatewayFixedFeeNGN,
+            gatewayFeeCapNGN,
+          })
+          : null;
+
+      return {
+        mode: "VARIANT" as const,
+        supplierPrice: bestAny?.unitPrice ?? null,
+        supplierId: bestAny?.supplierId ?? null,
+        supplierName: bestAny?.supplierName ?? null,
+        offerId: bestAny?.offerId ?? null,
+        final:
+          retailFromSupplier != null && retailFromSupplier > 0
+            ? retailFromSupplier
+            : retailFallbackProduct,
+        matchedVariant: null as VariantWire | null,
+        exactMatch: !!matchedVariant,
+        exactSellable,
+        source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
+      };
+    }
+
+    // 2) TRUE BASE MODE
+    if (axes.length > 0 && isAtBaseDefaults(selected)) {
+      // CASE A:
+      // Base attributes are NOT configured.
+      // Reset-to-base or base view should show base retailPrice,
+      // not auto-pick a variant.
+      if (!hasExplicitBaseDefaults) {
+        if (baseBest) {
+          const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+            supplierPrice: Number(baseBest.unitPrice ?? 0),
+            baseServiceFeeNGN,
+            commsUnitCostNGN,
+            gatewayFeePercent,
+            gatewayFixedFeeNGN,
+            gatewayFeeCapNGN,
+          });
+
+          return {
+            mode: "BASE" as const,
+            supplierPrice: baseBest.unitPrice ?? null,
+            supplierId: baseBest.supplierId ?? product?.supplier?.id ?? null,
+            supplierName: baseBest.supplierName ?? product?.supplier?.name ?? null,
+            offerId: baseBest.offerId ?? null,
+            final: retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+            matchedVariant: null as VariantWire | null,
+            exactMatch: false,
+            exactSellable: false,
+            source: "BASE_OFFER",
+          };
+        }
+
+        if (bestAny) {
+          const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+            supplierPrice: Number(bestAny.unitPrice),
+            baseServiceFeeNGN,
+            commsUnitCostNGN,
+            gatewayFeePercent,
+            gatewayFixedFeeNGN,
+            gatewayFeeCapNGN,
+          });
+
+          return {
+            mode: "VARIANT" as const,
+            supplierPrice: bestAny.unitPrice,
+            supplierId: bestAny.supplierId ?? null,
+            supplierName: bestAny.supplierName ?? null,
+            offerId: bestAny.offerId ?? null,
+            final: retailFromSupplier,
+            matchedVariant: null as VariantWire | null,
+            exactMatch: false,
+            exactSellable: false,
+            source: "CHEAPEST_OFFER",
+          };
+        }
+
+        return {
+          mode: "BASE" as const,
+          supplierPrice: null,
+          supplierId: product?.supplier?.id ?? null,
+          supplierName: product?.supplier?.name ?? null,
+          offerId: null,
+          final: retailFallbackProduct,
+          matchedVariant: null as VariantWire | null,
+          exactMatch: false,
+          exactSellable: false,
+          source: "PRODUCT_RETAIL",
+        };
+      }
+
+      // CASE B:
+      // Base attributes ARE configured, so base state should use those.
+      if (baseBest) {
+        const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+          supplierPrice: Number(baseBest.unitPrice ?? 0),
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        });
+
+        return {
+          mode: "BASE" as const,
+          supplierPrice: baseBest.unitPrice ?? null,
+          final: retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+          supplierId: baseBest.supplierId ?? product?.supplier?.id ?? null,
+          supplierName: baseBest.supplierName ?? product?.supplier?.name ?? null,
+          offerId: baseBest.offerId ?? null,
+          matchedVariant: null as VariantWire | null,
+          exactMatch: false,
+          exactSellable: false,
+          source: "BASE_OFFER",
+        };
+      }
+
+      // Base defaults exist, but there is no active base offer:
+      // only now fall back to cheapest sellable variant.
+      if (bestAny) {
+        const retailFromSupplier = computeRetailPriceFromSupplierPrice({
+          supplierPrice: Number(bestAny.unitPrice),
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        });
+
+        return {
+          mode: "VARIANT" as const,
+          supplierPrice: bestAny.unitPrice,
+          supplierId: bestAny.supplierId ?? null,
+          supplierName: bestAny.supplierName ?? null,
+          offerId: bestAny.offerId ?? null,
+          final: retailFromSupplier,
+          matchedVariant: null as VariantWire | null,
+          exactMatch: false,
+          exactSellable: false,
+          source: "CHEAPEST_OFFER",
+        };
+      }
 
       return {
         mode: "BASE" as const,
-        supplierPrice: chosenSupplier,
-        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+        supplierPrice: null,
+        final: retailFallbackProduct,
         supplierId: product?.supplier?.id ?? null,
         supplierName: product?.supplier?.name ?? null,
-        offerId: baseBest?.offerId ?? null,
+        offerId: null,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
         exactSellable: false,
-        source: chosenSupplier != null ? "BASE_OFFER" : "PRODUCT_RETAIL",
+        source: "PRODUCT_RETAIL",
       };
     }
 
-    const pickedPairs = selectionPairsOf(selected);
-    if (!pickedPairs.length) {
-      const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
-      const retailFromSupplier = bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
-
-      return {
-        mode: "VARIANT" as const,
-        supplierPrice: bestAny?.unitPrice ?? null,
-        supplierId: bestAny?.supplierId ?? null,
-        supplierName: bestAny?.supplierName ?? null,
-        offerId: bestAny?.offerId ?? null,
-        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
-        matchedVariant: null as VariantWire | null,
-        exactMatch: false,
-        exactSellable: false,
-        source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
-      };
-    }
-
-    if (!matchedVariant) {
-      const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
-      const retailFromSupplier = bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
-
-      return {
-        mode: "VARIANT" as const,
-        supplierPrice: bestAny?.unitPrice ?? null,
-        supplierId: bestAny?.supplierId ?? null,
-        supplierName: bestAny?.supplierName ?? null,
-        offerId: bestAny?.offerId ?? null,
-        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
-        matchedVariant: null as VariantWire | null,
-        exactMatch: false,
-        exactSellable: false,
-        source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
-      };
-    }
-
-    const bestVariant = pickBestOffer({
-      offers,
-      kind: "VARIANT",
-      variantId: matchedVariant.id,
-      sellableVariantIds,
-    });
-
-    const chosen = bestVariant;
-    const retailFromSupplier = chosen?.unitPrice != null ? applyMargin(chosen.unitPrice, marginPercent) : null;
-
-    const fallbackVariantRetail = toNum(matchedVariant.retailPrice, 0);
-    const fallbackRetail = fallbackVariantRetail > 0 ? fallbackVariantRetail : retailFallbackProduct;
+    // 3) PARTIAL / NO MATCH => CHEAPEST AVAILABLE PREVIEW PRICE
+    const retailFromSupplier =
+      bestAny?.unitPrice != null
+        ? computeRetailPriceFromSupplierPrice({
+          supplierPrice: bestAny.unitPrice,
+          baseServiceFeeNGN,
+          commsUnitCostNGN,
+          gatewayFeePercent,
+          gatewayFixedFeeNGN,
+          gatewayFeeCapNGN,
+        })
+        : null;
 
     return {
       mode: "VARIANT" as const,
-      supplierPrice: chosen?.unitPrice ?? null,
-      supplierId: chosen?.supplierId ?? product?.supplier?.id ?? null,
-      supplierName: chosen?.supplierName ?? product?.supplier?.name ?? null,
-      offerId: chosen?.offerId ?? null,
-      final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
-      matchedVariant,
-      exactMatch: true,
+      supplierPrice: bestAny?.unitPrice ?? null,
+      supplierId: bestAny?.supplierId ?? null,
+      supplierName: bestAny?.supplierName ?? null,
+      offerId: bestAny?.offerId ?? null,
+      final:
+        retailFromSupplier != null && retailFromSupplier > 0
+          ? retailFromSupplier
+          : retailFallbackProduct,
+      matchedVariant: null as VariantWire | null,
+      exactMatch: !!matchedVariant,
       exactSellable,
-      source: bestVariant != null ? "VARIANT_OFFER" : "RETAIL_FALLBACK",
+      source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
     };
   }, [
     product?.offers,
@@ -1246,32 +1502,98 @@ export default function ProductDetail() {
     product?.supplier?.id,
     product?.supplier?.name,
     axes.length,
+    axisIds,
     selected,
     isAtBaseDefaults,
     matchedVariant,
     exactSellable,
     sellableVariantIds,
-    marginPercent,
-    baseStockQty,
+    hasExplicitBaseDefaults,
+    baseServiceFeeNGN,
+    commsUnitCostNGN,
+    gatewayFeePercent,
+    gatewayFixedFeeNGN,
+    gatewayFeeCapNGN,
   ]);
 
   const purchaseMeta = React.useMemo(() => {
     const hasVariantAxes = axes.length > 0;
+    const hasAnySelection = axisIds.some((aid) => !!String(selected?.[aid] ?? "").trim());
+    const hasFullSelection =
+      hasVariantAxes &&
+      axisIds.length > 0 &&
+      axisIds.every((aid) => !!String(selected?.[aid] ?? "").trim());
 
     if (!hasVariantAxes) {
-      if (canBuyBase) return { disableAddToCart: false, helperNote: null, mode: "BASE" as const, variantId: null as string | null };
-      return { disableAddToCart: true, helperNote: "Out of stock.", mode: "BASE" as const, variantId: null as string | null };
-    }
+      if (canBuyBase) {
+        return {
+          disableAddToCart: false,
+          helperNote: null,
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
+      }
 
-    if (axisIds.every((aid) => !String(selected?.[aid] ?? "").trim())) {
       return {
         disableAddToCart: true,
-        helperNote: "Choose base option, or select a valid variant combination.",
-        mode: "VARIANT" as const,
+        helperNote: "Out of stock.",
+        mode: "BASE" as const,
         variantId: null as string | null,
       };
     }
 
+    // VALID MATCHED VARIANT ALWAYS WINS
+    if (matchedVariantId && hasFullSelection) {
+      const stock = stockByVariantId[matchedVariantId] ?? 0;
+
+      if (stock > 0) {
+        return {
+          disableAddToCart: false,
+          helperNote: null,
+          mode: "VARIANT" as const,
+          variantId: matchedVariantId,
+        };
+      }
+
+      return {
+        disableAddToCart: true,
+        helperNote:
+          "This variant combo is out of stock (no active supplier offer). Try another combination.",
+        mode: "VARIANT" as const,
+        variantId: matchedVariantId,
+      };
+    }
+
+    // No selections yet
+    if (!hasAnySelection) {
+      if (canBuyBase) {
+        return {
+          disableAddToCart: false,
+          helperNote: "Base product selected. Choose options to buy a specific variant.",
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
+      }
+
+      if (variantStockQty > 0) {
+        return {
+          disableAddToCart: true,
+          helperNote:
+            "This product is available as variants only — please select options.",
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
+      }
+
+      return {
+        disableAddToCart: true,
+        helperNote: "Out of stock.",
+        mode: "BASE" as const,
+        variantId: null as string | null,
+      };
+    }
+
+    // Explicit base/default state
     if (isAtBaseDefaults(selected)) {
       if (canBuyBase) {
         return {
@@ -1281,18 +1603,27 @@ export default function ProductDetail() {
           variantId: null as string | null,
         };
       }
+
       if (variantStockQty > 0) {
         return {
           disableAddToCart: true,
-          helperNote: "Base offer is not available. This product is available as variants only — please select options.",
+          helperNote:
+            "Base offer is not available. This product is available as variants only — please select options.",
           mode: "BASE" as const,
           variantId: null as string | null,
         };
       }
-      return { disableAddToCart: true, helperNote: "Out of stock.", mode: "BASE" as const, variantId: null as string | null };
+
+      return {
+        disableAddToCart: true,
+        helperNote: "Out of stock.",
+        mode: "BASE" as const,
+        variantId: null as string | null,
+      };
     }
 
-    if (!matchedVariantId) {
+    // Full selection but invalid combo
+    if (hasFullSelection && !matchedVariantId) {
       return {
         disableAddToCart: true,
         helperNote: "This combination is not available. Try a different set of options.",
@@ -1301,18 +1632,23 @@ export default function ProductDetail() {
       };
     }
 
-    const stock = stockByVariantId[matchedVariantId] ?? 0;
-    if (stock <= 0) {
-      return {
-        disableAddToCart: true,
-        helperNote: "This variant combo is out of stock (no active supplier offer). Try another combination.",
-        mode: "VARIANT" as const,
-        variantId: matchedVariantId,
-      };
-    }
-
-    return { disableAddToCart: false, helperNote: null, mode: "VARIANT" as const, variantId: matchedVariantId };
-  }, [axes.length, axisIds, canBuyBase, selected, isAtBaseDefaults, variantStockQty, matchedVariantId, stockByVariantId]);
+    // Partial selection
+    return {
+      disableAddToCart: true,
+      helperNote: "Select the remaining options to choose a valid variant combination.",
+      mode: "VARIANT" as const,
+      variantId: null as string | null,
+    };
+  }, [
+    axes.length,
+    axisIds,
+    canBuyBase,
+    selected,
+    isAtBaseDefaults,
+    variantStockQty,
+    matchedVariantId,
+    stockByVariantId,
+  ]);
 
   const selectedCount = React.useMemo(() => {
     return axisIds.filter((aid) => !!String(selected?.[aid] ?? "").trim()).length;
@@ -1320,13 +1656,14 @@ export default function ProductDetail() {
 
   const allAxesSelected = axes.length > 0 && selectedCount === axisIds.length;
 
-  const showInvalidCombo = !!axes.length && !isAtBaseDefaults(selected) && allAxesSelected && !matchedVariantId;
+  const showInvalidCombo =
+    !!axes.length &&
+    allAxesSelected &&
+    !matchedVariantId;
+
+  const shouldWarnInvalidCombo = showInvalidCombo && !canBuyBase;
 
   /* ---------------- Images ---------------- */
-  function isUrlish(s?: string) {
-    return !!resolveImageUrl(s);
-  }
-
   const images = React.useMemo(() => {
     const variantImgs =
       matchedVariant?.imagesJson?.map((u) => resolveImageUrl(u)).filter(Boolean as any) ?? [];
@@ -1382,10 +1719,11 @@ export default function ProductDetail() {
 
     if (!purchaseMeta.disableAddToCart && qtyNow > 0) {
       return {
-        text: `In stock${Number.isFinite(qtyNow) ? ` • ${qtyNow}` : ""}`,
-        cls: "bg-emerald-600/10 text-emerald-700 border-emerald-600/20",
+        text: `In stock • ${qtyNow}`,
+        cls: "bg-purple-600 text-white border-purple-700 shadow-md",
       };
     }
+
 
     if (productAvailabilityMode === "NONE") {
       return { text: "Out of stock", cls: "bg-rose-600/10 text-rose-700 border-rose-600/20" };
@@ -1688,12 +2026,20 @@ export default function ProductDetail() {
             const isAvailable = partialSelectionMatchesAnySellable(candidate);
             const disabled = !active && hasAnyPicked && !isAvailable;
 
-            const availableCls =
-              "border-emerald-300/80 bg-emerald-50/30 hover:bg-emerald-50/60 text-zinc-900";
-            const unavailableCls =
-              "opacity-45 border-zinc-200 bg-zinc-50 text-zinc-500 cursor-not-allowed";
-            const selectedOkCls = "ring-2 ring-fuchsia-500 border-fuchsia-500";
-            const selectedWarnCls = "ring-2 ring-amber-400 border-amber-400";
+            const baseCls =
+              "px-2.5 py-1.5 rounded-xl text-sm md:text-base transition flex items-center gap-2 bg-white";
+
+            const availableIdleCls =
+              "border-transparent text-zinc-900 hover:bg-zinc-50 shadow-none";
+
+            const disabledCls =
+              "border border-zinc-200 bg-zinc-50 text-zinc-400 cursor-not-allowed opacity-60";
+
+            const selectedOkCls =
+              "border border-fuchsia-500 ring-2 ring-fuchsia-500 text-zinc-900";
+
+            const selectedWarnCls =
+              "border border-amber-400 ring-2 ring-amber-400 text-zinc-900";
 
             return (
               <button
@@ -1705,23 +2051,19 @@ export default function ProductDetail() {
                   onChange(active ? "" : opt.id);
                 }}
                 className={[
-                  "px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2",
-                  silverBorder,
-                  silverShadowSm,
+                  baseCls,
                   active
-                    ? showInvalidCombo
+                    ? shouldWarnInvalidCombo
                       ? selectedWarnCls
                       : selectedOkCls
                     : disabled
-                      ? unavailableCls
-                      : isAvailable
-                        ? "border-dashed " + availableCls
-                        : "bg-white hover:bg-zinc-50",
+                      ? disabledCls
+                      : availableIdleCls,
                 ].join(" ")}
                 title={disabled ? "Not available with current selections" : ""}
               >
                 {!active && !disabled && isAvailable && (
-                  <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                  <span className="inline-block size-2 rounded-full bg-emerald-500" />
                 )}
                 <span>{opt.name}</span>
               </button>
@@ -1743,15 +2085,24 @@ export default function ProductDetail() {
           {axis.values.map((opt) => {
             const active = value === opt.id;
             const candidate = { ...selected, [axis.id]: opt.id };
+            const hasAnyPicked = axisIds.some((aid) => !!String(selected?.[aid] ?? "").trim());
             const isAvailable = partialSelectionMatchesAnySellable(candidate);
-            const disabled = !active && !isAvailable;
+            const disabled = !active && hasAnyPicked && !isAvailable;
 
-            const availableCls =
-              "border-emerald-300/80 bg-emerald-50/30 hover:bg-emerald-50/60 text-zinc-900";
-            const unavailableCls =
-              "opacity-45 border-zinc-200 bg-zinc-50 text-zinc-500 cursor-not-allowed";
-            const selectedOkCls = "ring-2 ring-fuchsia-500 border-fuchsia-500";
-            const selectedWarnCls = "ring-2 ring-amber-400 border-amber-400";
+            const baseCls =
+              "w-full text-left px-2.5 py-1.5 rounded-xl text-sm md:text-base transition flex items-center gap-2 bg-white";
+
+            const availableIdleCls =
+              "border-transparent text-zinc-900 hover:bg-zinc-50 shadow-none";
+
+            const disabledCls =
+              "border border-zinc-200 bg-zinc-50 text-zinc-400 cursor-not-allowed opacity-60";
+
+            const selectedOkCls =
+              "border border-fuchsia-500 ring-2 ring-fuchsia-500 text-zinc-900";
+
+            const selectedWarnCls =
+              "border border-amber-400 ring-2 ring-amber-400 text-zinc-900";
 
             return (
               <button
@@ -1763,21 +2114,19 @@ export default function ProductDetail() {
                   onChange(active ? "" : opt.id);
                 }}
                 className={[
-                  "px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2",
-                  silverBorder,
-                  silverShadowSm,
+                  baseCls,
                   active
                     ? showInvalidCombo
                       ? selectedWarnCls
                       : selectedOkCls
                     : disabled
-                      ? unavailableCls
-                      : "border-dashed " + availableCls,
+                      ? disabledCls
+                      : availableIdleCls,
                 ].join(" ")}
                 title={disabled ? "Not available with current selections" : active ? "Click again to deselect" : ""}
               >
-                {!active && !disabled && (
-                  <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                {!active && !disabled && isAvailable && (
+                  <span className="inline-block size-2 rounded-full bg-emerald-500" />
                 )}
                 <span>{opt.name}</span>
               </button>
@@ -1878,507 +2227,533 @@ export default function ProductDetail() {
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-zinc-50 to-white">
-        {/* Top bar */}
-        <div className="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
-          <div className="flex items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={goBack}
-
-              className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-            >
-              ← Back
-            </button>
-
-            <div className="text-xs text-zinc-500">
-              {product.brand?.name ? (
-                <span className="truncate max-w-[60vw] inline-block">
-                  {product.brand.name} / {product.title}
-                </span>
-              ) : (
-                <span className="truncate max-w-[60vw] inline-block">{product.title}</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* MAIN GRID */}
-        <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
-          {/* LEFT */}
-          <div className="space-y-3 md:space-y-5">
-            <div className="relative mx-auto w-full sm:max-w-[92%]">
-              <div
-                ref={imageStageRef}
-                className={`relative rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
-                style={{ aspectRatio: "1 / 1" }}
-                onMouseEnter={() => showMainImg && setIsZooming(true)}
-                onMouseLeave={() => setIsZooming(false)}
-                onMouseMove={handleZoomMove}
-                onTouchStart={() => showMainImg && setIsZooming(true)}
-                onTouchMove={handleTouchZoomMove}
-                onTouchEnd={() => setIsZooming(false)}
+        <div>
+          {/* Top bar */}
+          <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pt-3 md:pt-6">
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={goBack}
+                className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
               >
-                {showMainImg ? (
-                  <>
-                    <img
-                      src={currentSrc}
-                      alt={product.title || "Product image"}
-                      className="w-full h-full object-cover"
-                      loading="eager"
-                      onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
-                    />
+                ←
+              </button>
 
-                    {isZooming && (
-                      <div
-                        className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
-                        style={{
-                          left: `${zoomPos.x}%`,
-                          top: `${zoomPos.y}%`,
-                          transform: "translate(-50%, -50%)",
-                        }}
-                      />
-                    )}
-
-                    {isZooming && (
-                      <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
-                        <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
-                          <div
-                            className="h-full w-full"
-                            style={{
-                              backgroundImage: `url(${currentSrc})`,
-                              backgroundRepeat: "no-repeat",
-                              backgroundSize: "416%",
-                              backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white">
-                      Zoom
-                    </div>
-                  </>
+              <div className="text-xs text-zinc-500">
+                {product.brand?.name ? (
+                  <span className="truncate max-w-[68vw] inline-block">
+                    {product.brand.name} / {product.title}
+                  </span>
                 ) : (
-                  <NoImageBox className="bg-zinc-50" />
+                  <span className="truncate max-w-[68vw] inline-block">{product.title}</span>
                 )}
               </div>
+            </div>
+          </div>
 
-              <span
-                className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
-              >
-                {availabilityBadge.text}
-              </span>
+          {/* MAIN GRID */}
+          <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 py-3 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 max-[360px]:gap-4">
+            {/* LEFT */}
+            <div className="space-y-3 md:space-y-5">
+              <div className="relative w-full">
+                <div
+                  ref={imageStageRef}
+                  className={`relative rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
+                  style={{ aspectRatio: "1 / 1" }}
+                  onMouseEnter={() => showMainImg && setIsZooming(true)}
+                  onMouseLeave={() => setIsZooming(false)}
+                  onMouseMove={handleZoomMove}
+                  onTouchStart={() => showMainImg && setIsZooming(true)}
+                  onTouchMove={handleTouchZoomMove}
+                  onTouchEnd={() => setIsZooming(false)}
+                >
+                  {showMainImg ? (
+                    <>
+                      <img
+                        src={currentSrc}
+                        alt={product.title || "Product image"}
+                        className="w-full h-full object-cover"
+                        loading="eager"
+                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
+                      />
+
+                      {isZooming && (
+                        <div
+                          className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
+                          style={{
+                            left: `${zoomPos.x}%`,
+                            top: `${zoomPos.y}%`,
+                            transform: "translate(-50%, -50%)",
+                          }}
+                        />
+                      )}
+
+                      {isZooming && (
+                        <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
+                          <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
+                            <div
+                              className="h-full w-full"
+                              style={{
+                                backgroundImage: `url(${currentSrc})`,
+                                backgroundRepeat: "no-repeat",
+                                backgroundSize: "416%",
+                                backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white">
+                        Zoom
+                      </div>
+                    </>
+                  ) : (
+                    <NoImageBox className="bg-zinc-50" />
+                  )}
+                </div>
+
+                <span
+                  className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
+                >
+                  {availabilityBadge.text}
+                </span>
+
+                {images.length > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                      className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
+                      aria-label="Previous image"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+                      className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
+                      aria-label="Next image"
+                    >
+                      ›
+                    </button>
+                  </>
+                )}
+              </div>
 
               {images.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                    className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
-                    aria-label="Previous image"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                    className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
-                    aria-label="Next image"
-                  >
-                    ›
-                  </button>
-                </>
+                <div className="grid grid-cols-5 gap-2">
+                  {images.map((src, idx) => {
+                    const broken = !!brokenByIndex[idx];
+                    if (!src || broken) return null;
+
+                    const active = idx === mainIndex;
+                    return (
+                      <button
+                        key={`${src}-${idx}`}
+                        type="button"
+                        onClick={() => setMainIndex(idx)}
+                        className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder
+                          } ${silverShadowSm}`}
+                        style={{ aspectRatio: "1 / 1" }}
+                        aria-label={`Show image ${idx + 1}`}
+                      >
+                        <img
+                          src={src}
+                          alt=""
+                          aria-hidden="true"
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                          onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
               )}
-            </div>
 
-            {images.length > 1 && (
-              <div className="grid grid-cols-5 gap-2 sm:gap-3">
-                {images.map((src, idx) => {
-                  const broken = !!brokenByIndex[idx];
-                  if (!src || broken) return null;
-
-                  const active = idx === mainIndex;
-                  return (
-                    <button
-                      key={`${src}-${idx}`}
-                      type="button"
-                      onClick={() => setMainIndex(idx)}
-                      className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder
-                        } ${silverShadowSm}`}
-                      style={{ aspectRatio: "1 / 1" }}
-                      aria-label={`Show image ${idx + 1}`}
-                    >
-                      <img
-                        src={src}
-                        alt=""
-                        aria-hidden="true"
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
-                      />
-                    </button>
-                  );
-                })}
+              {/* Description on desktop */}
+              <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
+                <h2 className="text-base font-semibold mb-1">Description</h2>
+                <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
               </div>
-            )}
-
-            {/* Description on desktop */}
-            <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
-              <h2 className="text-base font-semibold mb-1">Description</h2>
-              <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
             </div>
-          </div>
 
-          {/* RIGHT */}
-          <div className="space-y-4 md:space-y-5">
-            <div className={`${cardCls} p-4 md:p-5`}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">{product.title}</h1>
+            {/* RIGHT */}
+            <div className="space-y-3 md:space-y-5">
+              <div className={`${cardCls} p-3 sm:p-4 md:p-5`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">{product.title}</h1>
 
-                  {product.brand?.name ? (
-                    <div className="mt-1 text-sm text-zinc-600">
-                      Brand: <span className="font-medium">{product.brand.name}</span>
-                    </div>
-                  ) : null}
-
-                  <div className="mt-2 text-2xl md:text-3xl font-bold text-zinc-900">{priceLabel}</div>
-
-                  <div className="mt-1 text-xs text-zinc-500">
-                    {computed.source === "VARIANT_OFFER"
-                      ? "Price from variant offer"
-                      : computed.source === "BASE_OFFER"
-                        ? "Price from base offer"
-                        : computed.source === "CHEAPEST_OFFER"
-                          ? "Price from cheapest available offer"
-                          : "Retail price"}
-                  </div>
-
-                  {ratingSummary.avg != null && (
-                    <div className="mt-2 flex items-center gap-2 text-sm text-zinc-700">
-                      <div className="flex items-center gap-0.5 text-amber-500 text-base">
-                        {Array.from({ length: 5 }).map((_, i) => (
-                          <span key={i}>{i < Math.round(ratingSummary.avg ?? 0) ? "★" : "☆"}</span>
-                        ))}
+                    {product.brand?.name ? (
+                      <div className="mt-1 text-sm text-zinc-600">
+                        Brand: <span className="font-medium">{product.brand.name}</span>
                       </div>
-                      <span className="font-semibold">{ratingSummary.avg.toFixed(1)}</span>
-                      {ratingSummary.count != null && (
-                        <span className="text-xs text-zinc-500">
-                          ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
-                        </span>
-                      )}
+                    ) : null}
+
+                    <div className="mt-2 text-2xl md:text-3xl font-bold text-zinc-900">{priceLabel}</div>
+
+                    <div className="mt-1 text-xs text-zinc-500">
+                      {computed.source === "VARIANT_OFFER"
+                        ? "Price from variant offer"
+                        : computed.source === "BASE_OFFER"
+                          ? "Price from base offer"
+                          : computed.source === "CHEAPEST_OFFER"
+                            ? "Price from cheapest available offer"
+                            : "Retail price"}
                     </div>
-                  )}
-                </div>
 
-                <div className="text-right">
-                  <div className="text-xs text-zinc-500">Total stock</div>
-                  <div className="text-sm font-semibold">{Math.max(0, totalStockQty)}</div>
-                </div>
-              </div>
+                    {ratingSummary.avg != null && (
+                      <div className="mt-2 flex items-center gap-2 text-sm text-zinc-700">
+                        <div className="flex items-center gap-0.5 text-amber-500 text-base">
+                          {Array.from({ length: 5 }).map((_, i) => (
+                            <span key={i}>{i < Math.round(ratingSummary.avg ?? 0) ? "★" : "☆"}</span>
+                          ))}
+                        </div>
+                        <span className="font-semibold">{ratingSummary.avg.toFixed(1)}</span>
+                        {ratingSummary.count != null && (
+                          <span className="text-xs text-zinc-500">
+                            ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
-              {purchaseMeta.helperNote ? (
-                <div className="mt-3 text-sm text-zinc-700">
-                  <span className="inline-flex rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
-                    {purchaseMeta.helperNote}
-                  </span>
-                </div>
-              ) : null}
-
-              {axes.length > 0 && (
-                <div className="mt-4 space-y-4">
-                  {axes.map((axis) => (
-                    <div key={axis.id} className="space-y-2">
-                      <div className="text-sm font-semibold text-zinc-800">{axis.name}</div>
-                      <VariantAxisPicker
-                        axis={axis}
-                        value={String(selected?.[axis.id] ?? "")}
-                        onChange={(next) => setSelected((prev) => ({ ...prev, [axis.id]: next }))}
-                      />
-                    </div>
-                  ))}
-                  {showInvalidCombo && (
-                    <div className="text-xs text-zinc-600">
-                      Tip: <span className="font-medium">dashed green</span> options can form an available combo.
-                    </div>
-                  )}
-
-                  {showInvalidCombo && (
-                    <VariantWarning message="This combination is not available. Try a different set of options." />
-                  )}
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelected(computeBaseSelection())}
-                      className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                    >
-                      Reset to base
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setSelected({})}
-                      className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                    >
-                      Clear selections
-                    </button>
+                  <div className="text-right">
+                    <div className="text-xs text-zinc-500">Total stock</div>
+                    <div className="text-sm font-semibold">{Math.max(0, totalStockQty)}</div>
                   </div>
                 </div>
-              )}
 
-              <div className="flex items-center gap-2 mt-4">
-                <span className="text-sm text-zinc-700">Qty</span>
+                {purchaseMeta.helperNote ? (
+                  <div className="mt-3 text-sm text-zinc-700">
+                    <span className="inline-flex rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
+                      {purchaseMeta.helperNote}
+                    </span>
+                  </div>
+                ) : null}
 
-                <button
-                  type="button"
-                  onClick={() => setQty((q) => Math.max(1, q - 1))}
-                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                >
-                  −
-                </button>
+                {axes.length > 0 && (
+                  <div className="mt-4 space-y-4">
+                    {axes.map((axis) => (
+                      <div key={axis.id} className="space-y-2">
+                        <div className="text-sm font-semibold text-zinc-800">{axis.name}</div>
+                        <VariantAxisPicker
+                          axis={axis}
+                          value={String(selected?.[axis.id] ?? "")}
+                          onChange={(next) => setSelected((prev) => ({ ...prev, [axis.id]: next }))}
+                        />
+                      </div>
+                    ))}
+                    {shouldWarnInvalidCombo && (
+                      <div className="text-xs text-zinc-600">
+                        Tip: <span className="font-medium">green dot</span> means the option can form an available combo.
+                      </div>
+                    )}
 
-                <input
-                  type="number"
-                  min={1}
-                  max={maxQty}
-                  value={qty === 0 ? "" : qty}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === "") {
-                      setQty(0);
-                      return;
-                    }
-                    const num = Number(v);
-                    if (!Number.isFinite(num)) return;
-                    const clamped = Math.min(maxQty, Math.max(1, num));
-                    setQty(clamped);
-                  }}
-                  onBlur={() => {
-                    if (!qty || qty < 1) setQty(1);
-                  }}
-                  className={`w-16 text-center rounded-xl border px-2 py-2 text-sm ${silverBorder}`}
-                />
-
-                <button
-                  type="button"
-                  onClick={() => setQty((q) => Math.min(maxQty, q + 1))}
-                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                >
-                  +
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isAdding) return;
-                    setQty((prev) => {
-                      const next = Math.max(1, maxQty);
-                      return prev === next ? prev : next;
-                    });
-                  }}
-                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""
-                    }`}
-                >
-                  Max
-                </button>
-              </div>
-
-              <div className="mt-5 flex flex-col sm:flex-row items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleAddToCart}
-                  disabled={purchaseMeta.disableAddToCart || isAdding}
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
-                    ? "bg-zinc-300 cursor-not-allowed"
-                    : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
-                    }`}
-                >
-                  {isAdding ? "Adding…" : "Add to cart"}
-                </button>
-
-                <Link
-                  to="/cart"
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                >
-                  View cart
-                </Link>
-              </div>
-
-              {computed.supplierName ? (
-                <div className="mt-3 text-xs text-zinc-500">
-                  Supplier: <span className="font-medium text-zinc-700">{computed.supplierName}</span>
-                </div>
-              ) : null}
-
-              {/* ⭐ Review form */}
-              <div className="mt-6 border-t border-zinc-200 pt-4">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold text-zinc-900">Rate this product</h2>
-                  {ratingSummary.avg != null && (
-                    <div className="flex items-center gap-1 text-xs text-zinc-500">
-                      <span>{ratingSummary.avg.toFixed(1)}★</span>
-                      {ratingSummary.count != null && (
-                        <span>
-                          ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {!user && (
-                  <p className="mt-2 text-xs text-zinc-600">
-                    <Link to="/login" className="font-medium text-fuchsia-600 hover:text-fuchsia-700">
-                      Sign in
-                    </Link>{" "}
-                    to write a review.
-                  </p>
-                )}
-
-                {user && (
-                  <form className="mt-3 space-y-3" onSubmit={handleSubmitReview}>
-                    <div className="flex items-center gap-1">
-                      {[1, 2, 3, 4, 5].map((star) => {
-                        const active = ratingInput >= star;
-                        return (
-                          <button
-                            key={star}
-                            type="button"
-                            onClick={() => setRatingInput(star)}
-                            className="p-0.5"
-                            aria-label={`${star} star${star === 1 ? "" : "s"}`}
-                          >
-                            <span className={`text-xl ${active ? "text-amber-500" : "text-zinc-300"}`}>
-                              {active ? "★" : "☆"}
-                            </span>
-                          </button>
-                        );
-                      })}
-                      <span className="ml-2 text-xs text-zinc-500">
-                        {ratingInput ? `${ratingInput} / 5` : "Tap a star to rate"}
-                      </span>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-zinc-700 mb-1">Comment (optional)</label>
-                      <textarea
-                        rows={3}
-                        value={commentInput}
-                        onChange={(e) => setCommentInput(e.target.value)}
-                        className={`w-full rounded-xl border text-sm px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-fuchsia-500 ${silverBorder}`}
-                        placeholder="Share your experience with this product…"
-                      />
-                    </div>
+                    {shouldWarnInvalidCombo && (
+                      <VariantWarning message="This combination is not available. Try a different set of options." />
+                    )}
 
                     <div className="flex items-center gap-2">
                       <button
-                        type="submit"
-                        disabled={saveReviewMutation.isPending}
-                        className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${saveReviewMutation.isPending
-                          ? "bg-zinc-400 cursor-not-allowed"
-                          : "bg-fuchsia-600 hover:bg-fuchsia-700"
-                          }`}
+                        type="button"
+                        onClick={() => setSelected(computeBaseSelection())}
+                        className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                       >
-                        {saveReviewMutation.isPending ? "Saving…" : myReviewQ.data ? "Update review" : "Submit review"}
+                        Reset to base
                       </button>
 
-                      {myReviewQ.data && (
-                        <button
-                          type="button"
-                          onClick={handleResetReview}
-                          disabled={deleteReviewMutation.isPending}
-                          className={`px-3 py-2 rounded-xl text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                        >
-                          {deleteReviewMutation.isPending ? "Resetting…" : "Reset review"}
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => setSelected({})}
+                        className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                      >
+                        Clear selections
+                      </button>
                     </div>
-
-                    {saveReviewMutation.isError && (
-                      <div className="text-xs text-rose-600">
-                        {(saveReviewMutation.error as any)?.message || "Could not save review. Please try again."}
-                      </div>
-                    )}
-                    {deleteReviewMutation.isError && (
-                      <div className="text-xs text-rose-600">
-                        {(deleteReviewMutation.error as any)?.message || "Could not reset review. Please try again."}
-                      </div>
-                    )}
-                  </form>
+                  </div>
                 )}
-              </div>
-            </div>
 
-            {/* Description on mobile */}
-            <div className={`md:hidden ${cardCls} p-4`}>
-              <h2 className="text-base font-semibold mb-1">Description</h2>
-              <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
-            </div>
-          </div>
-        </div>
+                <div className="mt-4 space-y-2">
+                  <span className="block text-sm text-zinc-700">Qty</span>
 
-        {/* Similar products */}
-        {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
-          <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 pb-6">
-            <div className={`${cardCls} p-4 md:p-5`}>
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-base font-semibold">Similar products</h2>
-                <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-[44px_minmax(0,1fr)_44px_64px] gap-2 sm:flex sm:items-center">
+                    <button
+                      type="button"
+                      onClick={() => setQty((q) => Math.max(1, q - 1))}
+                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
+                    >
+                      −
+                    </button>
+
+                    <input
+                      type="number"
+                      min={1}
+                      max={maxQty}
+                      value={qty === 0 ? "" : qty}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "") {
+                          setQty(0);
+                          return;
+                        }
+                        const num = Number(v);
+                        if (!Number.isFinite(num)) return;
+                        const clamped = Math.min(maxQty, Math.max(1, num));
+                        setQty(clamped);
+                      }}
+                      onBlur={() => {
+                        if (!qty || qty < 1) setQty(1);
+                      }}
+                      className={`h-11 sm:h-10 min-w-0 text-center rounded-xl border px-2 text-sm ${silverBorder}`}
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => setQty((q) => Math.min(maxQty, q + 1))}
+                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
+                    >
+                      +
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isAdding) return;
+                        setQty((prev) => {
+                          const next = Math.max(1, maxQty);
+                          return prev === next ? prev : next;
+                        });
+                      }}
+                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 px-3 text-sm font-medium ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""
+                        }`}
+                    >
+                      Max
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-col sm:flex-row items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => scrollSimilarBy(-1)}
-                    className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    onClick={handleAddToCart}
+                    disabled={purchaseMeta.disableAddToCart || isAdding}
+                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
+                      ? "bg-zinc-300 cursor-not-allowed"
+                      : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
+                      }`}
                   >
-                    ‹
+                    {isAdding ? "Adding…" : "Add to cart"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => scrollSimilarBy(1)}
-                    className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+
+                  <Link
+                    to="/cart"
+                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                   >
-                    ›
-                  </button>
+                    View cart
+                  </Link>
+                </div>
+
+                {/* ⭐ Review form */}
+                <div className="mt-6 border-t border-zinc-200 pt-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <h2 className="text-sm font-semibold text-zinc-900">
+                      Rate this product
+                    </h2>
+
+                    <div className="flex flex-col items-end text-right">
+                      {ratingSummary.avg != null && (
+                        <div className="flex items-center gap-1 text-xs text-zinc-500">
+                          <span>{ratingSummary.avg.toFixed(1)}★</span>
+                          {ratingSummary.count != null && (
+                            <span>
+                              ({ratingSummary.count} review{ratingSummary.count === 1 ? "" : "s"})
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      <Link
+                        to={`/products/${product.id}/reviews`}
+                        className="mt-1 text-xs sm:text-sm font-medium text-fuchsia-600 hover:underline"
+                      >
+                        See all reviews →
+                      </Link>
+                    </div>
+                  </div>
+                  {!user && (
+                    <p className="mt-2 text-xs text-zinc-600">
+                      <Link to="/login" className="font-medium text-fuchsia-600 hover:text-fuchsia-700">
+                        Sign in
+                      </Link>{" "}
+                      to write a review.
+                    </p>
+                  )}
+
+                  {user && (
+                    <form className="mt-3 space-y-3" onSubmit={handleSubmitReview}>
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 4, 5].map((star) => {
+                          const active = ratingInput >= star;
+                          return (
+                            <button
+                              key={star}
+                              type="button"
+                              onClick={() => setRatingInput(star)}
+                              className="p-0.5"
+                              aria-label={`${star} star${star === 1 ? "" : "s"}`}
+                            >
+                              <span className={`text-xl ${active ? "text-amber-500" : "text-zinc-300"}`}>
+                                {active ? "★" : "☆"}
+                              </span>
+                            </button>
+                          );
+                        })}
+                        <span className="ml-2 text-xs text-zinc-500">
+                          {ratingInput ? `${ratingInput} / 5` : "Tap a star to rate"}
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-700 mb-1">Comment (optional)</label>
+                        <textarea
+                          rows={3}
+                          value={commentInput}
+                          onChange={(e) => setCommentInput(e.target.value)}
+                          className={`w-full rounded-xl border text-sm px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-fuchsia-500 ${silverBorder}`}
+                          placeholder="Share your experience with this product…"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="submit"
+                          disabled={saveReviewMutation.isPending}
+                          className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${saveReviewMutation.isPending
+                            ? "bg-zinc-400 cursor-not-allowed"
+                            : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                            }`}
+                        >
+                          {saveReviewMutation.isPending ? "Saving…" : myReviewQ.data ? "Update review" : "Submit review"}
+                        </button>
+
+                        {myReviewQ.data && (
+                          <button
+                            type="button"
+                            onClick={handleResetReview}
+                            disabled={deleteReviewMutation.isPending}
+                            className={`px-3 py-2 rounded-xl text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                          >
+                            {deleteReviewMutation.isPending ? "Resetting…" : "Reset review"}
+                          </button>
+                        )}
+                      </div>
+
+                      {saveReviewMutation.isError && !reviewBlockedMessage && (
+                        <div className="text-xs text-rose-600">
+                          {(saveReviewMutation.error as any)?.message || "Could not save review. Please try again."}
+                        </div>
+                      )}
+                      {deleteReviewMutation.isError && (
+                        <div className="text-xs text-rose-600">
+                          {(deleteReviewMutation.error as any)?.message || "Could not reset review. Please try again."}
+                        </div>
+                      )}
+
+                      {reviewBlockedMessage && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          {reviewBlockedMessage}
+                        </div>
+                      )}
+                    </form>
+                  )}
                 </div>
               </div>
 
-              <div
-                ref={similarRef}
-                className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
-                style={{ scrollbarWidth: "thin" as any }}
-              >
-                {similarQ.data.map((sp) => {
-                  const basePrice = sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice)) ? Number(sp.retailPrice) : null;
-                  const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
-                  const imgRaw = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
-                  const img = resolveImageUrl(imgRaw) || "";
-
-                  return (
-                    <Link
-                      key={sp.id}
-                      to={`/products/${sp.id}`}
-                      className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
-                    >
-                      <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
-                        {img ? (
-                          <img src={img} alt={sp.title} className="w-full h-full object-cover" loading="lazy" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">No image</div>
-                        )}
-                      </div>
-                      <div className="p-3">
-                        <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
-                        <div className="mt-1 text-sm font-bold">{showPrice}</div>
-                        <div className="mt-1 text-xs text-zinc-500">{sp.inStock === false ? "Out of stock" : "Available"}</div>
-                      </div>
-                    </Link>
-                  );
-                })}
+              {/* Description on mobile */}
+              <div className={`md:hidden ${cardCls} p-3 sm:p-4`}>
+                <h2 className="text-base font-semibold mb-1">Description</h2>
+                <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
               </div>
             </div>
           </div>
-        )}
+
+          {/* Similar products */}
+          {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
+            <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pb-5 md:pb-6">
+              <div className={`${cardCls} p-3 sm:p-4 md:p-5`}>
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-base font-semibold">Similar products</h2>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => scrollSimilarBy(-1)}
+                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => scrollSimilarBy(1)}
+                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  ref={similarRef}
+                  className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
+                  style={{ scrollbarWidth: "thin" as any }}
+                >
+                  {similarQ.data.map((sp) => {
+                    const basePrice = sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice)) ? Number(sp.retailPrice) : null;
+                    const showPrice =
+                      basePrice != null
+                        ? NGN.format(
+                          computeRetailPriceFromSupplierPrice({
+                            supplierPrice: basePrice,
+                            baseServiceFeeNGN,
+                            commsUnitCostNGN,
+                            gatewayFeePercent,
+                            gatewayFixedFeeNGN,
+                            gatewayFeeCapNGN,
+                          })
+                        )
+                        : "—";
+                    const imgRaw = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
+                    const img = resolveImageUrl(imgRaw) || "";
+
+                    return (
+                      <Link
+                        key={sp.id}
+                        to={`/products/${sp.id}`}
+                        className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
+                      >
+                        <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
+                          {img ? (
+                            <img src={img} alt={sp.title} className="w-full h-full object-cover" loading="lazy" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">No image</div>
+                          )}
+                        </div>
+                        <div className="p-3">
+                          <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
+                          <div className="mt-1 text-sm font-bold">{showPrice}</div>
+                          <div className="mt-1 text-xs text-zinc-500">{sp.inStock === false ? "Out of stock" : "Available"}</div>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </SiteLayout>
   );

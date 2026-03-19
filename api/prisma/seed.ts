@@ -173,7 +173,7 @@ function activeSupplierPayload(args: {
     shipsNationwide: true,
     defaultLeadDays: args.leadDays,
     sameDayCutoffHour: 14,
-    handlingFee: toDec2(args.handlingFee),
+    handlingFee: toDec(args.handlingFee),
     supportsDoorDelivery: true,
     supportsPickupPoint: chance(0.35),
   };
@@ -181,10 +181,6 @@ function activeSupplierPayload(args: {
 
 
 function toDec(n: number) {
-  return new Prisma.Decimal(Math.round(n * 100) / 100);
-}
-
-function toDec2(n: number) {
   return new Prisma.Decimal(Math.round(n * 100) / 100);
 }
 
@@ -239,17 +235,29 @@ async function ensureCoreSettings() {
       data: [
         { key: "taxMode", value: "INCLUDED", isPublic: true },
         { key: "taxRatePct", value: "7.5", isPublic: true },
-        { key: "commsUnitCostNGN", value: "100", isPublic: false },
+
+        // pricing inputs used by retail-price computation
+        { key: "baseServiceFeeNGN", value: "1000", isPublic: true },
+        { key: "commsUnitCostNGN", value: "100", isPublic: true },
+        { key: "gatewayFeePercent", value: "1.5", isPublic: true },
+        { key: "gatewayFixedFeeNGN", value: "100", isPublic: true },
+        { key: "gatewayFeeCapNGN", value: "2000", isPublic: true },
+
+        // keep if still used elsewhere in your app
         { key: "profitMode", value: "accurate", isPublic: false },
-        { key: "serviceFeeBaseNGN", value: "1000", isPublic: false },
         { key: "marginPercent", value: "10", isPublic: true },
+
+        // scheduler
         { key: "payoutReleaseSchedulerEnabled", value: "true", isPublic: true },
         { key: "payoutReleaseIntervalHours", value: "6", isPublic: true },
         { key: "payoutReleaseSchedulerTimezone", value: "UTC", isPublic: true },
-        { key: "shippingEnabled", value: "false", isPublic: true },
+
+        // shipping
+        { key: "shippingEnabled", value: "true", isPublic: true },
       ],
       skipDuplicates: true,
     });
+
     log("Core settings ensured.");
   } catch {
     log("Skipping settings (table may not exist yet).");
@@ -261,24 +269,54 @@ async function ensureSuperAdmin() {
 
   const existing = await prisma.user.findUnique({
     where: { email: SUPER_EMAIL },
-    select: { id: true, role: true },
+    select: { id: true, role: true, defaultShippingAddressId: true },
   });
 
   if (existing) {
-    if (existing.role !== "SUPER_ADMIN") {
-      await prisma.user.update({
-        where: { id: existing.id },
+    const updated = await prisma.user.update({
+      where: { id: existing.id },
+      data: {
+        role: "SUPER_ADMIN",
+        status: "VERIFIED",
+        emailVerifiedAt: new Date(),
+        phoneVerifiedAt: new Date(),
+      },
+      select: { id: true, firstName: true, lastName: true, phone: true, defaultShippingAddressId: true },
+    });
+
+    if (!updated.defaultShippingAddressId) {
+      const ship = await prisma.userShippingAddress.create({
         data: {
-          role: "SUPER_ADMIN",
-          status: "VERIFIED",
-          emailVerifiedAt: new Date(),
+          userId: updated.id,
+          label: "Default",
+          recipientName: `${updated.firstName} ${updated.lastName}`.trim(),
+          phone: updated.phone || "+2348100000001",
+          whatsappPhone: updated.phone || "+2348100000001",
+          houseNumber: "1",
+          streetName: "Leadership Ave",
+          postCode: "900001",
+          town: "Wuse",
+          city: "Abuja",
+          state: "FCT",
+          country: "Nigeria",
+          lga: "Abuja Municipal",
+          isDefault: true,
+          isActive: true,
+          isValidated: true,
+          validationSource: "seed",
+          validatedAt: new Date(),
         },
+        select: { id: true },
       });
-      log(`Upgraded existing user to SUPER_ADMIN: ${SUPER_EMAIL}`);
-    } else {
-      log(`Super Admin already present: ${SUPER_EMAIL}`);
+
+      await prisma.user.update({
+        where: { id: updated.id },
+        data: { defaultShippingAddressId: ship.id },
+      });
     }
-    return existing.id;
+
+    log(`Super Admin already present: ${SUPER_EMAIL}`);
+    return updated.id;
   }
 
   const passwordHash = await bcrypt.hash(SUPER_PASS, 10);
@@ -287,12 +325,12 @@ async function ensureSuperAdmin() {
     data: {
       houseNumber: "1",
       streetName: "Leadership Ave",
-      city: "Abuja",
-      state: "FCT",
-      lga: "Abuja Municipal",
       postCode: "900001",
       town: "Wuse",
+      city: "Abuja",
+      state: "FCT",
       country: "Nigeria",
+      lga: "Abuja Municipal",
       isValidated: true,
       validationSource: "seed",
       validatedAt: new Date(),
@@ -312,15 +350,42 @@ async function ensureSuperAdmin() {
       phoneVerifiedAt: new Date(),
       joinedAt: new Date(),
       address: { connect: { id: address.id } },
-      shippingAddress: { connect: { id: address.id } },
+    },
+    select: { id: true, firstName: true, lastName: true, phone: true },
+  });
+
+  const shipping = await prisma.userShippingAddress.create({
+    data: {
+      userId: user.id,
+      label: "Default",
+      recipientName: `${user.firstName} ${user.lastName}`.trim(),
+      phone: user.phone || "+2348100000001",
+      whatsappPhone: user.phone || "+2348100000001",
+      houseNumber: "1",
+      streetName: "Leadership Ave",
+      postCode: "900001",
+      town: "Wuse",
+      city: "Abuja",
+      state: "FCT",
+      country: "Nigeria",
+      lga: "Abuja Municipal",
+      isDefault: true,
+      isActive: true,
+      isValidated: true,
+      validationSource: "seed",
+      validatedAt: new Date(),
     },
     select: { id: true },
+  });
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { defaultShippingAddressId: shipping.id },
   });
 
   log(`Created Super Admin: ${SUPER_EMAIL}`);
   return user.id;
 }
-
 
 async function ensureApprovedSupplierDocuments(args: {
   supplierId: string;
@@ -412,7 +477,7 @@ async function ensureSupplierUserAndSuppliers() {
 
   const existingUser = await prisma.user.findUnique({
     where: { email: SUPPLIER_EMAIL },
-    select: { id: true },
+    select: { id: true, defaultShippingAddressId: true, firstName: true, lastName: true, phone: true },
   });
 
   let userId: string;
@@ -448,9 +513,37 @@ async function ensureSupplierUserAndSuppliers() {
         phoneVerifiedAt: new Date(),
         joinedAt: new Date(),
         address: { connect: { id: address.id } },
-        shippingAddress: { connect: { id: address.id } },
+      },
+      select: { id: true, firstName: true, lastName: true, phone: true },
+    });
+
+    const shipping = await prisma.userShippingAddress.create({
+      data: {
+        userId: created.id,
+        label: "Default",
+        recipientName: `${created.firstName} ${created.lastName}`.trim(),
+        phone: created.phone || "+2348100000002",
+        whatsappPhone: created.phone || "+2348100000002",
+        houseNumber: "12",
+        streetName: "Supplier Road",
+        city: "Lagos",
+        state: "Lagos",
+        lga: "Ikeja",
+        town: "Ikeja",
+        postCode: "100271",
+        country: "Nigeria",
+        isDefault: true,
+        isActive: true,
+        isValidated: true,
+        validationSource: "seed",
+        validatedAt: new Date(),
       },
       select: { id: true },
+    });
+
+    await prisma.user.update({
+      where: { id: created.id },
+      data: { defaultShippingAddressId: shipping.id },
     });
 
     userId = created.id;
@@ -467,6 +560,37 @@ async function ensureSupplierUserAndSuppliers() {
         phoneVerifiedAt: new Date(),
       },
     });
+
+    if (!existingUser.defaultShippingAddressId) {
+      const shipping = await prisma.userShippingAddress.create({
+        data: {
+          userId,
+          label: "Default",
+          recipientName: `${existingUser.firstName ?? SUPPLIER_FIRST} ${existingUser.lastName ?? SUPPLIER_LAST}`.trim(),
+          phone: existingUser.phone || "+2348100000002",
+          whatsappPhone: existingUser.phone || "+2348100000002",
+          houseNumber: "12",
+          streetName: "Supplier Road",
+          city: "Lagos",
+          state: "Lagos",
+          lga: "Ikeja",
+          town: "Ikeja",
+          postCode: "100271",
+          country: "Nigeria",
+          isDefault: true,
+          isActive: true,
+          isValidated: true,
+          validationSource: "seed",
+          validatedAt: new Date(),
+        },
+        select: { id: true },
+      });
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: { defaultShippingAddressId: shipping.id },
+      });
+    }
 
     log(`Supplier user already present: ${SUPPLIER_EMAIL}`);
   }
@@ -671,8 +795,6 @@ async function ensureSupplierUserAndSuppliers() {
       supplierId: s.id,
       supplierName: s.name,
     });
-
-    others.push(s);
 
     others.push(s);
   }
@@ -990,883 +1112,883 @@ function variantParcelOverride(base: ParcelSeed) {
 
   return {
     weightGrams: w,
-    lengthCm: toDec2(l),
-    widthCm: toDec2(wd),
-    heightCm: toDec2(h),
+    lengthCm: toDec(l),
+    widthCm: toDec(wd),
+    heightCm: toDec(h),
     isFragileOverride: base.isFragile || chance(0.05),
     isBulkyOverride: base.isBulky || chance(0.05),
     shippingClassOverride: (base.isBulky
       ? "BULKY"
       : base.isFragile
-        ? "FRAGILE"
-        : "STANDARD") as string,
+      ? "FRAGILE"
+      : "STANDARD") as "STANDARD" | "FRAGILE" | "BULKY",
   };
 }
 
-/* ----------------------------------------------------------------------------
-  Variants creation
----------------------------------------------------------------------------- */
-async function createVariantsForProduct(args: {
-  productId: string;
-  skuBase: string;
-  retail: number;
-  attrs: Awaited<ReturnType<typeof ensureAttributes>>;
-  productParcel: ParcelSeed;
-}) {
-  const { productId, skuBase, retail, attrs } = args;
+  /* ----------------------------------------------------------------------------
+    Variants creation
+  ---------------------------------------------------------------------------- */
+  async function createVariantsForProduct(args: {
+    productId: string;
+    skuBase: string;
+    retail: number;
+    attrs: Awaited<ReturnType<typeof ensureAttributes>>;
+    productParcel: ParcelSeed;
+  }) {
+    const { productId, skuBase, retail, attrs } = args;
 
-  const attrByName = new Map(attrs.map((a) => [a.name, a]));
-  const color = attrByName.get("Color");
-  const size = attrByName.get("Size");
+    const attrByName = new Map(attrs.map((a) => [a.name, a]));
+    const color = attrByName.get("Color");
+    const size = attrByName.get("Size");
 
-  if (!color || !size) return [];
+    if (!color || !size) return [];
 
-  const values1 = color.values.slice(0, 3);
-  const values2 = size.values.slice(0, 3);
+    const values1 = color.values.slice(0, 3);
+    const values2 = size.values.slice(0, 3);
 
-  const combos: Array<{ c: string; s: string }> = [];
-  for (const c of values1) {
-    for (const s of values2) {
-      combos.push({ c: c.id, s: s.id });
+    const combos: Array<{ c: string; s: string }> = [];
+    for (const c of values1) {
+      for (const s of values2) {
+        combos.push({ c: c.id, s: s.id });
+      }
     }
-  }
 
-  const want = randInt(3, 6);
-  const chosen = pick(combos, want);
+    const want = randInt(3, 6);
+    const chosen = pick(combos, want);
 
-  const seen = new Set<string>();
-  const chosenUnique = chosen.filter((x) => {
-    const k = `${x.c}:${x.s}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-
-  const createdVariants: {
-    id: string;
-    sku: string | null;
-    retailPrice: Prisma.Decimal | null;
-  }[] = [];
-
-  let idx = 1;
-  for (const combo of chosenUnique) {
-    const vSku = `${skuBase}-V${String(idx).padStart(2, "0")}`;
-    idx++;
-
-    const variantRetail = Math.max(900, retail + randInt(-100, 1200));
-    const override = variantParcelOverride(args.productParcel);
-
-    const variant = await prisma.productVariant.create({
-      data: {
-        productId,
-        sku: vSku,
-        retailPrice: toDec(variantRetail),
-        weightGrams: override.weightGrams,
-        lengthCm: override.lengthCm,
-        widthCm: override.widthCm,
-        heightCm: override.heightCm,
-        isFragileOverride: override.isFragileOverride,
-        isBulkyOverride: override.isBulkyOverride,
-        shippingClassOverride: override.shippingClassOverride,
-        inStock: true,
-        imagesJson: pics(vSku),
-        isActive: true,
-        availableQty: 0,
-        options: {
-          create: [
-            { attributeId: color.attributeId, valueId: combo.c },
-            { attributeId: size.attributeId, valueId: combo.s },
-          ],
-        },
-      },
-      select: { id: true, sku: true, retailPrice: true },
+    const seen = new Set<string>();
+    const chosenUnique = chosen.filter((x) => {
+      const k = `${x.c}:${x.s}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
     });
 
-    createdVariants.push(variant);
+    const createdVariants: {
+      id: string;
+      sku: string | null;
+      retailPrice: Prisma.Decimal | null;
+    }[] = [];
+
+    let idx = 1;
+    for (const combo of chosenUnique) {
+      const vSku = `${skuBase}-V${String(idx).padStart(2, "0")}`;
+      idx++;
+
+      const variantRetail = Math.max(900, retail + randInt(-100, 1200));
+      const override = variantParcelOverride(args.productParcel);
+
+      const variant = await prisma.productVariant.create({
+        data: {
+          productId,
+          sku: vSku,
+          retailPrice: toDec(variantRetail),
+          weightGrams: override.weightGrams,
+          lengthCm: override.lengthCm,
+          widthCm: override.widthCm,
+          heightCm: override.heightCm,
+          isFragileOverride: override.isFragileOverride,
+          isBulkyOverride: override.isBulkyOverride,
+          shippingClassOverride: override.shippingClassOverride,
+          inStock: true,
+          imagesJson: pics(vSku),
+          isActive: true,
+          availableQty: 0,
+          options: {
+            create: [
+              { attributeId: color.attributeId, valueId: combo.c },
+              { attributeId: size.attributeId, valueId: combo.s },
+            ],
+          },
+        },
+        select: { id: true, sku: true, retailPrice: true },
+      });
+
+      createdVariants.push(variant);
+    }
+
+    return createdVariants;
   }
 
-  return createdVariants;
-}
+  /* ----------------------------------------------------------------------------
+    Offers
+  ---------------------------------------------------------------------------- */
 
-/* ----------------------------------------------------------------------------
-  Offers
----------------------------------------------------------------------------- */
+  function supplierBaseFromRetail(retail: number): Prisma.Decimal {
+    const pct = 0.5 + Math.random() * 0.25;
+    const val = Math.max(300, Math.round(retail * pct));
+    return new Prisma.Decimal(val);
+  }
 
-function supplierBaseFromRetail(retail: number): Prisma.Decimal {
-  const pct = 0.5 + Math.random() * 0.25;
-  const val = Math.max(300, Math.round(retail * pct));
-  return new Prisma.Decimal(val);
-}
+  function supplierUnitPriceFromVariantRetail(variantRetail: number): Prisma.Decimal {
+    const pct = 0.5 + Math.random() * 0.28;
+    const val = Math.max(300, Math.round(variantRetail * pct));
+    return new Prisma.Decimal(val);
+  }
 
-function supplierUnitPriceFromVariantRetail(variantRetail: number): Prisma.Decimal {
-  const pct = 0.5 + Math.random() * 0.28;
-  const val = Math.max(300, Math.round(variantRetail * pct));
-  return new Prisma.Decimal(val);
-}
+  async function ensureBaseOfferForProduct(args: {
+    productId: string;
+    retail: number;
+    supplierId: string;
+  }) {
+    const { productId, retail, supplierId } = args;
+    const availableQty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
 
-async function ensureBaseOfferForProduct(args: {
-  productId: string;
-  retail: number;
-  supplierId: string;
-}) {
-  const { productId, retail, supplierId } = args;
-  const availableQty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
-
-  return prisma.supplierProductOffer.upsert({
-    where: {
-      supplier_product_offer_unique: {
-        productId,
-        supplierId,
-      },
-    },
-    update: {
-      basePrice: supplierBaseFromRetail(retail),
-      availableQty,
-      inStock: availableQty > 0,
-      isActive: true,
-      leadDays: randInt(1, 7),
-      currency: "NGN",
-    },
-    create: {
-      productId,
-      supplierId,
-      basePrice: supplierBaseFromRetail(retail),
-      availableQty,
-      inStock: availableQty > 0,
-      isActive: true,
-      leadDays: randInt(1, 7),
-      currency: "NGN",
-    },
-    select: { id: true, availableQty: true, productId: true },
-  });
-}
-
-async function ensureVariantOffersForVariants(args: {
-  productId: string;
-  variants: { id: string; retailPrice: Prisma.Decimal | null }[];
-  baseOfferId: string;
-  supplierId: string;
-}) {
-  const { productId, variants, baseOfferId, supplierId } = args;
-
-  for (const v of variants) {
-    if (!chance(0.6)) continue;
-
-    const vr = Number(v.retailPrice ?? 0) || 0;
-    if (vr <= 0) continue;
-
-    const qty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
-
-    await prisma.supplierVariantOffer.upsert({
+    return prisma.supplierProductOffer.upsert({
       where: {
-        supplier_variant_offer_unique: {
-          variantId: v.id,
+        supplier_product_offer_unique: {
+          productId,
           supplierId,
         },
       },
       update: {
-        productId,
-        supplierProductOfferId: baseOfferId,
-        supplierId,
-        unitPrice: supplierUnitPriceFromVariantRetail(vr),
-        availableQty: qty,
-        inStock: qty > 0,
+        basePrice: supplierBaseFromRetail(retail),
+        availableQty,
+        inStock: availableQty > 0,
         isActive: true,
-        leadDays: randInt(1, 9),
+        leadDays: randInt(1, 7),
         currency: "NGN",
       },
       create: {
         productId,
-        variantId: v.id,
-        supplierProductOfferId: baseOfferId,
         supplierId,
-        unitPrice: supplierUnitPriceFromVariantRetail(vr),
-        availableQty: qty,
-        inStock: qty > 0,
+        basePrice: supplierBaseFromRetail(retail),
+        availableQty,
+        inStock: availableQty > 0,
         isActive: true,
-        leadDays: randInt(1, 9),
+        leadDays: randInt(1, 7),
         currency: "NGN",
       },
-      select: { id: true },
+      select: { id: true, availableQty: true, productId: true },
     });
   }
 
-  for (const v of variants) {
-    const agg = await prisma.supplierVariantOffer.aggregate({
+  async function ensureVariantOffersForVariants(args: {
+    productId: string;
+    variants: { id: string; retailPrice: Prisma.Decimal | null }[];
+    baseOfferId: string;
+    supplierId: string;
+  }) {
+    const { productId, variants, baseOfferId, supplierId } = args;
+
+    for (const v of variants) {
+      if (!chance(0.6)) continue;
+
+      const vr = Number(v.retailPrice ?? 0) || 0;
+      if (vr <= 0) continue;
+
+      const qty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
+
+      await prisma.supplierVariantOffer.upsert({
+        where: {
+          supplier_variant_offer_unique: {
+            variantId: v.id,
+            supplierId,
+          },
+        },
+        update: {
+          productId,
+          supplierProductOfferId: baseOfferId,
+          supplierId,
+          unitPrice: supplierUnitPriceFromVariantRetail(vr),
+          availableQty: qty,
+          inStock: qty > 0,
+          isActive: true,
+          leadDays: randInt(1, 9),
+          currency: "NGN",
+        },
+        create: {
+          productId,
+          variantId: v.id,
+          supplierProductOfferId: baseOfferId,
+          supplierId,
+          unitPrice: supplierUnitPriceFromVariantRetail(vr),
+          availableQty: qty,
+          inStock: qty > 0,
+          isActive: true,
+          leadDays: randInt(1, 9),
+          currency: "NGN",
+        },
+        select: { id: true },
+      });
+    }
+
+    for (const v of variants) {
+      const agg = await prisma.supplierVariantOffer.aggregate({
+        _sum: { availableQty: true },
+        where: { variantId: v.id, isActive: true, inStock: true },
+      });
+
+      const sum = Number(agg._sum.availableQty || 0);
+      await prisma.productVariant.update({
+        where: { id: v.id },
+        data: { availableQty: sum, inStock: sum > 0 },
+      });
+    }
+  }
+
+  async function recomputeProductAvailability(productId: string) {
+    const baseAgg = await prisma.supplierProductOffer.aggregate({
       _sum: { availableQty: true },
-      where: { variantId: v.id, isActive: true, inStock: true },
+      where: { productId, isActive: true, inStock: true },
     });
 
-    const sum = Number(agg._sum.availableQty || 0);
-    await prisma.productVariant.update({
-      where: { id: v.id },
-      data: { availableQty: sum, inStock: sum > 0 },
+    const varAgg = await prisma.supplierVariantOffer.aggregate({
+      _sum: { availableQty: true },
+      where: { productId, isActive: true, inStock: true },
+    });
+
+    const baseQty = Number(baseAgg._sum.availableQty ?? 0);
+    const variantQty = Number(varAgg._sum.availableQty ?? 0);
+    const total = Math.max(0, Math.trunc(baseQty + variantQty));
+
+    await prisma.product.update({
+      where: { id: productId },
+      data: { availableQty: total, inStock: total > 0 },
     });
   }
-}
 
-async function recomputeProductAvailability(productId: string) {
-  const baseAgg = await prisma.supplierProductOffer.aggregate({
-    _sum: { availableQty: true },
-    where: { productId, isActive: true, inStock: true },
-  });
+  /* ----------------------------------------------------------------------------
+    Shipping setup
+  ---------------------------------------------------------------------------- */
+  async function ensureShippingSetup() {
+    log("Ensuring shipping zones + rate cards...");
 
-  const varAgg = await prisma.supplierVariantOffer.aggregate({
-    _sum: { availableQty: true },
-    where: { productId, isActive: true, inStock: true },
-  });
+    const zones: Array<{
+      code: string;
+      name: string;
+      statesJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
+      lgasJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
+      priority: number;
+    }> = [
+        {
+          code: "LAGOS_LOCAL",
+          name: "Lagos Local",
+          statesJson: ["Lagos"],
+          lgasJson: [
+            "Ikeja",
+            "Eti-Osa",
+            "Surulere",
+            "Kosofe",
+            "Alimosho",
+            "Mushin",
+            "Lagos Island",
+            "Lagos Mainland",
+          ],
+          priority: 10,
+        },
+        {
+          code: "SW_NEAR",
+          name: "South West (Near)",
+          statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
+          lgasJson: Prisma.JsonNull,
+          priority: 20,
+        },
+        {
+          code: "SOUTH_REGIONAL",
+          name: "South (Regional)",
+          statesJson: [
+            "Abia",
+            "Anambra",
+            "Akwa Ibom",
+            "Bayelsa",
+            "Cross River",
+            "Delta",
+            "Edo",
+            "Ebonyi",
+            "Enugu",
+            "Imo",
+            "Rivers",
+          ],
+          lgasJson: Prisma.JsonNull,
+          priority: 30,
+        },
+        {
+          code: "NORTH_REGIONAL",
+          name: "North (Regional)",
+          statesJson: [
+            "FCT",
+            "Abuja",
+            "Federal Capital Territory",
+            "Kaduna",
+            "Kano",
+            "Plateau",
+            "Nasarawa",
+            "Benue",
+            "Niger",
+            "Kwara",
+            "Borno",
+            "Bauchi",
+            "Adamawa",
+            "Sokoto",
+            "Kebbi",
+            "Zamfara",
+            "Katsina",
+            "Jigawa",
+            "Yobe",
+            "Taraba",
+            "Gombe",
+            "Kogi",
+          ],
+          lgasJson: Prisma.JsonNull,
+          priority: 40,
+        },
+        {
+          code: "NIGERIA_FALLBACK",
+          name: "Nigeria Fallback",
+          statesJson: Prisma.JsonNull,
+          lgasJson: Prisma.JsonNull,
+          priority: 999,
+        },
+      ];
 
-  const baseQty = Number(baseAgg._sum.availableQty ?? 0);
-  const variantQty = Number(varAgg._sum.availableQty ?? 0);
-  const total = Math.max(0, Math.trunc(baseQty + variantQty));
+    const zoneByCode = new Map<string, string>();
 
-  await prisma.product.update({
-    where: { id: productId },
-    data: { availableQty: total, inStock: total > 0 },
-  });
-}
+    for (const z of zones) {
+      const zone = await prisma.shippingZone.upsert({
+        where: { code: z.code },
+        update: {
+          name: z.name,
+          country: "Nigeria",
+          statesJson: z.statesJson,
+          lgasJson: z.lgasJson,
+          isActive: true,
+          priority: z.priority,
+        },
+        create: {
+          code: z.code,
+          name: z.name,
+          country: "Nigeria",
+          statesJson: z.statesJson,
+          lgasJson: z.lgasJson,
+          isActive: true,
+          priority: z.priority,
+        },
+        select: { id: true, code: true },
+      });
 
-/* ----------------------------------------------------------------------------
-  Shipping setup
----------------------------------------------------------------------------- */
-async function ensureShippingSetup() {
-  log("Ensuring shipping zones + rate cards...");
+      zoneByCode.set(zone.code, zone.id);
+    }
 
-  const zones: Array<{
-    code: string;
-    name: string;
-    statesJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
-    lgasJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
-    priority: number;
-  }> = [
-      {
-        code: "LAGOS_LOCAL",
-        name: "Lagos Local",
-        statesJson: ["Lagos"],
-        lgasJson: [
-          "Ikeja",
-          "Eti-Osa",
-          "Surulere",
-          "Kosofe",
-          "Alimosho",
-          "Mushin",
-          "Lagos Island",
-          "Lagos Mainland",
-        ],
-        priority: 10,
-      },
-      {
-        code: "SW_NEAR",
-        name: "South West (Near)",
-        statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
-        lgasJson: Prisma.JsonNull,
-        priority: 20,
-      },
-      {
-        code: "SOUTH_REGIONAL",
-        name: "South (Regional)",
-        statesJson: [
-          "Abia",
-          "Anambra",
-          "Akwa Ibom",
-          "Bayelsa",
-          "Cross River",
-          "Delta",
-          "Edo",
-          "Ebonyi",
-          "Enugu",
-          "Imo",
-          "Rivers",
-        ],
-        lgasJson: Prisma.JsonNull,
-        priority: 30,
-      },
-      {
-        code: "NORTH_REGIONAL",
-        name: "North (Regional)",
-        statesJson: [
-          "FCT",
-          "Abuja",
-          "Federal Capital Territory",
-          "Kaduna",
-          "Kano",
-          "Plateau",
-          "Nasarawa",
-          "Benue",
-          "Niger",
-          "Kwara",
-          "Borno",
-          "Bauchi",
-          "Adamawa",
-          "Sokoto",
-          "Kebbi",
-          "Zamfara",
-          "Katsina",
-          "Jigawa",
-          "Yobe",
-          "Taraba",
-          "Gombe",
-          "Kogi",
-        ],
-        lgasJson: Prisma.JsonNull,
-        priority: 40,
-      },
-      {
-        code: "NIGERIA_FALLBACK",
-        name: "Nigeria Fallback",
-        statesJson: Prisma.JsonNull,
-        lgasJson: Prisma.JsonNull,
-        priority: 999,
-      },
+    await prisma.shippingRateCard.deleteMany({
+      where: { zoneId: { in: [...zoneByCode.values()] } },
+    });
+
+    const bands = [
+      { min: 0, max: 1000 },
+      { min: 1000, max: 3000 },
+      { min: 3000, max: 5000 },
+      { min: 5000, max: 10000 },
+      { min: 10000, max: null },
     ];
 
-  const zoneByCode = new Map<string, string>();
+    const zonePricing: Record<
+      string,
+      { base: number; perKg: number; remote: number; fallback?: boolean }
+    > = {
+      LAGOS_LOCAL: { base: 900, perKg: 180, remote: 0 },
+      SW_NEAR: { base: 1400, perKg: 260, remote: 120 },
+      SOUTH_REGIONAL: { base: 1900, perKg: 360, remote: 220 },
+      NORTH_REGIONAL: { base: 2400, perKg: 480, remote: 300 },
+      NIGERIA_FALLBACK: { base: 3500, perKg: 650, remote: 500, fallback: true },
+    };
 
-  for (const z of zones) {
-    const zone = await prisma.shippingZone.upsert({
-      where: { code: z.code },
-      update: {
-        name: z.name,
-        country: "Nigeria",
-        statesJson: z.statesJson,
-        lgasJson: z.lgasJson,
-        isActive: true,
-        priority: z.priority,
+    for (const [code, zoneId] of zoneByCode.entries()) {
+      const p = zonePricing[code];
+
+      for (const b of bands) {
+        const heavyAdder = b.min >= 5000 ? 350 : 0;
+        const fragileAdder = b.min >= 5000 ? 450 : 0;
+        const bulkyAdder = b.min >= 5000 ? 600 : 0;
+
+        await prisma.shippingRateCard.create({
+          data: {
+            zoneId,
+            serviceLevel: "STANDARD",
+            parcelClass: "STANDARD",
+            minWeightGrams: b.min,
+            maxWeightGrams: b.max,
+            volumetricDivisor: 5000,
+            baseFee: toDec(p.base + heavyAdder),
+            perKgFee: toDec(p.perKg),
+            remoteSurcharge: toDec(p.remote),
+            fuelSurcharge: toDec(p.fallback ? 180 : 70),
+            handlingFee: toDec(p.fallback ? 150 : 50),
+            currency: "NGN",
+            etaMinDays:
+              code === "LAGOS_LOCAL"
+                ? 1
+                : code === "SW_NEAR"
+                  ? 2
+                  : code === "NIGERIA_FALLBACK"
+                    ? 4
+                    : 3,
+            etaMaxDays:
+              code === "LAGOS_LOCAL"
+                ? 2
+                : code === "SW_NEAR"
+                  ? 4
+                  : code === "NIGERIA_FALLBACK"
+                    ? 8
+                    : 6,
+            isActive: true,
+          },
+        });
+
+        await prisma.shippingRateCard.create({
+          data: {
+            zoneId,
+            serviceLevel: "STANDARD",
+            parcelClass: "FRAGILE",
+            minWeightGrams: b.min,
+            maxWeightGrams: b.max,
+            volumetricDivisor: 5000,
+            baseFee: toDec(p.base + 300 + fragileAdder),
+            perKgFee: toDec(p.perKg + 70),
+            remoteSurcharge: toDec(p.remote),
+            fuelSurcharge: toDec(p.fallback ? 220 : 90),
+            handlingFee: toDec(p.fallback ? 220 : 120),
+            currency: "NGN",
+            etaMinDays:
+              code === "LAGOS_LOCAL"
+                ? 1
+                : code === "SW_NEAR"
+                  ? 2
+                  : code === "NIGERIA_FALLBACK"
+                    ? 4
+                    : 3,
+            etaMaxDays:
+              code === "LAGOS_LOCAL"
+                ? 2
+                : code === "SW_NEAR"
+                  ? 4
+                  : code === "NIGERIA_FALLBACK"
+                    ? 9
+                    : 7,
+            isActive: true,
+          },
+        });
+
+        await prisma.shippingRateCard.create({
+          data: {
+            zoneId,
+            serviceLevel: "STANDARD",
+            parcelClass: "BULKY",
+            minWeightGrams: b.min,
+            maxWeightGrams: b.max,
+            volumetricDivisor: 4000,
+            baseFee: toDec(p.base + 550 + bulkyAdder),
+            perKgFee: toDec(p.perKg + 110),
+            remoteSurcharge: toDec(p.remote + 80),
+            fuelSurcharge: toDec(p.fallback ? 260 : 110),
+            handlingFee: toDec(p.fallback ? 260 : 150),
+            currency: "NGN",
+            etaMinDays:
+              code === "LAGOS_LOCAL"
+                ? 1
+                : code === "SW_NEAR"
+                  ? 2
+                  : code === "NIGERIA_FALLBACK"
+                    ? 5
+                    : 4,
+            etaMaxDays:
+              code === "LAGOS_LOCAL"
+                ? 3
+                : code === "SW_NEAR"
+                  ? 5
+                  : code === "NIGERIA_FALLBACK"
+                    ? 10
+                    : 8,
+            isActive: true,
+          },
+        });
+      }
+    }
+
+    log("Shipping zones + rate cards ensured.");
+  }
+
+  /* ----------------------------------------------------------------------------
+    Product generation
+  ---------------------------------------------------------------------------- */
+
+  function baseTitlesPool() {
+    return [
+      "Electric Kettle",
+      "Wireless Headphones",
+      "Cotton T-Shirt",
+      "Running Sneakers",
+      "Bluetooth Speaker",
+      "Kitchen Blender",
+      "Analog Wristwatch",
+      "Laptop Backpack",
+      "Silicone Phone Case",
+      "Desk Lamp",
+      "Insulated Water Bottle",
+      "Power Bank",
+      "Standing Fan",
+      "2-Slice Toaster",
+      "Wireless Mouse",
+      "Mechanical Keyboard",
+      "USB Wall Charger",
+      "Wi-Fi Router",
+      "Extension Cable",
+      "Ceramic Coffee Mug",
+      "Pressure Cooker",
+      "Air Fryer",
+      "Microwave Oven",
+      "Water Bottle",
+      "Flask Set",
+      "Dinner Plate Set",
+      "Serving Bowl",
+      "Storage Container Set",
+      "Lunch Box",
+      "Dish Rack",
+      "Spice Rack",
+      "Drawer Organizer",
+      "Mop Bucket Set",
+      "Floor Cleaner",
+      "Bathroom Cleaner",
+      "Kitchen Cleaner",
+      "Trash Bin",
+      "Air Freshener",
+      "Steam Iron",
+      "Water Dispenser",
+      "Refrigerator Organizer",
+      "Laundry Basket",
+      "Drying Rack",
+      "Ironing Board",
+      "Wardrobe Organizer",
+      "Stackable Bin",
+      "LED Lamp",
+      "Power Strip",
+      "Lantern Light",
+      "Garden Hose",
+    ];
+  }
+
+  async function seedProducts(args: {
+    superAdminId: string;
+    categories: { id: string; name?: string }[];
+    brands: { id: string; name: string; slug: string }[];
+    suppliers: { id: string }[];
+    attrs: Awaited<ReturnType<typeof ensureAttributes>>;
+  }) {
+    const { superAdminId, categories, brands, suppliers, attrs } = args;
+
+    const liveTargets = LIVE_PRODUCTS_TOTAL;
+    const pendingTargets = PENDING_PRODUCTS_TOTAL;
+
+    log(`Seeding ${liveTargets} LIVE products, ${pendingTargets} PENDING products…`);
+
+    if (brands.length < 4) {
+      throw new Error("Need at least 4 brands to satisfy 2–4 brands per base product.");
+    }
+
+    const plan: Array<{
+      status: string;
+      title: string;
+      brandId: string;
+      sku: string;
+      retail: number;
+    }> = [];
+
+    const titles = baseTitlesPool();
+    let liveCount = 0;
+    let globalIndex = 1;
+
+    for (const t of titles) {
+      if (liveCount >= liveTargets) break;
+
+      const nBrands = randInt(MIN_BRANDS_PER_BASE, MAX_BRANDS_PER_BASE);
+      const chosenBrands = pick(brands, nBrands);
+
+      for (const b of chosenBrands) {
+        if (liveCount >= liveTargets) break;
+
+        const sku = `LIVE-${String(globalIndex).padStart(3, "0")}`;
+        const retail = 9000 + globalIndex * 450;
+
+        plan.push({ status: "LIVE", title: t, brandId: b.id, sku, retail });
+
+        liveCount++;
+        globalIndex++;
+      }
+    }
+
+    if (liveCount < liveTargets) {
+      throw new Error(
+        `Unable to build ${liveTargets} LIVE products from current title/brand pool. Built only ${liveCount}.`
+      );
+    }
+
+    for (let i = 1; i <= pendingTargets; i++) {
+      const baseTitle = titles[(i - 1) % titles.length];
+      const title = `${baseTitle} (Pending Review)`;
+      const b = brands[(i - 1) % brands.length];
+      const sku = `PEND-${String(i).padStart(3, "0")}`;
+      const retail = 6500 + i * 500;
+      plan.push({ status: "PENDING", title, brandId: b.id, sku, retail });
+    }
+
+    const usedBySupplier = new Map<string, Set<string>>();
+
+    for (const item of plan) {
+      const categoryId = categories[randInt(0, categories.length - 1)].id;
+
+      const supplierId = pickSupplierForItem(suppliers, usedBySupplier, item.title, item.brandId);
+      const key = productKeyForSupplier(item.title, item.brandId);
+      const set = usedBySupplier.get(supplierId) ?? new Set<string>();
+      set.add(key);
+      usedBySupplier.set(supplierId, set);
+
+      const existing = await prisma.product.findFirst({
+        where: {
+          supplierId,
+          brandId: item.brandId,
+          sku: item.sku,
+          isDeleted: false,
+        },
+        select: { id: true },
+      });
+
+      const parcel = parcelForTitle(item.title);
+
+      const product = existing
+        ? await prisma.product.update({
+          where: { id: existing.id },
+          data: {
+            title: item.title,
+            description:
+              item.status === "LIVE"
+                ? "Live product seeded for development and testing."
+                : "Pending product seeded for development and testing.",
+            retailPrice: toDec(item.retail),
+            sku: item.sku,
+            status: item.status,
+            imagesJson: pics(`${item.sku}-${item.brandId}`),
+            isDeleted: false,
+            availableQty: 0,
+            inStock: true,
+            shippingCost: toDec(0),
+            weightGrams: parcel.weightGrams,
+            lengthCm: toDec(parcel.lengthCm),
+            widthCm: toDec(parcel.widthCm),
+            heightCm: toDec(parcel.heightCm),
+            isFragile: parcel.isFragile,
+            isBulky: parcel.isBulky,
+            shippingClass: parcel.shippingClass,
+            freeShipping: false,
+            supplier: { connect: { id: supplierId } },
+            category: { connect: { id: categoryId } },
+            brand: { connect: { id: item.brandId } },
+            owner: { connect: { id: superAdminId } },
+            createdBy: { connect: { id: superAdminId } },
+            updatedBy: { connect: { id: superAdminId } },
+          },
+          select: { id: true, sku: true },
+        })
+        : await prisma.product.create({
+          data: {
+            title: item.title,
+            description:
+              item.status === "LIVE"
+                ? "Live product seeded for development and testing."
+                : "Pending product seeded for development and testing.",
+            retailPrice: toDec(item.retail),
+            sku: item.sku,
+            status: item.status,
+            imagesJson: pics(`${item.sku}-${item.brandId}`),
+            isDeleted: false,
+            availableQty: 0,
+            inStock: true,
+            shippingCost: toDec(0),
+            weightGrams: parcel.weightGrams,
+            lengthCm: toDec(parcel.lengthCm),
+            widthCm: toDec(parcel.widthCm),
+            heightCm: toDec(parcel.heightCm),
+            isFragile: parcel.isFragile,
+            isBulky: parcel.isBulky,
+            shippingClass: parcel.shippingClass,
+            freeShipping: false,
+            supplier: { connect: { id: supplierId } },
+            category: { connect: { id: categoryId } },
+            brand: { connect: { id: item.brandId } },
+            owner: { connect: { id: superAdminId } },
+            createdBy: { connect: { id: superAdminId } },
+            updatedBy: { connect: { id: superAdminId } },
+          },
+          select: { id: true, sku: true },
+        });
+
+      await ensureProductAttributeOptions(product.id, attrs);
+
+      const wantsVariants =
+        item.status === "LIVE"
+          ? chance(LIVE_VARIANT_FRACTION)
+          : chance(PENDING_VARIANT_FRACTION);
+
+      await prisma.supplierVariantOffer.deleteMany({
+        where: { productId: product.id },
+      });
+      await prisma.productVariant.deleteMany({
+        where: { productId: product.id },
+      });
+      await prisma.supplierProductOffer.deleteMany({
+        where: { productId: product.id },
+      });
+
+      const baseOffer = await ensureBaseOfferForProduct({
+        productId: product.id,
+        retail: item.retail,
+        supplierId,
+      });
+
+      if (wantsVariants) {
+        const variants = await createVariantsForProduct({
+          productId: product.id,
+          skuBase: item.sku,
+          retail: item.retail,
+          attrs,
+          productParcel: parcel,
+        });
+
+        await ensureVariantOffersForVariants({
+          productId: product.id,
+          variants,
+          baseOfferId: baseOffer.id,
+          supplierId,
+        });
+      }
+
+      await recomputeProductAvailability(product.id);
+    }
+
+    log("Products seeded.");
+  }
+
+  /* ----------------------------------------------------------------------------
+    Validation (shipping readiness)
+  ---------------------------------------------------------------------------- */
+  async function validateSeedShippingReadiness() {
+    log("Validating shipping readiness...");
+
+    const badProducts = await prisma.product.findMany({
+      where: {
+        isDeleted: false,
+        OR: [
+          { weightGrams: null },
+          { lengthCm: null },
+          { widthCm: null },
+          { heightCm: null },
+          { shippingClass: null },
+        ],
       },
-      create: {
-        code: z.code,
-        name: z.name,
-        country: "Nigeria",
-        statesJson: z.statesJson,
-        lgasJson: z.lgasJson,
+      select: { id: true, title: true, sku: true },
+      take: 20,
+    });
+
+    if (badProducts.length) {
+      throw new Error(
+        `Shipping validation failed: ${badProducts.length} product(s) missing parcel fields. ` +
+        `Examples: ${badProducts.map((p) => p.sku || p.id).join(", ")}`
+      );
+    }
+
+    const badVariants = await prisma.productVariant.findMany({
+      where: {
         isActive: true,
-        priority: z.priority,
+        OR: [
+          { weightGrams: null },
+          { lengthCm: null },
+          { widthCm: null },
+          { heightCm: null },
+          { shippingClassOverride: null },
+        ],
       },
+      select: { id: true, sku: true },
+      take: 20,
+    });
+
+    if (badVariants.length) {
+      throw new Error(
+        `Shipping validation failed: ${badVariants.length} variant(s) missing parcel override fields. ` +
+        `Examples: ${badVariants.map((v) => v.sku || v.id).join(", ")}`
+      );
+    }
+
+    const badSuppliers = await prisma.supplier.findMany({
+      where: {
+        OR: [
+          { shippingEnabled: false },
+          { shipsNationwide: false },
+          { registeredAddressId: null },
+          { pickupAddressId: null },
+        ],
+      },
+      select: { id: true, name: true },
+      take: 20,
+    });
+
+    if (badSuppliers.length) {
+      throw new Error(
+        `Shipping validation failed: ${badSuppliers.length} supplier(s) not shipping-ready. ` +
+        `Examples: ${badSuppliers.map((s) => s.name).join(", ")}`
+      );
+    }
+
+    const zones = await prisma.shippingZone.findMany({
+      where: { isActive: true },
       select: { id: true, code: true },
     });
 
-    zoneByCode.set(zone.code, zone.id);
-  }
-
-  await prisma.shippingRateCard.deleteMany({
-    where: { zoneId: { in: [...zoneByCode.values()] } },
-  });
-
-  const bands = [
-    { min: 0, max: 1000 },
-    { min: 1000, max: 3000 },
-    { min: 3000, max: 5000 },
-    { min: 5000, max: 10000 },
-    { min: 10000, max: null },
-  ];
-
-  const zonePricing: Record<
-    string,
-    { base: number; perKg: number; remote: number; fallback?: boolean }
-  > = {
-    LAGOS_LOCAL: { base: 900, perKg: 180, remote: 0 },
-    SW_NEAR: { base: 1400, perKg: 260, remote: 120 },
-    SOUTH_REGIONAL: { base: 1900, perKg: 360, remote: 220 },
-    NORTH_REGIONAL: { base: 2400, perKg: 480, remote: 300 },
-    NIGERIA_FALLBACK: { base: 3500, perKg: 650, remote: 500, fallback: true },
-  };
-
-  for (const [code, zoneId] of zoneByCode.entries()) {
-    const p = zonePricing[code];
-
-    for (const b of bands) {
-      const heavyAdder = b.min >= 5000 ? 350 : 0;
-      const fragileAdder = b.min >= 5000 ? 450 : 0;
-      const bulkyAdder = b.min >= 5000 ? 600 : 0;
-
-      await prisma.shippingRateCard.create({
-        data: {
-          zoneId,
-          serviceLevel: "STANDARD",
-          parcelClass: "STANDARD",
-          minWeightGrams: b.min,
-          maxWeightGrams: b.max,
-          volumetricDivisor: 5000,
-          baseFee: toDec2(p.base + heavyAdder),
-          perKgFee: toDec2(p.perKg),
-          remoteSurcharge: toDec2(p.remote),
-          fuelSurcharge: toDec2(p.fallback ? 180 : 70),
-          handlingFee: toDec2(p.fallback ? 150 : 50),
-          currency: "NGN",
-          etaMinDays:
-            code === "LAGOS_LOCAL"
-              ? 1
-              : code === "SW_NEAR"
-                ? 2
-                : code === "NIGERIA_FALLBACK"
-                  ? 4
-                  : 3,
-          etaMaxDays:
-            code === "LAGOS_LOCAL"
-              ? 2
-              : code === "SW_NEAR"
-                ? 4
-                : code === "NIGERIA_FALLBACK"
-                  ? 8
-                  : 6,
-          isActive: true,
-        },
+    for (const z of zones) {
+      const count = await prisma.shippingRateCard.count({
+        where: { zoneId: z.id, isActive: true },
       });
-
-      await prisma.shippingRateCard.create({
-        data: {
-          zoneId,
-          serviceLevel: "STANDARD",
-          parcelClass: "FRAGILE",
-          minWeightGrams: b.min,
-          maxWeightGrams: b.max,
-          volumetricDivisor: 5000,
-          baseFee: toDec2(p.base + 300 + fragileAdder),
-          perKgFee: toDec2(p.perKg + 70),
-          remoteSurcharge: toDec2(p.remote),
-          fuelSurcharge: toDec2(p.fallback ? 220 : 90),
-          handlingFee: toDec2(p.fallback ? 220 : 120),
-          currency: "NGN",
-          etaMinDays:
-            code === "LAGOS_LOCAL"
-              ? 1
-              : code === "SW_NEAR"
-                ? 2
-                : code === "NIGERIA_FALLBACK"
-                  ? 4
-                  : 3,
-          etaMaxDays:
-            code === "LAGOS_LOCAL"
-              ? 2
-              : code === "SW_NEAR"
-                ? 4
-                : code === "NIGERIA_FALLBACK"
-                  ? 9
-                  : 7,
-          isActive: true,
-        },
-      });
-
-      await prisma.shippingRateCard.create({
-        data: {
-          zoneId,
-          serviceLevel: "STANDARD",
-          parcelClass: "BULKY",
-          minWeightGrams: b.min,
-          maxWeightGrams: b.max,
-          volumetricDivisor: 4000,
-          baseFee: toDec2(p.base + 550 + bulkyAdder),
-          perKgFee: toDec2(p.perKg + 110),
-          remoteSurcharge: toDec2(p.remote + 80),
-          fuelSurcharge: toDec2(p.fallback ? 260 : 110),
-          handlingFee: toDec2(p.fallback ? 260 : 150),
-          currency: "NGN",
-          etaMinDays:
-            code === "LAGOS_LOCAL"
-              ? 1
-              : code === "SW_NEAR"
-                ? 2
-                : code === "NIGERIA_FALLBACK"
-                  ? 5
-                  : 4,
-          etaMaxDays:
-            code === "LAGOS_LOCAL"
-              ? 3
-              : code === "SW_NEAR"
-                ? 5
-                : code === "NIGERIA_FALLBACK"
-                  ? 10
-                  : 8,
-          isActive: true,
-        },
-      });
-    }
-  }
-
-  log("Shipping zones + rate cards ensured.");
-}
-
-/* ----------------------------------------------------------------------------
-  Product generation
----------------------------------------------------------------------------- */
-
-function baseTitlesPool() {
-  return [
-    "Electric Kettle",
-    "Wireless Headphones",
-    "Cotton T-Shirt",
-    "Running Sneakers",
-    "Bluetooth Speaker",
-    "Kitchen Blender",
-    "Analog Wristwatch",
-    "Laptop Backpack",
-    "Silicone Phone Case",
-    "Desk Lamp",
-    "Insulated Water Bottle",
-    "Power Bank",
-    "Standing Fan",
-    "2-Slice Toaster",
-    "Wireless Mouse",
-    "Mechanical Keyboard",
-    "USB Wall Charger",
-    "Wi-Fi Router",
-    "Extension Cable",
-    "Ceramic Coffee Mug",
-    "Pressure Cooker",
-    "Air Fryer",
-    "Microwave Oven",
-    "Water Bottle",
-    "Flask Set",
-    "Dinner Plate Set",
-    "Serving Bowl",
-    "Storage Container Set",
-    "Lunch Box",
-    "Dish Rack",
-    "Spice Rack",
-    "Drawer Organizer",
-    "Mop Bucket Set",
-    "Floor Cleaner",
-    "Bathroom Cleaner",
-    "Kitchen Cleaner",
-    "Trash Bin",
-    "Air Freshener",
-    "Steam Iron",
-    "Water Dispenser",
-    "Refrigerator Organizer",
-    "Laundry Basket",
-    "Drying Rack",
-    "Ironing Board",
-    "Wardrobe Organizer",
-    "Stackable Bin",
-    "LED Lamp",
-    "Power Strip",
-    "Lantern Light",
-    "Garden Hose",
-  ];
-}
-
-async function seedProducts(args: {
-  superAdminId: string;
-  categories: { id: string; name?: string }[];
-  brands: { id: string; name: string; slug: string }[];
-  suppliers: { id: string }[];
-  attrs: Awaited<ReturnType<typeof ensureAttributes>>;
-}) {
-  const { superAdminId, categories, brands, suppliers, attrs } = args;
-
-  const liveTargets = LIVE_PRODUCTS_TOTAL;
-  const pendingTargets = PENDING_PRODUCTS_TOTAL;
-
-  log(`Seeding ${liveTargets} LIVE products, ${pendingTargets} PENDING products…`);
-
-  if (brands.length < 4) {
-    throw new Error("Need at least 4 brands to satisfy 2–4 brands per base product.");
-  }
-
-  const plan: Array<{
-    status: string;
-    title: string;
-    brandId: string;
-    sku: string;
-    retail: number;
-  }> = [];
-
-  const titles = baseTitlesPool();
-  let liveCount = 0;
-  let globalIndex = 1;
-
-  for (const t of titles) {
-    if (liveCount >= liveTargets) break;
-
-    const nBrands = randInt(MIN_BRANDS_PER_BASE, MAX_BRANDS_PER_BASE);
-    const chosenBrands = pick(brands, nBrands);
-
-    for (const b of chosenBrands) {
-      if (liveCount >= liveTargets) break;
-
-      const sku = `LIVE-${String(globalIndex).padStart(3, "0")}`;
-      const retail = 9000 + globalIndex * 450;
-
-      plan.push({ status: "LIVE", title: t, brandId: b.id, sku, retail });
-
-      liveCount++;
-      globalIndex++;
-    }
-  }
-
-  if (liveCount < liveTargets) {
-    throw new Error(
-      `Unable to build ${liveTargets} LIVE products from current title/brand pool. Built only ${liveCount}.`
-    );
-  }
-
-  for (let i = 1; i <= pendingTargets; i++) {
-    const baseTitle = titles[(i - 1) % titles.length];
-    const title = `${baseTitle} (Pending Review)`;
-    const b = brands[(i - 1) % brands.length];
-    const sku = `PEND-${String(i).padStart(3, "0")}`;
-    const retail = 6500 + i * 500;
-    plan.push({ status: "PENDING", title, brandId: b.id, sku, retail });
-  }
-
-  const usedBySupplier = new Map<string, Set<string>>();
-
-  for (const item of plan) {
-    const categoryId = categories[randInt(0, categories.length - 1)].id;
-
-    const supplierId = pickSupplierForItem(suppliers, usedBySupplier, item.title, item.brandId);
-    const key = productKeyForSupplier(item.title, item.brandId);
-    const set = usedBySupplier.get(supplierId) ?? new Set<string>();
-    set.add(key);
-    usedBySupplier.set(supplierId, set);
-
-    const existing = await prisma.product.findFirst({
-      where: {
-        supplierId,
-        brandId: item.brandId,
-        sku: item.sku,
-        isDeleted: false,
-      },
-      select: { id: true },
-    });
-
-    const parcel = parcelForTitle(item.title);
-
-    const product = existing
-      ? await prisma.product.update({
-        where: { id: existing.id },
-        data: {
-          title: item.title,
-          description:
-            item.status === "LIVE"
-              ? "Live product seeded for development and testing."
-              : "Pending product seeded for development and testing.",
-          retailPrice: toDec(item.retail),
-          sku: item.sku,
-          status: item.status,
-          imagesJson: pics(`${item.sku}-${item.brandId}`),
-          isDeleted: false,
-          availableQty: 0,
-          inStock: true,
-          shippingCost: toDec2(0),
-          weightGrams: parcel.weightGrams,
-          lengthCm: toDec2(parcel.lengthCm),
-          widthCm: toDec2(parcel.widthCm),
-          heightCm: toDec2(parcel.heightCm),
-          isFragile: parcel.isFragile,
-          isBulky: parcel.isBulky,
-          shippingClass: parcel.shippingClass,
-          freeShipping: false,
-          supplier: { connect: { id: supplierId } },
-          category: { connect: { id: categoryId } },
-          brand: { connect: { id: item.brandId } },
-          owner: { connect: { id: superAdminId } },
-          createdBy: { connect: { id: superAdminId } },
-          updatedBy: { connect: { id: superAdminId } },
-        },
-        select: { id: true, sku: true },
-      })
-      : await prisma.product.create({
-        data: {
-          title: item.title,
-          description:
-            item.status === "LIVE"
-              ? "Live product seeded for development and testing."
-              : "Pending product seeded for development and testing.",
-          retailPrice: toDec(item.retail),
-          sku: item.sku,
-          status: item.status,
-          imagesJson: pics(`${item.sku}-${item.brandId}`),
-          isDeleted: false,
-          availableQty: 0,
-          inStock: true,
-          shippingCost: toDec2(0),
-          weightGrams: parcel.weightGrams,
-          lengthCm: toDec2(parcel.lengthCm),
-          widthCm: toDec2(parcel.widthCm),
-          heightCm: toDec2(parcel.heightCm),
-          isFragile: parcel.isFragile,
-          isBulky: parcel.isBulky,
-          shippingClass: parcel.shippingClass,
-          freeShipping: false,
-          supplier: { connect: { id: supplierId } },
-          category: { connect: { id: categoryId } },
-          brand: { connect: { id: item.brandId } },
-          owner: { connect: { id: superAdminId } },
-          createdBy: { connect: { id: superAdminId } },
-          updatedBy: { connect: { id: superAdminId } },
-        },
-        select: { id: true, sku: true },
-      });
-
-    await ensureProductAttributeOptions(product.id, attrs);
-
-    const wantsVariants =
-      item.status === "LIVE"
-        ? chance(LIVE_VARIANT_FRACTION)
-        : chance(PENDING_VARIANT_FRACTION);
-
-    await prisma.supplierVariantOffer.deleteMany({
-      where: { productId: product.id },
-    });
-    await prisma.productVariant.deleteMany({
-      where: { productId: product.id },
-    });
-    await prisma.supplierProductOffer.deleteMany({
-      where: { productId: product.id },
-    });
-
-    const baseOffer = await ensureBaseOfferForProduct({
-      productId: product.id,
-      retail: item.retail,
-      supplierId,
-    });
-
-    if (wantsVariants) {
-      const variants = await createVariantsForProduct({
-        productId: product.id,
-        skuBase: item.sku,
-        retail: item.retail,
-        attrs,
-        productParcel: parcel,
-      });
-
-      await ensureVariantOffersForVariants({
-        productId: product.id,
-        variants,
-        baseOfferId: baseOffer.id,
-        supplierId,
-      });
+      if (count === 0) {
+        throw new Error(
+          `Shipping validation failed: zone ${z.code} has no active rate cards`
+        );
+      }
     }
 
-    await recomputeProductAvailability(product.id);
+    log("Shipping readiness validation passed ✅");
   }
 
-  log("Products seeded.");
-}
+  /* ----------------------------------------------------------------------------
+    Main
+  ---------------------------------------------------------------------------- */
+  async function main() {
+    await ensureCoreSettings();
+    await ensureShippingSetup();
 
-/* ----------------------------------------------------------------------------
-  Validation (shipping readiness)
----------------------------------------------------------------------------- */
-async function validateSeedShippingReadiness() {
-  log("Validating shipping readiness...");
+    const superId = await ensureSuperAdmin();
+    const { suppliers } = await ensureSupplierUserAndSuppliers();
+    const categories = await ensureCategoriesFromTree();
+    const brands = await ensureBrands();
+    const attrs = await ensureAttributes();
 
-  const badProducts = await prisma.product.findMany({
-    where: {
-      isDeleted: false,
-      OR: [
-        { weightGrams: null },
-        { lengthCm: null },
-        { widthCm: null },
-        { heightCm: null },
-        { shippingClass: null },
-      ],
-    },
-    select: { id: true, title: true, sku: true },
-    take: 20,
-  });
-
-  if (badProducts.length) {
-    throw new Error(
-      `Shipping validation failed: ${badProducts.length} product(s) missing parcel fields. ` +
-      `Examples: ${badProducts.map((p) => p.sku || p.id).join(", ")}`
-    );
-  }
-
-  const badVariants = await prisma.productVariant.findMany({
-    where: {
-      isActive: true,
-      OR: [
-        { weightGrams: null },
-        { lengthCm: null },
-        { widthCm: null },
-        { heightCm: null },
-        { shippingClassOverride: null },
-      ],
-    },
-    select: { id: true, sku: true },
-    take: 20,
-  });
-
-  if (badVariants.length) {
-    throw new Error(
-      `Shipping validation failed: ${badVariants.length} variant(s) missing parcel override fields. ` +
-      `Examples: ${badVariants.map((v) => v.sku || v.id).join(", ")}`
-    );
-  }
-
-  const badSuppliers = await prisma.supplier.findMany({
-    where: {
-      OR: [
-        { shippingEnabled: false },
-        { shipsNationwide: false },
-        { registeredAddressId: null },
-        { pickupAddressId: null },
-      ],
-    },
-    select: { id: true, name: true },
-    take: 20,
-  });
-
-  if (badSuppliers.length) {
-    throw new Error(
-      `Shipping validation failed: ${badSuppliers.length} supplier(s) not shipping-ready. ` +
-      `Examples: ${badSuppliers.map((s) => s.name).join(", ")}`
-    );
-  }
-
-  const zones = await prisma.shippingZone.findMany({
-    where: { isActive: true },
-    select: { id: true, code: true },
-  });
-
-  for (const z of zones) {
-    const count = await prisma.shippingRateCard.count({
-      where: { zoneId: z.id, isActive: true },
+    await seedProducts({
+      superAdminId: superId,
+      categories,
+      brands,
+      suppliers,
+      attrs,
     });
-    if (count === 0) {
-      throw new Error(
-        `Shipping validation failed: zone ${z.code} has no active rate cards`
-      );
-    }
+
+    await validateSeedShippingReadiness();
+
+    log("Seed complete.");
+    log(`Super Admin: ${SUPER_EMAIL} / ${SUPER_PASS}`);
+    log(`Supplier: ${SUPPLIER_EMAIL} / ${SUPPLIER_PASS}`);
   }
 
-  log("Shipping readiness validation passed ✅");
-}
-
-/* ----------------------------------------------------------------------------
-  Main
----------------------------------------------------------------------------- */
-async function main() {
-  await ensureCoreSettings();
-  await ensureShippingSetup();
-
-  const superId = await ensureSuperAdmin();
-  const { suppliers } = await ensureSupplierUserAndSuppliers();
-  const categories = await ensureCategoriesFromTree();
-  const brands = await ensureBrands();
-  const attrs = await ensureAttributes();
-
-  await seedProducts({
-    superAdminId: superId,
-    categories,
-    brands,
-    suppliers,
-    attrs,
-  });
-
-  await validateSeedShippingReadiness();
-
-  log("Seed complete.");
-  log(`Super Admin: ${SUPER_EMAIL} / ${SUPER_PASS}`);
-  log(`Supplier: ${SUPPLIER_EMAIL} / ${SUPPLIER_PASS}`);
-}
-
-main()
-  .catch((e) => {
-    console.error("[seed] failed:", e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+  main()
+    .catch((e) => {
+      console.error("[seed] failed:", e);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });

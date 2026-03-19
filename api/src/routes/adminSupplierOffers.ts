@@ -15,8 +15,8 @@ const router = express.Router();
  * --------------------------------------------------------------------------*/
 const wrap =
   (fn: (req: Request, res: Response, next: NextFunction) => any): RequestHandler =>
-  (req, res, next) =>
-    Promise.resolve(fn(req, res, next)).catch(next);
+    (req, res, next) =>
+      Promise.resolve(fn(req, res, next)).catch(next);
 
 /* ----------------------------------------------------------------------------
  * Helpers
@@ -405,7 +405,11 @@ async function applyProductChangePatchTx(
       if (!variantId || !supplierId) continue;
 
       const existingVarOffer = await tx.supplierVariantOffer.findFirst({
-        where: { variantId, supplierId },
+        where: {
+          productId,
+          variantId,
+          supplierId,
+        },
         select: { id: true },
       });
 
@@ -750,11 +754,14 @@ const bulkOffersHandler = wrap(async (req, res) => {
 
   const [baseOffers, variantOffers] = await Promise.all([
     prisma.supplierProductOffer.findMany({
-      where: { productId: { in: ids } },
+      where: {
+        productId: { in: ids },
+      },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
         productId: true,
+        supplierId: true,
         basePrice: true,
         currency: true,
         availableQty: true,
@@ -764,7 +771,12 @@ const bulkOffersHandler = wrap(async (req, res) => {
       },
     }),
     prisma.supplierVariantOffer.findMany({
-      where: { productId: { in: ids } },
+      where: {
+        productId: { in: ids },
+        variant: {
+          productId: { in: ids },
+        },
+      },
       orderBy: { createdAt: "desc" },
       include: {
         variant: { select: { id: true, sku: true, productId: true } },
@@ -772,8 +784,25 @@ const bulkOffersHandler = wrap(async (req, res) => {
     }),
   ]);
 
-  const baseIds = baseOffers.map((b) => b.id);
-  const variantIds = variantOffers.map((v) => v.id);
+  const safeBaseOffers = (baseOffers || []).filter((b: any) => {
+    const productMeta = supplierByProductId.get(String(b.productId));
+    if (!productMeta) return false;
+
+    return String(b.supplierId ?? "") === String(productMeta.supplierId);
+  });
+
+  const safeVariantOffers = (variantOffers || []).filter((v: any) => {
+    const productMeta = supplierByProductId.get(String(v.productId));
+    if (!productMeta) return false;
+
+    return (
+      String(v.productId) === String(v.variant?.productId ?? "") &&
+      String(v.supplierId ?? "") === String(productMeta.supplierId)
+    );
+  });
+
+  const baseIds = safeBaseOffers.map((b: any) => b.id);
+  const variantIds = safeVariantOffers.map((v: any) => v.id);
 
   const [baseOrderRows, variantOrderRows] = await Promise.all([
     baseIds.length
@@ -794,11 +823,11 @@ const bulkOffersHandler = wrap(async (req, res) => {
   const variantUsedSet = new Set(variantOrderRows.map((o) => o.chosenSupplierVariantOfferId));
 
   const out: any[] = [];
-  for (const b of baseOffers as any[]) {
+  for (const b of safeBaseOffers as any[]) {
     const supplierMeta = supplierByProductId.get(String(b.productId));
     out.push(toDtoBase(b, supplierMeta, { hasOrders: baseUsedSet.has(b.id) }));
   }
-  for (const v of variantOffers as any[]) {
+  for (const v of safeVariantOffers as any[]) {
     const supplierMeta = supplierByProductId.get(String(v.productId));
     out.push(toDtoVariant(v, supplierMeta, { hasOrders: variantUsedSet.has(v.id) }));
   }
@@ -809,6 +838,7 @@ const bulkOffersHandler = wrap(async (req, res) => {
 router.get("/supplier-offers", bulkOffersHandler);
 router.get("/", bulkOffersHandler);
 
+
 router.get(
   "/products/:productId/supplier-offers",
   wrap(async (req, res) => {
@@ -816,7 +846,11 @@ router.get(
 
     const product = await prisma.product.findUnique({
       where: { id: productId },
-      select: { id: true, supplierId: true, supplier: { select: { name: true } } },
+      select: {
+        id: true,
+        supplierId: true,
+        supplier: { select: { name: true } },
+      },
     });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
@@ -827,11 +861,15 @@ router.get(
 
     const [baseOffers, variantOffers] = await Promise.all([
       prisma.supplierProductOffer.findMany({
-        where: { productId },
+        where: {
+          productId,
+          supplierId: String(product.supplierId),
+        },
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
           productId: true,
+          supplierId: true,
           basePrice: true,
           currency: true,
           availableQty: true,
@@ -841,7 +879,13 @@ router.get(
         },
       }),
       prisma.supplierVariantOffer.findMany({
-        where: { productId },
+        where: {
+          productId,
+          supplierId: String(product.supplierId),
+          variant: {
+            productId,
+          },
+        },
         orderBy: { createdAt: "desc" },
         include: {
           variant: { select: { id: true, sku: true, productId: true } },
@@ -849,9 +893,21 @@ router.get(
       }),
     ]);
 
+    const safeBaseOffers = (baseOffers || []).filter((b: any) => {
+      return String(b.supplierId ?? "") === String(product.supplierId ?? "");
+    });
+
+    const safeVariantOffers = (variantOffers || []).filter((v: any) => {
+      return (
+        String(v.supplierId ?? "") === String(product.supplierId ?? "") &&
+        String(v.productId) === String(productId) &&
+        String(v.variant?.productId ?? "") === String(productId)
+      );
+    });
+
     const out: any[] = [];
-    for (const b of baseOffers as any[]) out.push(toDtoBase(b, supplierMeta));
-    for (const v of variantOffers as any[]) out.push(toDtoVariant(v, supplierMeta));
+    for (const b of safeBaseOffers as any[]) out.push(toDtoBase(b, supplierMeta));
+    for (const v of safeVariantOffers as any[]) out.push(toDtoVariant(v, supplierMeta));
 
     return res.json({ data: out });
   })
@@ -937,7 +993,11 @@ router.post(
     });
 
     const existingVariant = await prisma.supplierVariantOffer.findFirst({
-      where: { variantId: String(variantId), supplierId },
+      where: {
+        productId,
+        variantId: String(variantId),
+        supplierId,
+      },
       select: { id: true },
     });
 
@@ -1084,7 +1144,11 @@ router.patch(
 
           const moved = await prisma.$transaction(async (tx) => {
             const existingVariant = await tx.supplierVariantOffer.findFirst({
-              where: { variantId: targetVariantId, supplierId },
+              where: {
+                productId,
+                variantId: targetVariantId,
+                supplierId,
+              },
               select: { id: true },
             });
 
@@ -1192,6 +1256,12 @@ router.patch(
         include: { variant: { select: { id: true, sku: true, productId: true } } },
       });
       if (!existing) return res.status(404).json({ error: "Variant offer not found" });
+
+      if (!existing.variant || String(existing.variant.productId) !== String(existing.productId)) {
+        return res.status(409).json({
+          error: "Corrupt variant offer: variant.productId does not match offer.productId",
+        });
+      }
 
       const productId = String(existing.productId);
 
@@ -1331,14 +1401,33 @@ router.patch(
       if (patch.isActive !== undefined) data.isActive = !!patch.isActive;
 
       if (patch.variantId && typeof patch.variantId === "string") {
+        const targetVariantId = String(patch.variantId);
+
         const variant = await prisma.productVariant.findUnique({
-          where: { id: String(patch.variantId) },
+          where: { id: targetVariantId },
           select: { id: true, productId: true },
         });
         if (!variant || String(variant.productId) !== productId) {
           return res.status(400).json({ error: "variantId does not belong to this product" });
         }
-        data.variantId = String(patch.variantId);
+
+        const conflicting = await prisma.supplierVariantOffer.findFirst({
+          where: {
+            productId,
+            supplierId,
+            variantId: targetVariantId,
+            id: { not: existing.id },
+          },
+          select: { id: true },
+        });
+
+        if (conflicting) {
+          return res.status(409).json({
+            error: "Duplicate variant offer for this supplier + product + variantId.",
+          });
+        }
+
+        data.variantId = targetVariantId;
       }
 
       const base = await prisma.supplierProductOffer.findFirst({
@@ -1505,27 +1594,51 @@ router.post(
 
     const product = await prisma.product.findUnique({
       where: { id: productId },
-      select: { id: true },
+      select: { id: true, supplierId: true },
     });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
     const result = await prisma.$transaction(async (tx) => {
       const variantOffers = await tx.supplierVariantOffer.findMany({
         where: { productId },
-        select: {
-          id: true,
-          supplierId: true,
-          supplierProductOfferId: true,
+        include: {
+          variant: {
+            select: {
+              id: true,
+              productId: true,
+            },
+          },
         },
       });
 
       let fixedBaseLink = 0;
+      let removedCorruptRows = 0;
+      let fixedSupplierId = 0;
 
       for (const vo of variantOffers as any[]) {
+        const variantBelongsToProduct =
+          !!vo.variant && String(vo.variant.productId) === String(productId);
+
+        if (!variantBelongsToProduct) {
+          await tx.supplierVariantOffer.delete({
+            where: { id: String(vo.id) },
+          });
+          removedCorruptRows += 1;
+          continue;
+        }
+
+        if (String(vo.supplierId ?? "") !== String(product.supplierId ?? "")) {
+          await tx.supplierVariantOffer.update({
+            where: { id: String(vo.id) },
+            data: { supplierId: String(product.supplierId ?? "") },
+          });
+          fixedSupplierId += 1;
+        }
+
         const base = await tx.supplierProductOffer.findFirst({
           where: {
             productId,
-            supplierId: String(vo.supplierId),
+            supplierId: String(product.supplierId ?? ""),
           },
           select: { id: true },
         });
@@ -1548,7 +1661,12 @@ router.post(
       }
 
       await recomputeProductStockTx(tx, productId);
-      return { scanned: variantOffers.length, fixedBaseLink };
+      return {
+        scanned: variantOffers.length,
+        fixedBaseLink,
+        fixedSupplierId,
+        removedCorruptRows,
+      };
     });
 
     return res.json({ ok: true, productId, ...result });

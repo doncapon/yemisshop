@@ -26,40 +26,86 @@ const RESEND_COOLDOWN_SEC = 60;
 const DAILY_CAP = 50;
 
 // ---------------- Schemas ----------------
-const RegisterSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-  firstName: z.string().min(1),
-  middleName: z.string().optional(),
-  lastName: z.string().min(1),
-  role: z.string().default("SHOPPER"),
+const RegisterSchema = z
+  .object({
+    email: z.string().email(),
+    password: z.string().min(8),
+    firstName: z.string().min(1),
+    middleName: z.string().optional(),
+    lastName: z.string().min(1),
+    role: z.string().default("SHOPPER"),
 
-  // ✅ now required
-  dialCode: z
-    .string()
-    .trim()
-    .min(1, "Country dial code is required")
-    .refine((v) => /^\+\d{1,4}$/.test(v), "Invalid country dial code"),
+    // ✅ optional now
+    dialCode: z.preprocess(
+      (v) => {
+        const s = String(v ?? "").trim();
+        return s ? s : undefined;
+      },
+      z
+        .string()
+        .refine((v) => /^\+\d{1,4}$/.test(v), "Invalid country dial code")
+        .optional()
+    ),
 
-  // ✅ now required
-  localPhone: z
-    .string()
-    .trim()
-    .min(6, "Phone number is required")
-    .transform((v) => v.replace(/\D/g, ""))
-    .refine((v) => v.length >= 6, "Please enter a valid phone number")
-    .refine((v) => v.length <= 15, "Please enter a valid phone number"),
+    // ✅ optional now
+    localPhone: z.preprocess(
+      (v) => {
+        const s = String(v ?? "").trim();
+        return s ? s : undefined;
+      },
+      z
+        .string()
+        .transform((v) => v.replace(/\D/g, ""))
+        .refine((v) => v.length >= 6, "Please enter a valid phone number")
+        .refine((v) => v.length <= 15, "Please enter a valid phone number")
+        .optional()
+    ),
 
-  dateOfBirth: z
-    .string()
-    .transform((s) => new Date(s))
-    .refine((d) => !Number.isNaN(+d), { message: "Invalid date of birth" })
-    .refine((d) => {
-      const today = new Date();
-      const years = (today.getTime() - d.getTime()) / (365.25 * 24 * 3600 * 1000);
-      return years >= 18;
-    }, { message: "You must be at least 18 years old" }),
-});
+    dateOfBirth: z
+      .string()
+      .transform((s) => new Date(s))
+      .refine((d) => !Number.isNaN(+d), { message: "Invalid date of birth" })
+      .refine((d) => {
+        const today = new Date();
+        const years = (today.getTime() - d.getTime()) / (365.25 * 24 * 3600 * 1000);
+        return years >= 16;
+      }, { message: "You must be at least 16 years old" }),
+  })
+  .superRefine((data, ctx) => {
+    const hasDialCode = !!data.dialCode;
+    const hasLocalPhone = !!data.localPhone;
+
+    // ✅ if one is provided, the other must also be provided
+    if (hasDialCode !== hasLocalPhone) {
+      if (!hasDialCode) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["dialCode"],
+          message: "Country dial code is required when phone number is provided",
+        });
+      }
+
+      if (!hasLocalPhone) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["localPhone"],
+          message: "Phone number is required when country dial code is provided",
+        });
+      }
+    }
+  });
+
+function isPhoneVerificationRequired(user: {
+  role?: string | null;
+  phone?: string | null;
+}) {
+  const role = String(user.role ?? "").trim().toUpperCase();
+  const hasPhone = !!String(user.phone ?? "").trim();
+
+  // Suppliers still require phone verification.
+  // Shoppers only require phone verification if they actually provided a phone.
+  return role === "SUPPLIER" || hasPhone;
+}
 
 const VerifyPhoneSchema = z.object({
   email: z.string().email(),
@@ -272,6 +318,7 @@ router.post(
 );
 
 // ---------------- ME ----------------
+// ---------------- ME ----------------
 router.get(
   "/me",
   requireAuth,
@@ -279,41 +326,51 @@ router.get(
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const u = await prisma.user.findUnique({
+    const authMeSelect = {
+      id: true,
+      email: true,
+      role: true,
+      firstName: true,
+      middleName: true,
+      lastName: true,
+      status: true,
+      phone: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true,
+      joinedAt: true,
+      address: true,
+      defaultShippingAddressId: true,
+      defaultShippingAddress: true,
+      shippingAddresses: {
+        where: { isActive: true },
+        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+      },
+    } satisfies Prisma.UserSelect;
+
+    type AuthMeUser = Prisma.UserGetPayload<{
+      select: typeof authMeSelect;
+    }>;
+
+    const u: AuthMeUser | null = await prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        firstName: true,
-        middleName: true,
-        lastName: true,
-        status: true,
-        phone: true,
-        emailVerifiedAt: true,
-        phoneVerifiedAt: true,
-        joinedAt: true,
-        address: true,
-        shippingAddress: true,
-      } as any,
+      select: authMeSelect,
     });
 
     if (!u) return res.status(404).json({ error: "User not found" });
 
-    res.json({
-      id: u.id,
-      email: u.email,
-      role: u.role,
-      status: (u as any).status ?? "PENDING",
-      firstName: u.firstName,
-      middleName: (u as any).middleName ?? null,
-      lastName: u.lastName,
-      phone: (u as any).phone ?? null,
-      joinedAt: (u as any).joinedAt ?? null,
-      emailVerified: Boolean((u as any).emailVerifiedAt),
-      phoneVerified: Boolean((u as any).phoneVerifiedAt),
-      address: (u as any).address ?? null,
-      shippingAddress: (u as any).shippingAddress ?? null,
+    const primaryShippingAddress =
+      u.defaultShippingAddress ??
+      u.shippingAddresses.find((a) => a.isDefault) ??
+      u.shippingAddresses[0] ??
+      null;
+
+    return res.json({
+      data: {
+        ...u,
+        shippingAddress: primaryShippingAddress, // legacy compatibility
+        defaultShippingAddressId:
+          u.defaultShippingAddressId ?? primaryShippingAddress?.id ?? null,
+      },
     });
   })
 );
@@ -424,10 +481,14 @@ router.post(
     if (existing) return res.status(409).json({ error: "Email already registered" });
 
     const passwordHash = await bcrypt.hash(body.password, 10);
-    const phone = toE164(body.dialCode, body.localPhone);
 
-    if (!phone) {
-      return res.status(400).json({ error: "A valid phone number is required" });
+    // ✅ phone is optional now
+    let phone: string | null = null;
+    if (body.dialCode && body.localPhone) {
+      phone = toE164(body.dialCode, body.localPhone);
+      if (!phone) {
+        return res.status(400).json({ error: "Please enter a valid phone number" });
+      }
     }
 
     const user = await prisma.user.create({
@@ -438,14 +499,16 @@ router.post(
         firstName: body.firstName,
         middleName: body.middleName,
         lastName: body.lastName,
-        phone,
+        phone, // ✅ null when omitted
         status: "PENDING",
         dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : null,
       } as any,
     });
 
     const result = {
-      message: "Registered. Verify email and phone number.",
+      message: phone
+        ? "Registered. Verify email and phone number."
+        : "Registered. Verify your email to continue.",
       tempToken: signJwt({ id: user.id, role: user.role, email: user.email }, "1h"),
       phoneOtpSent: false,
       emailSent: false,
@@ -464,30 +527,33 @@ router.post(
         console.warn("[register] send email verification failed:", (e as any)?.message);
       }
 
-      const r = await issueOtp({
-        identifier: user.id,
-        userId: user.id,
-        phoneE164: phone,
-        channelPref: "whatsapp",
-      });
-
-      result.phoneOtpSent = !!r.ok;
-
-      console.log("[register] OTP send result", {
-        userId: user.id,
-        phoneE164: phone,
-        ok: r.ok,
-        error: r.ok ? null : r.error,
-      });
-
-      if (r.ok) {
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            phoneOtpLastSentAt: new Date(),
-            phoneOtpSendCountDay: 1,
-          } as any,
+      // ✅ only send OTP if phone exists
+      if (phone) {
+        const r = await issueOtp({
+          identifier: user.id,
+          userId: user.id,
+          phone,
+          channelPref: "whatsapp",
         });
+
+        result.phoneOtpSent = !!r.ok;
+
+        console.log("[register] OTP send result", {
+          userId: user.id,
+          phoneE164: phone,
+          ok: r.ok,
+          error: r.ok ? null : r.error,
+        });
+
+        if (r.ok) {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: {
+              phoneOtpLastSentAt: new Date(),
+              phoneOtpSendCountDay: 1,
+            } as any,
+          });
+        }
       }
     } catch (e) {
       console.warn("[register] post-register side-effects failed (continuing):", (e as any)?.message);
@@ -532,19 +598,26 @@ router.get("/verify-email", async (req, res) => {
         id: true,
         email: true,
         role: true,
+        phone: true,
         emailVerifiedAt: true,
         phoneVerifiedAt: true,
         status: true,
       } as any,
     });
+
     if (!user) return res.status(404).send("Account not found");
 
     const email = (decoded.email || (user as any).email || "").toLowerCase();
 
     let nextUser = user as any;
     if (!(user as any).emailVerifiedAt) {
-      const phoneOk = !!(user as any).phoneVerifiedAt;
+      const phoneRequired = isPhoneVerificationRequired({
+        role: (user as any).role,
+        phone: (user as any).phone,
+      });
+      const phoneOk = !phoneRequired || !!(user as any).phoneVerifiedAt;
       const newStatus = phoneOk ? "VERIFIED" : "PARTIAL";
+
 
       nextUser = await prisma.user.update({
         where: { id: (user as any).id },
@@ -580,6 +653,7 @@ router.get("/verify-email", async (req, res) => {
         id: true,
         email: true,
         role: true,
+        phone: true,
         emailVerifiedAt: true,
         phoneVerifiedAt: true,
         status: true,
@@ -595,7 +669,11 @@ router.get("/verify-email", async (req, res) => {
     let nextUser = legacy as any;
 
     if (!(legacy as any).emailVerifiedAt) {
-      const phoneOk = !!(legacy as any).phoneVerifiedAt;
+      const phoneRequired = isPhoneVerificationRequired({
+        role: (legacy as any).role,
+        phone: (legacy as any).phone,
+      });
+      const phoneOk = !phoneRequired || !!(legacy as any).phoneVerifiedAt;
       const newStatus = phoneOk ? "VERIFIED" : "PARTIAL";
 
       nextUser = await prisma.user.update({
@@ -805,6 +883,11 @@ router.post("/resend-otp", requireAuth, async (req, res) => {
       return res.status(401).json({ error: "Unauthenticated" });
     }
 
+    const requestedPhone = String(req.body?.phone ?? "").trim();
+    const normalizedRequestedPhone = requestedPhone
+      ? normalizePhoneToE164(requestedPhone)
+      : null;
+
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -817,31 +900,29 @@ router.post("/resend-otp", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const rawPhone = String(user.phone || "").trim();
-    if (!rawPhone) {
-      return res.status(400).json({
-        error: "No phone number is available for OTP delivery.",
-      });
+    let phoneE164 = normalizedRequestedPhone;
+
+    if (!phoneE164) {
+      const rawPhone = String(user.phone || "").trim();
+      if (!rawPhone) {
+        return res.status(400).json({
+          error: "No phone number is available for OTP delivery.",
+        });
+      }
+
+      phoneE164 = normalizePhoneToE164(rawPhone);
     }
 
-    const phoneE164 = normalizePhoneToE164(rawPhone);
     if (!phoneE164) {
       return res.status(400).json({
         error: "Phone number must be in a valid international format.",
       });
     }
 
-    if (phoneE164 !== rawPhone) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { phone: phoneE164 },
-      });
-    }
-
     const result = await issueOtp({
       identifier: user.id,
       userId: user.id,
-      phoneE164,
+      phone: phoneE164,
       channelPref: "whatsapp",
     });
 
@@ -1125,7 +1206,7 @@ router.post("/register-supplier", async (req, res) => {
         const r = await issueOtp({
           identifier: user.id,
           userId: user.id,
-          phoneE164,
+          phone: phoneE164,
           channelPref: "whatsapp",
         });
 

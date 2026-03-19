@@ -18,7 +18,6 @@ import {
   Info,
   RefreshCcw,
   MailCheck,
-  Phone,
   ExternalLink,
   Eye,
   Search,
@@ -29,12 +28,11 @@ import {
 import { motion } from "framer-motion";
 import SiteLayout from "../layouts/SiteLayout";
 
-// at top
 import { loadCartRaw, saveCartRaw } from "../utils/cartStorage";
 import { performLogout } from "../utils/logout";
 
-// replace mergeIntoLocalCart with this:
 type LocalCartItem = { productId: string; qty: number };
+
 /* ---------------------- Types ---------------------- */
 type Role = "ADMIN" | "SUPER_ADMIN" | "SUPER_USER" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
@@ -46,6 +44,7 @@ type Address = {
   city?: string | null;
   state?: string | null;
   country?: string | null;
+  phone?: string | null;
 };
 
 type MeResponse = {
@@ -59,7 +58,7 @@ type MeResponse = {
   joinedAt?: string | null;
   status?: "PENDING" | "PARTIAL" | "VERIFIED";
   emailVerified?: boolean;
-  phoneVerified?: boolean;
+  emailVerifiedAt?: string | null;
   dob?: string | null;
 
   address?: Address | null;
@@ -100,7 +99,6 @@ type OrderLite = {
   trackingUrl?: string | null;
 };
 
-// Matches /api/orders/summary (+ byStatus computed on the client)
 type OrdersSummary = {
   ordersCount: number;
   totalSpent: number;
@@ -159,13 +157,9 @@ function normRole(r: any) {
 }
 
 /* ---------------------- Local cart merge ---------------------- */
-
 function mergeIntoLocalCart(items: LocalCartItem[]) {
   try {
     const curr = Array.isArray(loadCartRaw()) ? loadCartRaw() : [];
-
-    // merge by productId ONLY (good enough for buy-again base items)
-    // If you want variant-aware later, we can enhance with variantId/options.
     const byPid = new Map<string, any>();
 
     for (const x of curr) {
@@ -197,7 +191,7 @@ function mergeIntoLocalCart(items: LocalCartItem[]) {
 
     saveCartRaw(Array.from(byPid.values()));
   } catch {
-    /* noop */
+    //
   }
 }
 
@@ -207,6 +201,7 @@ const ngn = new Intl.NumberFormat("en-NG", {
   currency: "NGN",
   maximumFractionDigits: 2,
 });
+
 const dateFmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString() : "—");
 
 function dateTimeFmt(iso?: string | null) {
@@ -214,6 +209,32 @@ function dateTimeFmt(iso?: string | null) {
   const d = new Date(iso);
   if (Number.isNaN(+d)) return "—";
   return d.toLocaleString();
+}
+
+function isTruthyFlag(v: any) {
+  return v === true || v === 1 || v === "1" || v === "true" || v === "TRUE";
+}
+
+function resolveEmailVerified(raw: any): boolean {
+  if (!raw) return false;
+
+  const payload = unwrapData<any>(raw);
+  const status = String(payload?.status ?? "").trim().toUpperCase();
+
+  return (
+    isTruthyFlag(payload?.emailVerified) ||
+    payload?.emailVerifiedAt != null ||
+    payload?.user?.emailVerifiedAt != null ||
+    isTruthyFlag(payload?.user?.emailVerified) ||
+    status === "VERIFIED"
+  );
+}
+
+function resolveEmailVerifiedAt(raw: any): string | null {
+  if (!raw) return null;
+
+  const payload = unwrapData<any>(raw);
+  return payload?.emailVerifiedAt ?? payload?.user?.emailVerifiedAt ?? null;
 }
 
 function sinceJoined(iso?: string | null) {
@@ -254,7 +275,6 @@ function initialsFrom(first?: string | null, last?: string | null, fallback?: st
 }
 
 function unwrapData<T = any>(x: any): T {
-  // Accept: {data: ...}, {item: ...}, {items: ...}, or raw
   if (x && typeof x === "object") {
     if ("data" in x) return (x as any).data as T;
     if ("item" in x) return (x as any).item as T;
@@ -271,7 +291,6 @@ async function firstSuccessful<T>(urls: string[], map: (raw: any) => T): Promise
       return map(unwrapData(res.data));
     } catch (e: any) {
       lastErr = e;
-      // If it’s a hard auth failure, don’t keep trying.
       if (isAuthError(e)) break;
     }
   }
@@ -288,11 +307,6 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
 }
 
 /* ---------------------- Data hooks ---------------------- */
-
-/**
- * Viewer identity (always the logged-in session).
- * This is what we use to decide if admin view-as is allowed.
- */
 function useViewerMe(onAuthError?: () => void) {
   return useQuery({
     queryKey: ["me"],
@@ -309,10 +323,6 @@ function useViewerMe(onAuthError?: () => void) {
   });
 }
 
-/**
- * Admin user search (for impersonation UI)
- * Uses /api/admin/users (single canonical route) with a few query param aliases.
- */
 function useAdminUserSearch(q: string, enabled: boolean, onAuthError?: () => void) {
   const dq = useDebouncedValue(q, 250);
 
@@ -331,8 +341,13 @@ function useAdminUserSearch(q: string, enabled: boolean, onAuthError?: () => voi
 
         const rows = await firstSuccessful<any>(urls, (payload: any) => payload);
 
-        const list: any[] =
-          Array.isArray(rows?.items) ? rows.items : Array.isArray(rows?.data) ? rows.data : Array.isArray(rows) ? rows : [];
+        const list: any[] = Array.isArray(rows?.items)
+          ? rows.items
+          : Array.isArray(rows?.data)
+            ? rows.data
+            : Array.isArray(rows)
+              ? rows
+              : [];
 
         return list
           .map((u: any): AdminUserLite | null => {
@@ -361,19 +376,35 @@ function useAdminUserSearch(q: string, enabled: boolean, onAuthError?: () => voi
   });
 }
 
-/**
- * Target user profile:
- * - if targetUserId is null -> returns viewer profile
- * - if targetUserId exists -> uses canonical admin endpoint
- */
 function useTargetMe(targetUserId: string | null, onAuthError?: () => void) {
   return useQuery({
     queryKey: ["me", "target", targetUserId || "self"],
     queryFn: async () => {
       if (!targetUserId) {
-        // self
         try {
-          return (await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG)).data;
+          const raw = (await api.get<any>("/api/auth/me", AXIOS_COOKIE_CFG)).data;
+
+          return {
+            id: String(raw?.id ?? ""),
+            email: String(raw?.email ?? ""),
+            role: (normRole(raw?.role) || "SHOPPER") as Role,
+            firstName: raw?.firstName ?? null,
+            lastName: raw?.lastName ?? null,
+            displayName: raw?.displayName ?? null,
+            phone: raw?.phone ?? null,
+            joinedAt: raw?.joinedAt ?? raw?.createdAt ?? null,
+            status: raw?.status ?? null,
+            emailVerified: resolveEmailVerified(raw),
+            emailVerifiedAt: resolveEmailVerifiedAt(raw),
+            dob: raw?.dob ?? raw?.dateOfBirth ?? null,
+            address: raw?.address ?? null,
+            shippingAddress: raw?.shippingAddress ?? null,
+            language: raw?.language ?? null,
+            theme: raw?.theme ?? null,
+            currency: raw?.currency ?? null,
+            productInterests: Array.isArray(raw?.productInterests) ? raw.productInterests : undefined,
+            notificationPrefs: raw?.notificationPrefs ?? null,
+          };
         } catch (e: any) {
           if (isAuthError(e)) onAuthError?.();
           throw e;
@@ -393,8 +424,8 @@ function useTargetMe(targetUserId: string | null, onAuthError?: () => void) {
           phone: u?.phone ?? null,
           joinedAt: u?.joinedAt ?? u?.createdAt ?? null,
           status: u?.status ?? null,
-          emailVerified: Boolean(u?.emailVerified ?? u?.emailVerifiedAt ?? false),
-          phoneVerified: Boolean(u?.phoneVerified ?? u?.phoneVerifiedAt ?? false),
+          emailVerified: resolveEmailVerified(u),
+          emailVerifiedAt: resolveEmailVerifiedAt(u),
           dob: u?.dob ?? null,
           address: u?.address ?? null,
           shippingAddress: u?.shippingAddress ?? null,
@@ -414,11 +445,6 @@ function useTargetMe(targetUserId: string | null, onAuthError?: () => void) {
   });
 }
 
-/**
- * Orders list (recent)
- * - self: /api/orders/mine
- * - admin-view: /api/admin/users/:id/orders
- */
 function useRecentOrders(limit: number, targetUserId: string | null, onAuthError?: () => void) {
   return useQuery({
     queryKey: ["orders", "recent", limit, targetUserId || "self"],
@@ -470,11 +496,6 @@ function useRecentOrders(limit: number, targetUserId: string | null, onAuthError
   });
 }
 
-/**
- * Orders summary
- * - self: /api/orders/summary (+ /mine to compute byStatus)
- * - admin-view: /api/admin/users/:id/orders/summary (+ /orders to compute byStatus)
- */
 function useOrdersSummary(targetUserId: string | null, onAuthError?: () => void) {
   return useQuery({
     queryKey: ["orders", "summary", targetUserId || "self"],
@@ -533,11 +554,9 @@ function useOrdersSummary(targetUserId: string | null, onAuthError?: () => void)
           }
         }
 
-        // admin view (canonical)
         const summaryUrls = [`/api/admin/users/${encodeURIComponent(targetUserId)}/orders/summary`];
         const listUrls = [`/api/admin/users/${encodeURIComponent(targetUserId)}/orders?limit=1000`];
 
-        // compute byStatus from list
         const list = await firstSuccessful<any[]>(listUrls, (payload: any) => {
           const arr = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
           return arr;
@@ -551,7 +570,6 @@ function useOrdersSummary(targetUserId: string | null, onAuthError?: () => void)
           if (s === "PAID" || s === "COMPLETED") derivedTotalSpent += Number(o.total ?? 0);
         }
 
-        // try summary for nicer recent + totals
         try {
           const summary = await firstSuccessful<any>(summaryUrls, (x) => x);
           const recent = Array.isArray(summary?.recent) ? summary.recent : [];
@@ -589,11 +607,33 @@ function useOrdersSummary(targetUserId: string | null, onAuthError?: () => void)
   });
 }
 
-/**
- * Recent transactions
- * - self: /api/payments/recent
- * - admin-view: /api/admin/users/:id/payments/recent
- */
+function useEmailVerificationStatus(email: string | null | undefined, onAuthError?: () => void) {
+  return useQuery({
+    queryKey: ["auth", "email-status", email || ""],
+    enabled: !!email,
+    queryFn: async () => {
+      try {
+        const res = await api.get("/api/auth/email-status", {
+          params: { email },
+        });
+
+        const payload = unwrapData<any>(res.data);
+
+        return {
+          emailVerified: resolveEmailVerified(payload),
+          emailVerifiedAt: resolveEmailVerifiedAt(payload),
+          raw: payload,
+        };
+      } catch (e: any) {
+        if (isAuthError(e)) onAuthError?.();
+        throw e;
+      }
+    },
+    staleTime: 10_000,
+    retry: (count, e: any) => (isAuthError(e) || isNotFound(e) ? false : count < 1),
+  });
+}
+
 function useRecentTransactions(limit: number, targetUserId: string | null, onAuthError?: () => void) {
   return useQuery({
     queryKey: ["payments", "recent-orders", limit, targetUserId || "self"],
@@ -635,7 +675,6 @@ function useRecentTransactions(limit: number, targetUserId: string | null, onAut
         return await firstSuccessful<RecentTransaction[]>(urls, (payload: any) => {
           const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
           return rows.map((o: any) => {
-            // supports either "order-ish" rows or "payment-ish" rows
             const p = o.latestPayment || o.payment || o;
             const orderId = String(o.orderId ?? o.order?.id ?? o.order?.orderId ?? o.id ?? "");
             const createdAt = String(p?.paidAt || p?.createdAt || o.createdAt || new Date().toISOString());
@@ -667,12 +706,10 @@ function useRecentTransactions(limit: number, targetUserId: string | null, onAut
   });
 }
 
-/** Total spent; admin-view uses canonical summary endpoint first */
 function useTotalSpent(targetUserId: string | null, onAuthError?: () => void) {
   return useQuery({
     queryKey: ["payments", "totalSpent", targetUserId || "self"],
     queryFn: async () => {
-      // ADMIN path
       if (targetUserId) {
         try {
           const urls = [
@@ -690,24 +727,21 @@ function useTotalSpent(targetUserId: string | null, onAuthError?: () => void) {
           }
         }
 
-        // derive from admin orders list
         try {
           const listUrls = [`/api/admin/users/${encodeURIComponent(targetUserId)}/orders?limit=1000`];
           const list = await firstSuccessful<any[]>(listUrls, (payload: any) => {
             const arr = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
             return arr;
           });
-          const total = list
+          return list
             .filter((o) => ["PAID", "COMPLETED"].includes(String(o.status || "").toUpperCase()))
             .reduce((s, o) => s + (Number(o.total ?? 0) || 0), 0);
-          return total;
         } catch (e: any) {
           if (isAuthError(e)) onAuthError?.();
           return 0;
         }
       }
 
-      // SELF path
       try {
         const r = await api.get<{ totalPaid?: number; totalPaidNgn?: number }>("/api/payments/summary", AXIOS_COOKIE_CFG);
         const v = r.data?.totalPaid ?? r.data?.totalPaidNgn;
@@ -732,10 +766,9 @@ function useTotalSpent(targetUserId: string | null, onAuthError?: () => void) {
       try {
         const res = await api.get<{ data: any[] }>("/api/orders/mine?limit=1000", AXIOS_COOKIE_CFG);
         const list = Array.isArray(res.data?.data) ? res.data.data : [];
-        const total = list
+        return list
           .filter((o) => ["PAID", "COMPLETED"].includes(String(o.status || "").toUpperCase()))
           .reduce((s, o) => s + (Number(o.total ?? 0) || 0), 0);
-        return total;
       } catch (e: any) {
         if (isAuthError(e)) onAuthError?.();
         return 0;
@@ -759,77 +792,6 @@ function useResendEmail(onAuthError?: () => void) {
   });
 }
 
-function useResendOtp(onAuthError?: () => void) {
-  return useMutation({
-    mutationFn: async () => {
-      try {
-        return (await api.post("/api/auth/resend-otp", {}, AXIOS_COOKIE_CFG)).data as { nextResendAfterSec?: number };
-      } catch (e: any) {
-        if (isAuthError(e)) onAuthError?.();
-        throw e;
-      }
-    },
-  });
-}
-
-/**
- * Verify phone OTP
- * - tries a few common endpoints (your backend may name it differently)
- */
-function useVerifyOtp(onAuthError?: () => void) {
-  return useMutation({
-    mutationFn: async (code: string) => {
-      const payload = { otp: code };
-      const endpoints = ["/api/auth/verify-otp", "/api/auth/otp/verify", "/api/auth/phone/verify", "/api/auth/verify-phone"];
-
-      let lastErr: any = null;
-
-      for (const url of endpoints) {
-        try {
-          const r = await api.post(url, payload, AXIOS_COOKIE_CFG);
-
-          // If your API returns { ok: false, ... } on 200
-          if (r?.data && typeof r.data === "object" && (r.data as any).ok === false) {
-            const msg = ((r.data as any).message || (r.data as any).error || "Invalid OTP") as string;
-            throw new Error(msg);
-          }
-
-          return r.data;
-        } catch (e: any) {
-          if (isAuthError(e)) onAuthError?.();
-          lastErr = e;
-        }
-      }
-
-      const msg =
-        lastErr?.response?.data?.error ||
-        lastErr?.response?.data?.message ||
-        lastErr?.message ||
-        "Could not verify OTP";
-      throw new Error(msg);
-    },
-  });
-}
-
-function useLogout(onAuthError?: () => void) {
-  return useMutation({
-    mutationFn: async () => {
-      const endpoints = ["/api/auth/logout", "/api/auth/signout", "/api/logout"];
-      let lastErr: any = null;
-      for (const url of endpoints) {
-        try {
-          const r = await api.post(url, {}, AXIOS_COOKIE_CFG);
-          return r.data;
-        } catch (e: any) {
-          lastErr = e;
-        }
-      }
-      if (lastErr && isAuthError(lastErr)) onAuthError?.();
-      return { ok: true };
-    },
-  });
-}
-
 /* ---------------------- UI primitives ---------------------- */
 function GlassCard(props: {
   title: string;
@@ -843,18 +805,16 @@ function GlassCard(props: {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35 }}
-      className={`overflow-visible rounded-2xl border border-zinc-200/60 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-4 sm:p-5 lg:p-6 ${props.className || ""
-        }`}
+      className={`overflow-visible rounded-2xl border border-zinc-200/60 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-4 sm:p-5 lg:p-6 ${props.className || ""}`}
     >
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="inline-flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-gradient-to-br from-fuchsia-500/15 to-cyan-500/15 text-fuchsia-600 shrink-0">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-fuchsia-500/15 to-cyan-500/15 text-fuchsia-600 sm:h-8 sm:w-8">
             {props.icon ?? <Sparkles size={16} />}
           </span>
-          <h2 className="text-sm sm:text-base font-semibold tracking-tight min-w-0 truncate">{props.title}</h2>
+          <h2 className="min-w-0 truncate text-sm font-semibold tracking-tight sm:text-base">{props.title}</h2>
         </div>
-
-        {props.right ? <div className="self-start sm:self-auto shrink-0">{props.right}</div> : null}
+        {props.right ? <div className="shrink-0 self-start sm:self-auto">{props.right}</div> : null}
       </div>
 
       {props.children}
@@ -869,6 +829,7 @@ function Stat(props: { label: string; value: string; icon?: React.ReactNode; acc
       : props.accent === "cyan"
         ? "ring-cyan-400/25 text-cyan-700"
         : "ring-violet-400/25 text-violet-700";
+
   const iconBg =
     props.accent === "emerald"
       ? "from-emerald-400/20 to-emerald-500/20 text-emerald-600"
@@ -877,15 +838,15 @@ function Stat(props: { label: string; value: string; icon?: React.ReactNode; acc
         : "from-violet-400/20 to-violet-500/20 text-violet-600";
 
   return (
-    <motion.div whileHover={{ y: -2 }} className={`p-3 sm:p-4 rounded-2xl border bg-white ring-1 ${ring} shadow-sm`}>
+    <motion.div whileHover={{ y: -2 }} className={`rounded-2xl border bg-white p-3 ring-1 shadow-sm sm:p-4 ${ring}`}>
       <div className="flex items-center gap-3">
-        <span className={`inline-grid place-items-center w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br ${iconBg}`}>
+        <span className={`inline-grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br sm:h-10 sm:w-10 ${iconBg}`}>
           {props.icon}
         </span>
 
         <div className="min-w-0">
-          <div className="text-[10px] sm:text-[11px] uppercase tracking-wide text-zinc-500 truncate">{props.label}</div>
-          <div className="mt-0.5 text-lg sm:text-xl font-semibold">{props.value}</div>
+          <div className="truncate text-[10px] uppercase tracking-wide text-zinc-500 sm:text-[11px]">{props.label}</div>
+          <div className="mt-0.5 text-lg font-semibold sm:text-xl">{props.value}</div>
         </div>
       </div>
     </motion.div>
@@ -903,8 +864,9 @@ function StatusPill({ label, count }: { label: string; count: number }) {
           : label === "FAILED" || label === "CANCELLED"
             ? "bg-rose-100 text-rose-700 border-rose-200"
             : "bg-zinc-100 text-zinc-700 border-zinc-200";
+
   return (
-    <span className={`inline-flex items-center gap-2 text-[11px] sm:text-xs px-2.5 py-1 rounded-full border ${tone}`}>
+    <span className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] sm:text-xs ${tone}`}>
       <b className="font-semibold">{label}</b>
       <span className="text-[10px] opacity-70">({count})</span>
     </span>
@@ -919,10 +881,10 @@ function PaymentBadgeInline({ status }: { status: string | undefined }) {
       : s === "FAILED" || s === "CANCELLED"
         ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
         : "bg-amber-500/10 text-amber-700 border-amber-600/20";
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] sm:text-xs border ${tone}`}>{s}</span>;
+
+  return <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] sm:text-xs ${tone}`}>{s}</span>;
 }
 
-/* --------- Nicer status for recent orders (desktop neatness) --------- */
 function prettyStatus(s?: string) {
   const v = String(s || "").trim();
   if (!v) return "UNKNOWN";
@@ -941,10 +903,7 @@ function OrderStatusChip({ status }: { status: string }) {
           : "bg-amber-500/10 text-amber-700 border-amber-600/20";
 
   return (
-    <span
-      className={`inline-flex max-w-full items-center rounded-full border px-2.5 py-0.5 text-[11px] sm:text-xs ${tone}`}
-      title={s}
-    >
+    <span className={`inline-flex max-w-full items-center rounded-full border px-2.5 py-0.5 text-[11px] sm:text-xs ${tone}`} title={s}>
       <span className="truncate">{s}</span>
     </span>
   );
@@ -963,7 +922,6 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
     nav("/login", { replace: true, state: { from: location.pathname + location.search } });
   };
 
-  // viewer identity (always)
   const viewerMeQ = useViewerMe(redirectToLogin);
   const viewer = viewerMeQ.data;
 
@@ -971,48 +929,28 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
   const viewerIsAdmin = viewerRole === "ADMIN" || viewerRole === "SUPER_ADMIN";
   const isSuperAdmin = viewerRole === "SUPER_ADMIN";
 
-  // target user id can come from:
-  // - prop (App wrapper)
-  // - route param
-  // - query param (?as=USER_ID) for impersonation
   const asParam = searchParams.get("as");
   const requestedTargetId = props.adminUserId || params.userId || asParam || null;
-
-  // We only allow "view as user" if viewer is admin/superadmin
   const targetUserId = viewerIsAdmin ? requestedTargetId : null;
-
-  // whether we're actually in view-as mode (target != self)
   const isViewingOtherUser = Boolean(targetUserId && viewer?.id && targetUserId !== viewer.id);
 
-  // target profile
   const meQ = useTargetMe(targetUserId, redirectToLogin);
-
-  // orders/payments for target (or self if targetUserId == null)
   const ordersQ = useRecentOrders(5, targetUserId, redirectToLogin);
   const ordersSummaryQ = useOrdersSummary(targetUserId, redirectToLogin);
   const transactionsQ = useRecentTransactions(5, targetUserId, redirectToLogin);
   const totalSpentQ = useTotalSpent(targetUserId, redirectToLogin);
 
-  // Self-only actions (do not allow acting on someone else from view-as)
   const resendEmail = useResendEmail(redirectToLogin);
-  const resendOtp = useResendOtp(redirectToLogin);
-  const verifyOtp = useVerifyOtp(redirectToLogin);
-  const logoutM = useLogout();
 
-  const [otpCooldown, setOtpCooldown] = useState(0);
-  const [otpCode, setOtpCode] = useState("");
   const [rebuyingId, setRebuyingId] = useState<string | null>(null);
 
-  // --- impersonation UI state ---
   const [impQ, setImpQ] = useState("");
   const adminSearchQ = useAdminUserSearch(impQ, viewerIsAdmin, redirectToLogin);
 
   const exitImpersonation = () => {
-    // remove ?as=...
     const next = new URLSearchParams(searchParams);
     next.delete("as");
     setSearchParams(next, { replace: true });
-    // also revalidate
     qc.invalidateQueries({ queryKey: ["me", "target"] }).catch(() => null);
     qc.invalidateQueries({ queryKey: ["orders"] }).catch(() => null);
     qc.invalidateQueries({ queryKey: ["payments"] }).catch(() => null);
@@ -1026,7 +964,6 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
     next.set("as", id);
     setSearchParams(next, { replace: true });
 
-    // make UI instantly reflect it
     qc.invalidateQueries({ queryKey: ["me", "target"] }).catch(() => null);
     qc.invalidateQueries({ queryKey: ["orders"] }).catch(() => null);
     qc.invalidateQueries({ queryKey: ["payments"] }).catch(() => null);
@@ -1067,15 +1004,22 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
     }
   }
 
-  // properly tick down OTP cooldown
-  useEffect(() => {
-    if (otpCooldown <= 0) return;
-    const t = setInterval(() => setOtpCooldown((s) => Math.max(0, s - 1)), 1000);
-    return () => clearInterval(t);
-  }, [otpCooldown]);
-
   const me = meQ.data;
   const initials = initialsFrom(me?.firstName, me?.lastName, me?.email);
+
+  const emailStatusQ = useEmailVerificationStatus(me?.email, redirectToLogin);
+
+  const isEmailVerified =
+    resolveEmailVerified(emailStatusQ.data) ||
+    resolveEmailVerified(me);
+
+  const greetingName =
+    me?.firstName?.trim() ||
+    me?.displayName?.trim() ||
+    me?.email?.split?.("@")?.[0] ||
+    "there";
+
+  const displayPhone = me?.shippingAddress?.phone || me?.phone || "—";
 
   const statusOrder = ["PENDING", "PROCESSING", "PAID", "SHIPPED", "DELIVERED", "FAILED", "CANCELLED"];
   const byStatusEntries = useMemo(() => {
@@ -1085,33 +1029,14 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
       .filter(([k]) => !statusOrder.includes(k))
       .sort((a, b) => a[0].localeCompare(b[0])) as Array<[string, number]>;
     return [...known, ...unknown];
-  }, [ordersSummaryQ.data, statusOrder]);
+  }, [ordersSummaryQ.data]);
 
-  /* ---------------------- Skeletons ---------------------- */
   const Shimmer = () => (
-    <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />
+    <div className="h-3 w-full animate-pulse rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200" />
   );
 
   const statsGridClass =
     "grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))] sm:[grid-template-columns:repeat(auto-fit,minmax(200px,1fr))]";
-
-  async function handleVerifyOtp() {
-    const code = String(otpCode || "").trim();
-    if (!/^\d{6}$/.test(code)) {
-      openModal({ title: "Invalid code", message: "OTP must be 6 digits." });
-      return;
-    }
-
-    try {
-      await verifyOtp.mutateAsync(code);
-      setOtpCode("");
-      setOtpCooldown(0);
-      await qc.invalidateQueries({ queryKey: ["me"] });
-      openModal({ title: "Verified", message: "Your phone number has been verified." });
-    } catch (e: any) {
-      openModal({ title: "Could not verify", message: e?.message || "Please try again." });
-    }
-  }
 
   const viewerBadge = viewerIsAdmin ? (
     <span className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-[12px]">
@@ -1122,31 +1047,29 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
 
   return (
     <SiteLayout>
-      <div className="max-w-screen-2xl mx-auto text-[13px] sm:text-[14px]">
-        {/* Neon gradient hero */}
+      <div className="mx-auto max-w-screen-2xl text-[13px] sm:text-[14px]">
         <div className="relative overflow-hidden">
           <div className="absolute inset-0 bg-[radial-gradient(closest-side,rgba(255,0,167,0.08),transparent_70%),radial-gradient(closest-side,rgba(0,204,255,0.10),transparent_70%)]" />
-          <div className="relative px-4 md:px-8 pt-5 sm:pt-7 pb-3 sm:pb-4">
+          <div className="relative px-4 pb-3 pt-5 sm:pb-4 sm:pt-7 md:px-8">
             <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1 min-w-0">
+              <div className="min-w-0 space-y-1">
                 <motion.h1
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight text-zinc-900"
+                  className="text-xl font-bold tracking-tight text-zinc-900 sm:text-2xl md:text-3xl"
                 >
-                  {me ? `Hey ${me.firstName || me.displayName || me.email.split("@")[0]}!` : "Welcome!"}{" "}
+                  {me ? `Hey ${greetingName}!` : "Welcome!"}{" "}
                   <span className="inline-block align-middle">
                     <Sparkles className="inline text-fuchsia-600" size={20} />
                   </span>
                 </motion.h1>
-                <p className="text-[12px] sm:text-sm text-zinc-600 leading-5 sm:leading-6">
+
+                <p className="text-[12px] leading-5 text-zinc-600 sm:text-sm sm:leading-6">
                   Your vibe, your orders, your payments—everything in one electric dashboard ⚡
                 </p>
 
-                {/* Admin badge */}
                 {viewerBadge ? <div className="mt-2">{viewerBadge}</div> : null}
 
-                {/* Admin view banner */}
                 {isViewingOtherUser && (
                   <div className="mt-3 inline-flex w-full flex-wrap items-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-[12px] sm:text-sm">
                     <span className="inline-flex items-center gap-2">
@@ -1161,7 +1084,7 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                     </span>
 
                     <span className="text-zinc-600">•</span>
-                    <span className="text-zinc-700 truncate">{me?.email || "—"}</span>
+                    <span className="truncate text-zinc-700">{me?.email || "—"}</span>
                     <span className="text-zinc-600">•</span>
                     <span className="text-zinc-700">{normRole(me?.role) || "SHOPPER"}</span>
 
@@ -1189,11 +1112,8 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
           </div>
         </div>
 
-        {/* Content grid */}
-        <div className="px-4 md:px-8 pb-12 grid items-start gap-6 lg:gap-8 lg:grid-cols-[380px_minmax(0,1fr)]">
-          {/* Left rail */}
-          <div className="min-w-0 space-y-6 lg:space-y-7 lg:sticky lg:top-6 lg:self-start">
-            {/* ✅ Admin impersonation panel */}
+        <div className="grid items-start gap-6 px-4 pb-12 md:px-8 lg:grid-cols-[380px_minmax(0,1fr)] lg:gap-8">
+          <div className="min-w-0 space-y-6 lg:sticky lg:top-6 lg:self-start lg:space-y-7">
             {viewerIsAdmin && (
               <GlassCard
                 title="View as user"
@@ -1201,18 +1121,18 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                 right={
                   isViewingOtherUser ? (
                     <button
-                      className="text-[12px] sm:text-sm text-zinc-700 hover:underline inline-flex items-center gap-1"
+                      className="inline-flex items-center gap-1 text-[12px] text-zinc-700 hover:underline sm:text-sm"
                       onClick={exitImpersonation}
                       title="Exit impersonation"
                     >
                       Exit <X size={14} />
                     </button>
                   ) : (
-                    <span className="text-[12px] sm:text-sm text-zinc-500">Read-only</span>
+                    <span className="text-[12px] text-zinc-500 sm:text-sm">Read-only</span>
                   )
                 }
               >
-                <div className="text-[12px] sm:text-sm text-zinc-600">
+                <div className="text-[12px] text-zinc-600 sm:text-sm">
                   Search a user and open their dashboard in <b>read-only</b> mode.
                 </div>
 
@@ -1223,12 +1143,12 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                       value={impQ}
                       onChange={(e) => setImpQ(e.target.value)}
                       placeholder="Search by email / name / id…"
-                      className="w-full rounded-full border bg-white pl-9 pr-10 py-2 text-[12px] sm:text-sm outline-none focus:ring-2 focus:ring-fuchsia-200"
+                      className="w-full rounded-full border bg-white py-2 pl-9 pr-10 text-[12px] outline-none focus:ring-2 focus:ring-fuchsia-200 sm:text-sm"
                     />
                     {impQ.trim().length > 0 && (
                       <button
                         type="button"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full hover:bg-zinc-100 grid place-items-center"
+                        className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full hover:bg-zinc-100"
                         onClick={() => setImpQ("")}
                         title="Clear"
                       >
@@ -1239,21 +1159,17 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
 
                   <button
                     type="button"
-                    className="rounded-full border bg-white px-4 py-2 text-[12px] sm:text-sm font-semibold hover:bg-zinc-50"
+                    className="rounded-full border bg-white px-4 py-2 text-[12px] font-semibold hover:bg-zinc-50 sm:text-sm"
                     onClick={() => {
-                      // If they typed an ID exactly, allow direct open.
                       const raw = impQ.trim();
                       if (!raw) return;
 
-                      // If results exist, prefer exact match (email or id)
                       const list = adminSearchQ.data || [];
                       const exact =
                         list.find((u) => String(u.id).toLowerCase() === raw.toLowerCase()) ||
                         list.find((u) => String(u.email).toLowerCase() === raw.toLowerCase());
 
                       if (exact?.id) return startImpersonation(exact.id);
-
-                      // If it looks like an id (not email), allow direct attempt
                       if (!raw.includes("@") && raw.length >= 8) return startImpersonation(raw);
 
                       openModal({
@@ -1269,14 +1185,14 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
 
                 <div className="mt-3">
                   {adminSearchQ.isFetching && (
-                    <div className="text-[12px] sm:text-sm text-zinc-600 inline-flex items-center gap-2">
+                    <div className="inline-flex items-center gap-2 text-[12px] text-zinc-600 sm:text-sm">
                       <RefreshCcw size={14} className="animate-spin" />
                       Searching…
                     </div>
                   )}
 
                   {!adminSearchQ.isFetching && (adminSearchQ.data?.length || 0) === 0 && impQ.trim().length >= 2 && (
-                    <div className="text-[12px] sm:text-sm text-zinc-600 inline-flex items-center gap-2">
+                    <div className="inline-flex items-center gap-2 text-[12px] text-zinc-600 sm:text-sm">
                       <Info size={14} />
                       No users found.
                     </div>
@@ -1293,26 +1209,23 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                           <button
                             key={u.id}
                             type="button"
-                            className={`w-full text-left rounded-2xl border px-3 py-2 bg-white hover:bg-zinc-50 transition ${active ? "ring-2 ring-cyan-200 border-cyan-200" : "border-zinc-200"
-                              }`}
+                            className={`w-full rounded-2xl border bg-white px-3 py-2 text-left transition hover:bg-zinc-50 ${active ? "border-cyan-200 ring-2 ring-cyan-200" : "border-zinc-200"}`}
                             onClick={() => startImpersonation(u.id)}
                             title="View dashboard (read-only)"
                           >
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <div className="text-[12px] sm:text-sm font-semibold text-zinc-900 truncate">{who}</div>
-                                <div className="text-[11px] sm:text-xs text-zinc-600 truncate">{u.email}</div>
-                                <div className="mt-1 text-[10px] sm:text-[11px] text-zinc-500 font-mono truncate">{u.id}</div>
+                                <div className="truncate text-[12px] font-semibold text-zinc-900 sm:text-sm">{who}</div>
+                                <div className="truncate text-[11px] text-zinc-600 sm:text-xs">{u.email}</div>
+                                <div className="mt-1 truncate font-mono text-[10px] text-zinc-500 sm:text-[11px]">{u.id}</div>
                               </div>
 
                               <div className="shrink-0 text-right">
-                                <div className="text-[11px] sm:text-xs inline-flex items-center gap-2 rounded-full border bg-white px-2 py-0.5">
+                                <div className="inline-flex items-center gap-2 rounded-full border bg-white px-2 py-0.5 text-[11px] sm:text-xs">
                                   <Lock size={12} className="text-zinc-600" />
                                   <span className="text-zinc-700">{role}</span>
                                 </div>
-                                {u.status ? (
-                                  <div className="mt-1 text-[10px] sm:text-[11px] text-zinc-500">{String(u.status)}</div>
-                                ) : null}
+                                {u.status ? <div className="mt-1 text-[10px] text-zinc-500 sm:text-[11px]">{String(u.status)}</div> : null}
                               </div>
                             </div>
                           </button>
@@ -1322,7 +1235,7 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                   )}
                 </div>
 
-                <div className="mt-3 text-[11px] sm:text-xs text-zinc-500">
+                <div className="mt-3 text-[11px] text-zinc-500 sm:text-xs">
                   Tip: use <span className="font-mono">?as=&lt;userId&gt;</span> to deep-link view-as mode.
                 </div>
               </GlassCard>
@@ -1334,48 +1247,48 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
               right={
                 !isViewingOtherUser ? (
                   <button
-                    className="text-[12px] sm:text-sm text-fuchsia-600 hover:underline"
+                    className="text-[12px] text-fuchsia-600 hover:underline sm:text-sm"
                     onClick={() => nav("/profile")}
                     aria-label="Edit profile"
                   >
                     Edit
                   </button>
                 ) : (
-                  <span className="text-[12px] sm:text-sm text-zinc-500">View-only</span>
+                  <span className="text-[12px] text-zinc-500 sm:text-sm">View-only</span>
                 )
               }
             >
               <div className="flex items-start gap-3 sm:gap-4">
                 {me ? (
                   <motion.div whileHover={{ rotate: -2 }}>
-                    <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl grid place-items-center border bg-gradient-to-br from-zinc-900 to-zinc-700 text-white font-semibold shadow text-sm sm:text-base">
+                    <div className="grid h-12 w-12 place-items-center rounded-2xl border bg-gradient-to-br from-zinc-900 to-zinc-700 text-sm font-semibold text-white shadow sm:h-14 sm:w-14 sm:text-base">
                       {initials}
                     </div>
                   </motion.div>
                 ) : (
-                  <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-zinc-200 animate-pulse" />
+                  <div className="h-12 w-12 animate-pulse rounded-2xl bg-zinc-200 sm:h-14 sm:w-14" />
                 )}
 
                 <div className="min-w-0 flex-1">
-                  <div className="font-semibold truncate text-sm sm:text-base">
+                  <div className="truncate text-sm font-semibold sm:text-base">
                     {me ? `${me.firstName ?? ""} ${me?.lastName ?? ""}`.trim() || me.email : <Shimmer />}
                   </div>
 
-                  <div className="text-[12px] sm:text-sm text-zinc-600 truncate">
+                  <div className="truncate text-[12px] text-zinc-600 sm:text-sm">
                     {me?.email || (meQ.isLoading ? <Shimmer /> : "—")}
                   </div>
 
-                  <div className="text-[11px] sm:text-xs text-zinc-600 mt-1 flex flex-wrap items-center gap-2">
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-600 sm:text-xs">
                     <Clock3 size={13} className="text-cyan-600" />
-                    <span className="truncate">Joined {dateFmt(me?.joinedAt)}</span>{" "}
+                    <span className="truncate">Joined {dateFmt(me?.joinedAt)}</span>
                     {me ? (
-                      me?.status === "VERIFIED" ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] sm:text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700">
-                          <CheckCircle2 size={13} /> Verified
+                      isEmailVerified ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700 sm:text-xs">
+                          <CheckCircle2 size={13} /> Email verified
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-[11px] sm:text-xs px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700">
-                          <AlertCircle size={13} /> Not verified
+                        <span className="inline-flex items-center gap-1 rounded-full border bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 sm:text-xs">
+                          <AlertCircle size={13} /> Email pending
                         </span>
                       )
                     ) : null}
@@ -1383,13 +1296,12 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                 </div>
               </div>
 
-              {/* ✅ SuperAdmin: show more fields (view-only) */}
               {isViewingOtherUser && isSuperAdmin && (
                 <div className="mt-4 rounded-2xl border bg-white p-3 text-[12px] sm:text-sm">
-                  <div className="text-[10px] sm:text-[11px] uppercase tracking-wide text-zinc-500 mb-2">SuperAdmin view</div>
+                  <div className="mb-2 text-[10px] uppercase tracking-wide text-zinc-500 sm:text-[11px]">SuperAdmin view</div>
                   <div className="grid grid-cols-1 gap-1.5 text-zinc-700">
                     <div>
-                      <span className="text-zinc-500">Phone:</span> <span className="font-mono">{me?.phone || "—"}</span>
+                      <span className="text-zinc-500">Phone:</span> <span className="font-mono">{displayPhone}</span>
                     </div>
                     <div>
                       <span className="text-zinc-500">DOB:</span> <span className="font-mono">{me?.dob || "—"}</span>
@@ -1398,8 +1310,7 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                       <span className="text-zinc-500">Address:</span>{" "}
                       <span className="font-mono">
                         {me?.address
-                          ? `${me.address.houseNumber ?? ""} ${me.address.streetName ?? ""}, ${me.address.city ?? ""} ${me.address.state ?? ""
-                            } ${me.address.postCode ?? ""} ${me.address.country ?? ""}`
+                          ? `${me.address.houseNumber ?? ""} ${me.address.streetName ?? ""}, ${me.address.city ?? ""} ${me.address.state ?? ""} ${me.address.postCode ?? ""} ${me.address.country ?? ""}`
                             .replace(/\s+/g, " ")
                             .trim() || "—"
                           : "—"}
@@ -1409,16 +1320,14 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                       <span className="text-zinc-500">Shipping:</span>{" "}
                       <span className="font-mono">
                         {me?.shippingAddress
-                          ? `${me.shippingAddress.houseNumber ?? ""} ${me.shippingAddress.streetName ?? ""}, ${me.shippingAddress.city ?? ""
-                            } ${me.shippingAddress.state ?? ""} ${me.shippingAddress.postCode ?? ""} ${me.shippingAddress.country ?? ""
-                            }`
+                          ? `${me.shippingAddress.houseNumber ?? ""} ${me.shippingAddress.streetName ?? ""}, ${me.shippingAddress.city ?? ""} ${me.shippingAddress.state ?? ""} ${me.shippingAddress.postCode ?? ""} ${me.shippingAddress.country ?? ""}`
                             .replace(/\s+/g, " ")
                             .trim() || "—"
                           : "—"}
                       </span>
                     </div>
                   </div>
-                  <div className="mt-2 text-[11px] sm:text-xs text-zinc-500">
+                  <div className="mt-2 text-[11px] text-zinc-500 sm:text-xs">
                     Reminder: “view as” must be enforced server-side with role checks + audit logging.
                   </div>
                 </div>
@@ -1428,13 +1337,13 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                 {!isViewingOtherUser ? (
                   <>
                     <Link className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline" to="/profile">
-                      Manage <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
+                      Manage <ChevronRight className="transition group-hover:translate-x-0.5" size={14} />
                     </Link>
                     <Link
-                      className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline justify-self-end"
+                      className="group justify-self-end inline-flex items-center gap-1.5 text-cyan-700 hover:underline"
                       to="/orders"
                     >
-                      Orders <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
+                      Orders <ChevronRight className="transition group-hover:translate-x-0.5" size={14} />
                     </Link>
                   </>
                 ) : (
@@ -1446,25 +1355,25 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
               </div>
             </GlassCard>
 
-            {/* Verification card: self-only (don’t resend/verify OTP for other users) */}
             {!isViewingOtherUser && (
               <GlassCard title="Verification" icon={<ShieldCheck size={16} />}>
                 <div className="space-y-3 text-[12px] sm:text-sm">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="inline-flex items-center gap-2 min-w-0">
-                      <MailCheck size={15} className="text-emerald-600" />{" "}
-                      <span className="truncate">Email {me?.emailVerified ? "verified" : "pending"}</span>
-                    </span>
+                    <span className="inline-flex min-w-0 items-center gap-2">
+                      <MailCheck size={15} className="text-emerald-600" />
+                      <span className="truncate">Email {isEmailVerified ? "verified" : "pending"}</span>                    </span>
 
-                    {!me?.emailVerified && (
+                    {!isEmailVerified && (
                       <motion.button
                         whileHover={{ y: -1 }}
-                        className="rounded-full border px-3 py-1 bg-white hover:bg-zinc-50 transition text-[12px] sm:text-sm"
+                        className="rounded-full border bg-white px-3 py-1 text-[12px] transition hover:bg-zinc-50 sm:text-sm"
                         disabled={resendEmail.isPending}
                         onClick={async () => {
                           try {
                             await resendEmail.mutateAsync();
                             qc.invalidateQueries({ queryKey: ["me"] });
+                            qc.invalidateQueries({ queryKey: ["me", "target"] });
+                            qc.invalidateQueries({ queryKey: ["auth", "email-status"] });
                             openModal({ title: "Verification", message: "Verification email sent." });
                           } catch (e: any) {
                             if (isAuthError(e)) return redirectToLogin();
@@ -1476,61 +1385,6 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                       </motion.button>
                     )}
                   </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
-                    <span className="inline-flex items-center gap-2 min-w-0">
-                      <Phone size={15} className="text-cyan-600 shrink-0" />
-                      <span className="truncate">Phone {me?.phoneVerified ? "verified" : "pending"}</span>
-                    </span>
-
-                    {!me?.phoneVerified && (
-                      <motion.button
-                        whileHover={{ y: -1 }}
-                        className="rounded-full border px-3 py-2 sm:py-1 bg-white hover:bg-zinc-50 transition disabled:opacity-50 text-[12px] sm:text-sm w-full sm:w-auto"
-                        disabled={resendOtp.isPending || otpCooldown > 0}
-                        title={otpCooldown > 0 ? `Retry in ${otpCooldown}s` : "Resend OTP"}
-                        onClick={async () => {
-                          try {
-                            const resp = await resendOtp.mutateAsync();
-                            setOtpCooldown(resp?.nextResendAfterSec ?? 60);
-                            openModal({ title: "OTP sent", message: "OTP sent to your phone." });
-                          } catch (e: any) {
-                            if (isAuthError(e)) return redirectToLogin();
-                            const retryAfter = e?.response?.data?.retryAfterSec;
-                            if (retryAfter) setOtpCooldown(retryAfter);
-                            openModal({ title: "Failed", message: e?.response?.data?.error || "Failed to resend OTP" });
-                          }
-                        }}
-                      >
-                        {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : "Resend OTP"}
-                      </motion.button>
-                    )}
-                  </div>
-
-                  {!me?.phoneVerified && (
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                      <input
-                        value={otpCode}
-                        onChange={(e) => setOtpCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6))}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleVerifyOtp();
-                        }}
-                        inputMode="numeric"
-                        placeholder="Enter 6-digit OTP"
-                        className="w-full sm:flex-1 rounded-full border bg-white px-3 py-2 text-[12px] sm:text-sm outline-none focus:ring-2 focus:ring-fuchsia-200"
-                      />
-
-                      <motion.button
-                        whileHover={{ y: -1 }}
-                        className="w-full sm:w-auto rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition disabled:opacity-50 text-[12px] sm:text-sm font-semibold"
-                        disabled={verifyOtp.isPending || otpCode.trim().length !== 6}
-                        onClick={handleVerifyOtp}
-                        title="Verify phone OTP"
-                      >
-                        {verifyOtp.isPending ? "Verifying…" : "Verify"}
-                      </motion.button>
-                    </div>
-                  )}
                 </div>
               </GlassCard>
             )}
@@ -1540,37 +1394,32 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                 {!isViewingOtherUser ? (
                   <>
                     <Link to="/forgot-password" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
-                      Change password <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
+                      Change password <ChevronRight className="transition group-hover:translate-x-0.5" size={14} />
                     </Link>
-                    <Link
-                      to="/account/sessions"
-                      className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline"
-                    >
-                      Sessions & devices <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
+                    <Link to="/account/sessions" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
+                      Sessions & devices <ChevronRight className="transition group-hover:translate-x-0.5" size={14} />
                     </Link>
                   </>
                 ) : (
-                  <div className="text-zinc-600 text-[12px] sm:text-sm">
+                  <div className="text-[12px] text-zinc-600 sm:text-sm">
                     View-only mode (admin). Security controls are not shown here.
                   </div>
                 )}
                 <Link to="/privacy" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
-                  Data & privacy <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
+                  Data & privacy <ChevronRight className="transition group-hover:translate-x-0.5" size={14} />
                 </Link>
               </div>
             </GlassCard>
 
-            {/* Logout: self-only */}
             {!isViewingOtherUser && (
               <motion.button
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
-                className="w-full text-[12px] sm:text-sm rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition inline-flex items-center justify-center gap-2"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-full border bg-white px-4 py-2 text-[12px] transition hover:bg-zinc-50 sm:text-sm"
                 onClick={async () => {
                   try {
                     await performLogout("/login", nav);
                   } catch {
-                    // fallback
                     qc.clear();
                     nav("/login");
                   }
@@ -1581,18 +1430,17 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
             )}
           </div>
 
-          {/* Right rail */}
           <div className="min-w-0 space-y-5 sm:space-y-6">
             <GlassCard
               title="Your orders at a glance"
               icon={<ShoppingBag size={16} />}
               right={
                 !isViewingOtherUser ? (
-                  <Link className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
+                  <Link className="inline-flex items-center gap-1 text-[12px] text-fuchsia-700 hover:underline sm:text-sm" to="/orders">
                     View all <ChevronRight size={14} />
                   </Link>
                 ) : (
-                  <span className="text-[12px] sm:text-sm text-zinc-500 inline-flex items-center gap-2">
+                  <span className="inline-flex items-center gap-2 text-[12px] text-zinc-500 sm:text-sm">
                     <Lock size={14} /> Read-only
                   </span>
                 )
@@ -1601,7 +1449,7 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
               {ordersSummaryQ.isLoading ? (
                 <div className={statsGridClass}>
                   {Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className="p-3 sm:p-4 rounded-2xl border bg-white">
+                    <div key={i} className="rounded-2xl border bg-white p-3 sm:p-4">
                       <Shimmer />
                       <div className="mt-2">
                         <Shimmer />
@@ -1610,7 +1458,7 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                   ))}
                 </div>
               ) : ordersSummaryQ.isError ? (
-                <div className="text-[12px] sm:text-sm text-rose-600 inline-flex items-center gap-2">
+                <div className="inline-flex items-center gap-2 text-[12px] text-rose-600 sm:text-sm">
                   <Info size={16} /> Couldn’t load order summary.
                 </div>
               ) : (
@@ -1657,11 +1505,11 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
               icon={<Truck size={16} />}
               right={
                 !isViewingOtherUser ? (
-                  <Link className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
+                  <Link className="inline-flex items-center gap-1 text-[12px] text-fuchsia-700 hover:underline sm:text-sm" to="/orders">
                     View all <ChevronRight size={14} />
                   </Link>
                 ) : (
-                  <span className="text-[12px] sm:text-sm text-zinc-500 inline-flex items-center gap-2">
+                  <span className="inline-flex items-center gap-2 text-[12px] text-zinc-500 sm:text-sm">
                     <Lock size={14} /> Read-only
                   </span>
                 )
@@ -1670,33 +1518,31 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
               {ordersQ.isLoading ? (
                 <div className="grid gap-3">
                   {Array.from({ length: 3 }).map((_, i) => (
-                    <div key={i} className="border rounded-2xl p-3 sm:p-4 bg-white grid gap-2">
+                    <div key={i} className="grid gap-2 rounded-2xl border bg-white p-3 sm:p-4">
                       <Shimmer />
                       <Shimmer />
                     </div>
                   ))}
                 </div>
               ) : ordersQ.isError ? (
-                <div className="text-[12px] sm:text-sm text-rose-600 inline-flex items-center gap-2">
+                <div className="inline-flex items-center gap-2 text-[12px] text-rose-600 sm:text-sm">
                   <Info size={16} /> Couldn’t load orders.
                 </div>
               ) : ordersQ.data && ordersQ.data.length > 0 ? (
                 <div className="grid gap-3">
                   {ordersQ.data.map((o) => (
-                    <motion.div key={o.id} whileHover={{ scale: 1.005 }} className="border rounded-2xl p-3 sm:p-4 bg-white">
-                      <div className="grid gap-3 md:gap-4 md:grid-cols-[140px_minmax(0,1fr)_240px] md:items-center">
-                        {/* Left: date + status pill */}
-                        <div className="flex items-center justify-between md:block md:justify-start min-w-0">
-                          <div className="text-[11px] sm:text-xs text-zinc-500">{dateFmt(o.createdAt)}</div>
-                          <div className="md:mt-2 min-w-0">
+                    <motion.div key={o.id} whileHover={{ scale: 1.005 }} className="rounded-2xl border bg-white p-3 sm:p-4">
+                      <div className="grid gap-3 md:grid-cols-[140px_minmax(0,1fr)_240px] md:items-center md:gap-4">
+                        <div className="flex min-w-0 items-center justify-between md:block md:justify-start">
+                          <div className="text-[11px] text-zinc-500 sm:text-xs">{dateFmt(o.createdAt)}</div>
+                          <div className="min-w-0 md:mt-2">
                             <OrderStatusChip status={o.status} />
                           </div>
                         </div>
 
-                        {/* Middle: amount + items */}
                         <div className="min-w-0">
-                          <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">{ngn.format(o.total)}</div>
-                          <div className="mt-1 text-[12px] sm:text-sm text-zinc-600 truncate">
+                          <div className="text-[13px] font-semibold text-zinc-900 sm:text-sm">{ngn.format(o.total)}</div>
+                          <div className="mt-1 truncate text-[12px] text-zinc-600 sm:text-sm">
                             {o.items.length === 0
                               ? "No items"
                               : o.items.length === 1
@@ -1705,19 +1551,18 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                           </div>
                         </div>
 
-                        {/* Right: actions */}
-                        <div className="flex items-center justify-between md:justify-end gap-3">
+                        <div className="flex items-center justify-between gap-3 md:justify-end">
                           {!isViewingOtherUser ? (
-                            <Link to={`/orders?open=${o.id}`} className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline">
+                            <Link to={`/orders?open=${o.id}`} className="text-[12px] text-fuchsia-700 hover:underline sm:text-sm">
                               Details
                             </Link>
                           ) : (
-                            <span className="text-[12px] sm:text-sm text-zinc-500">—</span>
+                            <span className="text-[12px] text-zinc-500 sm:text-sm">—</span>
                           )}
 
                           <motion.button
                             whileHover={{ y: -1 }}
-                            className="text-[12px] sm:text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition disabled:opacity-50"
+                            className="rounded-full border bg-white px-3 py-1.5 text-[12px] transition hover:bg-zinc-50 disabled:opacity-50 sm:text-sm"
                             onClick={() => buyAgain(o.id)}
                             disabled={rebuyingId === o.id || isViewingOtherUser}
                             title={isViewingOtherUser ? "Disabled in admin view" : "Re-add all items from this order to your cart"}
@@ -1730,7 +1575,7 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                   ))}
                 </div>
               ) : (
-                <div className="text-[12px] sm:text-sm text-zinc-600">No recent orders yet.</div>
+                <div className="text-[12px] text-zinc-600 sm:text-sm">No recent orders yet.</div>
               )}
             </GlassCard>
 
@@ -1738,14 +1583,14 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
               {transactionsQ.isLoading ? (
                 <div className="grid gap-3">
                   {Array.from({ length: 3 }).map((_, i) => (
-                    <div key={i} className="border rounded-2xl p-3 sm:p-4 bg-white grid gap-2">
+                    <div key={i} className="grid gap-2 rounded-2xl border bg-white p-3 sm:p-4">
                       <Shimmer />
                       <Shimmer />
                     </div>
                   ))}
                 </div>
               ) : transactionsQ.isError ? (
-                <div className="text-[12px] sm:text-sm text-rose-600 inline-flex items-center gap-2">
+                <div className="inline-flex items-center gap-2 text-[12px] text-rose-600 sm:text-sm">
                   <Info size={16} /> Couldn’t load transactions.
                 </div>
               ) : transactionsQ.data && transactionsQ.data.length > 0 ? (
@@ -1754,20 +1599,19 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                     <motion.div
                       key={`${t.orderId}:${t.createdAt}`}
                       whileHover={{ scale: 1.005 }}
-                      className="border rounded-2xl p-3 sm:p-4 bg-white flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4"
+                      className="flex flex-col gap-3 rounded-2xl border bg-white p-3 sm:flex-row sm:items-center sm:gap-4 sm:p-4"
                     >
-                      <div className="text-[11px] sm:text-xs sm:w-44 flex items-center justify-between sm:block">
+                      <div className="flex items-center justify-between text-[11px] sm:block sm:w-44 sm:text-xs">
                         <div className="text-zinc-500">{dateTimeFmt(t.createdAt)}</div>
                         <div className="font-medium sm:mt-1">{t.orderStatus}</div>
                       </div>
 
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[12px] sm:text-sm font-semibold">{ngn.format(t.total)}</div>
-                        <div className="text-[11px] sm:text-xs text-zinc-600 mt-1 break-words">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12px] font-semibold sm:text-sm">{ngn.format(t.total)}</div>
+                        <div className="mt-1 break-words text-[11px] text-zinc-600 sm:text-xs">
                           {t.payment ? (
                             <>
-                              <PaymentBadgeInline status={t.payment.status} /> {t.payment.provider || "—"} •{" "}
-                              {t.payment.channel || "—"} • Ref:{" "}
+                              <PaymentBadgeInline status={t.payment.status} /> {t.payment.provider || "—"} • {t.payment.channel || "—"} • Ref:{" "}
                               <span className="font-mono">{t.payment.reference || "—"}</span>
                             </>
                           ) : (
@@ -1776,25 +1620,25 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                         </div>
                       </div>
 
-                      <div className="sm:ml-auto flex items-center justify-between sm:justify-end gap-3">
+                      <div className="flex items-center justify-between gap-3 sm:ml-auto sm:justify-end">
                         {!isViewingOtherUser ? (
-                          <Link to={`/orders?open=${t.orderId}`} className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline">
+                          <Link to={`/orders?open=${t.orderId}`} className="text-[12px] text-fuchsia-700 hover:underline sm:text-sm">
                             Details
                           </Link>
                         ) : (
-                          <span className="text-[12px] sm:text-sm text-zinc-500">—</span>
+                          <span className="text-[12px] text-zinc-500 sm:text-sm">—</span>
                         )}
                       </div>
                     </motion.div>
                   ))}
                 </div>
               ) : (
-                <div className="text-[12px] sm:text-sm text-zinc-600">No recent transactions.</div>
+                <div className="text-[12px] text-zinc-600 sm:text-sm">No recent transactions.</div>
               )}
             </GlassCard>
 
             <GlassCard title="Your insights" icon={<Sparkles size={16} />}>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <Stat
                   label="Total spent"
                   value={totalSpentQ.isLoading ? "…" : ngn.format(totalSpentQ.data ?? 0)}
@@ -1814,11 +1658,11 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
               </div>
 
               {isViewingOtherUser ? (
-                <p className="text-[11px] sm:text-xs text-zinc-600 mt-3">
+                <p className="mt-3 text-[11px] text-zinc-600 sm:text-xs">
                   Admin view is <b>read-only</b>. Any shopper actions are disabled by design.
                 </p>
               ) : (
-                <p className="text-[11px] sm:text-xs text-zinc-600 mt-3">
+                <p className="mt-3 text-[11px] text-zinc-600 sm:text-xs">
                   Tip: Turn on personalised recommendations in Preferences to see smarter picks here.
                 </p>
               )}
