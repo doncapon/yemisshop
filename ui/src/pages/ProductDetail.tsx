@@ -2422,8 +2422,29 @@ export default function ProductDetail() {
                   </div>
 
                   <div className="text-right">
-                    <div className="text-xs text-zinc-500">Total stock</div>
-                    <div className="text-sm font-semibold">{Math.max(0, totalStockQty)}</div>
+                    <div className="text-xs text-zinc-500">
+                      {purchaseMeta.mode === "VARIANT" && purchaseMeta.variantId
+                        ? "Selected variant stock"
+                        : isAtBaseDefaults(selected)
+                          ? "Base stock"
+                          : "Stock"}
+                    </div>
+
+                    <div className="text-sm font-semibold">
+                      {purchaseMeta.mode === "VARIANT" && purchaseMeta.variantId
+                        ? Math.max(0, currentSelectionQty)
+                        : isAtBaseDefaults(selected)
+                          ? Math.max(0, baseStockQty)
+                          : selectedCount > 0
+                            ? "—"
+                            : Math.max(0, baseStockQty)}
+                    </div>
+
+                    {!isAtBaseDefaults(selected) && !(purchaseMeta.mode === "VARIANT" && purchaseMeta.variantId) && selectedCount > 0 && (
+                      <div className="mt-1 text-[11px] text-zinc-500">
+                        Select all options to see exact stock
+                      </div>
+                    )}
                   </div>
                 </div>
 
