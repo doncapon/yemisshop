@@ -9,8 +9,8 @@ const router = Router();
 
 const wrap =
   (fn: express.RequestHandler): express.RequestHandler =>
-  (req, res, next) =>
-    Promise.resolve(fn(req, res, next)).catch(next);
+    (req, res, next) =>
+      Promise.resolve(fn(req, res, next)).catch(next);
 
 function toNumber(n: any) {
   const v = Number(n);
@@ -163,10 +163,10 @@ function readSupplierRatingFromOffer(o: any): {
 } {
   const sid = String(
     o?.supplierId ??
-      o?.supplier?.id ??
-      o?.product?.supplierId ??
-      o?.product?.supplier?.id ??
-      ""
+    o?.supplier?.id ??
+    o?.product?.supplierId ??
+    o?.product?.supplier?.id ??
+    ""
   );
 
   const avgRaw = o?.supplier?.ratingAvg ?? o?.product?.supplier?.ratingAvg;
@@ -242,15 +242,15 @@ async function getPublicPricingSettings() {
 
 let publicPricingCache:
   | {
-      at: number;
-      data: {
-        baseServiceFeeNGN: number;
-        commsUnitCostNGN: number;
-        gatewayFeePercent: number;
-        gatewayFixedFeeNGN: number;
-        gatewayFeeCapNGN: number;
-      };
-    }
+    at: number;
+    data: {
+      baseServiceFeeNGN: number;
+      commsUnitCostNGN: number;
+      gatewayFeePercent: number;
+      gatewayFixedFeeNGN: number;
+      gatewayFeeCapNGN: number;
+    };
+  }
   | null = null;
 
 const PUBLIC_PRICING_CACHE_TTL_MS = 60_000;
@@ -421,12 +421,12 @@ router.get(
       ...(statusRaw ? { status: statusRaw as any } : {}),
       ...(q
         ? {
-            OR: [
-              { title: { contains: q, mode: "insensitive" } },
-              { sku: { contains: q, mode: "insensitive" } },
-              { description: { contains: q, mode: "insensitive" } },
-            ],
-          }
+          OR: [
+            { title: { contains: q, mode: "insensitive" } },
+            { sku: { contains: q, mode: "insensitive" } },
+            { description: { contains: q, mode: "insensitive" } },
+          ],
+        }
         : {}),
     };
 
@@ -526,15 +526,15 @@ router.get(
     const [cats, brands] = await Promise.all([
       wantCategory && categoryIds.length
         ? prisma.category.findMany({
-            where: { id: { in: categoryIds } },
-            select: { id: true, name: true, slug: true },
-          })
+          where: { id: { in: categoryIds } },
+          select: { id: true, name: true, slug: true },
+        })
         : Promise.resolve([]),
       wantBrand && brandIds.length
         ? prisma.brand.findMany({
-            where: { id: { in: brandIds } },
-            select: { id: true, name: true },
-          })
+          where: { id: { in: brandIds } },
+          select: { id: true, name: true },
+        })
         : Promise.resolve([]),
     ]);
 
@@ -564,21 +564,21 @@ router.get(
     const variantsRows =
       wantVariants || needOffers
         ? await prisma.productVariant.findMany({
-            where: {
-              productId: { in: ids },
-              ...(vWhere ? (vWhere as any) : {}),
-            } as any,
-            select: {
-              id: true,
-              productId: true,
-              sku: true,
-              retailPrice: true,
-              inStock: true,
-              imagesJson: true,
-              availableQty: true,
-            },
-            orderBy: { createdAt: "asc" },
-          })
+          where: {
+            productId: { in: ids },
+            ...(vWhere ? (vWhere as any) : {}),
+          } as any,
+          select: {
+            id: true,
+            productId: true,
+            sku: true,
+            retailPrice: true,
+            inStock: true,
+            imagesJson: true,
+            availableQty: true,
+          },
+          orderBy: { createdAt: "asc" },
+        })
         : [];
 
     const variantsByProduct = new Map<string, any[]>();
@@ -646,94 +646,94 @@ router.get(
       await Promise.all([
         needOffers
           ? prisma.supplierProductOffer.findMany({
-              where: {
-                productId: { in: ids },
-                isActive: true,
-                inStock: true,
-                availableQty: { gt: 0 },
-                basePrice: { gt: dec0 },
-                ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
-                ...(payoutWhereBaseOffer as any),
-              } as any,
-              select: baseOfferSelect,
-            })
+            where: {
+              productId: { in: ids },
+              isActive: true,
+              inStock: true,
+              availableQty: { gt: 0 },
+              basePrice: { gt: dec0 },
+              ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
+              ...(payoutWhereBaseOffer as any),
+            } as any,
+            select: baseOfferSelect,
+          })
           : Promise.resolve([]),
 
         needOffers
           ? prisma.supplierVariantOffer.findMany({
-              where: {
-                productId: { in: ids },
-                isActive: true,
-                inStock: true,
-                availableQty: { gt: 0 },
-                unitPrice: { gt: dec0 },
-                ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
-                ...(payoutWhereVarOffer as any),
-              } as any,
-              select: varOfferSelect,
-            })
+            where: {
+              productId: { in: ids },
+              isActive: true,
+              inStock: true,
+              availableQty: { gt: 0 },
+              unitPrice: { gt: dec0 },
+              ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
+              ...(payoutWhereVarOffer as any),
+            } as any,
+            select: varOfferSelect,
+          })
           : Promise.resolve([]),
 
         ids.length
           ? prisma.supplierProductOffer.groupBy({
-              by: ["productId"],
-              where: {
-                productId: { in: ids },
-                isActive: true,
-                inStock: true,
-                availableQty: { gt: 0 },
-                basePrice: { gt: dec0 },
-                ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
-                ...(payoutWhereBaseOffer as any),
-              } as any,
-              _min: { basePrice: true },
-            })
+            by: ["productId"],
+            where: {
+              productId: { in: ids },
+              isActive: true,
+              inStock: true,
+              availableQty: { gt: 0 },
+              basePrice: { gt: dec0 },
+              ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
+              ...(payoutWhereBaseOffer as any),
+            } as any,
+            _min: { basePrice: true },
+          })
           : Promise.resolve([] as any[]),
 
         ids.length
           ? prisma.supplierVariantOffer.groupBy({
-              by: ["productId"],
-              where: {
-                productId: { in: ids },
-                isActive: true,
-                inStock: true,
-                availableQty: { gt: 0 },
-                unitPrice: { gt: dec0 },
-                ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
-                ...(payoutWhereVarOffer as any),
-              } as any,
-              _min: { unitPrice: true },
-            })
+            by: ["productId"],
+            where: {
+              productId: { in: ids },
+              isActive: true,
+              inStock: true,
+              availableQty: { gt: 0 },
+              unitPrice: { gt: dec0 },
+              ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
+              ...(payoutWhereVarOffer as any),
+            } as any,
+            _min: { unitPrice: true },
+          })
           : Promise.resolve([] as any[]),
 
         ids.length
           ? prisma.supplierProductOffer.groupBy({
-              by: ["productId"],
-              where: {
-                productId: { in: ids },
-                isActive: true,
-                inStock: true,
-                availableQty: { gt: 0 },
-                ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
-                ...(payoutWhereBaseOffer as any),
-              } as any,
-              _sum: { availableQty: true },
-            })
+            by: ["productId"],
+            where: {
+              productId: { in: ids },
+              isActive: true,
+              inStock: true,
+              availableQty: { gt: 0 },
+              ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
+              ...(payoutWhereBaseOffer as any),
+            } as any,
+            _sum: { availableQty: true },
+          })
           : Promise.resolve([] as any[]),
 
         ids.length
           ? prisma.supplierVariantOffer.groupBy({
-              by: ["productId"],
-              where: {
-                productId: { in: ids },
-                isActive: true,
-                inStock: true,
-                availableQty: { gt: 0 },
-                ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
-                ...(payoutWhereVarOffer as any),
-              } as any,
-              _sum: { availableQty: true },
-            })
+            by: ["productId"],
+            where: {
+              productId: { in: ids },
+              isActive: true,
+              inStock: true,
+              availableQty: { gt: 0 },
+              ...(excludeSupplierId ? { supplierId: { not: excludeSupplierId } } : {}),
+              ...(payoutWhereVarOffer as any),
+            } as any,
+            _sum: { availableQty: true },
+          })
           : Promise.resolve([] as any[]),
       ]);
 
@@ -843,20 +843,20 @@ router.get(
 
     const [attrOpts, attrTexts] = wantAttributes
       ? await Promise.all([
-          prisma.productAttributeOption.findMany({
-            where: { productId: { in: ids } },
-            include: {
-              attribute: { select: { id: true, name: true, type: true } },
-              value: { select: { id: true, name: true, code: true } },
-            },
-          }),
-          prisma.productAttributeText.findMany({
-            where: { productId: { in: ids } },
-            include: {
-              attribute: { select: { id: true, name: true, type: true } },
-            },
-          }),
-        ])
+        prisma.productAttributeOption.findMany({
+          where: { productId: { in: ids } },
+          include: {
+            attribute: { select: { id: true, name: true, type: true } },
+            value: { select: { id: true, name: true, code: true } },
+          },
+        }),
+        prisma.productAttributeText.findMany({
+          where: { productId: { in: ids } },
+          include: {
+            attribute: { select: { id: true, name: true, type: true } },
+          },
+        }),
+      ])
       : [[], []];
 
     const attrByProduct = new Map<string, { values: any[]; texts: any[]; summary: any[] }>();
@@ -904,23 +904,23 @@ router.get(
         baseOfferPrice > 0 && variantOfferPrice > 0
           ? Math.min(baseOfferPrice, variantOfferPrice)
           : baseOfferPrice > 0
-          ? baseOfferPrice
-          : variantOfferPrice > 0
-          ? variantOfferPrice
-          : Number(p.retailPrice ?? p.autoPrice ?? 0) || 0;
+            ? baseOfferPrice
+            : variantOfferPrice > 0
+              ? variantOfferPrice
+              : Number(p.retailPrice ?? p.autoPrice ?? 0) || 0;
 
       const offersFrom = needOffers ? offersFromByProduct.get(pid) ?? null : null;
 
       const offerRetail =
         offersFrom != null && Number(offersFrom) > 0
           ? computeRetailPriceFromSupplierPrice({
-              supplierPrice: Number(offersFrom),
-              baseServiceFeeNGN: pricing.baseServiceFeeNGN,
-              commsUnitCostNGN: pricing.commsUnitCostNGN,
-              gatewayFeePercent: pricing.gatewayFeePercent,
-              gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
-              gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
-            })
+            supplierPrice: Number(offersFrom),
+            baseServiceFeeNGN: pricing.baseServiceFeeNGN,
+            commsUnitCostNGN: pricing.commsUnitCostNGN,
+            gatewayFeePercent: pricing.gatewayFeePercent,
+            gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
+            gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
+          })
           : null;
 
       const retailOnly = computePublicDisplayPriceRetailOnly(
@@ -938,54 +938,54 @@ router.get(
 
       const variantsOut = wantVariants
         ? (variantsByProduct.get(pid) ?? []).map((v: any) => {
-            const vid = String(v.id);
-            const vOffers = needOffers ? variantOffersByVariant.get(vid) ?? [] : [];
+          const vid = String(v.id);
+          const vOffers = needOffers ? variantOffersByVariant.get(vid) ?? [] : [];
 
-            const vQty = needOffers
-              ? vOffers.reduce((acc: number, x: any) => {
-                  if (x?.isActive !== true) return acc;
-                  if (x?.inStock !== true) return acc;
-                  const qn = Number(x?.availableQty ?? 0) || 0;
-                  return acc + (qn > 0 ? qn : 0);
-                }, 0)
-              : 0;
+          const vQty = needOffers
+            ? vOffers.reduce((acc: number, x: any) => {
+              if (x?.isActive !== true) return acc;
+              if (x?.inStock !== true) return acc;
+              const qn = Number(x?.availableQty ?? 0) || 0;
+              return acc + (qn > 0 ? qn : 0);
+            }, 0)
+            : 0;
 
-            const bestVariantRating = pickBestRating(ratingsByVariant.get(vid) ?? []);
+          const bestVariantRating = pickBestRating(ratingsByVariant.get(vid) ?? []);
 
-            return {
-              id: vid,
-              sku: v.sku ?? null,
-              retailPrice: v.retailPrice != null ? toNum(v.retailPrice) : null,
-              inStock: vQty > 0 || v.inStock === true,
-              imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-              availableQty: vQty,
+          return {
+            id: vid,
+            sku: v.sku ?? null,
+            retailPrice: v.retailPrice != null ? toNum(v.retailPrice) : null,
+            inStock: vQty > 0 || v.inStock === true,
+            imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+            availableQty: vQty,
 
-              offers: needOffers
-                ? vOffers.map((o: any) => {
-                    const r = readSupplierRatingFromOffer(o);
-                    return {
-                      id: String(o.id),
-                      supplierId: r.supplierId,
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number(o.availableQty ?? 0) || 0,
-                      unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
-                      supplierRatingAvg: r.ratingAvg,
-                      supplierRatingCount: r.ratingCount,
-                      supplier: r.supplierId
-                        ? {
-                            id: r.supplierId,
-                            ratingAvg: r.ratingAvg,
-                            ratingCount: r.ratingCount,
-                          }
-                        : undefined,
-                    };
-                  })
-                : [],
+            offers: needOffers
+              ? vOffers.map((o: any) => {
+                const r = readSupplierRatingFromOffer(o);
+                return {
+                  id: String(o.id),
+                  supplierId: r.supplierId,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number(o.availableQty ?? 0) || 0,
+                  unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
+                  supplierRatingAvg: r.ratingAvg,
+                  supplierRatingCount: r.ratingCount,
+                  supplier: r.supplierId
+                    ? {
+                      id: r.supplierId,
+                      ratingAvg: r.ratingAvg,
+                      ratingCount: r.ratingCount,
+                    }
+                    : undefined,
+                };
+              })
+              : [],
 
-              bestSupplierRating: bestVariantRating,
-            };
-          })
+            bestSupplierRating: bestVariantRating,
+          };
+        })
         : [];
 
       return {
@@ -1022,29 +1022,29 @@ router.get(
 
         supplierProductOffers: needOffers
           ? (baseOffers as any[])
-              .filter((o: any) => String(o.productId) === pid)
-              .map((o: any) => {
-                const r = readSupplierRatingFromOffer(o);
-                return {
-                  id: String(o.id),
-                  supplierId: r.supplierId,
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number(o.availableQty ?? 0) || 0,
-                  basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
-                  currency: o.currency ?? "NGN",
-                  leadDays: o.leadDays ?? null,
-                  supplierRatingAvg: r.ratingAvg,
-                  supplierRatingCount: r.ratingCount,
-                  supplier: r.supplierId
-                    ? {
-                        id: r.supplierId,
-                        ratingAvg: r.ratingAvg,
-                        ratingCount: r.ratingCount,
-                      }
-                    : undefined,
-                };
-              })
+            .filter((o: any) => String(o.productId) === pid)
+            .map((o: any) => {
+              const r = readSupplierRatingFromOffer(o);
+              return {
+                id: String(o.id),
+                supplierId: r.supplierId,
+                isActive: o.isActive === true,
+                inStock: o.inStock === true,
+                availableQty: Number(o.availableQty ?? 0) || 0,
+                basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
+                currency: o.currency ?? "NGN",
+                leadDays: o.leadDays ?? null,
+                supplierRatingAvg: r.ratingAvg,
+                supplierRatingCount: r.ratingCount,
+                supplier: r.supplierId
+                  ? {
+                    id: r.supplierId,
+                    ratingAvg: r.ratingAvg,
+                    ratingCount: r.ratingCount,
+                  }
+                  : undefined,
+              };
+            })
           : [],
 
         variants: variantsOut,
@@ -1076,7 +1076,7 @@ router.get(
 router.get(
   "/:id/similar",
   wrap(async (req, res) => {
-    const { id } = req.params;
+    const productId = String(req.params.id ?? "");
     const dec0 = new Prisma.Decimal("0");
     const excludeSupplierId = normalizeId((req.query as any)?.excludeSupplierId);
     const excludeSupplierWhere = buildExcludeSupplierWhere(excludeSupplierId);
@@ -1089,7 +1089,7 @@ router.get(
     const pricing = await getPublicPricingSettingsCached();
 
     const me = await prisma.product.findFirst({
-      where: { id, status: "LIVE" as any, ...(productActiveWhere() as any) },
+      where: { id: productId, status: "LIVE" as any, ...(productActiveWhere() as any) },
       select: {
         id: true,
         retailPrice: true,
@@ -1102,7 +1102,7 @@ router.get(
     if (!me) return res.status(404).json({ error: "Product not found" });
 
     const candidateBaseWhere: Prisma.ProductWhereInput = {
-      id: { not: id },
+      id: { not: productId },
       status: "LIVE" as any,
       ...(productActiveWhere() as any),
     };
@@ -1127,17 +1127,17 @@ router.get(
       const byPrice =
         meDisplayBase > 0
           ? await prisma.product.findMany({
-              where: {
-                ...candidateBaseWhere,
-                OR: [
-                  { retailPrice: { gte: Math.max(0, meDisplayBase * 0.6), lte: meDisplayBase * 1.4 } },
-                  { autoPrice: { gte: Math.max(0, meDisplayBase * 0.6), lte: meDisplayBase * 1.4 } },
-                ],
-              },
-              take: 24,
-              orderBy: { createdAt: "desc" },
-              select: { id: true },
-            })
+            where: {
+              ...candidateBaseWhere,
+              OR: [
+                { retailPrice: { gte: Math.max(0, meDisplayBase * 0.6), lte: meDisplayBase * 1.4 } },
+                { autoPrice: { gte: Math.max(0, meDisplayBase * 0.6), lte: meDisplayBase * 1.4 } },
+              ],
+            },
+            take: 24,
+            orderBy: { createdAt: "desc" },
+            select: { id: true },
+          })
           : [];
 
       const seen = new Set(candidateIds);
@@ -1261,21 +1261,21 @@ router.get(
           baseOfferPrice > 0 && variantOfferPrice > 0
             ? Math.min(baseOfferPrice, variantOfferPrice)
             : baseOfferPrice > 0
-            ? baseOfferPrice
-            : variantOfferPrice > 0
-            ? variantOfferPrice
-            : null;
+              ? baseOfferPrice
+              : variantOfferPrice > 0
+                ? variantOfferPrice
+                : null;
 
         const computedRetail =
           offersFrom != null && Number(offersFrom) > 0
             ? computeRetailPriceFromSupplierPrice({
-                supplierPrice: Number(offersFrom),
-                baseServiceFeeNGN: pricing.baseServiceFeeNGN,
-                commsUnitCostNGN: pricing.commsUnitCostNGN,
-                gatewayFeePercent: pricing.gatewayFeePercent,
-                gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
-                gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
-              })
+              supplierPrice: Number(offersFrom),
+              baseServiceFeeNGN: pricing.baseServiceFeeNGN,
+              commsUnitCostNGN: pricing.commsUnitCostNGN,
+              gatewayFeePercent: pricing.gatewayFeePercent,
+              gatewayFixedFeeNGN: pricing.gatewayFixedFeeNGN,
+              gatewayFeeCapNGN: pricing.gatewayFeeCapNGN,
+            })
             : null;
 
         const fallbackRetail = computePublicDisplayPriceRetailOnly(
@@ -1316,7 +1316,7 @@ router.get(
 router.get(
   "/:id",
   wrap(async (req, res) => {
-    const { id } = req.params;
+    const productId = String(req.params.id ?? "");
 
     const includeParts = String(req.query.include || "")
       .split(",")
@@ -1343,11 +1343,16 @@ router.get(
       autoPrice: true,
       priceMode: true,
       inStock: true,
+      availableQty: true,
       imagesJson: true,
       categoryId: true,
       brandId: true,
       status: true,
     };
+
+    if (!productId) {
+      return res.status(400).json({ error: "Missing product id" });
+    }
 
     if (hasScalar(PRODUCT_MODEL, "isActive")) productSelect.isActive = true;
     if (hasScalar(PRODUCT_MODEL, "isDeleted")) productSelect.isDeleted = true;
@@ -1356,7 +1361,7 @@ router.get(
     if (hasScalar(PRODUCT_MODEL, "archivedAt")) productSelect.archivedAt = true;
 
     const p = await prisma.product.findUnique({
-      where: { id },
+      where: { id: productId },
       select: productSelect,
     } as any);
 
@@ -1377,31 +1382,32 @@ router.get(
     ] = await Promise.all([
       wantBrand && (p as any).brandId
         ? prisma.brand.findUnique({
-            where: { id: String((p as any).brandId) },
-            select: { id: true, name: true },
-          })
+          where: { id: String((p as any).brandId) },
+          select: { id: true, name: true },
+        })
         : Promise.resolve(null),
 
       wantCategory && (p as any).categoryId
         ? prisma.category.findUnique({
-            where: { id: String((p as any).categoryId) },
-            select: { id: true, name: true, slug: true },
-          })
+          where: { id: String((p as any).categoryId) },
+          select: { id: true, name: true, slug: true },
+        })
         : Promise.resolve(null),
 
       wantVariants || wantOffers
         ? prisma.productVariant.findMany({
-            where: {
-              productId: id,
-              ...(vWhere ? (vWhere as any) : {}),
-            } as any,
-            select: {
-              id: true,
-              sku: true,
-              retailPrice: true,
-              inStock: true,
-              imagesJson: true,
-              availableQty: true,
+          where: {
+            productId,
+            ...(vWhere ? (vWhere as any) : {}),
+          } as any,
+          select: {
+            id: true,
+            sku: true,
+            retailPrice: true,
+            inStock: true,
+            imagesJson: true,
+            availableQty: true,
+            ...(wantVariants && {
               options: {
                 select: {
                   attributeId: true,
@@ -1411,30 +1417,31 @@ router.get(
                   value: { select: { id: true, name: true, code: true } },
                 },
               },
-            },
-            orderBy: { createdAt: "asc" },
-          })
+            }),
+          },
+          orderBy: { createdAt: "asc" },
+        })
         : Promise.resolve([]),
 
       wantAttributes
         ? prisma.productAttributeOption.findMany({
-            where: { productId: id },
-            include: {
-              attribute: { select: { id: true, name: true, type: true } },
-              value: { select: { id: true, name: true, code: true } },
-            },
-            orderBy: [{ attribute: { name: "asc" } }],
-          })
+          where: { productId },
+          include: {
+            attribute: { select: { id: true, name: true, type: true } },
+            value: { select: { id: true, name: true, code: true } },
+          },
+          orderBy: [{ attribute: { name: "asc" } }],
+        })
         : Promise.resolve([]),
 
       wantAttributes
         ? prisma.productAttributeText.findMany({
-            where: { productId: id },
-            include: {
-              attribute: { select: { id: true, name: true, type: true } },
-            },
-            orderBy: [{ attribute: { name: "asc" } }],
-          })
+          where: { productId: productId },
+          include: {
+            attribute: { select: { id: true, name: true, type: true } },
+          },
+          orderBy: [{ attribute: { name: "asc" } }],
+        })
         : Promise.resolve([]),
     ]);
 
@@ -1497,7 +1504,7 @@ router.get(
       [baseOffers, variantOffers] = await Promise.all([
         prisma.supplierProductOffer.findMany({
           where: {
-            productId: id,
+            productId: productId,
             isActive: true,
             inStock: true,
             availableQty: { gt: 0 },
@@ -1512,20 +1519,20 @@ router.get(
 
         variantIds.length
           ? prisma.supplierVariantOffer.findMany({
-              where: {
-                productId: id,
-                variantId: { in: variantIds },
-                isActive: true,
-                inStock: true,
-                availableQty: { gt: 0 },
-                unitPrice: { gt: dec0 },
-                ...(offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL, false) as any),
-                ...(offerNonNullSupplierIdWhere(VAR_OFFER_MODEL) as any),
-                ...(excludeSupplierWhere as any),
-              } as any,
-              select: varOfferSelect,
-              orderBy: [{ unitPrice: "asc" }, { createdAt: "asc" as any }],
-            })
+            where: {
+              productId: productId,
+              variantId: { in: variantIds },
+              isActive: true,
+              inStock: true,
+              availableQty: { gt: 0 },
+              unitPrice: { gt: dec0 },
+              ...(offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL, false) as any),
+              ...(offerNonNullSupplierIdWhere(VAR_OFFER_MODEL) as any),
+              ...(excludeSupplierWhere as any),
+            } as any,
+            select: varOfferSelect,
+            orderBy: [{ unitPrice: "asc" }, { createdAt: "asc" as any }],
+          })
           : Promise.resolve([]),
       ]);
     }
@@ -1549,10 +1556,10 @@ router.get(
       data.categoryName = (categoryRow as any)?.name ?? null;
       data.category = categoryRow
         ? {
-            id: (categoryRow as any).id,
-            name: (categoryRow as any).name,
-            slug: (categoryRow as any).slug ?? null,
-          }
+          id: (categoryRow as any).id,
+          name: (categoryRow as any).name,
+          slug: (categoryRow as any).slug ?? null,
+        }
         : null;
     }
 
@@ -1631,7 +1638,7 @@ router.get(
       return sum + (qty > 0 ? qty : 0);
     }, 0);
 
-    const aggregatedQty = wantOffers ? baseQty + variantQty : 0;
+    const aggregatedQty = wantOffers ? baseQty + variantQty : Number((p as any).availableQty ?? 0) || 0;
     data.availableQty = aggregatedQty;
     data.inStock = aggregatedQty > 0 || p.inStock === true;
 
@@ -1650,10 +1657,10 @@ router.get(
       minBaseOfferPrice > 0 && minVariantOfferPrice > 0
         ? Math.min(minBaseOfferPrice, minVariantOfferPrice)
         : minBaseOfferPrice > 0
-        ? minBaseOfferPrice
-        : minVariantOfferPrice > 0
-        ? minVariantOfferPrice
-        : null;
+          ? minBaseOfferPrice
+          : minVariantOfferPrice > 0
+            ? minVariantOfferPrice
+            : null;
 
     data.offersFrom = offersFrom;
 
@@ -1683,11 +1690,11 @@ router.get(
 
         const vQty = wantOffers
           ? vOffers.reduce((acc: number, x: any) => {
-              if (x?.isActive !== true) return acc;
-              if (x?.inStock !== true) return acc;
-              const qn = Number(x?.availableQty ?? 0) || 0;
-              return acc + (qn > 0 ? qn : 0);
-            }, 0)
+            if (x?.isActive !== true) return acc;
+            if (x?.inStock !== true) return acc;
+            const qn = Number(x?.availableQty ?? 0) || 0;
+            return acc + (qn > 0 ? qn : 0);
+          }, 0)
           : Number(v.availableQty ?? 0) || 0;
 
         const bestVariantRating = pickBestRating(ratingsByVariant.get(vid) ?? []);
@@ -1699,39 +1706,39 @@ router.get(
           inStock: vQty > 0 || v.inStock === true,
           imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
           availableQty: vQty,
-          options: (v.options || []).map((o: any) => ({
+          options: wantVariants ? (v.options || []).map((o: any) => ({
             attributeId: String(o.attributeId),
             valueId: String(o.valueId),
             unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
             attribute: { id: o.attribute.id, name: o.attribute.name, type: o.attribute.type },
             value: { id: o.value.id, name: o.value.name, code: o.value.code ?? null },
-          })),
+          })) : [],
           offers: wantOffers
             ? vOffers.map((o: any) => {
-                const r = readSupplierRatingFromOffer(o);
-                return {
-                  id: String(o.id),
-                  supplierId: r.supplierId,
-                  productId: String(o.productId),
-                  variantId: String(o.variantId),
-                  supplierProductOfferId: o.supplierProductOfferId ? String(o.supplierProductOfferId) : null,
-                  unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
-                  currency: o.currency ?? "NGN",
-                  availableQty: Number(o.availableQty ?? 0) || 0,
-                  inStock: o.inStock === true,
-                  isActive: o.isActive === true,
-                  leadDays: o.leadDays ?? null,
-                  supplierRatingAvg: r.ratingAvg,
-                  supplierRatingCount: r.ratingCount,
-                  supplier: r.supplierId
-                    ? {
-                        id: r.supplierId,
-                        ratingAvg: r.ratingAvg,
-                        ratingCount: r.ratingCount,
-                      }
-                    : undefined,
-                };
-              })
+              const r = readSupplierRatingFromOffer(o);
+              return {
+                id: String(o.id),
+                supplierId: r.supplierId,
+                productId: String(o.productId),
+                variantId: String(o.variantId),
+                supplierProductOfferId: o.supplierProductOfferId ? String(o.supplierProductOfferId) : null,
+                unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
+                currency: o.currency ?? "NGN",
+                availableQty: Number(o.availableQty ?? 0) || 0,
+                inStock: o.inStock === true,
+                isActive: o.isActive === true,
+                leadDays: o.leadDays ?? null,
+                supplierRatingAvg: r.ratingAvg,
+                supplierRatingCount: r.ratingCount,
+                supplier: r.supplierId
+                  ? {
+                    id: r.supplierId,
+                    ratingAvg: r.ratingAvg,
+                    ratingCount: r.ratingCount,
+                  }
+                  : undefined,
+              };
+            })
             : [],
           bestSupplierRating: bestVariantRating,
         };
@@ -1757,10 +1764,10 @@ router.get(
           supplierRatingCount: r.ratingCount,
           supplier: r.supplierId
             ? {
-                id: r.supplierId,
-                ratingAvg: r.ratingAvg,
-                ratingCount: r.ratingCount,
-              }
+              id: r.supplierId,
+              ratingAvg: r.ratingAvg,
+              ratingCount: r.ratingCount,
+            }
             : undefined,
         };
       });
@@ -1783,10 +1790,10 @@ router.get(
           supplierRatingCount: r.ratingCount,
           supplier: r.supplierId
             ? {
-                id: r.supplierId,
-                ratingAvg: r.ratingAvg,
-                ratingCount: r.ratingCount,
-              }
+              id: r.supplierId,
+              ratingAvg: r.ratingAvg,
+              ratingCount: r.ratingCount,
+            }
             : undefined,
         };
       });
@@ -1811,10 +1818,10 @@ router.get(
             supplierRatingCount: r.ratingCount,
             supplier: r.supplierId
               ? {
-                  id: r.supplierId,
-                  ratingAvg: r.ratingAvg,
-                  ratingCount: r.ratingCount,
-                }
+                id: r.supplierId,
+                ratingAvg: r.ratingAvg,
+                ratingCount: r.ratingCount,
+              }
               : undefined,
           };
         }),
@@ -1846,10 +1853,10 @@ router.get(
             supplierRatingCount: r.ratingCount,
             supplier: r.supplierId
               ? {
-                  id: r.supplierId,
-                  ratingAvg: r.ratingAvg,
-                  ratingCount: r.ratingCount,
-                }
+                id: r.supplierId,
+                ratingAvg: r.ratingAvg,
+                ratingCount: r.ratingCount,
+              }
               : undefined,
           };
         }),
