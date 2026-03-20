@@ -812,14 +812,24 @@ export default function App() {
       genericReturnTo = sessionStorage.getItem("auth:returnTo") || "";
     } catch {}
 
+    const hasTimedOutUser = !!timedOutUserKey;
     const sameTimedOutUser =
       !!currentUserKey &&
       !!timedOutUserKey &&
       currentUserKey === timedOutUserKey;
 
-    const target = sameTimedOutUser
-      ? timedOutReturnTo || genericReturnTo || defaultAuthedPathForRole(user?.role)
-      : genericReturnTo || defaultAuthedPathForRole(user?.role);
+    let target = defaultAuthedPathForRole(user?.role);
+
+    if (sameTimedOutUser) {
+      target = timedOutReturnTo || genericReturnTo || defaultAuthedPathForRole(user?.role);
+    } else if (!hasTimedOutUser) {
+      // normal fresh login flow (no previous timed-out user context)
+      target = genericReturnTo || defaultAuthedPathForRole(user?.role);
+    } else {
+      // a different user logged in after a previous user/session
+      // ignore the old "from" target and go to this user's home/dashboard
+      target = defaultAuthedPathForRole(user?.role);
+    }
 
     try {
       sessionStorage.removeItem("auth:returnTo");
