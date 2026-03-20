@@ -1839,40 +1839,40 @@ export default function Catalog() {
         .map((x) => {
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => ({
-                id: String(v.id),
-                sku: v.sku ?? null,
-                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
-                inStock: v.inStock === true,
-                imagesJson: normalizeImages(v.imagesJson),
-                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
-                offers: Array.isArray(v.offers)
-                  ? v.offers.map((o: any) => ({
-                      id: String(o.id),
-                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty))
-                        ? Number(o.availableQty)
+              id: String(v.id),
+              sku: v.sku ?? null,
+              retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
+              inStock: v.inStock === true,
+              imagesJson: normalizeImages(v.imagesJson),
+              availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+              offers: Array.isArray(v.offers)
+                ? v.offers.map((o: any) => ({
+                  id: String(o.id),
+                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number.isFinite(Number(o.availableQty))
+                    ? Number(o.availableQty)
+                    : null,
+                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                  currency: o.currency ?? "NGN",
+                  leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
+                  supplierRatingAvg:
+                    o.supplierRatingAvg != null
+                      ? decToNumber(o.supplierRatingAvg)
+                      : o.supplier?.ratingAvg != null
+                        ? decToNumber(o.supplier.ratingAvg)
                         : null,
-                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                      currency: o.currency ?? "NGN",
-                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
-                      supplierRatingAvg:
-                        o.supplierRatingAvg != null
-                          ? decToNumber(o.supplierRatingAvg)
-                          : o.supplier?.ratingAvg != null
-                            ? decToNumber(o.supplier.ratingAvg)
-                            : null,
-                      supplierRatingCount:
-                        o.supplierRatingCount != null
-                          ? Number(o.supplierRatingCount)
-                          : o.supplier?.ratingCount != null
-                            ? Number(o.supplier.ratingCount)
-                            : null,
-                    }))
-                  : [],
-              }))
+                  supplierRatingCount:
+                    o.supplierRatingCount != null
+                      ? Number(o.supplierRatingCount)
+                      : o.supplier?.ratingCount != null
+                        ? Number(o.supplier.ratingCount)
+                        : null,
+                }))
+                : [],
+            }))
             : [];
 
           const baseSource =
@@ -1933,9 +1933,9 @@ export default function Catalog() {
             brand:
               x.brand && (x.brand.id != null || x.brand.name != null)
                 ? {
-                    id: String(x.brand.id ?? ""),
-                    name: cleanText(x.brand.name),
-                  }
+                  id: String(x.brand.id ?? ""),
+                  name: cleanText(x.brand.name),
+                }
                 : null,
             variants,
             supplierProductOffers: baseOffers,
@@ -2554,11 +2554,10 @@ export default function Catalog() {
       const clamped = Math.min(Math.max(1, Math.trunc(Number(nextPage) || 1)), totalPages);
       if (clamped === currentPage) return;
 
+      writeCatalogScroll(window.scrollY || window.pageYOffset || 0);
       setPage(clamped);
-      writeCatalogScroll(0);
-      scrollResultsToTop();
     },
-    [currentPage, totalPages, isPageFetching, scrollResultsToTop]
+    [currentPage, totalPages, isPageFetching]
   );
 
   const windowedPages = useCallback((current: number, total: number, radius = 2) => {
@@ -2669,22 +2668,17 @@ export default function Catalog() {
   const submitSearch = useCallback(() => {
     setSearchFocused(false);
     setActiveIdx(0);
+    writeCatalogScroll(window.scrollY || window.pageYOffset || 0);
     setPage(1);
-    writeCatalogScroll(0);
-    scrollResultsToTop();
-  }, [scrollResultsToTop]);
+  }, []);
 
-  const applySuggestionToFilter = useCallback(
-    (title: string) => {
-      setQuery(title);
-      setSearchFocused(false);
-      setActiveIdx(0);
-      setPage(1);
-      writeCatalogScroll(0);
-      scrollResultsToTop();
-    },
-    [scrollResultsToTop]
-  );
+  const applySuggestionToFilter = useCallback((title: string) => {
+    setQuery(title);
+    setSearchFocused(false);
+    setActiveIdx(0);
+    writeCatalogScroll(window.scrollY || window.pageYOffset || 0);
+    setPage(1);
+  }, []);
 
   const toggleCategory = useCallback((id: string) => {
     setSelectedCategories((curr) =>
@@ -3005,22 +2999,20 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
-                              checked
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
-                                  checked
-                                    ? "text-white/90 hover:bg-white/10"
-                                    : "text-zinc-600 hover:bg-black/5"
-                                }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
+                                  ? "text-white/90 hover:bg-white/10"
+                                  : "text-zinc-600 hover:bg-black/5"
+                                  }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -3039,9 +3031,8 @@ export default function Catalog() {
                             </button>
 
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({count})
                             </span>
@@ -3059,17 +3050,15 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({c.count})
                             </span>
@@ -3100,17 +3089,15 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({b.count})
                             </span>
@@ -3142,17 +3129,15 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                          }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span
-                            className={`ml-2 text-[11px] ${
-                              checked ? "text-white/90" : "text-zinc-600"
-                            }`}
+                            className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                           >
                             ({count})
                           </span>
@@ -3457,11 +3442,10 @@ export default function Catalog() {
                                   type="button"
                                   onClick={() => goTo(n)}
                                   disabled={isPageFetching || n === currentPage}
-                                  className={`rounded-xl px-3 py-1.5 text-xs disabled:cursor-not-allowed ${
-                                    n === currentPage
-                                      ? "border border-zinc-900 bg-zinc-900 text-white"
-                                      : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-40"
-                                  }`}
+                                  className={`rounded-xl px-3 py-1.5 text-xs disabled:cursor-not-allowed ${n === currentPage
+                                    ? "border border-zinc-900 bg-zinc-900 text-white"
+                                    : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-40"
+                                    }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -3582,22 +3566,20 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${checked
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${
-                                  checked
-                                    ? "text-white/90 hover:bg-white/10"
-                                    : "text-zinc-600 hover:bg-black/5"
-                                }`}
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
+                                  ? "text-white/90 hover:bg-white/10"
+                                  : "text-zinc-600 hover:bg-black/5"
+                                  }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -3616,9 +3598,8 @@ export default function Catalog() {
                             </button>
 
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({count})
                             </span>
@@ -3636,17 +3617,15 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({c.count})
                             </span>
@@ -3678,17 +3657,15 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
+                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
                             >
                               ({b.count})
                             </span>
@@ -3720,17 +3697,15 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                          }`}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span
-                            className={`ml-2 text-[11px] ${
-                              checked ? "text-white/90" : "text-zinc-600"
-                            }`}
+                            className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              }`}
                           >
                             ({count})
                           </span>
