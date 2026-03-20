@@ -1,4 +1,4 @@
-// src/pages/ProductDetail.tsx
+// src /pages/ProductDetail.tsx
 import * as React from "react";
 import { useParams, useNavigate, Link, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
