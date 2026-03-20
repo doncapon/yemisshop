@@ -28,11 +28,19 @@ const wrap =
 const statusEnum = z.enum(["ACTIVE", "PROBATION", "ON_LEAVE", "EXITED"]);
 const payFrequencyEnum = z.enum(["MONTHLY", "WEEKLY", "OTHER"]);
 
-// Query params for list
+// Query params for employee list
 const listQuerySchema = z.object({
   status: statusEnum.optional(),
   search: z.string().optional(),
   department: z.string().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+// Query params for employee documents list
+const documentsListQuerySchema = z.object({
+  kind: z.enum(["PASSPORT", "NIN_SLIP", "TAX", "CONTRACT", "OTHER"]).optional(),
+  search: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
@@ -82,6 +90,15 @@ const baseEmployeeBodySchema = z.object({
 const createEmployeeSchema = baseEmployeeBodySchema;
 const updateEmployeeSchema = baseEmployeeBodySchema.partial();
 
+// Create employee document (after upload to /api/uploads or S3 etc.)
+const createDocumentBodySchema = z.object({
+  kind: z.enum(["PASSPORT", "NIN_SLIP", "TAX", "CONTRACT", "OTHER"]),
+  storageKey: z.string().min(1),
+  originalFilename: z.string().min(1),
+  mimeType: z.string().optional(),
+  size: z.number().int().nonnegative().optional(),
+});
+
 /* ----------------------------------------------------------------------------
  * Helpers
  * --------------------------------------------------------------------------*/
@@ -114,10 +131,46 @@ function buildListWhere(input: z.infer<typeof listQuerySchema>) {
       { emailWork: { contains: q, mode: "insensitive" } },
       { emailPersonal: { contains: q, mode: "insensitive" } },
       { jobTitle: { contains: q, mode: "insensitive" } },
+      { department: { contains: q, mode: "insensitive" } },
+      { phone: { contains: q, mode: "insensitive" } },
     ];
   }
 
   return where;
+}
+
+function buildDocumentsWhere(
+  employeeId: string,
+  input: z.infer<typeof documentsListQuerySchema>
+) {
+  const where: any = { employeeId };
+
+  if (input.kind) {
+    where.kind = input.kind;
+  }
+
+  if (input.search && input.search.trim()) {
+    const q = input.search.trim();
+    where.OR = [
+      { originalFilename: { contains: q, mode: "insensitive" } },
+      { storageKey: { contains: q, mode: "insensitive" } },
+      { mimeType: { contains: q, mode: "insensitive" } },
+    ];
+  }
+
+  return where;
+}
+
+function paginationMeta(total: number, page: number, pageSize: number) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  return {
+    total,
+    page,
+    pageSize,
+    pageCount,
+    hasNextPage: page < pageCount,
+    hasPrevPage: page > 1,
+  };
 }
 
 /* ----------------------------------------------------------------------------
@@ -151,14 +204,9 @@ router.get(
       }),
     ]);
 
-    const pageCount = Math.max(1, Math.ceil(total / query.pageSize));
-
     res.json({
       items,
-      total,
-      page: query.page,
-      pageSize: query.pageSize,
-      pageCount,
+      ...paginationMeta(total, query.page, query.pageSize),
     });
   })
 );
@@ -264,7 +312,7 @@ router.patch(
 );
 
 /**
- * (Optional) GET /api/admin/employees/:id
+ * GET /api/admin/employees/:id
  */
 router.get(
   "/:id",
@@ -283,43 +331,46 @@ router.get(
   })
 );
 
-// Create employee document (after upload to /api/uploads or S3 etc.)
-const createDocumentBodySchema = z.object({
-  kind: z.enum(["PASSPORT", "NIN_SLIP", "TAX", "CONTRACT", "OTHER"]),
-  storageKey: z.string().min(1),
-  originalFilename: z.string().min(1),
-  mimeType: z.string().optional(),
-  size: z.number().int().nonnegative().optional(),
-});
-
 /* ----------------------------------------------------------------------------
  * GET /api/admin/employees/:id/documents
- * List documents for a specific employee
+ * List documents for a specific employee with server-side pagination
  * --------------------------------------------------------------------------*/
 router.get(
   "/:id/documents",
   wrap(async (req: Request, res: Response) => {
-    const employeeId = requiredString(req.params.id);
-    if (!employeeId) {
-      return res.status(400).json({ error: "Missing employee id" });
-    }
+    const employeeId = requiredString(req.params.id, "id");
+    const query = documentsListQuerySchema.parse(req.query);
 
-    const docs = await prisma.employeeDocument.findMany({
-      where: { employeeId },
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        createdAt: true,
-        kind: true,
-        storageKey: true,
-        originalFilename: true,
-        mimeType: true,
-        size: true,
-      },
+    const employee = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      select: { id: true },
     });
 
-    // Optional: If you have a CDN base URL for uploads, you can expose a URL
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    const where = buildDocumentsWhere(employeeId, query);
     const base = process.env.UPLOADS_PUBLIC_BASE_URL ?? "";
+
+    const [total, docs] = await Promise.all([
+      prisma.employeeDocument.count({ where }),
+      prisma.employeeDocument.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        select: {
+          id: true,
+          createdAt: true,
+          kind: true,
+          storageKey: true,
+          originalFilename: true,
+          mimeType: true,
+          size: true,
+        },
+      }),
+    ]);
 
     const items = docs.map((d) => ({
       ...d,
@@ -328,7 +379,10 @@ router.get(
         : null,
     }));
 
-    res.json({ items });
+    res.json({
+      items,
+      ...paginationMeta(total, query.page, query.pageSize),
+    });
   })
 );
 
@@ -339,10 +393,7 @@ router.get(
 router.post(
   "/:id/documents",
   wrap(async (req: Request, res: Response) => {
-    const employeeId = requiredString(req.params.id);
-    if (!employeeId) {
-      return res.status(400).json({ error: "Missing employee id" });
-    }
+    const employeeId = requiredString(req.params.id, "id");
 
     // Validate body
     const body = createDocumentBodySchema.parse(req.body);
@@ -416,12 +467,8 @@ router.post(
 router.delete(
   "/:id/documents/:docId",
   wrap(async (req: Request, res: Response) => {
-    const employeeId = requiredString(req.params.id);
-    const docId = requiredString(req.params.docId);
-
-    if (!employeeId || !docId) {
-      return res.status(400).json({ error: "Missing employee or document id" });
-    }
+    const employeeId = requiredString(req.params.id, "id");
+    const docId = requiredString(req.params.docId, "docId");
 
     await prisma.$transaction(async (tx) => {
       const existing = await tx.employeeDocument.findUnique({
@@ -434,7 +481,7 @@ router.delete(
       });
 
       if (!existing || existing.employeeId !== employeeId) {
-        throw new Error("Document not found for this employee");
+        return res.status(404).json({ error: "Document not found for this employee" });
       }
 
       const kind = existing.kind;
@@ -468,6 +515,8 @@ router.delete(
           });
         }
       }
+
+      return null;
     });
 
     res.json({ ok: true });

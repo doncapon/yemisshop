@@ -11,7 +11,12 @@ import { signJwt, signAccessJwt } from "../lib/jwt.js";
 import { requireAuth, requireVerifySession } from "../middleware/auth.js";
 import { issueOtp, verifyOtp } from "../lib/otp.js";
 import { Prisma, SupplierType } from "@prisma/client";
-import { setAccessTokenCookie, clearAccessTokenCookie, clearAuthCookies, getAccessTokenCookieName } from "../lib/authCookies.js";
+import {
+  setAccessTokenCookie,
+  clearAccessTokenCookie,
+  clearAuthCookies,
+  getAccessTokenCookieName,
+} from "../lib/authCookies.js";
 
 // ---------------- ENV / constants ----------------
 const APP_URL = process.env.APP_URL || "http://localhost:5173";
@@ -65,11 +70,14 @@ const RegisterSchema = z
       .string()
       .transform((s) => new Date(s))
       .refine((d) => !Number.isNaN(+d), { message: "Invalid date of birth" })
-      .refine((d) => {
-        const today = new Date();
-        const years = (today.getTime() - d.getTime()) / (365.25 * 24 * 3600 * 1000);
-        return years >= 16;
-      }, { message: "You must be at least 16 years old" }),
+      .refine(
+        (d) => {
+          const today = new Date();
+          const years = (today.getTime() - d.getTime()) / (365.25 * 24 * 3600 * 1000);
+          return years >= 16;
+        },
+        { message: "You must be at least 16 years old" }
+      ),
   })
   .superRefine((data, ctx) => {
     const hasDialCode = !!data.dialCode;
@@ -130,7 +138,6 @@ async function issueAndEmailEmailVerification(userId: string, email: string) {
   let verifyUrl;
   if (process.env.NODE_ENV === "development") {
     verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
-
   } else {
     verifyUrl = `${API_BASE_URL}/auth/verify-email?token=${encodeURIComponent(token)}`;
   }
@@ -157,6 +164,62 @@ function toE164(dialCode?: string, local?: string): string | null {
   if (localDigits.length < 6 || localDigits.length > 15) return null;
 
   return `${normalizedDial}${localDigits}`;
+}
+
+function asNum(v: any, d = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+
+function toPagination(req: Request, defaults?: { pageSize?: number; maxPageSize?: number }) {
+  const q = req.query as any;
+  const defaultPageSize = Math.max(1, asNum(defaults?.pageSize, 10));
+  const maxPageSize = Math.max(defaultPageSize, asNum(defaults?.maxPageSize, 100));
+
+  const rawPage = asNum(q.page, 0);
+  const rawPageSize = asNum(q.pageSize, 0);
+
+  const hasPageStyle = rawPage > 0 || rawPageSize > 0;
+
+  if (hasPageStyle) {
+    const pageSize = Math.min(maxPageSize, Math.max(1, rawPageSize || defaultPageSize));
+    const page = Math.max(1, rawPage || 1);
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    return { page, pageSize, take, skip };
+  }
+
+  const takeRaw = asNum(q.take, defaultPageSize);
+  const skipRaw = asNum(q.skip, 0);
+
+  const take = Math.min(maxPageSize, Math.max(1, takeRaw));
+  const skip = Math.max(0, skipRaw);
+  const pageSize = take;
+  const page = Math.floor(skip / take) + 1;
+
+  return { page, pageSize, take, skip };
+}
+
+function buildPaginatedResult<T>(params: {
+  rows: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}) {
+  const { rows, total, page, pageSize } = params;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+
+  return {
+    rows,
+    total,
+    page: safePage,
+    pageSize,
+    totalPages,
+    hasNextPage: safePage < totalPages,
+    hasPrevPage: safePage > 1,
+  };
 }
 
 async function createUserSession(req: Request, userId: string, role?: string | null) {
@@ -249,9 +312,9 @@ router.post(
     const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
     const ttlDays =
       roleNorm === "ADMIN" ||
-        roleNorm === "SUPER_ADMIN" ||
-        roleNorm === "SUPPLIER" ||
-        roleNorm === "SUPPLIER_RIDER"
+      roleNorm === "SUPER_ADMIN" ||
+      roleNorm === "SUPPLIER" ||
+      roleNorm === "SUPPLIER_RIDER"
         ? 7
         : 30;
 
@@ -277,7 +340,6 @@ router.post(
     });
   })
 );
-
 
 // ---------------- LOGOUT ----------------
 // ---------------- LOGOUT ----------------
@@ -326,6 +388,11 @@ router.get(
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    const { page, pageSize, take, skip } = toPagination(req, {
+      pageSize: 10,
+      maxPageSize: 100,
+    });
+
     const authMeSelect = {
       id: true,
       email: true,
@@ -341,35 +408,52 @@ router.get(
       address: true,
       defaultShippingAddressId: true,
       defaultShippingAddress: true,
-      shippingAddresses: {
-        where: { isActive: true },
-        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-      },
     } satisfies Prisma.UserSelect;
 
     type AuthMeUser = Prisma.UserGetPayload<{
       select: typeof authMeSelect;
     }>;
 
-    const u: AuthMeUser | null = await prisma.user.findUnique({
-      where: { id: userId },
-      select: authMeSelect,
-    });
+    const [u, shippingAddressesTotal, shippingAddressesRows] = await prisma.$transaction([
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: authMeSelect,
+      }),
+      prisma.userShippingAddress.count({
+        where: { userId, isActive: true } as any,
+      }),
+      prisma.userShippingAddress.findMany({
+        where: { userId, isActive: true } as any,
+        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+        take,
+        skip,
+      }),
+    ]);
 
     if (!u) return res.status(404).json({ error: "User not found" });
 
-    const primaryShippingAddress =
+    const fallbackPrimaryShippingAddress =
       u.defaultShippingAddress ??
-      u.shippingAddresses.find((a) => a.isDefault) ??
-      u.shippingAddresses[0] ??
+      shippingAddressesRows.find((a: any) => a.isDefault) ??
+      shippingAddressesRows[0] ??
+      (await prisma.userShippingAddress.findFirst({
+        where: { userId, isActive: true } as any,
+        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+      })) ??
       null;
 
     return res.json({
       data: {
         ...u,
-        shippingAddress: primaryShippingAddress, // legacy compatibility
+        shippingAddress: fallbackPrimaryShippingAddress, // legacy compatibility
         defaultShippingAddressId:
-          u.defaultShippingAddressId ?? primaryShippingAddress?.id ?? null,
+          u.defaultShippingAddressId ?? fallbackPrimaryShippingAddress?.id ?? null,
+        shippingAddresses: buildPaginatedResult({
+          rows: shippingAddressesRows,
+          total: shippingAddressesTotal,
+          page,
+          pageSize,
+        }),
       },
     });
   })
@@ -467,7 +551,6 @@ router.post(
     }
   })
 );
-
 
 // ---------------- REGISTER ----------------
 router.post(
@@ -575,7 +658,7 @@ router.get("/verify-email", async (req, res) => {
   // - Keep APP_URL free to mean whatever you want, but FRONTEND_URL should be the UI origin.
   const UI_URL = String(
     process.env.APP_URL || // fallback for older envs
-    "https://dayspringhouse.com",
+      "https://dayspringhouse.com"
   ).replace(/\/$/, "");
 
   const redirectUi = (params: Record<string, string>) => {
@@ -617,7 +700,6 @@ router.get("/verify-email", async (req, res) => {
       });
       const phoneOk = !phoneRequired || !!(user as any).phoneVerifiedAt;
       const newStatus = phoneOk ? "VERIFIED" : "PARTIAL";
-
 
       nextUser = await prisma.user.update({
         where: { id: (user as any).id },
@@ -884,9 +966,7 @@ router.post("/resend-otp", requireAuth, async (req, res) => {
     }
 
     const requestedPhone = String(req.body?.phone ?? "").trim();
-    const normalizedRequestedPhone = requestedPhone
-      ? normalizePhoneToE164(requestedPhone)
-      : null;
+    const normalizedRequestedPhone = requestedPhone ? normalizePhoneToE164(requestedPhone) : null;
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -954,15 +1034,15 @@ router.post("/resend-otp", requireAuth, async (req, res) => {
   }
 });
 
-const KYC_TICKET_SECRET = process.env.KYC_TICKET_SECRET || 'CHANGE_ME_KYC_TICKET_SECRET';
+const KYC_TICKET_SECRET = process.env.KYC_TICKET_SECRET || "CHANGE_ME_KYC_TICKET_SECRET";
 
 // Company type validator for suppliers
 const CacCompanyTypeEnum = z.enum([
-  'BUSINESS_NAME',
-  'COMPANY',
-  'INCORPORATED_TRUSTEES',
-  'LIMITED_PARTNERSHIP',
-  'LIMITED_LIABILITY_PARTNERSHIP',
+  "BUSINESS_NAME",
+  "COMPANY",
+  "INCORPORATED_TRUSTEES",
+  "LIMITED_PARTNERSHIP",
+  "LIMITED_LIABILITY_PARTNERSHIP",
 ]);
 
 const registerSupplierSchema = z.object({
@@ -990,11 +1070,11 @@ const registerSupplierSchema = z.object({
 });
 
 // small helpers
-const norm = (s: any) => String(s ?? '').trim().toLowerCase();
-const digits = (s: any) => String(s ?? '').replace(/\D/g, '');
+const norm = (s: any) => String(s ?? "").trim().toLowerCase();
+const digits = (s: any) => String(s ?? "").replace(/\D/g, "");
 
 function normalizeDateToYMD(raw?: string | null): string | null {
-  const s = String(raw ?? '').trim();
+  const s = String(raw ?? "").trim();
   if (!s) return null;
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
 
@@ -1011,33 +1091,37 @@ function normalizeDateToYMD(raw?: string | null): string | null {
       day = a;
       month = b;
     }
-    const pad2 = (n: number) => String(n).padStart(2, '0');
+    const pad2 = (n: number) => String(n).padStart(2, "0");
     return `${y}-${pad2(month)}-${pad2(day)}`;
   }
 
   try {
     const dt = new Date(s);
     if (Number.isNaN(dt.getTime())) return null;
-    const pad2 = (n: number) => String(n).padStart(2, '0');
+    const pad2 = (n: number) => String(n).padStart(2, "0");
     return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
   } catch {
     return null;
   }
 }
 
-function matchesAllFour(entity: any, input: {
-  rcNumber: string;
-  companyType: string;
-  companyName: string;
-  regDate: string;
-}) {
-  const rcOk = digits(input.rcNumber) !== '' && digits(input.rcNumber) === digits(entity.rc_number);
+function matchesAllFour(
+  entity: any,
+  input: {
+    rcNumber: string;
+    companyType: string;
+    companyName: string;
+    regDate: string;
+  }
+) {
+  const rcOk = digits(input.rcNumber) !== "" && digits(input.rcNumber) === digits(entity.rc_number);
   const typeOk =
-    String(input.companyType).trim().toUpperCase() === String(entity.type_of_company).trim().toUpperCase();
-  const nameOk = norm(input.companyName) !== '' && norm(input.companyName) === norm(entity.company_name);
+    String(input.companyType).trim().toUpperCase() ===
+    String(entity.type_of_company).trim().toUpperCase();
+  const nameOk = norm(input.companyName) !== "" && norm(input.companyName) === norm(entity.company_name);
 
   const entryDate = normalizeDateToYMD(entity.date_of_registration);
-  const uiDate = String(input.regDate || '').trim();
+  const uiDate = String(input.regDate || "").trim();
   const dateOk = !!uiDate && !!entryDate && entryDate === uiDate;
 
   return rcOk && typeOk && nameOk && dateOk;
@@ -1156,9 +1240,7 @@ router.post("/register-supplier", async (req, res) => {
         // onboarding / registration identity
         legalName: trimmedLegalName,
         registeredBusinessName:
-          registrationType === "REGISTERED_BUSINESS"
-            ? trimmedBusinessName
-            : null,
+          registrationType === "REGISTERED_BUSINESS" ? trimmedBusinessName : null,
         registrationType: registrationType ?? null,
         registrationCountryCode:
           String(registrationCountryCode ?? "").trim().toUpperCase() || null,
@@ -1174,8 +1256,7 @@ router.post("/register-supplier", async (req, res) => {
 
     // 4) send email verification + WhatsApp OTP (best-effort)
     const result = {
-      message:
-        "Supplier registered. Please verify email and WhatsApp number to continue.",
+      message: "Supplier registered. Please verify email and WhatsApp number to continue.",
       supplierId: supplier.id,
       tempToken: signJwt(
         { id: user.id, role: user.role, email: user.email, k: "verify" },
@@ -1237,10 +1318,7 @@ router.post("/register-supplier", async (req, res) => {
       });
     }
 
-    if (
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === "P2002"
-    ) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
       return res.status(409).json({
         error: "A supplier or user already exists with these details.",
         meta: err.meta,
@@ -1250,7 +1328,5 @@ router.post("/register-supplier", async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 });
-
-
 
 export default router;

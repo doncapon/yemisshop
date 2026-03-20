@@ -1,6 +1,6 @@
 // src/pages/admin/AdminShipping.tsx
 import React, { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
 
@@ -74,6 +74,30 @@ type SupplierProfile = {
   } | null;
 };
 
+type PaginatedResponse<T> = {
+  data: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  hasNextPage?: boolean;
+  hasPrevPage?: boolean;
+};
+
+type PaginationState = {
+  page: number;
+  pageSize: number;
+};
+
+type PaginationMeta = {
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+};
+
 const SERVICE_LEVELS = ["STANDARD", "EXPRESS", "PICKUP_POINT", "SAME_DAY"];
 const PARCEL_CLASSES = ["STANDARD", "FRAGILE", "BULKY"];
 const PROFILE_MODES = ["DEFAULT_PLATFORM", "SUPPLIER_OVERRIDDEN", "MANUAL_QUOTE"];
@@ -84,10 +108,55 @@ const FULFILLMENT_MODES = [
   "MANUAL_QUOTE",
 ];
 
+const DEFAULT_PAGE_SIZE = 20;
+const ZONE_OPTIONS_PAGE_SIZE = 100;
+
 const num = (v: any, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
 };
+
+function normalizePaginated<T>(
+  payload: PaginatedResponse<T> | undefined,
+  fallback: PaginationState
+): { rows: T[]; meta: PaginationMeta } {
+  const rows = Array.isArray(payload?.data) ? payload!.data : [];
+  const total = Number.isFinite(payload?.total) ? Number(payload!.total) : rows.length;
+  const page = Number.isFinite(payload?.page) ? Number(payload!.page) : fallback.page;
+  const pageSize = Number.isFinite(payload?.pageSize)
+    ? Number(payload!.pageSize)
+    : fallback.pageSize;
+  const pageCount = Math.max(
+    1,
+    Number.isFinite(payload?.pageCount)
+      ? Number(payload!.pageCount)
+      : Math.ceil(total / Math.max(1, pageSize))
+  );
+
+  return {
+    rows,
+    meta: {
+      total,
+      page,
+      pageSize,
+      pageCount,
+      hasNextPage:
+        typeof payload?.hasNextPage === "boolean" ? payload.hasNextPage : page < pageCount,
+      hasPrevPage:
+        typeof payload?.hasPrevPage === "boolean" ? payload.hasPrevPage : page > 1,
+    },
+  };
+}
+
+function rangeStart(meta: PaginationMeta) {
+  if (meta.total <= 0) return 0;
+  return (meta.page - 1) * meta.pageSize + 1;
+}
+
+function rangeEnd(meta: PaginationMeta) {
+  if (meta.total <= 0) return 0;
+  return Math.min(meta.page * meta.pageSize, meta.total);
+}
 
 function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
@@ -126,53 +195,205 @@ function Card({ children }: { children: React.ReactNode }) {
   return <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm">{children}</div>;
 }
 
+function TablePagination({
+  meta,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  meta: PaginationMeta;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 border-t border-zinc-200 px-4 py-3 text-sm text-zinc-600 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        {meta.total > 0
+          ? `Showing ${rangeStart(meta)}–${rangeEnd(meta)} of ${meta.total}`
+          : "No results"}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          value={String(meta.pageSize)}
+          onChange={(e) => onPageSizeChange(Number(e.target.value) || DEFAULT_PAGE_SIZE)}
+          className="w-[110px]"
+        >
+          {[10, 20, 50, 100].map((n) => (
+            <option key={n} value={n}>
+              {n} / page
+            </option>
+          ))}
+        </Select>
+
+        <Button
+          type="button"
+          onClick={() => onPageChange(1)}
+          disabled={!meta.hasPrevPage}
+          className="bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          First
+        </Button>
+        <Button
+          type="button"
+          onClick={() => onPageChange(meta.page - 1)}
+          disabled={!meta.hasPrevPage}
+          className="bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Prev
+        </Button>
+
+        <div className="px-2">
+          Page <span className="font-semibold">{meta.page}</span> of{" "}
+          <span className="font-semibold">{meta.pageCount}</span>
+        </div>
+
+        <Button
+          type="button"
+          onClick={() => onPageChange(meta.page + 1)}
+          disabled={!meta.hasNextPage}
+          className="bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Next
+        </Button>
+        <Button
+          type="button"
+          onClick={() => onPageChange(meta.pageCount)}
+          disabled={!meta.hasNextPage}
+          className="bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Last
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminShipping() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<"zones" | "platform" | "routes" | "suppliers">("zones");
   const [error, setError] = useState<string | null>(null);
 
+  const [zonesPagination, setZonesPagination] = useState<PaginationState>({
+    page: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
+  });
+  const [platformPagination, setPlatformPagination] = useState<PaginationState>({
+    page: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
+  });
+  const [routesPagination, setRoutesPagination] = useState<PaginationState>({
+    page: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
+  });
+  const [suppliersPagination, setSuppliersPagination] = useState<PaginationState>({
+    page: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
+  });
+
   const zonesQ = useQuery({
-    queryKey: ["admin-shipping-zones"],
+    queryKey: ["admin-shipping-zones", zonesPagination.page, zonesPagination.pageSize],
     queryFn: async () => {
-      const { data } = await api.get("/api/admin/shipping/zones", AXIOS_COOKIE_CFG);
-      return (data?.data ?? []) as Zone[];
+      const { data } = await api.get<PaginatedResponse<Zone>>("/api/admin/shipping/zones", {
+        ...AXIOS_COOKIE_CFG,
+        params: {
+          page: zonesPagination.page,
+          pageSize: zonesPagination.pageSize,
+        },
+      });
+      return data;
     },
+    placeholderData: keepPreviousData,
+    enabled: tab === "zones",
+  });
+
+  const zonesOptionsQ = useQuery({
+    queryKey: ["admin-shipping-zones-options"],
+    queryFn: async () => {
+      const { data } = await api.get<PaginatedResponse<Zone>>("/api/admin/shipping/zones", {
+        ...AXIOS_COOKIE_CFG,
+        params: { page: 1, pageSize: ZONE_OPTIONS_PAGE_SIZE },
+      });
+      return data;
+    },
+    placeholderData: keepPreviousData,
   });
 
   const platformRatesQ = useQuery({
-    queryKey: ["admin-shipping-platform-rates"],
+    queryKey: ["admin-shipping-platform-rates", platformPagination.page, platformPagination.pageSize],
     queryFn: async () => {
-      const { data } = await api.get("/api/admin/shipping/platform-rates", AXIOS_COOKIE_CFG);
-      return (data?.data ?? []) as PlatformRate[];
+      const { data } = await api.get<PaginatedResponse<PlatformRate>>(
+        "/api/admin/shipping/platform-rates",
+        {
+          ...AXIOS_COOKIE_CFG,
+          params: {
+            page: platformPagination.page,
+            pageSize: platformPagination.pageSize,
+          },
+        }
+      );
+      return data;
     },
+    placeholderData: keepPreviousData,
+    enabled: tab === "platform",
   });
 
   const routeRatesQ = useQuery({
-    queryKey: ["admin-shipping-route-rates"],
+    queryKey: ["admin-shipping-route-rates", routesPagination.page, routesPagination.pageSize],
     queryFn: async () => {
-      const { data } = await api.get("/api/admin/shipping/route-rates", AXIOS_COOKIE_CFG);
-      return (data?.data ?? []) as RouteRate[];
+      const { data } = await api.get<PaginatedResponse<RouteRate>>(
+        "/api/admin/shipping/route-rates",
+        {
+          ...AXIOS_COOKIE_CFG,
+          params: {
+            page: routesPagination.page,
+            pageSize: routesPagination.pageSize,
+          },
+        }
+      );
+      return data;
     },
+    placeholderData: keepPreviousData,
+    enabled: tab === "routes",
   });
 
   const supplierProfilesQ = useQuery({
-    queryKey: ["admin-shipping-supplier-profiles"],
+    queryKey: [
+      "admin-shipping-supplier-profiles",
+      suppliersPagination.page,
+      suppliersPagination.pageSize,
+    ],
     queryFn: async () => {
-      const { data } = await api.get("/api/admin/shipping/supplier-profiles", AXIOS_COOKIE_CFG);
-      return (data?.data ?? []) as SupplierProfile[];
+      const { data } = await api.get<PaginatedResponse<SupplierProfile>>(
+        "/api/admin/shipping/supplier-profiles",
+        {
+          ...AXIOS_COOKIE_CFG,
+          params: {
+            page: suppliersPagination.page,
+            pageSize: suppliersPagination.pageSize,
+          },
+        }
+      );
+      return data;
     },
+    placeholderData: keepPreviousData,
+    enabled: tab === "suppliers",
   });
+
+  const zonesData = normalizePaginated(zonesQ.data, zonesPagination);
+  const platformData = normalizePaginated(platformRatesQ.data, platformPagination);
+  const routesData = normalizePaginated(routeRatesQ.data, routesPagination);
+  const suppliersData = normalizePaginated(supplierProfilesQ.data, suppliersPagination);
+  const zoneOptions = zonesOptionsQ.data?.data ?? [];
 
   const refreshAll = async () => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["admin-shipping-zones"] }),
+      qc.invalidateQueries({ queryKey: ["admin-shipping-zones-options"] }),
       qc.invalidateQueries({ queryKey: ["admin-shipping-platform-rates"] }),
       qc.invalidateQueries({ queryKey: ["admin-shipping-route-rates"] }),
       qc.invalidateQueries({ queryKey: ["admin-shipping-supplier-profiles"] }),
     ]);
   };
-
-  const zoneOptions = zonesQ.data ?? [];
 
   return (
     <SiteLayout>
@@ -214,7 +435,14 @@ export default function AdminShipping() {
 
         {tab === "zones" && (
           <ZonesTab
-            rows={zonesQ.data ?? []}
+            rows={zonesData.rows}
+            pagination={zonesData.meta}
+            onPageChange={(page) =>
+              setZonesPagination((s) => ({ ...s, page: Math.max(1, page) }))
+            }
+            onPageSizeChange={(pageSize) =>
+              setZonesPagination({ page: 1, pageSize })
+            }
             onError={setError}
             onSaved={refreshAll}
           />
@@ -222,8 +450,15 @@ export default function AdminShipping() {
 
         {tab === "platform" && (
           <PlatformRatesTab
-            rows={platformRatesQ.data ?? []}
+            rows={platformData.rows}
+            pagination={platformData.meta}
             zones={zoneOptions}
+            onPageChange={(page) =>
+              setPlatformPagination((s) => ({ ...s, page: Math.max(1, page) }))
+            }
+            onPageSizeChange={(pageSize) =>
+              setPlatformPagination({ page: 1, pageSize })
+            }
             onError={setError}
             onSaved={refreshAll}
           />
@@ -231,8 +466,15 @@ export default function AdminShipping() {
 
         {tab === "routes" && (
           <RouteRatesTab
-            rows={routeRatesQ.data ?? []}
+            rows={routesData.rows}
+            pagination={routesData.meta}
             zones={zoneOptions}
+            onPageChange={(page) =>
+              setRoutesPagination((s) => ({ ...s, page: Math.max(1, page) }))
+            }
+            onPageSizeChange={(pageSize) =>
+              setRoutesPagination({ page: 1, pageSize })
+            }
             onError={setError}
             onSaved={refreshAll}
           />
@@ -240,8 +482,15 @@ export default function AdminShipping() {
 
         {tab === "suppliers" && (
           <SupplierProfilesTab
-            rows={supplierProfilesQ.data ?? []}
+            rows={suppliersData.rows}
+            pagination={suppliersData.meta}
             zones={zoneOptions}
+            onPageChange={(page) =>
+              setSuppliersPagination((s) => ({ ...s, page: Math.max(1, page) }))
+            }
+            onPageSizeChange={(pageSize) =>
+              setSuppliersPagination({ page: 1, pageSize })
+            }
             onError={setError}
             onSaved={refreshAll}
           />
@@ -255,10 +504,16 @@ export default function AdminShipping() {
 
 function ZonesTab({
   rows,
+  pagination,
+  onPageChange,
+  onPageSizeChange,
   onError,
   onSaved,
 }: {
   rows: Zone[];
+  pagination: PaginationMeta;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
   onError: (s: string | null) => void;
   onSaved: () => Promise<void>;
 }) {
@@ -396,7 +651,9 @@ function ZonesTab({
                     <button
                       type="button"
                       onClick={() => toggleMut.mutate({ id: z.id, isActive: !z.isActive })}
-                      className={`rounded px-2 py-1 text-xs ${z.isActive ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-600"}`}
+                      className={`rounded px-2 py-1 text-xs ${
+                        z.isActive ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-600"
+                      }`}
                     >
                       {z.isActive ? "Active" : "Inactive"}
                     </button>
@@ -413,6 +670,12 @@ function ZonesTab({
             </tbody>
           </table>
         </div>
+
+        <TablePagination
+          meta={pagination}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </Card>
     </div>
   );
@@ -422,12 +685,18 @@ function ZonesTab({
 
 function PlatformRatesTab({
   rows,
+  pagination,
   zones,
+  onPageChange,
+  onPageSizeChange,
   onError,
   onSaved,
 }: {
   rows: PlatformRate[];
+  pagination: PaginationMeta;
   zones: Zone[];
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
   onError: (s: string | null) => void;
   onSaved: () => Promise<void>;
 }) {
@@ -549,9 +818,22 @@ function PlatformRatesTab({
               {rows.map((r) => (
                 <PlatformRateRow key={r.id} row={r} zones={zones} onSaved={onSaved} onError={onError} />
               ))}
+              {!rows.length && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
+                    No platform rates found.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
+
+        <TablePagination
+          meta={pagination}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </Card>
     </div>
   );
@@ -713,12 +995,18 @@ function PlatformRateRow({
 
 function RouteRatesTab({
   rows,
+  pagination,
   zones,
+  onPageChange,
+  onPageSizeChange,
   onError,
   onSaved,
 }: {
   rows: RouteRate[];
+  pagination: PaginationMeta;
   zones: Zone[];
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
   onError: (s: string | null) => void;
   onSaved: () => Promise<void>;
 }) {
@@ -839,9 +1127,22 @@ function RouteRatesTab({
               {rows.map((r) => (
                 <RouteRateRow key={r.id} row={r} zones={zones} onSaved={onSaved} onError={onError} />
               ))}
+              {!rows.length && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
+                    No route rates found.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
+
+        <TablePagination
+          meta={pagination}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </Card>
     </div>
   );
@@ -992,12 +1293,18 @@ function RouteRateRow({
 
 function SupplierProfilesTab({
   rows,
+  pagination,
   zones,
+  onPageChange,
+  onPageSizeChange,
   onError,
   onSaved,
 }: {
   rows: SupplierProfile[];
+  pagination: PaginationMeta;
   zones: Zone[];
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
   onError: (s: string | null) => void;
   onSaved: () => Promise<void>;
 }) {
@@ -1010,6 +1317,12 @@ function SupplierProfilesTab({
         ))}
         {!rows.length && <div className="px-4 py-8 text-center text-zinc-500">No suppliers found.</div>}
       </div>
+
+      <TablePagination
+        meta={pagination}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
     </Card>
   );
 }

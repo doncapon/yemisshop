@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -104,6 +104,34 @@ function parsePositiveInt(v: unknown, fallback: number, min = 1, max = 100) {
   return Math.min(i, max);
 }
 
+function toPagination(req: Request, defaults?: { pageSize?: number; maxPageSize?: number }) {
+  const defaultPageSize = Math.max(1, Number(defaults?.pageSize ?? 20));
+  const maxPageSize = Math.max(defaultPageSize, Number(defaults?.maxPageSize ?? 100));
+
+  const rawPage = Number(req.query.page);
+  const rawPageSize = Number(req.query.pageSize);
+  const hasPageStyle =
+    Number.isFinite(rawPage) ||
+    Number.isFinite(rawPageSize);
+
+  if (hasPageStyle) {
+    const page = parsePositiveInt(req.query.page, 1, 1, 100000);
+    const pageSize = parsePositiveInt(req.query.pageSize, defaultPageSize, 1, maxPageSize);
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    return { page, pageSize, skip, take };
+  }
+
+  const take = parsePositiveInt(req.query.take, defaultPageSize, 1, maxPageSize);
+  const skipRaw = Number(req.query.skip);
+  const skip = Number.isFinite(skipRaw) && skipRaw >= 0 ? Math.trunc(skipRaw) : 0;
+  const pageSize = take;
+  const page = Math.floor(skip / take) + 1;
+
+  return { page, pageSize, skip, take };
+}
+
 /**
  * POST /api/supplier/catalog-requests
  */
@@ -148,8 +176,9 @@ r.post("/", requireAuth, async (req, res, next) => {
 /**
  * GET /api/supplier/catalog-requests
  * Server-side pagination:
- * - page=1
- * - pageSize=20
+ * - page=1&pageSize=20
+ * - or take=20&skip=0
+ *
  * Optional filters:
  * - status=PENDING|APPROVED|REJECTED
  * - type=BRAND|CATEGORY|ATTRIBUTE|ATTRIBUTE_VALUE
@@ -166,9 +195,10 @@ r.get("/", requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: "Supplier account not found for this user" });
     }
 
-    const page = parsePositiveInt(req.query.page, 1, 1, 100000);
-    const pageSize = parsePositiveInt(req.query.pageSize, 20, 1, 100);
-    const skip = (page - 1) * pageSize;
+    const { page, pageSize, skip, take } = toPagination(req, {
+      pageSize: 20,
+      maxPageSize: 100,
+    });
 
     const rawStatus = String(req.query.status ?? "").trim().toUpperCase();
     const rawType = String(req.query.type ?? "").trim().toUpperCase();
@@ -201,17 +231,17 @@ r.get("/", requireAuth, async (req, res, next) => {
       ];
     }
 
-    const [rows, total] = await Promise.all([
+    const [rows, total] = await prisma.$transaction([
       prisma.catalogRequest.findMany({
         where,
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         skip,
-        take: pageSize,
+        take,
       }),
       prisma.catalogRequest.count({ where }),
     ]);
 
-    const data = rows.map((row: any) => {
+    const mappedRows = rows.map((row: any) => {
       const p = (row.payload ?? {}) as any;
 
       return {
@@ -229,14 +259,16 @@ r.get("/", requireAuth, async (req, res, next) => {
 
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-    res.json({
-      data,
-      page,
-      pageSize,
-      total,
-      totalPages,
-      hasNextPage: page < totalPages,
-      hasPrevPage: page > 1,
+    return res.json({
+      data: {
+        rows: mappedRows,
+        total,
+        page,
+        pageSize,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
     });
   } catch (e) {
     next(e);

@@ -1,7 +1,8 @@
+//AccountSessions.tsx
 import { useEffect, useMemo, useState } from "react";
 import SiteLayout from "../../layouts/SiteLayout";
 import api from "../../api/client";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useModal } from "../../components/ModalProvider";
 import { useNavigate } from "react-router-dom";
 import {
@@ -27,6 +28,23 @@ type SessionDto = {
   revokedReason?: string | null;
 };
 
+type TabKey = "ACTIVE" | "RECENT";
+
+type SessionsPageDto = {
+  rows: SessionDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+  currentSessionId: string | null;
+  counts?: {
+    active?: number;
+    recent?: number;
+  };
+};
+
 function maskIp(ip?: string | null) {
   if (!ip) return "—";
   const parts = ip.split(".");
@@ -43,25 +61,8 @@ function guessDevice(ua?: string | null) {
   return { icon: <Monitor size={16} />, label: "Desktop" };
 }
 
-type TabKey = "ACTIVE" | "RECENT";
-
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
-}
-
-function paginate<T>(items: T[], page: number, pageSize: number) {
-  const total = items.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const safePage = clamp(page, 1, totalPages);
-  const start = (safePage - 1) * pageSize;
-  const end = start + pageSize;
-  return {
-    page: safePage,
-    pageSize,
-    total,
-    totalPages,
-    items: items.slice(start, end),
-  };
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -104,8 +105,8 @@ function Pill({
     tone === "emerald"
       ? "bg-emerald-50 text-emerald-700 border-emerald-200"
       : tone === "rose"
-      ? "bg-rose-50 text-rose-700 border-rose-200"
-      : "bg-zinc-50 text-zinc-700 border-zinc-200";
+        ? "bg-rose-50 text-rose-700 border-rose-200"
+        : "bg-zinc-50 text-zinc-700 border-zinc-200";
 
   return (
     <span className={`text-[11px] px-2 py-0.5 rounded-full border ${cls}`}>
@@ -114,18 +115,113 @@ function Pill({
   );
 }
 
+function normalizeSessionsPayload(raw: any, fallbackTab: TabKey, fallbackPage: number, fallbackPageSize: number): SessionsPageDto {
+  const payload = raw?.data ?? raw ?? {};
+
+  const rows = Array.isArray(payload?.rows)
+    ? payload.rows
+    : Array.isArray(payload?.items)
+      ? payload.items
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : [];
+
+  const total = Number.isFinite(Number(payload?.total)) ? Number(payload.total) : rows.length;
+  const pageSize =
+    Number.isFinite(Number(payload?.pageSize)) && Number(payload.pageSize) > 0
+      ? Number(payload.pageSize)
+      : fallbackPageSize;
+
+  const computedTotalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page =
+    Number.isFinite(Number(payload?.page)) && Number(payload.page) > 0
+      ? Number(payload.page)
+      : fallbackPage;
+
+  const totalPages =
+    Number.isFinite(Number(payload?.totalPages)) && Number(payload.totalPages) > 0
+      ? Number(payload.totalPages)
+      : computedTotalPages;
+
+  const currentSessionId =
+    payload?.currentSessionId ??
+    payload?.meta?.currentSessionId ??
+    null;
+
+  const counts =
+    payload?.counts && typeof payload.counts === "object"
+      ? {
+          active: Number.isFinite(Number(payload.counts.active)) ? Number(payload.counts.active) : undefined,
+          recent: Number.isFinite(Number(payload.counts.recent)) ? Number(payload.counts.recent) : undefined,
+        }
+      : undefined;
+
+  const hasPrevPage =
+    typeof payload?.hasPrevPage === "boolean" ? payload.hasPrevPage : page > 1;
+
+  const hasNextPage =
+    typeof payload?.hasNextPage === "boolean" ? payload.hasNextPage : page < totalPages;
+
+  // Backward-compat fallback if backend still returns all sessions
+  if (!payload?.rows && !payload?.items && Array.isArray(rows)) {
+    const filtered = rows
+      .filter((s: SessionDto) => (fallbackTab === "ACTIVE" ? !s.revokedAt : !!s.revokedAt))
+      .sort((a: SessionDto, b: SessionDto) => {
+        if (fallbackTab === "RECENT") {
+          const ra = a.revokedAt ? +new Date(a.revokedAt) : 0;
+          const rb = b.revokedAt ? +new Date(b.revokedAt) : 0;
+          if (rb !== ra) return rb - ra;
+        }
+        const ta = +new Date(a.lastSeenAt || a.createdAt);
+        const tb = +new Date(b.lastSeenAt || b.createdAt);
+        return tb - ta;
+      });
+
+    const filteredTotal = filtered.length;
+    const filteredTotalPages = Math.max(1, Math.ceil(filteredTotal / fallbackPageSize));
+    const safePage = clamp(fallbackPage, 1, filteredTotalPages);
+    const start = (safePage - 1) * fallbackPageSize;
+    const pageRows = filtered.slice(start, start + fallbackPageSize);
+
+    return {
+      rows: pageRows,
+      total: filteredTotal,
+      page: safePage,
+      pageSize: fallbackPageSize,
+      totalPages: filteredTotalPages,
+      hasNextPage: safePage < filteredTotalPages,
+      hasPrevPage: safePage > 1,
+      currentSessionId,
+      counts: {
+        active: rows.filter((s: SessionDto) => !s.revokedAt).length,
+        recent: rows.filter((s: SessionDto) => !!s.revokedAt).length,
+      },
+    };
+  }
+
+  return {
+    rows,
+    total,
+    page: clamp(page, 1, Math.max(1, totalPages)),
+    pageSize,
+    totalPages: Math.max(1, totalPages),
+    hasNextPage,
+    hasPrevPage,
+    currentSessionId,
+    counts,
+  };
+}
+
 export default function AccountSessions() {
   const { openModal } = useModal();
   const qc = useQueryClient();
   const navigate = useNavigate();
 
-  // ✅ cookie-mode: gate by hydrated + user, NOT token
   const hydrated = useAuthStore((s: any) => s.hydrated);
   const user = useAuthStore((s: any) => s.user);
 
   const [tab, setTab] = useState<TabKey>("ACTIVE");
 
-  // separate page + pageSize per tab (persisted)
   const [activePage, setActivePage] = useState(1);
   const [recentPage, setRecentPage] = useState(1);
 
@@ -136,26 +232,73 @@ export default function AccountSessions() {
     readNumber("acct_sessions_recent_pageSize", 10)
   );
 
-  // jump-to-page input per tab (text to allow empty/typing)
   const [activeJump, setActiveJump] = useState("");
   const [recentJump, setRecentJump] = useState("");
 
   useEffect(() => writeNumber("acct_sessions_active_pageSize", activePageSize), [activePageSize]);
   useEffect(() => writeNumber("acct_sessions_recent_pageSize", recentPageSize), [recentPageSize]);
 
+  const currentPage = tab === "ACTIVE" ? activePage : recentPage;
+  const currentPageSize = tab === "ACTIVE" ? activePageSize : recentPageSize;
+  const currentJump = tab === "ACTIVE" ? activeJump : recentJump;
+
+  const setCurrentPage = (p: number) => {
+    if (tab === "ACTIVE") setActivePage(p);
+    else setRecentPage(p);
+  };
+
+  const setCurrentPageSize = (n: number) => {
+    if (tab === "ACTIVE") {
+      setActivePageSize(n);
+      setActivePage(1);
+    } else {
+      setRecentPageSize(n);
+      setRecentPage(1);
+    }
+  };
+
+  const setCurrentJump = (v: string) => {
+    if (tab === "ACTIVE") setActiveJump(v);
+    else setRecentJump(v);
+  };
+
+  const enabled = !!hydrated && !!user?.id;
+
+  async function fetchSessionsPage(targetTab: TabKey, page: number, pageSize: number): Promise<SessionsPageDto> {
+    const { data } = await api.get("/api/auth/sessions", {
+      params: {
+        page,
+        pageSize,
+        tab: targetTab,
+        status: targetTab,
+      },
+    });
+
+    return normalizeSessionsPayload(data, targetTab, page, pageSize);
+  }
+
   const sessionsQ = useQuery({
-    queryKey: ["auth", "sessions"],
-    enabled: !!hydrated && !!user?.id, // ✅ cookie-mode
-    queryFn: async () => {
-      const { data } = await api.get<{ data: SessionDto[]; currentSessionId: string | null }>(
-        "/api/auth/sessions"
-      );
-      return data;
-    },
+    queryKey: ["auth", "sessions", tab, currentPage, currentPageSize],
+    enabled,
+    placeholderData: keepPreviousData,
+    queryFn: () => fetchSessionsPage(tab, currentPage, currentPageSize),
     staleTime: 15_000,
   });
 
-  // ✅ If cookie expired / not logged in, redirect cleanly
+  const activeMetaQ = useQuery({
+    queryKey: ["auth", "sessions", "ACTIVE", "meta"],
+    enabled,
+    queryFn: () => fetchSessionsPage("ACTIVE", 1, 1),
+    staleTime: 15_000,
+  });
+
+  const recentMetaQ = useQuery({
+    queryKey: ["auth", "sessions", "RECENT", "meta"],
+    enabled,
+    queryFn: () => fetchSessionsPage("RECENT", 1, 1),
+    staleTime: 15_000,
+  });
+
   useEffect(() => {
     const status = (sessionsQ.error as any)?.response?.status;
     if (status === 401) {
@@ -163,8 +306,37 @@ export default function AccountSessions() {
     }
   }, [sessionsQ.error, navigate]);
 
-  const currentSessionId = sessionsQ.data?.currentSessionId ?? null;
-  const sessions = sessionsQ.data?.data ?? [];
+  const currentSessionId =
+    sessionsQ.data?.currentSessionId ??
+    activeMetaQ.data?.currentSessionId ??
+    recentMetaQ.data?.currentSessionId ??
+    null;
+
+  const activeTotal =
+    activeMetaQ.data?.counts?.active ??
+    activeMetaQ.data?.total ??
+    (tab === "ACTIVE" ? sessionsQ.data?.total : 0) ??
+    0;
+
+  const recentTotal =
+    recentMetaQ.data?.counts?.recent ??
+    recentMetaQ.data?.total ??
+    (tab === "RECENT" ? sessionsQ.data?.total : 0) ??
+    0;
+
+  const pageData = sessionsQ.data ?? {
+    rows: [],
+    total: 0,
+    page: currentPage,
+    pageSize: currentPageSize,
+    totalPages: 1,
+    hasNextPage: false,
+    hasPrevPage: false,
+    currentSessionId,
+  };
+
+  const rows = pageData.rows ?? [];
+  const busy = false;
 
   const revokeOneM = useMutation({
     mutationFn: async (id: string) => {
@@ -208,96 +380,41 @@ export default function AccountSessions() {
         message: "This device session was revoked. Please log in again.",
       });
 
-      // ✅ single logout+redirect path (no double navigate)
       await performLogout("/login", navigate);
-      return;
     }
   };
 
-  const busy = revokeOneM.isPending || revokeOthersM.isPending;
+  const mutationBusy = revokeOneM.isPending || revokeOthersM.isPending;
+  const activeHasAny = activeTotal > 0;
 
-  const { activeSessions, recentSessions } = useMemo(() => {
-    const active = sessions
-      .filter((s) => !s.revokedAt)
-      .slice()
-      .sort((a, b) => {
-        const ta = +new Date(a.lastSeenAt || a.createdAt);
-        const tb = +new Date(b.lastSeenAt || b.createdAt);
-        return tb - ta;
-      });
-
-    const recent = sessions
-      .filter((s) => !!s.revokedAt)
-      .slice()
-      .sort((a, b) => {
-        const ra = a.revokedAt ? +new Date(a.revokedAt) : 0;
-        const rb = b.revokedAt ? +new Date(b.revokedAt) : 0;
-        if (rb !== ra) return rb - ra;
-
-        const ta = +new Date(a.lastSeenAt || a.createdAt);
-        const tb = +new Date(b.lastSeenAt || b.createdAt);
-        return tb - ta;
-      });
-
-    return { activeSessions: active, recentSessions: recent };
-  }, [sessions]);
-
-  // keep pages valid when list sizes or page size change
-  useEffect(() => {
-    const maxPages = Math.max(1, Math.ceil(activeSessions.length / activePageSize));
-    setActivePage((p) => clamp(p, 1, maxPages));
-  }, [activeSessions.length, activePageSize]);
-
-  useEffect(() => {
-    const maxPages = Math.max(1, Math.ceil(recentSessions.length / recentPageSize));
-    setRecentPage((p) => clamp(p, 1, maxPages));
-  }, [recentSessions.length, recentPageSize]);
-
-  // reset jump inputs when tab changes for nicer UX
   useEffect(() => {
     setActiveJump("");
     setRecentJump("");
   }, [tab]);
 
-  const currentPage = tab === "ACTIVE" ? activePage : recentPage;
-  const setCurrentPage = (p: number) => {
-    if (tab === "ACTIVE") setActivePage(p);
-    else setRecentPage(p);
-  };
+  useEffect(() => {
+    const maxPages = Math.max(1, activeMetaQ.data?.totalPages || Math.ceil(activeTotal / activePageSize) || 1);
+    setActivePage((p) => clamp(p, 1, maxPages));
+  }, [activeTotal, activePageSize, activeMetaQ.data?.totalPages]);
 
-  const currentPageSize = tab === "ACTIVE" ? activePageSize : recentPageSize;
-  const setCurrentPageSize = (n: number) => {
-    if (tab === "ACTIVE") {
-      setActivePageSize(n);
-      setActivePage(1);
-    } else {
-      setRecentPageSize(n);
-      setRecentPage(1);
-    }
-  };
-
-  const currentJump = tab === "ACTIVE" ? activeJump : recentJump;
-  const setCurrentJump = (v: string) => {
-    if (tab === "ACTIVE") setActiveJump(v);
-    else setRecentJump(v);
-  };
-
-  const paged = useMemo(() => {
-    const list = tab === "ACTIVE" ? activeSessions : recentSessions;
-    return paginate(list, currentPage, currentPageSize);
-  }, [tab, activeSessions, recentSessions, currentPage, currentPageSize]);
+  useEffect(() => {
+    const maxPages = Math.max(1, recentMetaQ.data?.totalPages || Math.ceil(recentTotal / recentPageSize) || 1);
+    setRecentPage((p) => clamp(p, 1, maxPages));
+  }, [recentTotal, recentPageSize, recentMetaQ.data?.totalPages]);
 
   const applyJump = () => {
     const n = Number(String(currentJump || "").trim());
     if (!Number.isFinite(n)) return;
-    const target = clamp(Math.floor(n), 1, paged.totalPages);
+    const target = clamp(Math.floor(n), 1, pageData.totalPages);
     setCurrentPage(target);
   };
+
+  const startItem = pageData.total === 0 ? 0 : (pageData.page - 1) * pageData.pageSize + 1;
+  const endItem = pageData.total === 0 ? 0 : Math.min(pageData.page * pageData.pageSize, pageData.total);
 
   return (
     <SiteLayout>
       <div className="max-w-screen-xl mx-auto px-3 sm:px-4 md:px-8 py-5 sm:py-6">
-        {/* ✅ Mobile-first header: stacks, keeps CTA tidy */}
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-zinc-900">
@@ -309,10 +426,10 @@ export default function AccountSessions() {
           </div>
 
           <button
-            disabled={busy || !activeSessions.length}
+            disabled={mutationBusy || !activeHasAny}
             onClick={() => revokeOthersM.mutate()}
             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border bg-white px-4 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 disabled:opacity-60 whitespace-nowrap"
-            title={!activeSessions.length ? "No active sessions to revoke" : "Log out other devices"}
+            title={!activeHasAny ? "No active sessions to revoke" : "Log out other devices"}
           >
             <LogOut size={16} />
             <span className="sm:hidden">Log out others</span>
@@ -321,7 +438,6 @@ export default function AccountSessions() {
         </div>
 
         <div className="mt-4 sm:mt-5 rounded-2xl border bg-white overflow-hidden">
-          {/* ✅ Top bar: title + tabs wrap nicely */}
           <div className="px-4 py-3 border-b flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <span className="inline-flex items-center gap-2 text-sm font-semibold text-zinc-900">
               <Lock size={16} />
@@ -338,7 +454,7 @@ export default function AccountSessions() {
                     : "text-zinc-600 hover:text-zinc-900"
                 }`}
               >
-                Active <span className="opacity-70">({activeSessions.length})</span>
+                Active <span className="opacity-70">({activeTotal})</span>
               </button>
               <button
                 type="button"
@@ -349,12 +465,11 @@ export default function AccountSessions() {
                     : "text-zinc-600 hover:text-zinc-900"
                 }`}
               >
-                Recent <span className="opacity-70">({recentSessions.length})</span>
+                Recent <span className="opacity-70">({recentTotal})</span>
               </button>
             </div>
           </div>
 
-          {/* ✅ Controls: compact, no long sentence on mobile */}
           <div className="px-4 py-3 border-b bg-zinc-50 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2 text-xs text-zinc-700">
               <span className="font-semibold">Rows</span>
@@ -378,7 +493,7 @@ export default function AccountSessions() {
 
             <div className="flex items-center justify-between sm:justify-end gap-2">
               <div className="text-xs text-zinc-600">
-                Page <b className="text-zinc-900">{paged.page}</b> / {paged.totalPages}
+                Page <b className="text-zinc-900">{pageData.page}</b> / {pageData.totalPages}
               </div>
 
               <div className="flex items-center gap-2">
@@ -395,7 +510,7 @@ export default function AccountSessions() {
                 <button
                   type="button"
                   onClick={applyJump}
-                  disabled={!paged.total || paged.totalPages <= 1}
+                  disabled={!pageData.total || pageData.totalPages <= 1}
                   className="rounded-full border bg-white px-3 py-2 sm:py-1.5 text-xs font-semibold hover:bg-black/5 disabled:opacity-60"
                 >
                   Go
@@ -408,17 +523,14 @@ export default function AccountSessions() {
             <div className="p-4 text-sm text-zinc-600">Loading sessions…</div>
           ) : sessionsQ.isError ? (
             <div className="p-4 text-sm text-zinc-600">Could not load sessions. Please refresh.</div>
-          ) : sessions.length === 0 ? (
-            <div className="p-4 text-sm text-zinc-600">No sessions found.</div>
-          ) : paged.total === 0 ? (
+          ) : pageData.total === 0 ? (
             <div className="p-4 text-sm text-zinc-600">
               {tab === "ACTIVE" ? "No active sessions." : "No recent (revoked) sessions."}
             </div>
           ) : (
             <>
-              {/* ✅ Mobile: each session looks like a neat card; desktop still fine */}
               <div className="p-3 sm:p-0 sm:divide-y">
-                {paged.items.map((s) => {
+                {rows.map((s) => {
                   const isCurrent = currentSessionId && s.id === currentSessionId;
                   const isRevoked = !!s.revokedAt;
                   const dev = guessDevice(s.userAgent);
@@ -442,7 +554,6 @@ export default function AccountSessions() {
                             {isRevoked && <Pill tone="rose">Revoked</Pill>}
                           </div>
 
-                          {/* ✅ cleaner meta layout */}
                           <div className="mt-2 grid gap-1.5">
                             <InfoRow label="IP" value={maskIp(s.ip)} />
                             <InfoRow
@@ -468,11 +579,10 @@ export default function AccountSessions() {
                         </div>
                       </div>
 
-                      {/* ✅ actions: full-width on mobile, inline on desktop */}
                       <div className="mt-3 flex gap-2 sm:justify-end">
                         {tab === "ACTIVE" ? (
                           <button
-                            disabled={busy || isRevoked}
+                            disabled={mutationBusy || isRevoked}
                             onClick={() => onRevoke(s.id)}
                             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
                             title={isCurrent ? "Log out this device" : "Revoke this session"}
@@ -496,40 +606,35 @@ export default function AccountSessions() {
                 })}
               </div>
 
-              {/* Pagination footer */}
               <div className="px-4 py-3 border-t bg-zinc-50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="text-xs text-zinc-600">
                   Showing{" "}
-                  <span className="font-semibold text-zinc-900">
-                    {Math.min((paged.page - 1) * paged.pageSize + 1, paged.total)}
-                  </span>
+                  <span className="font-semibold text-zinc-900">{startItem}</span>
                   {"–"}
-                  <span className="font-semibold text-zinc-900">
-                    {Math.min(paged.page * paged.pageSize, paged.total)}
-                  </span>{" "}
-                  of <span className="font-semibold text-zinc-900">{paged.total}</span>
+                  <span className="font-semibold text-zinc-900">{endItem}</span> of{" "}
+                  <span className="font-semibold text-zinc-900">{pageData.total}</span>
                 </div>
 
                 <div className="flex items-center justify-between sm:justify-end gap-2">
                   <button
                     type="button"
                     className="inline-flex items-center gap-1 rounded-full border bg-white px-3 py-2 sm:py-1.5 text-xs font-semibold hover:bg-black/5 disabled:opacity-60"
-                    disabled={paged.page <= 1}
-                    onClick={() => setCurrentPage(paged.page - 1)}
+                    disabled={!pageData.hasPrevPage}
+                    onClick={() => setCurrentPage(pageData.page - 1)}
                   >
                     <ChevronLeft size={14} />
                     Prev
                   </button>
 
                   <span className="text-xs text-zinc-700 whitespace-nowrap">
-                    <b className="text-zinc-900">{paged.page}</b> / {paged.totalPages}
+                    <b className="text-zinc-900">{pageData.page}</b> / {pageData.totalPages}
                   </span>
 
                   <button
                     type="button"
                     className="inline-flex items-center gap-1 rounded-full border bg-white px-3 py-2 sm:py-1.5 text-xs font-semibold hover:bg-black/5 disabled:opacity-60"
-                    disabled={paged.page >= paged.totalPages}
-                    onClick={() => setCurrentPage(paged.page + 1)}
+                    disabled={!pageData.hasNextPage}
+                    onClick={() => setCurrentPage(pageData.page + 1)}
                   >
                     Next
                     <ChevronRight size={14} />

@@ -11,34 +11,40 @@ import { Prisma } from "@prisma/client";
 
 const router = Router();
 
-
 function normRole(r?: string) {
-    return String(r || "").toUpperCase();
+  return String(r || "").toUpperCase();
 }
 
 function normStr(v: any) {
-    return String(v ?? "").trim();
+  return String(v ?? "").trim();
 }
 
 function toDecimal(v: any) {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return new Prisma.Decimal(0);
-    return new Prisma.Decimal(n);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return new Prisma.Decimal(0);
+  return new Prisma.Decimal(n);
 }
 
 function sumOrderItems(orderItems: Array<{ unitPrice: any; quantity: number }>) {
-    let itemsAmount = new Prisma.Decimal(0);
-    for (const it of orderItems) {
-        const price = toDecimal(it.unitPrice);
-        const qty = new Prisma.Decimal(Number(it.quantity || 0));
-        itemsAmount = itemsAmount.plus(price.mul(qty));
-    }
-    return itemsAmount;
+  let itemsAmount = new Prisma.Decimal(0);
+  for (const it of orderItems) {
+    const price = toDecimal(it.unitPrice);
+    const qty = new Prisma.Decimal(Number(it.quantity || 0));
+    itemsAmount = itemsAmount.plus(price.mul(qty));
+  }
+  return itemsAmount;
 }
 
 /** PO status helpers (safe string-based to avoid enum mismatch at runtime) */
 function poStatusUpper(v: any) {
-    return String(v ?? "").toUpperCase();
+  return String(v ?? "").toUpperCase();
+}
+
+function toPositiveInt(value: any, fallback: number) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.floor(n);
+  return v > 0 ? v : fallback;
 }
 
 /**
@@ -46,7 +52,7 @@ function poStatusUpper(v: any) {
  *
  * Admin:
  * - sees all refunds
- * - supports q, status, take, skip
+ * - supports q, status, page, pageSize
  *
  * Shopper:
  * - sees only refunds where requestedByUserId = actorId
@@ -57,7 +63,10 @@ function poStatusUpper(v: any) {
  * Query:
  * - q: optional search by orderId, purchaseOrderId, supplierId, providerReference
  * - status: optional RefundStatus
- * - take, skip
+ * - page, pageSize
+ *
+ * Backward compatibility:
+ * - still accepts take, skip
  */
 router.get("/", requireAuth, async (req: any, res) => {
   const actorId = normStr(req.user?.id);
@@ -67,8 +76,25 @@ router.get("/", requireAuth, async (req: any, res) => {
 
   const q = normStr(req.query.q).toLowerCase();
   const status = normStr(req.query.status).toUpperCase();
-  const take = Math.min(100, Math.max(1, Number(req.query.take ?? 50)));
-  const skip = Math.max(0, Number(req.query.skip ?? 0));
+
+  const pageRaw = req.query.page;
+  const pageSizeRaw = req.query.pageSize;
+
+  const hasPageMode = pageRaw !== undefined || pageSizeRaw !== undefined;
+
+  const page = hasPageMode ? toPositiveInt(pageRaw, 1) : 1;
+  const pageSize = Math.min(100, toPositiveInt(pageSizeRaw, 20));
+
+  const take = hasPageMode
+    ? pageSize
+    : Math.min(100, Math.max(1, Number(req.query.take ?? 50)));
+
+  const skip = hasPageMode
+    ? (page - 1) * pageSize
+    : Math.max(0, Number(req.query.skip ?? 0));
+
+  const resolvedPage = hasPageMode ? page : Math.floor(skip / Math.max(1, take)) + 1;
+  const resolvedPageSize = hasPageMode ? pageSize : take;
 
   const where: any = {};
 
@@ -198,11 +224,16 @@ router.get("/", requireAuth, async (req: any, res) => {
     prisma.refund.count({ where }),
   ]);
 
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, resolvedPageSize)));
+
   return res.json({
     ok: true,
     data: rows,
     meta: {
       total,
+      page: resolvedPage,
+      pageSize: resolvedPageSize,
+      totalPages,
       take,
       skip,
       role,
@@ -232,7 +263,6 @@ async function getAdminUserIds() {
   });
   return admins.map((a: { id: string }) => a.id);
 }
-
 
 /**
  * PATCH /api/refunds/:id/decision
@@ -269,7 +299,6 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
       });
       if (!refund) throw new Error("Refund not found");
 
-      // Guard: only allow admin decision from specific statuses
       const allowed = new Set([
         "SUPPLIER_REVIEW",
         "SUPPLIER_ACCEPTED",
@@ -306,11 +335,9 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
       return { r2, refund };
     });
 
-    // ---- Notifications (outside tx) ----
     const refundRow = updated.r2;
     const refundMeta = updated.refund;
 
-    // Notify customer
     if (refundMeta.requestedByUserId) {
       await notifyUser(refundMeta.requestedByUserId, {
         type: "REFUND_STATUS_CHANGED",
@@ -323,7 +350,6 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
       });
     }
 
-    // Notify supplier user (if supplierId + supplier user exists)
     if (refundMeta.supplierId) {
       const supplier = await prisma.supplier.findUnique({
         where: { id: refundMeta.supplierId },
@@ -342,7 +368,6 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
       }
     }
 
-    // Notify all admins
     const adminUserIds = await getAdminUserIds();
     await notifyMany(adminUserIds, {
       type: "REFUND_STATUS_CHANGED",
@@ -457,7 +482,6 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
         },
       });
 
-      // Reflect refund-requested state on PO if present
       if (refund.purchaseOrderId) {
         try {
           await tx.purchaseOrder.update({
@@ -471,17 +495,11 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
         }
       }
 
-      // -----------------------------------
-      // RESTORE INVENTORY ON APPROVAL
-      // -----------------------------------
       for (const ri of refundItems) {
         const oi = ri.orderItem;
         if (!oi) continue;
 
-        const restoreQty = Math.max(
-          0,
-          Number(ri.qty ?? oi.quantity ?? 0)
-        );
+        const restoreQty = Math.max(0, Number(ri.qty ?? oi.quantity ?? 0));
 
         if (restoreQty <= 0) continue;
 
@@ -500,12 +518,11 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
             },
           });
 
-          const variantProductId =
-            updatedVariantOffer.productId
-              ? String(updatedVariantOffer.productId)
-              : oi.productId
-                ? String(oi.productId)
-                : null;
+          const variantProductId = updatedVariantOffer.productId
+            ? String(updatedVariantOffer.productId)
+            : oi.productId
+              ? String(oi.productId)
+              : null;
 
           if (variantProductId) {
             await recomputeProductStockTx(tx, variantProductId);
@@ -525,19 +542,17 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
             },
           });
 
-          const baseProductId =
-            updatedBaseOffer.productId
-              ? String(updatedBaseOffer.productId)
-              : oi.productId
-                ? String(oi.productId)
-                : null;
+          const baseProductId = updatedBaseOffer.productId
+            ? String(updatedBaseOffer.productId)
+            : oi.productId
+              ? String(oi.productId)
+              : null;
 
           if (baseProductId) {
             await recomputeProductStockTx(tx, baseProductId);
             await syncProductInStockCacheTx(tx, baseProductId);
           }
         } else if (oi.productId) {
-          // Fallback if chosen offer IDs are missing
           await recomputeProductStockTx(tx, String(oi.productId));
           await syncProductInStockCacheTx(tx, String(oi.productId));
         }
@@ -552,9 +567,6 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
 
     const refundMeta = updated.meta;
 
-    // ---- Notifications ----
-
-    // Customer
     if (refundMeta.requestedByUserId) {
       await notifyUser(refundMeta.requestedByUserId, {
         type: "REFUND_STATUS_CHANGED",
@@ -568,7 +580,6 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
       });
     }
 
-    // Supplier
     if (refundMeta.supplierId) {
       const supplier = await prisma.supplier.findUnique({
         where: { id: refundMeta.supplierId },
@@ -589,7 +600,6 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
       }
     }
 
-    // Admins
     const adminUserIds = await getAdminUserIds();
     await notifyMany(adminUserIds, {
       type: "REFUND_STATUS_CHANGED",
@@ -617,4 +627,3 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
 });
 
 export default router;
-

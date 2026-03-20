@@ -88,6 +88,21 @@ type CustomerOption = CustomerRow & {
   _search: string;
 };
 
+type RefundsMeta = {
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  take?: number;
+  skip?: number;
+  role?: string;
+};
+
+type RefundsQueryResult = {
+  rows: RefundRow[];
+  meta: RefundsMeta;
+};
+
 /* ---------------- Refund normalization ---------------- */
 function normalizeRefund(r: any): RefundRow {
   const evidenceUrls =
@@ -146,6 +161,32 @@ function normalizeRefunds(payload: any): RefundRow[] {
     (payload && Array.isArray(payload.results) && payload.results) ||
     [];
   return list.map(normalizeRefund);
+}
+
+function normalizeRefundsResponse(payload: any, fallbackPage: number, fallbackPageSize: number): RefundsQueryResult {
+  const rows = normalizeRefunds(payload);
+
+  const rawMeta = payload?.meta ?? {};
+  const total = Number(rawMeta.total ?? rows.length ?? 0);
+  const page = Math.max(1, Number(rawMeta.page ?? fallbackPage ?? 1) || 1);
+  const pageSize = Math.max(1, Number(rawMeta.pageSize ?? rawMeta.take ?? fallbackPageSize ?? PAGE_SIZE) || PAGE_SIZE);
+  const totalPages = Math.max(
+    1,
+    Number(rawMeta.totalPages ?? Math.ceil(total / Math.max(1, pageSize)) ?? 1) || 1
+  );
+
+  return {
+    rows,
+    meta: {
+      total,
+      page,
+      pageSize,
+      totalPages,
+      take: Number(rawMeta.take ?? pageSize),
+      skip: Number(rawMeta.skip ?? (page - 1) * pageSize),
+      role: rawMeta.role ? String(rawMeta.role) : undefined,
+    },
+  };
 }
 
 /* ---------------- Customers normalization ---------------- */
@@ -373,6 +414,7 @@ const RefundFilters = React.memo(function RefundFilters({
   loading,
   pageStart,
   pageEnd,
+  serverTotal,
 }: {
   isAdmin: boolean;
   customersLoading: boolean;
@@ -409,6 +451,7 @@ const RefundFilters = React.memo(function RefundFilters({
   loading: boolean;
   pageStart: number;
   pageEnd: number;
+  serverTotal: number;
 }) {
   const [localCustomerInput, setLocalCustomerInput] = useState(customerKeyInput);
   const [localQ, setLocalQ] = useState(q);
@@ -657,14 +700,15 @@ const RefundFilters = React.memo(function RefundFilters({
         </button>
 
         <div className={`ml-auto ${T_SM} text-ink-soft`}>
-          {filteredCount > 0 ? (
-            <>
-              Showing {pageStart}-{pageEnd} of {filteredCount}
-            </>
-          ) : loading ? (
+          {loading ? (
             "Loading refunds…"
+          ) : filteredCount > 0 ? (
+            <>
+              Showing {pageStart}-{pageEnd} of {filteredCount} on this page
+              <span className="ml-2">• {serverTotal} total from server</span>
+            </>
           ) : (
-            "No matching refunds"
+            <>No matching refunds on this page{serverTotal > 0 ? ` • ${serverTotal} total from server` : ""}</>
           )}
           {isTodayActive && filteredCount > 0 && <span className="ml-2">(today)</span>}
         </div>
@@ -748,16 +792,36 @@ export default function ReturnsRefundsPage() {
   const customers = (customersQ.data || []) as CustomerRow[];
 
   const refundsQ = useQuery({
-    queryKey: ["refunds", isAdmin ? "admin" : "mine", isAdmin ? activeCustomerKey || "all" : "self"],
+    queryKey: [
+      "refunds",
+      isAdmin ? "admin" : "mine",
+      isAdmin ? activeCustomerKey || "all" : "self",
+      page,
+      PAGE_SIZE,
+      deferredQ.trim(),
+      statusFilter,
+    ],
     enabled: queriesEnabled,
     queryFn: async () => {
       const urls = isAdmin
         ? ["/api/refunds", "/api/refunds/all"]
-        : ["/api/orders/refunds/mine"];
+        : ["/api/refunds", "/api/orders/refunds/mine"];
 
       let lastErr: any = null;
 
-      const params: Record<string, any> = {};
+      const params: Record<string, any> = {
+        page,
+        pageSize: PAGE_SIZE,
+      };
+
+      if (deferredQ.trim()) {
+        params.q = deferredQ.trim();
+      }
+
+      if (statusFilter !== "ALL") {
+        params.status = statusFilter;
+      }
+
       if (isAdmin && activeCustomerKey) {
         params.customer = activeCustomerKey;
       }
@@ -768,7 +832,7 @@ export default function ReturnsRefundsPage() {
             ...AXIOS_COOKIE_CFG,
             params,
           });
-          return normalizeRefunds(data);
+          return normalizeRefundsResponse(data, page, PAGE_SIZE);
         } catch (e: any) {
           lastErr = e;
           if (isAuthError(e)) throw e;
@@ -776,15 +840,30 @@ export default function ReturnsRefundsPage() {
       }
 
       console.warn("Refund list fetch failed", lastErr);
-      return [] as RefundRow[];
+      return {
+        rows: [] as RefundRow[],
+        meta: {
+          total: 0,
+          page,
+          pageSize: PAGE_SIZE,
+          totalPages: 1,
+        },
+      } satisfies RefundsQueryResult;
     },
     staleTime: 15_000,
     retry: false,
+    placeholderData: (prev) => prev,
   });
 
-  const refunds = refundsQ.data || [];
-  const loading = !authReady || refundsQ.isLoading;
+  const refunds = refundsQ.data?.rows || [];
+  const refundsMeta = refundsQ.data?.meta ?? {
+    total: 0,
+    page,
+    pageSize: PAGE_SIZE,
+    totalPages: 1,
+  };
 
+  const loading = !authReady || (refundsQ.isLoading && !refundsQ.data);
   const mustLoginFromData = refundsQ.isError && isAuthError(refundsQ.error);
 
   useEffect(() => {
@@ -795,6 +874,11 @@ export default function ReturnsRefundsPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  useEffect(() => {
+    setPage(1);
+    setExpandedId(null);
+  }, [statusFilter, activeCustomerKey]);
 
   const statusOptions = useMemo(() => {
     const set = new Set<string>();
@@ -824,27 +908,11 @@ export default function ReturnsRefundsPage() {
     }
   };
 
-  const filtered = useMemo(() => {
-    const qnorm = deferredQ.trim().toLowerCase();
+  const visibleRefunds = useMemo(() => {
     const dateFrom = from ? new Date(from).getTime() : null;
-    const dateTo = to ? new Date(to + "T23:59:59.999Z").getTime() : null;
+    const dateTo = to ? new Date(`${to}T23:59:59.999`).getTime() : null;
 
     return refunds.filter((r) => {
-      if (qnorm) {
-        const pool: string[] = [];
-        pool.push(r.id || "");
-        if (r.orderId) pool.push(r.orderId);
-        if (r.supplier?.name) pool.push(r.supplier.name);
-        if (r.reason) pool.push(r.reason);
-        if (r.message) pool.push(r.message);
-        const hit = pool.some((s) => s.toLowerCase().includes(qnorm));
-        if (!hit) return false;
-      }
-
-      if (statusFilter !== "ALL") {
-        if (String(r.status || "") !== statusFilter) return false;
-      }
-
       if (reasonFilter !== "ALL") {
         if (String(r.reason || "") !== reasonFilter) return false;
       }
@@ -857,46 +925,37 @@ export default function ReturnsRefundsPage() {
 
       return true;
     });
-  }, [refunds, deferredQ, statusFilter, reasonFilter, from, to]);
+  }, [refunds, reasonFilter, from, to]);
 
-  useEffect(() => {
-    setPage(1);
-  }, [filtered.length, deferredQ, statusFilter, reasonFilter, from, to]);
+  const serverPage = Math.max(1, Number(refundsMeta.page || page));
+  const totalPages = Math.max(1, Number(refundsMeta.totalPages || 1));
+  const serverTotal = Math.max(0, Number(refundsMeta.total || 0));
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const currentPage = Math.min(page, totalPages);
-
-  const pageStart = filtered.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
-  const pageEnd =
-    filtered.length === 0 ? 0 : Math.min(filtered.length, (currentPage - 1) * PAGE_SIZE + PAGE_SIZE);
-
-  const paginated = useMemo(() => {
-    const start = (currentPage - 1) * PAGE_SIZE;
-    return filtered.slice(start, start + PAGE_SIZE);
-  }, [filtered, currentPage]);
+  const pageStart = visibleRefunds.length === 0 ? 0 : (serverPage - 1) * PAGE_SIZE + 1;
+  const pageEnd = visibleRefunds.length === 0 ? 0 : pageStart + visibleRefunds.length - 1;
 
   const summary = useMemo(() => {
     let open = 0;
     let resolved = 0;
     let refundedTotal = 0;
 
-    refunds.forEach((r) => {
+    visibleRefunds.forEach((r) => {
       const st = String(r.status || "").toUpperCase();
       const amt = fmtN(r.amount);
 
-      if (["PENDING", "REQUESTED", "OPEN", "IN_REVIEW"].includes(st)) {
+      if (["PENDING", "REQUESTED", "OPEN", "IN_REVIEW", "SUPPLIER_REVIEW", "ESCALATED"].includes(st)) {
         open += 1;
       } else {
         resolved += 1;
       }
 
-      if (["REFUNDED", "COMPLETED", "PAID_OUT"].includes(st) && amt > 0) {
+      if (["REFUNDED", "COMPLETED", "PAID_OUT", "APPROVED"].includes(st) && amt > 0) {
         refundedTotal += amt;
       }
     });
 
-    return { total: refunds.length, open, resolved, refundedTotal };
-  }, [refunds]);
+    return { total: serverTotal, open, resolved, refundedTotal };
+  }, [visibleRefunds, serverTotal]);
 
   const clearFilters = () => {
     setQ("");
@@ -904,6 +963,8 @@ export default function ReturnsRefundsPage() {
     setReasonFilter("ALL");
     setFrom("");
     setTo("");
+    setPage(1);
+    setExpandedId(null);
 
     const sp = new URLSearchParams(searchParams);
     sp.delete("q");
@@ -999,20 +1060,18 @@ export default function ReturnsRefundsPage() {
             <div className={`${T_SM} text-ink-soft`}>Total requests</div>
             <div className="text-lg font-semibold">{summary.total}</div>
             <div className={`${T_XS} text-ink-soft`}>
-              {isAdmin && activeCustomerKey ? "For this customer" : "All time"}
+              {isAdmin && activeCustomerKey ? "For this customer" : "Across all server pages"}
             </div>
           </div>
           <div className={`${CARD_XL} p-3`}>
             <div className={`${T_SM} text-ink-soft`}>Open cases</div>
             <div className="text-lg font-semibold">{summary.open}</div>
-            <div className={`${T_XS} text-ink-soft`}>Pending review or action</div>
+            <div className={`${T_XS} text-ink-soft`}>On this page after local filters</div>
           </div>
           <div className={`${CARD_XL} p-3`}>
             <div className={`${T_SM} text-ink-soft`}>Refunded amount</div>
             <div className="text-lg font-semibold">{ngn.format(summary.refundedTotal)}</div>
-            <div className={`${T_XS} text-ink-soft`}>
-              {isAdmin && activeCustomerKey ? "Refunded for this customer" : "Completed refunds"}
-            </div>
+            <div className={`${T_XS} text-ink-soft`}>On this page after local filters</div>
           </div>
         </div>
 
@@ -1046,10 +1105,11 @@ export default function ReturnsRefundsPage() {
             clearFilters={clearFilters}
             refundsRefetch={() => void refundsQ.refetch()}
             queriesEnabled={queriesEnabled}
-            filteredCount={filtered.length}
+            filteredCount={visibleRefunds.length}
             loading={loading}
             pageStart={pageStart}
             pageEnd={pageEnd}
+            serverTotal={serverTotal}
           />
         </div>
 
@@ -1096,10 +1156,11 @@ export default function ReturnsRefundsPage() {
                   clearFilters={clearFilters}
                   refundsRefetch={() => void refundsQ.refetch()}
                   queriesEnabled={queriesEnabled}
-                  filteredCount={filtered.length}
+                  filteredCount={visibleRefunds.length}
                   loading={loading}
                   pageStart={pageStart}
                   pageEnd={pageEnd}
+                  serverTotal={serverTotal}
                 />
               </div>
             </div>
@@ -1111,9 +1172,11 @@ export default function ReturnsRefundsPage() {
             <div className="text-sm text-ink-soft">
               {loading
                 ? "Loading refunds…"
-                : filtered.length
-                ? `Showing ${pageStart}-${pageEnd} of ${filtered.length} refunds`
-                : "No refunds match your filters."}
+                : visibleRefunds.length
+                ? `Showing ${pageStart}-${pageEnd} of ${serverTotal} refunds`
+                : serverTotal > 0
+                  ? "No refunds on this page match your local filters."
+                  : "No refunds match your filters."}
             </div>
             <button
               onClick={() => refundsQ.refetch()}
@@ -1148,16 +1211,16 @@ export default function ReturnsRefundsPage() {
                   </>
                 )}
 
-                {!loading && paginated.length === 0 && (
+                {!loading && visibleRefunds.length === 0 && (
                   <tr>
                     <td colSpan={isAdmin ? 8 : 7} className="px-3 py-6 text-center text-zinc-500">
-                      No refunds match your filters.
+                      {serverTotal > 0 ? "No refunds on this page match your local filters." : "No refunds match your filters."}
                     </td>
                   </tr>
                 )}
 
                 {!loading &&
-                  paginated.map((r) => {
+                  visibleRefunds.map((r) => {
                     const isOpen = expandedId === r.id;
                     const firstEvent = r.events?.[0];
                     const lastEvent =
@@ -1395,7 +1458,7 @@ export default function ReturnsRefundsPage() {
 
           <div className="px-4 md:px-5 pb-4">
             <Pagination
-              page={currentPage}
+              page={serverPage}
               totalPages={totalPages}
               onChange={(p) => {
                 setExpandedId(null);
@@ -1413,14 +1476,14 @@ export default function ReturnsRefundsPage() {
             </>
           )}
 
-          {!loading && paginated.length === 0 && (
+          {!loading && visibleRefunds.length === 0 && (
             <div className={`${CARD_2XL} py-6 px-4 text-center text-zinc-500 ${T_SM}`}>
-              No refunds match your filters.
+              {serverTotal > 0 ? "No refunds on this page match your local filters." : "No refunds match your filters."}
             </div>
           )}
 
           {!loading &&
-            paginated.map((r) => {
+            visibleRefunds.map((r) => {
               const isOpen = expandedId === r.id;
               const st = r.status || "—";
 
@@ -1541,7 +1604,7 @@ export default function ReturnsRefundsPage() {
             })}
 
           <Pagination
-            page={currentPage}
+            page={serverPage}
             totalPages={totalPages}
             onChange={(p) => {
               setExpandedId(null);

@@ -62,28 +62,56 @@ function prismaUniqueConflict(e: any) {
   return e?.code === "P2002";
 }
 
+function toPositiveInt(value: unknown, fallback: number) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.floor(n);
+  return v > 0 ? v : fallback;
+}
+
 /**
  * GET /api/admin/catalog-requests
- * Optional query: ?status=PENDING&type=CATEGORY
+ * Optional query:
+ *   ?status=PENDING&type=CATEGORY&page=1&pageSize=20
  */
 r.get("/", async (req, res, next) => {
   try {
     const status = req.query.status ? CatalogRequestStatusZ.parse(req.query.status) : undefined;
     const type = req.query.type ? CatalogRequestTypeZ.parse(req.query.type) : undefined;
 
-    const rows = await prisma.catalogRequest.findMany({
-      where: {
-        ...(status ? { status } : {}),
-        ...(type ? { type } : {}),
-      },
-      orderBy: [{ createdAt: "desc" }],
-      include: {
-        supplier: { select: { id: true, name: true } },
-        reviewedBy: { select: { id: true, email: true, firstName: true, lastName: true } },
-      },
-    });
+    const page = toPositiveInt(req.query.page, 1);
+    const pageSizeRaw = toPositiveInt(req.query.pageSize, 20);
+    const pageSize = Math.min(pageSizeRaw, 100);
+    const skip = (page - 1) * pageSize;
 
-    res.json({ data: rows });
+    const where = {
+      ...(status ? { status } : {}),
+      ...(type ? { type } : {}),
+    };
+
+    const [total, rows] = await Promise.all([
+      prisma.catalogRequest.count({ where }),
+      prisma.catalogRequest.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }],
+        skip,
+        take: pageSize,
+        include: {
+          supplier: { select: { id: true, name: true } },
+          reviewedBy: { select: { id: true, email: true, firstName: true, lastName: true } },
+        },
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    res.json({
+      data: rows,
+      total,
+      page,
+      pageSize,
+      totalPages,
+    });
   } catch (e) {
     next(e);
   }
@@ -145,10 +173,8 @@ r.post("/:id/approve", async (req, res, next) => {
         return { status: 409 as const, body: { error: "Request is not PENDING" } };
       }
 
-      // Validate payload shape for safety (also normalizes)
       const payload = validatePayloadByType(reqRow.type as any, reqRow.payload);
 
-      // Create the actual catalog entity
       let created: any = null;
 
       try {
@@ -192,8 +218,6 @@ r.post("/:id/approve", async (req, res, next) => {
               name,
               type: p.type,
               isActive: p.isActive ?? true,
-              // NOTE: your Attribute model doesn’t show placeholder field in schema;
-              // if you later add it, include it here.
             },
           });
         }
@@ -201,7 +225,6 @@ r.post("/:id/approve", async (req, res, next) => {
         if (reqRow.type === "ATTRIBUTE_VALUE") {
           const p = payload as z.infer<typeof AttributeValuePayloadZ>;
 
-          // ensure attribute exists
           const attr = await tx.attribute.findUnique({ where: { id: p.attributeId } });
           if (!attr) {
             return { status: 400 as const, body: { error: "attributeId is invalid (attribute not found)" } };
@@ -229,7 +252,7 @@ r.post("/:id/approve", async (req, res, next) => {
       const updatedRequest = await tx.catalogRequest.update({
         where: { id },
         data: {
-          status:  CatalogRequestStatus.APPROVED,
+          status: CatalogRequestStatus.APPROVED,
           reviewedAt: new Date(),
           reviewedById,
         },

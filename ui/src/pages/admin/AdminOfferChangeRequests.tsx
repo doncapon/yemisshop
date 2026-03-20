@@ -7,6 +7,8 @@ import {
   Search,
   ChevronDown,
   ChevronUp,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
@@ -26,6 +28,14 @@ type ChangeItem = {
   requestedAt?: string;
   supplier?: { id: string; name?: string | null };
   product?: { id: string; title?: string | null; sku?: string | null };
+};
+
+type PaginatedResult<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 };
 
 function fmtDate(s?: string) {
@@ -129,9 +139,9 @@ function prettifyAttributeSelections(
     const valueNames =
       valueIds.length > 0
         ? valueIds.map((id: any) => {
-          const meta = valueMetaById.get(String(id));
-          return formatValueLabel(meta) ?? String(id);
-        })
+            const meta = valueMetaById.get(String(id));
+            return formatValueLabel(meta) ?? String(id);
+          })
         : undefined;
 
     return {
@@ -156,18 +166,18 @@ function prettifyVariantOptions(
   return input.map((row: any) => {
     const attributeId = String(
       row?.attributeId ??
-      row?.attribute?.id ??
-      row?.attributeValue?.attributeId ??
-      row?.value?.attributeId ??
-      ""
+        row?.attribute?.id ??
+        row?.attributeValue?.attributeId ??
+        row?.value?.attributeId ??
+        ""
     ).trim();
 
     const valueId = String(
       row?.valueId ??
-      row?.attributeValueId ??
-      row?.attributeValue?.id ??
-      row?.value?.id ??
-      ""
+        row?.attributeValueId ??
+        row?.attributeValue?.id ??
+        row?.value?.id ??
+        ""
     ).trim();
 
     const attributeName =
@@ -301,21 +311,19 @@ function summarizeAttributeSelections(input: any) {
 
   return input
     .map((row: any) => {
-      const a =
-        String(
-          row?.attributeName ??
+      const a = String(
+        row?.attributeName ??
           row?.attribute ??
           row?.attributeId ??
           ""
-        ).trim();
+      ).trim();
 
-      const single =
-        String(
-          row?.valueName ??
+      const single = String(
+        row?.valueName ??
           row?.value ??
           row?.valueId ??
           ""
-        ).trim();
+      ).trim();
 
       const multi = Array.isArray(row?.valueNames)
         ? row.valueNames.map((x: any) => String(x)).filter(Boolean)
@@ -342,9 +350,9 @@ function summarizePatch(patch: any) {
   const attrSummary = summarizeAttributeSelections(patch.attributeSelections);
   if (attrSummary) bits.push(attrSummary);
 
-  if (patch.description) bits.push(`Description updated`);
-  if (patch.categoryId) bits.push(`Category changed`);
-  if (patch.brandId) bits.push(`Brand changed`);
+  if (patch.description) bits.push("Description updated");
+  if (patch.categoryId) bits.push("Category changed");
+  if (patch.brandId) bits.push("Brand changed");
 
   if (Array.isArray(patch.variants) && patch.variants.length) {
     bits.push(`${patch.variants.length} variant change(s)`);
@@ -358,13 +366,69 @@ function summarizePatch(patch: any) {
   return bits.join(" • ");
 }
 
+function toPositiveInt(value: any, fallback: number) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.floor(n);
+  return v > 0 ? v : fallback;
+}
+
+function extractItems(root: any): any[] {
+  if (Array.isArray(root?.data)) return root.data;
+  if (Array.isArray(root?.items)) return root.items;
+  if (Array.isArray(root?.data?.items)) return root.data.items;
+  if (Array.isArray(root?.rows)) return root.rows;
+  if (Array.isArray(root)) return root;
+  return [];
+}
+
+function extractPaginated<T = any>(root: any, fallbackPage: number, fallbackPageSize: number): PaginatedResult<T> {
+  const items = extractItems(root) as T[];
+
+  const totalRaw =
+    root?.total ??
+    root?.data?.total ??
+    root?.count ??
+    root?.data?.count;
+
+  const pageRaw =
+    root?.page ??
+    root?.data?.page;
+
+  const pageSizeRaw =
+    root?.pageSize ??
+    root?.data?.pageSize;
+
+  const totalPagesRaw =
+    root?.totalPages ??
+    root?.data?.totalPages;
+
+  const total = Number.isFinite(Number(totalRaw)) ? Number(totalRaw) : items.length;
+  const page = toPositiveInt(pageRaw, fallbackPage);
+  const pageSize = toPositiveInt(pageSizeRaw, fallbackPageSize);
+  const totalPages =
+    Number.isFinite(Number(totalPagesRaw))
+      ? Math.max(1, Number(totalPagesRaw))
+      : Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    totalPages,
+  };
+}
+
 export default function AdminOfferChangeRequests() {
   const qc = useQueryClient();
-  const storeUser = useAuthStore((s) => s.user);
+  useAuthStore((s) => s.user);
 
   const [tab, setTab] = useState<"PENDING" | "APPROVED" | "REJECTED">("PENDING");
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(20);
 
   const meQ = useQuery({
     queryKey: ["me-min"],
@@ -422,23 +486,32 @@ export default function AdminOfferChangeRequests() {
   }, [attributes]);
 
   const listQ = useQuery({
-    queryKey: ["admin", "change-requests", tab],
+    queryKey: ["admin", "change-requests", tab, page, pageSize],
     enabled: queriesEnabled,
     queryFn: async () => {
+      const qs = new URLSearchParams({
+        status: tab,
+        page: String(page),
+        pageSize: String(pageSize),
+      }).toString();
+
       const [offerRes, productRes] = await Promise.all([
-        api.get(`/api/admin/offer-change-requests?status=${tab}`, AXIOS_COOKIE_CFG),
-        api.get(`/api/admin/product-change-requests?status=${tab}`, AXIOS_COOKIE_CFG),
+        api.get(`/api/admin/offer-change-requests?${qs}`, AXIOS_COOKIE_CFG),
+        api.get(`/api/admin/product-change-requests?${qs}`, AXIOS_COOKIE_CFG),
       ]);
 
       const offerRoot = (offerRes as any)?.data;
       const productRoot = (productRes as any)?.data;
 
-      const offerItems = (offerRoot?.data?.items ?? offerRoot?.items ?? []).map((x: any) => ({
+      const offerPaged = extractPaginated<any>(offerRoot, page, pageSize);
+      const productPaged = extractPaginated<any>(productRoot, page, pageSize);
+
+      const offerItems = offerPaged.items.map((x: any) => ({
         ...x,
         requestType: "OFFER" as const,
       }));
 
-      const productItems = (productRoot?.data?.items ?? productRoot?.items ?? []).map((x: any) => ({
+      const productItems = productPaged.items.map((x: any) => ({
         ...x,
         requestType: "PRODUCT" as const,
         scope: "PRODUCT",
@@ -449,16 +522,33 @@ export default function AdminOfferChangeRequests() {
         const ta = new Date(a?.requestedAt ?? 0).getTime();
         const tb = new Date(b?.requestedAt ?? 0).getTime();
         return tb - ta;
-      });
+      }) as ChangeItem[];
 
-      return merged as ChangeItem[];
+      const mergedTotal =
+        (offerPaged.total || 0) + (productPaged.total || 0);
+
+      const mergedTotalPages = Math.max(
+        offerPaged.totalPages || 1,
+        productPaged.totalPages || 1,
+        Math.ceil(mergedTotal / Math.max(1, pageSize))
+      );
+
+      return {
+        items: merged,
+        total: mergedTotal,
+        page,
+        pageSize,
+        totalPages: mergedTotalPages,
+        offerTotal: offerPaged.total,
+        productTotal: productPaged.total,
+      };
     },
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
 
   const filtered = useMemo(() => {
-    const items = listQ.data ?? [];
+    const items = listQ.data?.items ?? [];
     const term = q.trim().toLowerCase();
     if (!term) return items;
 
@@ -492,7 +582,8 @@ export default function AdminOfferChangeRequests() {
 
       return hay.includes(term);
     });
-  }, [listQ.data, q, attributeNameById, valueMetaById]);
+  }, [listQ.data?.items, q, attributeNameById, valueMetaById]);
+
   const approveM = useMutation({
     mutationFn: async ({
       id,
@@ -559,6 +650,9 @@ export default function AdminOfferChangeRequests() {
       ? "You’re not signed in (or your session expired). Please login again."
       : null;
 
+  const total = listQ.data?.total ?? 0;
+  const totalPages = Math.max(1, listQ.data?.totalPages ?? 1);
+
   return (
     <SiteLayout>
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-4">
@@ -595,11 +689,16 @@ export default function AdminOfferChangeRequests() {
               <button
                 key={t}
                 type="button"
-                onClick={() => setTab(t)}
-                className={`px-4 py-2 text-sm font-semibold ${tab === t
-                  ? "bg-zinc-900 text-white"
-                  : "bg-white text-zinc-800 hover:bg-black/5"
-                  }`}
+                onClick={() => {
+                  setTab(t);
+                  setPage(1);
+                  setExpanded(new Set());
+                }}
+                className={`px-4 py-2 text-sm font-semibold ${
+                  tab === t
+                    ? "bg-zinc-900 text-white"
+                    : "bg-white text-zinc-800 hover:bg-black/5"
+                }`}
                 disabled={!queriesEnabled}
               >
                 {t}
@@ -618,6 +717,65 @@ export default function AdminOfferChangeRequests() {
             />
           </div>
         </div>
+
+        {!authErr && (
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 rounded-2xl border bg-white p-3">
+            <div className="text-sm text-zinc-600">
+              <span className="font-semibold text-zinc-900">{total}</span> total request(s)
+              {q.trim() ? (
+                <>
+                  {" "}
+                  • <span className="font-semibold text-zinc-900">{filtered.length}</span> shown after search
+                </>
+              ) : null}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage(1)}
+                disabled={!queriesEnabled || page <= 1 || listQ.isFetching}
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+              >
+                <ChevronsLeft size={16} />
+                First
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={!queriesEnabled || page <= 1 || listQ.isFetching}
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+              >
+                Prev
+              </button>
+
+              <div className="text-sm text-zinc-700 px-2">
+                Page <span className="font-semibold text-zinc-900">{page}</span> of{" "}
+                <span className="font-semibold text-zinc-900">{totalPages}</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={!queriesEnabled || page >= totalPages || listQ.isFetching}
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+              >
+                Next
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPage(totalPages)}
+                disabled={!queriesEnabled || page >= totalPages || listQ.isFetching}
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+              >
+                Last
+                <ChevronsRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
 
         {!authErr && listQ.isLoading && (
           <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-600">
@@ -763,6 +921,53 @@ export default function AdminOfferChangeRequests() {
               );
             })}
         </div>
+
+        {!authErr && totalPages > 1 && (
+          <div className="flex items-center justify-center gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setPage(1)}
+              disabled={!queriesEnabled || page <= 1 || listQ.isFetching}
+              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+            >
+              <ChevronsLeft size={16} />
+              First
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={!queriesEnabled || page <= 1 || listQ.isFetching}
+              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+            >
+              Prev
+            </button>
+
+            <div className="text-sm text-zinc-700 px-3">
+              Page <span className="font-semibold text-zinc-900">{page}</span> of{" "}
+              <span className="font-semibold text-zinc-900">{totalPages}</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={!queriesEnabled || page >= totalPages || listQ.isFetching}
+              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+            >
+              Next
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setPage(totalPages)}
+              disabled={!queriesEnabled || page >= totalPages || listQ.isFetching}
+              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+            >
+              Last
+              <ChevronsRight size={16} />
+            </button>
+          </div>
+        )}
       </div>
     </SiteLayout>
   );

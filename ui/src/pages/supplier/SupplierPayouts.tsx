@@ -10,9 +10,8 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "../../store/auth";
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
-
-// ✅ cookie calls helper (always send cookies)
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+const PAGE_SIZE = 20;
 
 function Card({
   children,
@@ -34,42 +33,48 @@ function Card({
 type PayoutSummaryDTO = {
   supplierId?: string;
   currency: "NGN" | string;
-
   availableBalance: number;
   outstandingDebt?: number;
   credits?: number;
   debits?: number;
-
   pending?: number;
   approved?: number;
   held?: number;
   paidOut?: number;
   failed?: number;
-
   scheduleNote?: string | null;
 };
 
 type PayoutHistoryRowDTO = {
   id: string;
-  date: string; // ISO
+  date: string;
   reference: string;
   amount: number;
   status: "PENDING" | "PAID" | "FAILED" | "APPROVED" | "HELD" | string;
   purchaseOrderId?: string | null;
-  orderId: string;
-  paymentId: string;
+  orderId?: string | null;
+  paymentId?: string | null;
 };
 
 type PayoutHistoryDTO = {
   rows: PayoutHistoryRowDTO[];
-  total?: number;
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
 };
 
 function formatISODate(iso: string) {
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+    return d.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+    });
   } catch {
     return iso;
   }
@@ -100,8 +105,28 @@ function statusPill(statusRaw: string) {
   );
 }
 
+function normalizeHistoryPayload(raw: any): PayoutHistoryDTO {
+  const payload = raw?.data ?? raw ?? {};
+  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+  const total = asNum(payload?.total, rows.length);
+  const pageSize = Math.max(1, asNum(payload?.pageSize, PAGE_SIZE));
+  const totalPages = Math.max(1, asNum(payload?.totalPages, Math.ceil(total / pageSize) || 1));
+  const page = Math.min(totalPages, Math.max(1, asNum(payload?.page, 1)));
+
+  return {
+    rows,
+    total,
+    page,
+    pageSize,
+    totalPages,
+    hasNextPage:
+      typeof payload?.hasNextPage === "boolean" ? payload.hasNextPage : page < totalPages,
+    hasPrevPage:
+      typeof payload?.hasPrevPage === "boolean" ? payload.hasPrevPage : page > 1,
+  };
+}
+
 export default function SupplierPayouts() {
-  // keep role from store only for admin "view as" (no more token usage)
   const role = useAuthStore((s: any) => s.user?.role);
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
@@ -119,7 +144,6 @@ export default function SupplierPayouts() {
 
   const adminSupplierId = isAdmin ? (urlSupplierId ?? storedSupplierId) : undefined;
 
-  // inject stored into URL if missing (admin view-as)
   useEffect(() => {
     if (!isAdmin) return;
 
@@ -159,27 +183,33 @@ export default function SupplierPayouts() {
     []
   );
 
-  const [page, setPage] = useState(0);
-  const take = 20;
-  const skip = page * take;
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    setPage(1);
+  }, [adminSupplierId]);
 
   async function fetchSummary(): Promise<PayoutSummaryDTO> {
     const res = await api.get("/api/supplier/payouts/summary", {
       ...AXIOS_COOKIE_CFG,
-      params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
+      params: { supplierId: adminSupplierId },
     });
     return res.data?.data;
   }
 
-  async function fetchHistory(params: { take: number; skip: number }): Promise<PayoutHistoryDTO> {
+  async function fetchHistory(params: { page: number; pageSize: number }): Promise<PayoutHistoryDTO> {
     const res = await api.get("/api/supplier/payouts/history", {
       ...AXIOS_COOKIE_CFG,
-      params: { ...params, supplierId: adminSupplierId }, // ✅ admin view-as supplier
+      params: {
+        page: params.page,
+        pageSize: params.pageSize,
+        supplierId: adminSupplierId,
+      },
     });
-    return res.data?.data;
+
+    return normalizeHistoryPayload(res.data);
   }
 
-  // ✅ cookie auth => no token gating
   const enabled = !isAdmin || !!adminSupplierId;
 
   const summaryQ = useQuery({
@@ -192,9 +222,9 @@ export default function SupplierPayouts() {
   });
 
   const historyQ = useQuery({
-    queryKey: ["supplier-payouts", "history", { take, skip, supplierId: adminSupplierId }],
+    queryKey: ["supplier-payouts", "history", { page, pageSize: PAGE_SIZE, supplierId: adminSupplierId }],
     enabled,
-    queryFn: () => fetchHistory({ take, skip }),
+    queryFn: () => fetchHistory({ page, pageSize: PAGE_SIZE }),
     staleTime: 10_000,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
@@ -202,10 +232,16 @@ export default function SupplierPayouts() {
   });
 
   const summary = summaryQ.data;
-  const rows = historyQ.data?.rows ?? [];
+  const history = historyQ.data;
+  const rows = history?.rows ?? [];
+  const total = asNum(history?.total, 0);
+  const totalPages = Math.max(1, asNum(history?.totalPages, 1));
+  const currentPage = Math.min(totalPages, Math.max(1, asNum(history?.page, page)));
+  const canPrev = !!history?.hasPrevPage;
+  const canNext = !!history?.hasNextPage;
 
-  const canPrev = page > 0;
-  const canNext = rows.length === take;
+  const startItem = total === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const endItem = total === 0 ? 0 : Math.min(total, (currentPage - 1) * PAGE_SIZE + rows.length);
 
   const availableBalance = asNum(summary?.availableBalance, 0);
   const outstandingDebt = asNum(summary?.outstandingDebt, 0);
@@ -221,7 +257,6 @@ export default function SupplierPayouts() {
   return (
     <SiteLayout>
       <SupplierLayout>
-        {/* Hero */}
         <div className="relative overflow-hidden rounded-3xl mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
@@ -238,13 +273,13 @@ export default function SupplierPayouts() {
             <div className="mt-4 flex flex-col sm:flex-row flex-wrap gap-2">
               <Link
                 to={withSupplierCtx("/supplier")}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full ... px-4 py-2 text-sm ..."
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/15"
               >
                 Back to overview <ArrowRight size={16} />
               </Link>
               <Link
                 to={withSupplierCtx("/supplier/settings")}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full ... px-4 py-2 text-sm ..."
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/15"
               >
                 Update payout details <ArrowRight size={16} />
               </Link>
@@ -270,7 +305,6 @@ export default function SupplierPayouts() {
           </div>
         </div>
 
-        {/* Summary (mobile: stacked; desktop: 3 cols) */}
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card
             className="lg:col-span-1"
@@ -353,20 +387,29 @@ export default function SupplierPayouts() {
           </Card>
         </div>
 
-        {/* History */}
         <div className="mt-4">
           <div className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden">
             <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-zinc-900">Payout history</div>
-                <div className="text-xs text-zinc-500">{historyQ.isLoading ? "Loading…" : "Supplier allocations"}</div>
+                <div className="text-xs text-zinc-500">
+                  {historyQ.isLoading
+                    ? "Loading…"
+                    : total > 0
+                      ? `Showing ${startItem}-${endItem} of ${total}`
+                      : "Supplier allocations"}
+                </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 w-full sm:w-auto">
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                <div className="text-[11px] text-zinc-500 px-2">
+                  Page {currentPage} of {totalPages}
+                </div>
+
                 <button
                   disabled={!canPrev || historyQ.isFetching}
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  className="w-full text-[11px] px-2 py-2 rounded-full border bg-white disabled:opacity-50"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  className="text-[11px] px-3 py-2 rounded-full border bg-white disabled:opacity-50"
                 >
                   Prev
                 </button>
@@ -374,7 +417,7 @@ export default function SupplierPayouts() {
                 <button
                   disabled={!canNext || historyQ.isFetching}
                   onClick={() => setPage((p) => p + 1)}
-                  className="w-full text-[11px] px-2 py-2 rounded-full border bg-white disabled:opacity-50"
+                  className="text-[11px] px-3 py-2 rounded-full border bg-white disabled:opacity-50"
                 >
                   Next
                 </button>
@@ -382,12 +425,11 @@ export default function SupplierPayouts() {
                 <button
                   onClick={() => historyQ.refetch()}
                   disabled={historyQ.isFetching}
-                  className="w-full text-[11px] px-2 py-2 rounded-full border bg-white disabled:opacity-50"
+                  className="text-[11px] px-3 py-2 rounded-full border bg-white disabled:opacity-50"
                 >
                   Refresh
                 </button>
               </div>
-
             </div>
 
             {historyQ.isError && (
@@ -399,7 +441,6 @@ export default function SupplierPayouts() {
               </div>
             )}
 
-            {/* ✅ Mobile list */}
             <div className="sm:hidden p-4 space-y-3">
               {!historyQ.isLoading && rows.length === 0 && (
                 <div className="rounded-2xl border bg-zinc-50 p-4 text-sm text-zinc-600">No payout records yet.</div>
@@ -422,12 +463,16 @@ export default function SupplierPayouts() {
 
                   <div className="pt-1">
                     <div className="text-xs text-zinc-500 mb-1">Order</div>
-                    <Link
-                      to={withSupplierCtx(`/supplier/orders?q=${encodeURIComponent(x.orderId)}`)}
-                      className="font-mono text-xs underline break-all"
-                    >
-                      {x.orderId}
-                    </Link>
+                    {x.orderId ? (
+                      <Link
+                        to={withSupplierCtx(`/supplier/orders?q=${encodeURIComponent(x.orderId)}`)}
+                        className="font-mono text-xs underline break-all"
+                      >
+                        {x.orderId}
+                      </Link>
+                    ) : (
+                      <div className="font-mono text-xs text-zinc-400">—</div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -435,7 +480,6 @@ export default function SupplierPayouts() {
               {historyQ.isFetching && <div className="text-xs text-zinc-500">Updating…</div>}
             </div>
 
-            {/* ✅ Desktop table */}
             <div className="hidden sm:block p-5 overflow-auto">
               <table className="min-w-[720px] w-full text-sm">
                 <thead>
@@ -463,12 +507,16 @@ export default function SupplierPayouts() {
                       <td className="py-3 font-semibold">{x.reference}</td>
 
                       <td className="py-3">
-                        <Link
-                          to={withSupplierCtx(`/supplier/orders?q=${encodeURIComponent(x.orderId)}`)}
-                          className="font-mono text-xs underline"
-                        >
-                          {x.orderId}
-                        </Link>
+                        {x.orderId ? (
+                          <Link
+                            to={withSupplierCtx(`/supplier/orders?q=${encodeURIComponent(x.orderId)}`)}
+                            className="font-mono text-xs underline"
+                          >
+                            {x.orderId}
+                          </Link>
+                        ) : (
+                          <span className="text-zinc-400">—</span>
+                        )}
                       </td>
 
                       <td className="py-3">{ngn.format(asNum(x.amount, 0))}</td>

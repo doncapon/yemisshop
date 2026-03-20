@@ -38,30 +38,25 @@ type CatalogRequestRow = {
   type: RequestType;
   status: RequestStatus;
 
-  // common
   name?: string | null;
   slug?: string | null;
   notes?: string | null;
 
-  // category
   parentId?: string | null;
 
-  // attribute
   attributeType?: "TEXT" | "SELECT" | "MULTISELECT" | null;
 
-  // attribute value request
   attributeId?: string | null;
   valueName?: string | null;
   valueCode?: string | null;
 
-  // review info
   adminNote?: string | null;
   reviewedAt?: string | null;
   createdAt?: string | null;
 };
 
 type CatalogRequestsEnvelope = {
-  data: CatalogRequestRow[];
+  rows: CatalogRequestRow[];
   page: number;
   pageSize: number;
   total: number;
@@ -120,8 +115,8 @@ function StatusPill({ status }: { status: RequestStatus }) {
     status === "APPROVED"
       ? "bg-emerald-50 text-emerald-700 border-emerald-200"
       : status === "REJECTED"
-      ? "bg-rose-50 text-rose-700 border-rose-200"
-      : "bg-amber-50 text-amber-700 border-amber-200";
+        ? "bg-rose-50 text-rose-700 border-rose-200"
+        : "bg-amber-50 text-amber-700 border-amber-200";
 
   const icon =
     status === "APPROVED" ? (
@@ -187,6 +182,55 @@ function toInt(v: any, fallback: number) {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
+function normalizeRequestsResponse(raw: any, fallbackPage: number, fallbackPageSize: number): CatalogRequestsEnvelope {
+  const root = raw?.data ?? raw ?? {};
+  const payload = root?.data ?? root ?? {};
+
+  const rawRows = Array.isArray(payload?.rows)
+    ? payload.rows
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(root?.data)
+        ? root.data
+        : [];
+
+  const rows: CatalogRequestRow[] = rawRows.map((r: any) => ({
+    id: String(r.id),
+    type: asRequestType(r.type),
+    status: asRequestStatus(r.status),
+
+    name: r.name ?? null,
+    slug: r.slug ?? null,
+    notes: r.notes ?? null,
+
+    parentId: r.parentId ?? null,
+
+    attributeType: r.attributeType ?? null,
+    attributeId: r.attributeId ?? null,
+    valueName: r.valueName ?? null,
+    valueCode: r.valueCode ?? null,
+
+    adminNote: r.adminNote ?? r.reviewNote ?? null,
+    reviewedAt: r.reviewedAt ?? null,
+    createdAt: r.createdAt ?? null,
+  }));
+
+  const page = Math.max(1, toInt(payload?.page ?? root?.page, fallbackPage));
+  const pageSize = Math.max(1, toInt(payload?.pageSize ?? root?.pageSize, fallbackPageSize));
+  const total = Math.max(0, toInt(payload?.total ?? root?.total, rows.length));
+  const totalPages = Math.max(1, toInt(payload?.totalPages ?? root?.totalPages, Math.ceil(total / pageSize) || 1));
+
+  return {
+    rows,
+    page,
+    pageSize,
+    total,
+    totalPages,
+    hasNextPage: Boolean(payload?.hasNextPage ?? root?.hasNextPage ?? page < totalPages),
+    hasPrevPage: Boolean(payload?.hasPrevPage ?? root?.hasPrevPage ?? page > 1),
+  };
+}
+
 /* =========================================================
    Page
 ========================================================= */
@@ -206,13 +250,11 @@ export default function SupplierCatalogRequests() {
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  // auto-suggest tracking
   const [catSlugTouched, setCatSlugTouched] = useState(false);
   const [brandSlugTouched, setBrandSlugTouched] = useState(false);
   const [attrSlugTouched, setAttrSlugTouched] = useState(false);
   const [valCodeTouched, setValCodeTouched] = useState(false);
 
-  // ----- forms state -----
   const [catName, setCatName] = useState("");
   const [catSlug, setCatSlug] = useState("");
   const [catParentId, setCatParentId] = useState<string | null>(null);
@@ -233,7 +275,6 @@ export default function SupplierCatalogRequests() {
   const [valCode, setValCode] = useState("");
   const [valNotes, setValNotes] = useState("");
 
-  // “My requests” controls
   const [mineSearch, setMineSearch] = useState("");
   const [mineStatus, setMineStatus] = useState<"" | RequestStatus>("");
   const [mineType, setMineType] = useState<"" | RequestType>("");
@@ -284,7 +325,10 @@ export default function SupplierCatalogRequests() {
     setPage(1);
   }, [mineSearch, mineStatus, mineType]);
 
-  // ----- My requests list (server-side paginated / cookie-auth) -----
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize]);
+
   const myRequestsQ = useQuery<CatalogRequestsEnvelope>({
     queryKey: ["supplier", "catalog-requests", "mine", { page, pageSize, mineSearch, mineStatus, mineType }],
     enabled: hydrated && isSupplier,
@@ -304,40 +348,10 @@ export default function SupplierCatalogRequests() {
         },
       });
 
-      const rows = Array.isArray((data as any)?.data) ? (data as any).data : [];
-
-      return {
-        data: rows.map((r: any): CatalogRequestRow => ({
-          id: String(r.id),
-          type: asRequestType(r.type),
-          status: asRequestStatus(r.status),
-
-          name: r.name ?? null,
-          slug: r.slug ?? null,
-          notes: r.notes ?? null,
-
-          parentId: r.parentId ?? null,
-
-          attributeType: r.attributeType ?? null,
-          attributeId: r.attributeId ?? null,
-          valueName: r.valueName ?? null,
-          valueCode: r.valueCode ?? null,
-
-          adminNote: r.adminNote ?? r.reviewNote ?? null,
-          reviewedAt: r.reviewedAt ?? null,
-          createdAt: r.createdAt ?? null,
-        })),
-        page: toInt((data as any)?.page, page),
-        pageSize: toInt((data as any)?.pageSize, pageSize),
-        total: toInt((data as any)?.total, 0),
-        totalPages: Math.max(1, toInt((data as any)?.totalPages, 1)),
-        hasNextPage: Boolean((data as any)?.hasNextPage),
-        hasPrevPage: Boolean((data as any)?.hasPrevPage),
-      };
+      return normalizeRequestsResponse(data, page, pageSize);
     },
   });
 
-  // ----- Create request mutation (cookie-auth) -----
   const createReqM = useMutation({
     mutationFn: async (payload: CreateRequestPayload) => {
       setErr(null);
@@ -448,7 +462,7 @@ export default function SupplierCatalogRequests() {
 
   const guardMsg = role && role !== "SUPPLIER" ? "This page is for suppliers only." : null;
 
-  const myRequestsFiltered = myRequestsQ.data?.data || [];
+  const myRequestsRows = myRequestsQ.data?.rows || [];
   const myRequestsTotal = myRequestsQ.data?.total || 0;
   const myRequestsPage = myRequestsQ.data?.page || page;
   const myRequestsPageSize = myRequestsQ.data?.pageSize || pageSize;
@@ -993,15 +1007,15 @@ export default function SupplierCatalogRequests() {
 
                   {myRequestsQ.isLoading && <div className="text-sm text-zinc-500">Loading your requests…</div>}
 
-                  {!myRequestsQ.isLoading && myRequestsFiltered.length === 0 && (
+                  {!myRequestsQ.isLoading && myRequestsRows.length === 0 && (
                     <div className="text-sm text-zinc-500">
                       No matching requests. Try clearing filters or create one from “New”.
                     </div>
                   )}
 
-                  {myRequestsFiltered.length > 0 && (
+                  {myRequestsRows.length > 0 && (
                     <div className="space-y-3">
-                      {myRequestsFiltered.map((r) => {
+                      {myRequestsRows.map((r) => {
                         const created = prettyDate(r.createdAt);
                         const reviewed = prettyDate(r.reviewedAt);
 
@@ -1021,10 +1035,10 @@ export default function SupplierCatalogRequests() {
                                   {r.type === "BRAND"
                                     ? "Brand"
                                     : r.type === "CATEGORY"
-                                    ? "Category"
-                                    : r.type === "ATTRIBUTE"
-                                    ? "Attribute"
-                                    : "Attribute value"}{" "}
+                                      ? "Category"
+                                      : r.type === "ATTRIBUTE"
+                                        ? "Attribute"
+                                        : "Attribute value"}{" "}
                                   request
                                 </div>
 

@@ -48,6 +48,13 @@ function toNullIfBlank(v: string | undefined) {
   return s ? s : null;
 }
 
+function toPositiveInt(value: unknown, fallback: number) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.floor(n);
+  return v > 0 ? v : fallback;
+}
+
 function mapSavedShippingAddress(row: any) {
   if (!row) return null;
   return {
@@ -321,21 +328,44 @@ router.post("/shipping", requireAuth, async (req, res, next) => {
 
 /**
  * GET /api/profile/shipping-addresses
+ * Supports:
+ * - page=1..n
+ * - pageSize=1..100
  */
 router.get("/shipping-addresses", requireAuth, async (req, res, next) => {
   try {
     const userId = req.user!.id;
 
-    const rows = await prisma.userShippingAddress.findMany({
-      where: {
-        userId,
-        isActive: true,
-      },
-      orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-    });
+    const page = toPositiveInt(req.query.page, 1);
+    const pageSizeRaw = toPositiveInt(req.query.pageSize, 20);
+    const pageSize = Math.min(pageSizeRaw, 100);
+    const skip = (page - 1) * pageSize;
+
+    const where = {
+      userId,
+      isActive: true,
+    };
+
+    const [rows, total] = await Promise.all([
+      prisma.userShippingAddress.findMany({
+        where,
+        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+        skip,
+        take: pageSize,
+      }),
+      prisma.userShippingAddress.count({ where }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
     res.json({
       data: rows.map(mapSavedShippingAddress),
+      meta: {
+        total,
+        page,
+        pageSize,
+        totalPages,
+      },
     });
   } catch (e) {
     next(e);
@@ -435,16 +465,16 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
             : {}),
           ...(data.phone !== undefined
             ? {
-              phone:
-                normalizePhoneToE164(cleanString(data.phone)) || cleanString(data.phone),
-            }
+                phone:
+                  normalizePhoneToE164(cleanString(data.phone)) || cleanString(data.phone),
+              }
             : {}),
           ...(data.whatsappPhone !== undefined
             ? {
-              whatsappPhone:
-                normalizePhoneToE164(cleanString(data.whatsappPhone)) ||
-                toNullIfBlank(data.whatsappPhone),
-            }
+                whatsappPhone:
+                  normalizePhoneToE164(cleanString(data.whatsappPhone)) ||
+                  toNullIfBlank(data.whatsappPhone),
+              }
             : {}),
           ...(data.houseNumber !== undefined
             ? { houseNumber: toNullIfBlank(data.houseNumber) }
@@ -759,7 +789,6 @@ router.post("/shipping-addresses/:id/request-phone-otp", requireAuth, async (req
     next(e);
   }
 });
-
 
 /**
  * POST /api/profile/shipping-addresses/:id/verify-phone

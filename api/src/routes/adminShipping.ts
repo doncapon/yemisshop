@@ -1,7 +1,13 @@
 // api/src/routes/adminShipping.ts
 import { Router } from "express";
 import { z } from "zod";
-import { Prisma, DeliveryServiceLevel, ShippingParcelClass, SupplierFulfillmentMode, SupplierShippingProfileMode } from "@prisma/client";
+import {
+  Prisma,
+  DeliveryServiceLevel,
+  ShippingParcelClass,
+  SupplierFulfillmentMode,
+  SupplierShippingProfileMode,
+} from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireSuperAdmin } from "../middleware/auth.js";
 
@@ -138,6 +144,23 @@ async function assertNoOverlappingRouteRate(args: {
   }
 }
 
+const paginationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+function makePaginationMeta(total: number, page: number, pageSize: number) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  return {
+    total,
+    page,
+    pageSize,
+    pageCount,
+    hasNextPage: page < pageCount,
+    hasPrevPage: page > 1,
+  };
+}
+
 /* ----------------------------- Schemas ----------------------------- */
 
 const ZoneSchema = z.object({
@@ -205,12 +228,23 @@ const SupplierProfileSchema = z.object({
 
 /* ----------------------------- Zones ----------------------------- */
 
-router.get("/zones", async (_req, res) => {
+router.get("/zones", async (req, res) => {
   try {
-    const rows = await prisma.shippingZone.findMany({
-      orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+    const { page, pageSize } = paginationQuerySchema.parse(req.query);
+
+    const [total, rows] = await Promise.all([
+      prisma.shippingZone.count(),
+      prisma.shippingZone.findMany({
+        orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+
+    return res.json({
+      data: rows,
+      ...makePaginationMeta(total, page, pageSize),
     });
-    return res.json({ data: rows });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message || "Failed to fetch zones" });
   }
@@ -285,24 +319,36 @@ router.delete("/zones/:id", async (req, res) => {
 
 /* ----------------------------- Platform zone rates ----------------------------- */
 
-router.get("/platform-rates", async (_req, res) => {
+router.get("/platform-rates", async (req, res) => {
   try {
-    const rows = await prisma.shippingRateCard.findMany({
-      where: { supplierId: null },
-      orderBy: [
-        { zone: { priority: "asc" } },
-        { serviceLevel: "asc" },
-        { parcelClass: "asc" },
-        { minWeightGrams: "asc" },
-      ],
-      include: {
-        zone: {
-          select: { id: true, code: true, name: true },
-        },
-      },
-    });
+    const { page, pageSize } = paginationQuerySchema.parse(req.query);
 
-    return res.json({ data: rows });
+    const where = { supplierId: null as null };
+
+    const [total, rows] = await Promise.all([
+      prisma.shippingRateCard.count({ where }),
+      prisma.shippingRateCard.findMany({
+        where,
+        orderBy: [
+          { zone: { priority: "asc" } },
+          { serviceLevel: "asc" },
+          { parcelClass: "asc" },
+          { minWeightGrams: "asc" },
+        ],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          zone: {
+            select: { id: true, code: true, name: true },
+          },
+        },
+      }),
+    ]);
+
+    return res.json({
+      data: rows,
+      ...makePaginationMeta(total, page, pageSize),
+    });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message || "Failed to fetch platform rates" });
   }
@@ -445,19 +491,29 @@ router.delete("/platform-rates/:id", async (req, res) => {
 
 /* ----------------------------- Route rates ----------------------------- */
 
-router.get("/route-rates", async (_req, res) => {
+router.get("/route-rates", async (req, res) => {
   try {
-    const rows = await prisma.shippingRouteRateCard.findMany({
-      orderBy: [
-        { originZoneCode: "asc" },
-        { destinationZoneCode: "asc" },
-        { serviceLevel: "asc" },
-        { parcelClass: "asc" },
-        { minWeightGrams: "asc" },
-      ],
-    });
+    const { page, pageSize } = paginationQuerySchema.parse(req.query);
 
-    return res.json({ data: rows });
+    const [total, rows] = await Promise.all([
+      prisma.shippingRouteRateCard.count(),
+      prisma.shippingRouteRateCard.findMany({
+        orderBy: [
+          { originZoneCode: "asc" },
+          { destinationZoneCode: "asc" },
+          { serviceLevel: "asc" },
+          { parcelClass: "asc" },
+          { minWeightGrams: "asc" },
+        ],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+
+    return res.json({
+      data: rows,
+      ...makePaginationMeta(total, page, pageSize),
+    });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message || "Failed to fetch route rates" });
   }
@@ -584,23 +640,35 @@ router.delete("/route-rates/:id", async (req, res) => {
 
 /* ----------------------------- Supplier profiles ----------------------------- */
 
-router.get("/supplier-profiles", async (_req, res) => {
+router.get("/supplier-profiles", async (req, res) => {
   try {
-    const rows = await prisma.supplier.findMany({
-      where: { isDeleted: false },
-      orderBy: { name: "asc" },
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        shippingProfileMode: true,
-        defaultServiceLevel: true,
-        handlingFee: true,
-        shippingProfile: true,
-      },
-    });
+    const { page, pageSize } = paginationQuerySchema.parse(req.query);
 
-    return res.json({ data: rows });
+    const where = { isDeleted: false };
+
+    const [total, rows] = await Promise.all([
+      prisma.supplier.count({ where }),
+      prisma.supplier.findMany({
+        where,
+        orderBy: { name: "asc" },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          shippingProfileMode: true,
+          defaultServiceLevel: true,
+          handlingFee: true,
+          shippingProfile: true,
+        },
+      }),
+    ]);
+
+    return res.json({
+      data: rows,
+      ...makePaginationMeta(total, page, pageSize),
+    });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message || "Failed to fetch supplier profiles" });
   }

@@ -1,6 +1,6 @@
 // src/pages/admin/AdminCareersJobs.tsx
 import React, { useMemo, useState, type FormEvent } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../../api/client";
 import { format } from "date-fns";
@@ -30,17 +30,19 @@ export type CareersJobRole = {
   responsibilitiesJson?: any | null;
   requirementsJson?: any | null;
   benefitsJson?: any | null;
-  closingDate?: string | null; // ISO string from API
+  closingDate?: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
 type JobsListResponse = {
-  items: CareersJobRole[];
+  rows: CareersJobRole[];
   total: number;
   page: number;
   pageSize: number;
-  pageCount: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
 };
 
 /* ----------------------------- Filters / UI State ----------------------------- */
@@ -68,22 +70,61 @@ type EditingJobState =
   | { mode: "edit"; job: CareersJobRole }
   | null;
 
-/* ----------------------------- API helpers ----------------------------- */
+/* ----------------------------- Helpers ----------------------------- */
+
+function toInt(v: any, fallback: number) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
 
 function buildListQuery(filters: Filters) {
-  const params: any = {
+  const params: Record<string, string | number | boolean> = {
     page: filters.page,
     pageSize: filters.pageSize,
   };
 
-  if (filters.search.trim()) params.search = filters.search.trim();
-  if (filters.department.trim()) params.department = filters.department.trim();
-  if (filters.includeDeleted) params.includeDeleted = "1";
+  if (filters.search.trim()) params.q = filters.search.trim();
 
-  if (filters.isPublished === "published") params.isPublished = "1";
-  else if (filters.isPublished === "unpublished") params.isPublished = "0";
+  if (filters.isPublished === "published") params.isPublished = "true";
+  else if (filters.isPublished === "unpublished") params.isPublished = "false";
+
+  if (filters.includeDeleted) params.isDeleted = "true";
+  else params.isDeleted = "false";
 
   return params;
+}
+
+function normalizeJobsResponse(raw: any, fallbackPage: number, fallbackPageSize: number): JobsListResponse {
+  const root = raw?.data ?? raw ?? {};
+  const payload = root?.data ?? root ?? {};
+
+  const rawRows = Array.isArray(payload?.rows)
+    ? payload.rows
+    : Array.isArray(payload?.items)
+      ? payload.items
+      : Array.isArray(root?.rows)
+        ? root.rows
+        : Array.isArray(root?.items)
+          ? root.items
+          : [];
+
+  const total = Math.max(0, toInt(payload?.total ?? root?.total, rawRows.length));
+  const pageSize = Math.max(1, toInt(payload?.pageSize ?? root?.pageSize, fallbackPageSize));
+  const page = Math.max(1, toInt(payload?.page ?? root?.page, fallbackPage));
+  const totalPages = Math.max(
+    1,
+    toInt(payload?.totalPages ?? root?.pageCount ?? root?.totalPages, Math.ceil(total / pageSize) || 1)
+  );
+
+  return {
+    rows: rawRows as CareersJobRole[],
+    total,
+    page,
+    pageSize,
+    totalPages,
+    hasNextPage: Boolean(payload?.hasNextPage ?? root?.hasNextPage ?? page < totalPages),
+    hasPrevPage: Boolean(payload?.hasPrevPage ?? root?.hasPrevPage ?? page > 1),
+  };
 }
 
 /* ----------------------------- Component ----------------------------- */
@@ -99,12 +140,11 @@ const AdminCareersJobs: React.FC = () => {
 
   const jobsQuery = useQuery({
     queryKey,
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const params = buildListQuery(filters);
-      const res = await api.get<JobsListResponse>("/api/admin/careers/jobs", {
-        params,
-      });
-      return res.data;
+      const res = await api.get("/api/admin/careers/jobs", { params });
+      return normalizeJobsResponse(res.data, filters.page, filters.pageSize);
     },
   });
 
@@ -145,9 +185,7 @@ const AdminCareersJobs: React.FC = () => {
 
   const isSaving = createMutation.isPending || updateMutation.isPending;
   const isDeleting = deleteMutation.isPending;
-  const { data, isLoading, isError } = jobsQuery;
-
-  /* ----------------------------- Handlers ----------------------------- */
+  const { data, isLoading, isError, isFetching } = jobsQuery;
 
   function openCreate() {
     const blank: Partial<CareersJobRole> = {
@@ -233,9 +271,15 @@ const AdminCareersJobs: React.FC = () => {
     deleteMutation.mutate(id);
   }
 
-  const jobs = data?.items ?? [];
-
-  /* ----------------------------- Render ----------------------------- */
+  const jobs = data?.rows ?? [];
+  const total = data?.total ?? 0;
+  const page = data?.page ?? filters.page;
+  const pageSize = data?.pageSize ?? filters.pageSize;
+  const totalPages = data?.totalPages ?? 1;
+  const hasPrevPage = data?.hasPrevPage ?? false;
+  const hasNextPage = data?.hasNextPage ?? false;
+  const startItem = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endItem = total === 0 ? 0 : Math.min(page * pageSize, total);
 
   return (
     <div className="p-6 space-y-6">
@@ -264,7 +308,6 @@ const AdminCareersJobs: React.FC = () => {
         </button>
       </header>
 
-      {/* Filters */}
       <section className="bg-white rounded-lg shadow-sm p-4 space-y-3">
         <div className="flex flex-wrap gap-3 items-end">
           <div className="flex flex-col">
@@ -312,6 +355,27 @@ const AdminCareersJobs: React.FC = () => {
             </select>
           </div>
 
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-600">Page size</label>
+            <select
+              className="border rounded px-2 py-1 text-sm"
+              value={filters.pageSize}
+              onChange={(e) =>
+                setFilters((f) => ({
+                  ...f,
+                  pageSize: toInt(e.target.value, 20),
+                  page: 1,
+                }))
+              }
+            >
+              {[10, 20, 50, 100].map((n) => (
+                <option key={n} value={n}>
+                  {n} / page
+                </option>
+              ))}
+            </select>
+          </div>
+
           <label className="inline-flex items-center gap-2 text-xs font-medium text-gray-600">
             <input
               type="checkbox"
@@ -322,14 +386,15 @@ const AdminCareersJobs: React.FC = () => {
             />
             Include archived
           </label>
+
+          <div className="ml-auto text-xs text-gray-500">
+            {isFetching ? "Refreshing…" : total > 0 ? `Showing ${startItem}-${endItem} of ${total}` : "No jobs"}
+          </div>
         </div>
       </section>
 
-      {/* Table */}
       <section className="bg-white rounded-lg shadow-sm">
-        {isLoading && (
-          <div className="p-6 text-sm text-gray-500">Loading jobs…</div>
-        )}
+        {isLoading && <div className="p-6 text-sm text-gray-500">Loading jobs…</div>}
         {isError && !isLoading && (
           <div className="p-6 text-sm text-red-600">
             Failed to load jobs. Please try again.
@@ -434,16 +499,15 @@ const AdminCareersJobs: React.FC = () => {
           </div>
         )}
 
-        {/* Pagination */}
-        {data && data.pageCount > 1 && (
+        {data && totalPages > 1 && (
           <div className="px-4 py-3 flex items-center justify-between text-xs text-gray-600 border-t">
             <div>
-              Page {data.page} of {data.pageCount} • {data.total} jobs
+              Page {page} of {totalPages} • {total} jobs
             </div>
-            <div className="space-x-2">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                disabled={filters.page <= 1}
+                disabled={!hasPrevPage}
                 onClick={() =>
                   setFilters((f) => ({ ...f, page: Math.max(1, f.page - 1) }))
                 }
@@ -453,11 +517,11 @@ const AdminCareersJobs: React.FC = () => {
               </button>
               <button
                 type="button"
-                disabled={filters.page >= data.pageCount}
+                disabled={!hasNextPage}
                 onClick={() =>
                   setFilters((f) => ({
                     ...f,
-                    page: Math.min(data.pageCount, f.page + 1),
+                    page: Math.min(totalPages, f.page + 1),
                   }))
                 }
                 className="px-2 py-1 border rounded disabled:opacity-50"
@@ -469,16 +533,13 @@ const AdminCareersJobs: React.FC = () => {
         )}
       </section>
 
-      {/* Form Drawer / Modal */}
       {isFormOpen && editing && (
         <div className="fixed inset-0 z-40 flex">
-          {/* Backdrop */}
           <div
             className="flex-1 bg-black/40"
             onClick={closeForm}
             aria-hidden="true"
           />
-          {/* Panel */}
           <div className="w-full max-w-xl bg-white shadow-xl p-6 overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold">
@@ -495,7 +556,6 @@ const AdminCareersJobs: React.FC = () => {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4 text-sm">
-              {/* Title & Slug */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-600">
@@ -522,7 +582,6 @@ const AdminCareersJobs: React.FC = () => {
                 </div>
               </div>
 
-              {/* Department / Location */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-600">
@@ -548,7 +607,6 @@ const AdminCareersJobs: React.FC = () => {
                 </div>
               </div>
 
-              {/* Employment / Location type */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-600">
@@ -584,7 +642,6 @@ const AdminCareersJobs: React.FC = () => {
                 </div>
               </div>
 
-              {/* Salary */}
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-600">
@@ -622,7 +679,6 @@ const AdminCareersJobs: React.FC = () => {
                 </div>
               </div>
 
-              {/* Application */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-600">
@@ -647,7 +703,6 @@ const AdminCareersJobs: React.FC = () => {
                 </div>
               </div>
 
-              {/* Publishing */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="flex items-center gap-2 mt-2">
                   <input
@@ -677,7 +732,6 @@ const AdminCareersJobs: React.FC = () => {
                 </div>
               </div>
 
-              {/* Closing date */}
               <div>
                 <label className="block text-xs font-medium text-gray-600">
                   Closing date
@@ -694,7 +748,6 @@ const AdminCareersJobs: React.FC = () => {
                 />
               </div>
 
-              {/* Intro */}
               <div>
                 <label className="block text-xs font-medium text-gray-600">
                   Intro / teaser (HTML allowed)
@@ -707,7 +760,6 @@ const AdminCareersJobs: React.FC = () => {
                 />
               </div>
 
-              {/* JSON fields */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-600">
@@ -759,7 +811,6 @@ const AdminCareersJobs: React.FC = () => {
                 </div>
               </div>
 
-              {/* Actions */}
               <div className="pt-4 flex items-center justify-between border-t">
                 <button
                   type="button"
@@ -779,8 +830,8 @@ const AdminCareersJobs: React.FC = () => {
                       ? "Creating…"
                       : "Saving…"
                     : editing.mode === "create"
-                    ? "Create job"
-                    : "Save changes"}
+                      ? "Create job"
+                      : "Save changes"}
                 </button>
               </div>
             </form>
