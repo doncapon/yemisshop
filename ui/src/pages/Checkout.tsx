@@ -745,11 +745,10 @@ async function syncSelectedShippingAddressEntry(address: SavedShippingAddress) {
 }
 
 async function sendPhoneOtpForCheckout(args: { shippingAddressId: string }) {
-  return api.post(
-    `/api/profile/shipping-addresses/${encodeURIComponent(args.shippingAddressId)}/request-phone-otp`,
-    {},
-    AXIOS_COOKIE_CFG
-  );
+  const url = `/api/profile/shipping-addresses/${encodeURIComponent(args.shippingAddressId)}/request-phone-otp`;
+  console.log("[sendPhoneOtpForCheckout] POST", url);
+
+  return api.post(url, {}, AXIOS_COOKIE_CFG);
 }
 
 async function verifyPhoneOtpForCheckout(args: { shippingAddressId: string; code: string }) {
@@ -1835,7 +1834,16 @@ export default function Checkout() {
 
   const selectedPhoneVerified = useMemo(() => {
     if (!selectedShippingAddress) return false;
-    return isSavedAddressPhoneVerified(selectedShippingAddress);
+
+    const phoneToCheck =
+      selectedShippingAddress.whatsappPhone ||
+      selectedShippingAddress.phone ||
+      "";
+
+    return (
+      isSavedAddressPhoneVerified(selectedShippingAddress) ||
+      isShippingPhoneVerifiedLocally(selectedShippingAddress.id, phoneToCheck)
+    );
   }, [selectedShippingAddress]);
 
 
@@ -1852,7 +1860,16 @@ export default function Checkout() {
       return;
     }
 
-    if (isSavedAddressPhoneVerified(selectedShippingAddress)) {
+    const phoneToCheck =
+      selectedShippingAddress.whatsappPhone ||
+      selectedShippingAddress.phone ||
+      "";
+
+    const alreadyVerified =
+      isSavedAddressPhoneVerified(selectedShippingAddress) ||
+      isShippingPhoneVerifiedLocally(selectedShippingAddress.id, phoneToCheck);
+
+    if (alreadyVerified) {
       setOtpCode("");
       setOtpSentToPhone(null);
       setOtpMessage("This delivery phone is already verified.");
@@ -2305,27 +2322,58 @@ export default function Checkout() {
   const homeFormLgas = useMemo(() => lgasForState(homeAddr.state), [homeAddr.state]);
 
   const sendOtp = async () => {
+    console.log("[CHECKOUT sendOtp] clicked", {
+      selectedShippingAddress,
+    });
+
     if (!selectedShippingAddress) {
       openModal({ title: "Phone verification", message: "Select a delivery detail first." });
       return;
     }
 
-    const phone = selectedShippingAddress.phone?.trim() || "";
+    const targetPhone =
+      String(selectedShippingAddress.whatsappPhone ?? "").trim() ||
+      String(selectedShippingAddress.phone ?? "").trim();
 
-    if (!phone) {
-      openModal({ title: "Phone verification", message: "Selected delivery detail has no phone number." });
+    console.log("[CHECKOUT sendOtp] target", {
+      shippingAddressId: selectedShippingAddress.id,
+      phone: selectedShippingAddress.phone,
+      whatsappPhone: selectedShippingAddress.whatsappPhone,
+      targetPhone,
+    });
+
+    if (!targetPhone) {
+      openModal({
+        title: "Phone verification",
+        message: "Selected delivery detail has no WhatsApp or phone number.",
+      });
       return;
     }
 
     try {
       setSendingOtp(true);
       setOtpMessage(null);
-      await sendPhoneOtpForCheckout({
+
+      console.log("[CHECKOUT sendOtp] before api call", {
         shippingAddressId: selectedShippingAddress.id,
       });
-      setOtpSentToPhone(phone);
+
+      const res = await sendPhoneOtpForCheckout({
+        shippingAddressId: selectedShippingAddress.id,
+      });
+
+      console.log("[CHECKOUT sendOtp] api success", res?.data);
+
+      setOtpSentToPhone(targetPhone);
+      setOtpCode("");
       setOtpMessage("OTP sent. Enter the code below to confirm this delivery phone.");
     } catch (e: any) {
+      console.error("[CHECKOUT sendOtp] api error", {
+        status: e?.response?.status,
+        data: e?.response?.data,
+        message: e?.message,
+      });
+
       openModal({
         title: "Send OTP",
         message: safeServerMessage(
@@ -2386,6 +2434,13 @@ export default function Checkout() {
             },
           };
         })
+      );
+
+      markVerifiedShippingPhoneLocally(
+        selectedShippingAddress.id,
+        selectedShippingAddress.whatsappPhone ||
+        selectedShippingAddress.phone ||
+        ""
       );
 
       setOtpSentToPhone(null);
