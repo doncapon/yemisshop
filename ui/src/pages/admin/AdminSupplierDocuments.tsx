@@ -33,6 +33,15 @@ type SupplierDocumentKind =
 type SupplierDocStatus = "PENDING" | "APPROVED" | "REJECTED";
 type SummaryStatus = SupplierDocStatus | "MISSING";
 
+type PaginationMeta = {
+    total: number;
+    page: number;
+    pageSize: number;
+    pageCount: number;
+    hasNextPage?: boolean;
+    hasPrevPage?: boolean;
+};
+
 type SupplierSummaryRow = {
     id: string;
     businessName?: string | null;
@@ -94,6 +103,29 @@ type SupplierDetail = {
         lastName?: string | null;
     } | null;
     documents: SupplierDocument[];
+    documentsPagination?: PaginationMeta;
+};
+
+type SupplierListResponse = {
+    data?: SupplierSummaryRow[];
+    items?: SupplierSummaryRow[];
+    total?: number;
+    page?: number;
+    pageSize?: number;
+    pageCount?: number;
+    hasNextPage?: boolean;
+    hasPrevPage?: boolean;
+};
+
+type SupplierDetailResponse = {
+    data?: SupplierDetail | null;
+    items?: SupplierDocument[];
+    total?: number;
+    page?: number;
+    pageSize?: number;
+    pageCount?: number;
+    hasNextPage?: boolean;
+    hasPrevPage?: boolean;
 };
 
 const DOC_LABELS: Record<SupplierDocumentKind, string> = {
@@ -104,6 +136,9 @@ const DOC_LABELS: Record<SupplierDocumentKind, string> = {
     BANK_PROOF: "Bank proof",
     OTHER: "Other document",
 };
+
+const SUPPLIERS_PAGE_SIZE = 8;
+const DOCUMENTS_PAGE_SIZE = 8;
 
 function docIcon(kind: SupplierDocumentKind) {
     if (kind === "GOVERNMENT_ID") return <IdCard className="h-4 w-4 text-zinc-700" />;
@@ -212,6 +247,76 @@ function downloadDocument(doc?: SupplierDocument | null) {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+}
+
+function rangeStart(page: number, pageSize: number, total: number) {
+    if (total <= 0) return 0;
+    return (page - 1) * pageSize + 1;
+}
+
+function rangeEnd(page: number, pageSize: number, total: number) {
+    if (total <= 0) return 0;
+    return Math.min(page * pageSize, total);
+}
+
+function normaliseListResponse(data: SupplierListResponse | undefined) {
+    const items = Array.isArray(data?.items)
+        ? data?.items
+        : Array.isArray(data?.data)
+            ? data?.data
+            : [];
+
+    const total = Number.isFinite(data?.total) ? Number(data?.total) : items.length;
+    const page = Number.isFinite(data?.page) ? Number(data?.page) : 1;
+    const pageSize = Number.isFinite(data?.pageSize) ? Number(data?.pageSize) : SUPPLIERS_PAGE_SIZE;
+    const pageCount = Math.max(
+        1,
+        Number.isFinite(data?.pageCount)
+            ? Number(data?.pageCount)
+            : Math.ceil(total / Math.max(1, pageSize))
+    );
+
+    return {
+        items,
+        total,
+        page,
+        pageSize,
+        pageCount,
+        hasNextPage: typeof data?.hasNextPage === "boolean" ? data.hasNextPage : page < pageCount,
+        hasPrevPage: typeof data?.hasPrevPage === "boolean" ? data.hasPrevPage : page > 1,
+    };
+}
+
+function normaliseDetailResponse(data: SupplierDetailResponse | undefined): SupplierDetail | null {
+    const detail = data?.data || null;
+    if (!detail) return null;
+
+    const documents = Array.isArray(detail.documents) ? detail.documents : [];
+    const documentsPagination: PaginationMeta = detail.documentsPagination || {
+        total: Number.isFinite(data?.total) ? Number(data?.total) : documents.length,
+        page: Number.isFinite(data?.page) ? Number(data?.page) : 1,
+        pageSize: Number.isFinite(data?.pageSize) ? Number(data?.pageSize) : DOCUMENTS_PAGE_SIZE,
+        pageCount: Math.max(
+            1,
+            Number.isFinite(data?.pageCount)
+                ? Number(data?.pageCount)
+                : Math.ceil(
+                    (Number.isFinite(data?.total) ? Number(data?.total) : documents.length) /
+                        Math.max(
+                            1,
+                            Number.isFinite(data?.pageSize) ? Number(data?.pageSize) : DOCUMENTS_PAGE_SIZE
+                        )
+                )
+        ),
+        hasNextPage: typeof data?.hasNextPage === "boolean" ? data.hasNextPage : false,
+        hasPrevPage: typeof data?.hasPrevPage === "boolean" ? data.hasPrevPage : false,
+    };
+
+    return {
+        ...detail,
+        documents,
+        documentsPagination,
+    };
 }
 
 function InlinePreview({ doc }: { doc: SupplierDocument }) {
@@ -400,6 +505,14 @@ export default function AdminSupplierDocuments() {
     const [loadingList, setLoadingList] = useState(true);
     const [listError, setListError] = useState<string | null>(null);
     const [rows, setRows] = useState<SupplierSummaryRow[]>([]);
+    const [listPagination, setListPagination] = useState<PaginationMeta>({
+        total: 0,
+        page: 1,
+        pageSize: SUPPLIERS_PAGE_SIZE,
+        pageCount: 1,
+        hasNextPage: false,
+        hasPrevPage: false,
+    });
 
     const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
     const [detailLoading, setDetailLoading] = useState(false);
@@ -418,45 +531,74 @@ export default function AdminSupplierDocuments() {
         "approve" | "reject" | null
     >(null);
 
-    const [page, setPage] = useState(1);
-    const PAGE_SIZE = 8;
+    const [supplierPage, setSupplierPage] = useState(1);
+    const [documentsPage, setDocumentsPage] = useState(1);
 
     const loadList = useCallback(async () => {
         try {
             setLoadingList(true);
             setListError(null);
 
-            const { data } = await api.get("/api/admin/supplier-documents", {
+            const { data } = await api.get<SupplierListResponse>("/api/admin/supplier-documents", {
                 withCredentials: true,
+                params: {
+                    page: supplierPage,
+                    pageSize: SUPPLIERS_PAGE_SIZE,
+                },
             });
 
-            const items = Array.isArray(data?.data) ? data.data : [];
-            setRows(items);
+            const parsed = normaliseListResponse(data);
+            setRows(parsed.items);
+            setListPagination({
+                total: parsed.total,
+                page: parsed.page,
+                pageSize: parsed.pageSize,
+                pageCount: parsed.pageCount,
+                hasNextPage: parsed.hasNextPage,
+                hasPrevPage: parsed.hasPrevPage,
+            });
 
-            if (!selectedSupplierId && items.length > 0) {
-                setSelectedSupplierId(items[0].id);
-            }
+            setSelectedSupplierId((prev) => {
+                if (prev && parsed.items.some((item) => item.id === prev)) return prev;
+                return parsed.items[0]?.id || null;
+            });
         } catch (e: any) {
             setListError(
                 e?.response?.data?.error ||
                 e?.response?.data?.message ||
                 "Could not load supplier document review list."
             );
+            setRows([]);
+            setListPagination({
+                total: 0,
+                page: supplierPage,
+                pageSize: SUPPLIERS_PAGE_SIZE,
+                pageCount: 1,
+                hasNextPage: false,
+                hasPrevPage: false,
+            });
         } finally {
             setLoadingList(false);
         }
-    }, [selectedSupplierId]);
+    }, [supplierPage]);
 
     const loadDetail = useCallback(async (supplierId: string) => {
         try {
             setDetailLoading(true);
             setDetailError(null);
 
-            const { data } = await api.get(`/api/admin/supplier-documents/${supplierId}`, {
-                withCredentials: true,
-            });
+            const { data } = await api.get<SupplierDetailResponse>(
+                `/api/admin/supplier-documents/${supplierId}`,
+                {
+                    withCredentials: true,
+                    params: {
+                        page: documentsPage,
+                        pageSize: DOCUMENTS_PAGE_SIZE,
+                    },
+                }
+            );
 
-            setDetail((data?.data || null) as SupplierDetail | null);
+            setDetail(normaliseDetailResponse(data));
         } catch (e: any) {
             setDetailError(
                 e?.response?.data?.error ||
@@ -467,7 +609,7 @@ export default function AdminSupplierDocuments() {
         } finally {
             setDetailLoading(false);
         }
-    }, []);
+    }, [documentsPage]);
 
     useEffect(() => {
         loadList();
@@ -516,31 +658,25 @@ export default function AdminSupplierDocuments() {
     }, [rows, query, statusFilter]);
 
     useEffect(() => {
-        setPage(1);
-    }, [query, statusFilter]);
-
-    const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
-
-    const paginatedRows = useMemo(() => {
-        const start = (page - 1) * PAGE_SIZE;
-        return filteredRows.slice(start, start + PAGE_SIZE);
-    }, [filteredRows, page]);
+        if (filteredRows.length === 0) return;
+        if (!selectedSupplierId || !filteredRows.some((r) => r.id === selectedSupplierId)) {
+            setSelectedSupplierId(filteredRows[0].id);
+        }
+    }, [filteredRows, selectedSupplierId]);
 
     useEffect(() => {
-        if (page > totalPages) {
-            setPage(totalPages);
-        }
-    }, [page, totalPages]);
+        setDocumentsPage(1);
+    }, [selectedSupplierId]);
 
     const stats = useMemo(() => {
         return {
-            total: rows.length,
+            total: listPagination.total,
             pending: rows.filter((r) => r.pendingCount > 0).length,
             rejected: rows.filter((r) => r.rejectedCount > 0).length,
             missing: rows.filter((r) => r.missingCount > 0).length,
             ready: rows.filter((r) => r.readyForApproval).length,
         };
-    }, [rows]);
+    }, [rows, listPagination.total]);
 
     const reviewDocument = async (
         documentId: string,
@@ -673,6 +809,15 @@ export default function AdminSupplierDocuments() {
     const secondaryBtn =
         "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60";
 
+    const documentPagination = detail?.documentsPagination || {
+        total: 0,
+        page: 1,
+        pageSize: DOCUMENTS_PAGE_SIZE,
+        pageCount: 1,
+        hasNextPage: false,
+        hasPrevPage: false,
+    };
+
     return (
         <SiteLayout>
             <div className={pageWrap}>
@@ -707,25 +852,25 @@ export default function AdminSupplierDocuments() {
                                     />
                                     <StatCard
                                         icon={<Clock3 className="h-5 w-5" />}
-                                        label="Pending review"
+                                        label="Pending on page"
                                         value={stats.pending}
                                         tone="amber"
                                     />
                                     <StatCard
                                         icon={<XCircle className="h-5 w-5" />}
-                                        label="Rejected"
+                                        label="Rejected on page"
                                         value={stats.rejected}
                                         tone="rose"
                                     />
                                     <StatCard
                                         icon={<ShieldCheck className="h-5 w-5" />}
-                                        label="Ready / approved"
+                                        label="Ready on page"
                                         value={stats.ready}
                                         tone="emerald"
                                     />
                                     <StatCard
                                         icon={<AlertTriangle className="h-5 w-5" />}
-                                        label="Missing docs"
+                                        label="Missing on page"
                                         value={stats.missing}
                                         tone="zinc"
                                     />
@@ -743,7 +888,7 @@ export default function AdminSupplierDocuments() {
                                                 <input
                                                     value={query}
                                                     onChange={(e) => setQuery(e.target.value)}
-                                                    placeholder="Search supplier, email, status..."
+                                                    placeholder="Filter current page..."
                                                     className={`${input} pl-10`}
                                                 />
                                             </div>
@@ -753,11 +898,11 @@ export default function AdminSupplierDocuments() {
                                                 onChange={(e) =>
                                                     setStatusFilter(
                                                         e.target.value as
-                                                        | "ALL"
-                                                        | "PENDING"
-                                                        | "APPROVED"
-                                                        | "REJECTED"
-                                                        | "MISSING"
+                                                            | "ALL"
+                                                            | "PENDING"
+                                                            | "APPROVED"
+                                                            | "REJECTED"
+                                                            | "MISSING"
                                                     )
                                                 }
                                                 className={input}
@@ -788,11 +933,11 @@ export default function AdminSupplierDocuments() {
                                                 </div>
                                             ) : filteredRows.length === 0 ? (
                                                 <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-8 text-center text-sm text-zinc-500">
-                                                    No suppliers matched your filters.
+                                                    No suppliers matched your filters on this page.
                                                 </div>
                                             ) : (
                                                 <div className="space-y-3">
-                                                    {paginatedRows.map((row) => {
+                                                    {filteredRows.map((row) => {
                                                         const selected = selectedSupplierId === row.id;
 
                                                         return (
@@ -800,10 +945,11 @@ export default function AdminSupplierDocuments() {
                                                                 key={row.id}
                                                                 type="button"
                                                                 onClick={() => setSelectedSupplierId(row.id)}
-                                                                className={`w-full rounded-[22px] border p-4 text-left transition ${selected
+                                                                className={`w-full rounded-[22px] border p-4 text-left transition ${
+                                                                    selected
                                                                         ? "border-zinc-900 bg-zinc-900 text-white shadow-lg"
                                                                         : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
-                                                                    }`}
+                                                                }`}
                                                             >
                                                                 <div className="flex items-start justify-between gap-3">
                                                                     <div className="min-w-0">
@@ -811,38 +957,43 @@ export default function AdminSupplierDocuments() {
                                                                             {row.businessName || "Unnamed supplier"}
                                                                         </div>
                                                                         <div
-                                                                            className={`mt-1 truncate text-sm ${selected ? "text-zinc-300" : "text-zinc-500"
-                                                                                }`}
+                                                                            className={`mt-1 truncate text-sm ${
+                                                                                selected ? "text-zinc-300" : "text-zinc-500"
+                                                                            }`}
                                                                         >
                                                                             {row.user?.email || "No email"}
                                                                         </div>
                                                                     </div>
 
                                                                     <Eye
-                                                                        className={`mt-0.5 h-4 w-4 shrink-0 ${selected ? "text-white" : "text-zinc-500"
-                                                                            }`}
+                                                                        className={`mt-0.5 h-4 w-4 shrink-0 ${
+                                                                            selected ? "text-white" : "text-zinc-500"
+                                                                        }`}
                                                                     />
                                                                 </div>
 
                                                                 <div className="mt-3 flex flex-wrap gap-2">
                                                                     <span
-                                                                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${selected ? "bg-white/10 text-white" : statusChip(row.kycStatus)
-                                                                            }`}
+                                                                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                                                                            selected ? "bg-white/10 text-white" : statusChip(row.kycStatus)
+                                                                        }`}
                                                                     >
                                                                         KYC: {row.kycStatus || "—"}
                                                                     </span>
 
                                                                     <span
-                                                                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${selected ? "bg-white/10 text-white" : statusChip(row.status)
-                                                                            }`}
+                                                                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                                                                            selected ? "bg-white/10 text-white" : statusChip(row.status)
+                                                                        }`}
                                                                     >
                                                                         Status: {row.status || "—"}
                                                                     </span>
                                                                 </div>
 
                                                                 <div
-                                                                    className={`mt-4 grid grid-cols-4 gap-2 rounded-2xl px-1 text-[11px] ${selected ? "text-zinc-200" : "text-zinc-600"
-                                                                        }`}
+                                                                    className={`mt-4 grid grid-cols-4 gap-2 rounded-2xl px-1 text-[11px] ${
+                                                                        selected ? "text-zinc-200" : "text-zinc-600"
+                                                                    }`}
                                                                 >
                                                                     <div>
                                                                         <div className="text-sm font-semibold">{row.approvedCount}</div>
@@ -868,32 +1019,45 @@ export default function AdminSupplierDocuments() {
                                             )}
                                         </div>
 
-                                        {!loadingList && filteredRows.length > 0 && (
+                                        {!loadingList && (
                                             <div className="flex flex-col gap-3 border-t border-zinc-200 pt-4">
                                                 <div className="text-xs text-zinc-500">
-                                                    Showing {(page - 1) * PAGE_SIZE + 1}–
-                                                    {Math.min(page * PAGE_SIZE, filteredRows.length)} of {filteredRows.length}
+                                                    {listPagination.total > 0
+                                                        ? `Showing ${rangeStart(
+                                                            listPagination.page,
+                                                            listPagination.pageSize,
+                                                            listPagination.total
+                                                        )}–${rangeEnd(
+                                                            listPagination.page,
+                                                            listPagination.pageSize,
+                                                            listPagination.total
+                                                        )} of ${listPagination.total} suppliers`
+                                                        : "No suppliers"}
                                                 </div>
 
                                                 <div className="flex items-center justify-between gap-2">
                                                     <button
                                                         type="button"
-                                                        onClick={() => setPage((p) => Math.max(1, p - 1))}
-                                                        disabled={page <= 1}
+                                                        onClick={() => setSupplierPage((p) => Math.max(1, p - 1))}
+                                                        disabled={!listPagination.hasPrevPage}
                                                         className={secondaryBtn}
                                                     >
                                                         Prev
                                                     </button>
 
                                                     <div className="text-sm text-zinc-700">
-                                                        Page <span className="font-semibold">{page}</span> of{" "}
-                                                        <span className="font-semibold">{totalPages}</span>
+                                                        Page <span className="font-semibold">{listPagination.page}</span> of{" "}
+                                                        <span className="font-semibold">{listPagination.pageCount}</span>
                                                     </div>
 
                                                     <button
                                                         type="button"
-                                                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                                                        disabled={page >= totalPages}
+                                                        onClick={() =>
+                                                            setSupplierPage((p) =>
+                                                                Math.min(listPagination.pageCount, p + 1)
+                                                            )
+                                                        }
+                                                        disabled={!listPagination.hasNextPage}
                                                         className={secondaryBtn}
                                                     >
                                                         Next
@@ -1043,7 +1207,7 @@ export default function AdminSupplierDocuments() {
 
                                                                                                 {!doc ? (
                                                                                                     <p className="mt-1 text-sm text-zinc-500">
-                                                                                                        No file submitted yet.
+                                                                                                        No file submitted on this loaded page yet.
                                                                                                     </p>
                                                                                                 ) : (
                                                                                                     <>
@@ -1062,8 +1226,9 @@ export default function AdminSupplierDocuments() {
 
                                                                                             <div className="shrink-0">
                                                                                                 <span
-                                                                                                    className={`rounded-full px-3 py-1.5 text-xs font-semibold ${doc ? statusChip(doc.status) : statusChip("MISSING")
-                                                                                                        }`}
+                                                                                                    className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+                                                                                                        doc ? statusChip(doc.status) : statusChip("MISSING")
+                                                                                                    }`}
                                                                                                 >
                                                                                                     {doc?.status || "MISSING"}
                                                                                                 </span>
@@ -1173,12 +1338,30 @@ export default function AdminSupplierDocuments() {
 
                                                     {extraDocuments.length > 0 && (
                                                         <div className={`${card} p-5 sm:p-6`}>
-                                                            <h3 className="text-base font-semibold text-zinc-900">
-                                                                Additional uploaded documents
-                                                            </h3>
-                                                            <p className="mt-1 text-sm text-zinc-600">
-                                                                Extra files submitted outside the required onboarding list.
-                                                            </p>
+                                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                                                                <div>
+                                                                    <h3 className="text-base font-semibold text-zinc-900">
+                                                                        Additional uploaded documents
+                                                                    </h3>
+                                                                    <p className="mt-1 text-sm text-zinc-600">
+                                                                        Extra files submitted outside the required onboarding list.
+                                                                    </p>
+                                                                </div>
+
+                                                                <div className="text-xs text-zinc-500">
+                                                                    {documentPagination.total > 0
+                                                                        ? `Showing ${rangeStart(
+                                                                            documentPagination.page,
+                                                                            documentPagination.pageSize,
+                                                                            documentPagination.total
+                                                                        )}–${rangeEnd(
+                                                                            documentPagination.page,
+                                                                            documentPagination.pageSize,
+                                                                            documentPagination.total
+                                                                        )} of ${documentPagination.total} documents`
+                                                                        : "No documents"}
+                                                                </div>
+                                                            </div>
 
                                                             <div className="mt-5 space-y-3">
                                                                 {extraDocuments.map((doc) => (
@@ -1245,6 +1428,35 @@ export default function AdminSupplierDocuments() {
                                                                         )}
                                                                     </div>
                                                                 ))}
+                                                            </div>
+
+                                                            <div className="mt-5 flex items-center justify-between gap-2 border-t border-zinc-200 pt-4">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setDocumentsPage((p) => Math.max(1, p - 1))}
+                                                                    disabled={!documentPagination.hasPrevPage}
+                                                                    className={secondaryBtn}
+                                                                >
+                                                                    Prev
+                                                                </button>
+
+                                                                <div className="text-sm text-zinc-700">
+                                                                    Page <span className="font-semibold">{documentPagination.page}</span> of{" "}
+                                                                    <span className="font-semibold">{documentPagination.pageCount}</span>
+                                                                </div>
+
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() =>
+                                                                        setDocumentsPage((p) =>
+                                                                            Math.min(documentPagination.pageCount, p + 1)
+                                                                        )
+                                                                    }
+                                                                    disabled={!documentPagination.hasNextPage}
+                                                                    className={secondaryBtn}
+                                                                >
+                                                                    Next
+                                                                </button>
                                                             </div>
                                                         </div>
                                                     )}

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Search,
   RefreshCcw,
@@ -9,6 +9,8 @@ import {
   Copy,
   Package,
   ArrowRight,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import SupplierLayout from "../../layouts/SupplierLayout";
@@ -22,6 +24,8 @@ const NGN = new Intl.NumberFormat("en-NG", {
   maximumFractionDigits: 2,
 });
 
+const PAGE_SIZES = [10, 20, 30, 50, 100] as const;
+
 const toNum = (v: any, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
@@ -29,30 +33,82 @@ const toNum = (v: any, d = 0) => {
 
 const is401 = (e: any) => Number(e?.response?.status) === 401;
 
+type VariantOptionWire = {
+  attributeId: string;
+  valueId: string;
+  attribute?: { id: string; name: string; type?: string; code?: string | null };
+  value?: { id: string; name: string; code?: string | null };
+};
+
+type VariantOfferWire = {
+  id: string;
+  supplierId?: string | null;
+  productId?: string | null;
+  variantId?: string | null;
+  supplierProductOfferId?: string | null;
+  unitPrice?: number | null;
+  availableQty?: number | null;
+  leadDays?: number | null;
+  isActive?: boolean;
+  inStock?: boolean;
+  currency?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 type VariantWire = {
   id: string;
   sku?: string | null;
   retailPrice?: number | null;
+  availableQty?: number | null;
   inStock?: boolean;
   imagesJson?: string[];
-  options?: Array<{
-    attributeId: string;
-    valueId: string;
-    attribute?: { id: string; name: string; type?: string; code?: string | null };
-    value?: { id: string; name: string; code?: string | null };
-  }>;
+  options?: VariantOptionWire[];
+  supplierVariantOffer?: VariantOfferWire | null;
+};
+
+type BaseOfferWire = {
+  id: string;
+  supplierId?: string | null;
+  productId?: string | null;
+  basePrice?: number | null;
+  availableQty?: number | null;
+  leadDays?: number | null;
+  isActive?: boolean;
+  inStock?: boolean;
+  currency?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  pendingChangeId?: string | null;
 };
 
 type ProductWire = {
   id: string;
   title: string;
+  description?: string | null;
   sku?: string;
   retailPrice?: number | null;
   imagesJson?: string[];
   inStock?: boolean;
+  availableQty?: number | null;
+  status?: string | null;
   brand?: { id: string; name: string } | null;
   supplierId?: string | null;
+  offer?: BaseOfferWire | null;
   ProductVariant?: VariantWire[];
+};
+
+type CatalogResponse = {
+  supplierId: string;
+  items: ProductWire[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+  skip: number;
+  take: number;
 };
 
 type AttributeGuideRow = {
@@ -99,8 +155,27 @@ function normalizeVariant(v: any): VariantWire {
     id: String(v?.id ?? ""),
     sku: v?.sku ?? null,
     retailPrice: pickRetailPrice(v),
+    availableQty: toNum(v?.availableQty, 0),
     inStock: v?.inStock !== false,
     imagesJson: Array.isArray(v?.imagesJson) ? v.imagesJson : [],
+    supplierVariantOffer: v?.supplierVariantOffer
+      ? {
+          id: String(v.supplierVariantOffer.id ?? ""),
+          supplierId: v.supplierVariantOffer.supplierId ?? null,
+          productId: v.supplierVariantOffer.productId ?? null,
+          variantId: v.supplierVariantOffer.variantId ?? null,
+          supplierProductOfferId: v.supplierVariantOffer.supplierProductOfferId ?? null,
+          unitPrice: toNum(v.supplierVariantOffer.unitPrice, 0),
+          availableQty: toNum(v.supplierVariantOffer.availableQty, 0),
+          leadDays:
+            v.supplierVariantOffer.leadDays == null ? null : toNum(v.supplierVariantOffer.leadDays, 0),
+          isActive: v.supplierVariantOffer.isActive !== false,
+          inStock: v.supplierVariantOffer.inStock !== false,
+          currency: v.supplierVariantOffer.currency ?? "NGN",
+          createdAt: v.supplierVariantOffer.createdAt ?? null,
+          updatedAt: v.supplierVariantOffer.updatedAt ?? null,
+        }
+      : null,
     options: Array.isArray(v?.options)
       ? v.options.map((o: any) => ({
           attributeId: String(o?.attributeId ?? ""),
@@ -125,12 +200,31 @@ function normalizeProduct(p: any): ProductWire {
   return {
     id: String(p?.id ?? ""),
     title: String(p?.title ?? ""),
+    description: p?.description ?? null,
     sku: p?.sku ?? "",
     retailPrice: pickRetailPrice(p),
     imagesJson: Array.isArray(p?.imagesJson) ? p.imagesJson : [],
     inStock: p?.inStock !== false,
+    availableQty: toNum(p?.availableQty, 0),
+    status: p?.status ?? null,
     brand: p?.brand ? { id: String(p.brand.id), name: String(p.brand.name) } : null,
     supplierId: p?.supplierId ?? null,
+    offer: p?.offer
+      ? {
+          id: String(p.offer.id ?? ""),
+          supplierId: p.offer.supplierId ?? null,
+          productId: p.offer.productId ?? null,
+          basePrice: toNum(p.offer.basePrice, 0),
+          availableQty: toNum(p.offer.availableQty, 0),
+          leadDays: p.offer.leadDays == null ? null : toNum(p.offer.leadDays, 0),
+          isActive: p.offer.isActive !== false,
+          inStock: p.offer.inStock !== false,
+          currency: p.offer.currency ?? "NGN",
+          createdAt: p.offer.createdAt ?? null,
+          updatedAt: p.offer.updatedAt ?? null,
+          pendingChangeId: p.offer.pendingChangeId ?? null,
+        }
+      : null,
     ProductVariant: Array.isArray(p?.ProductVariant) ? p.ProductVariant.map(normalizeVariant) : [],
   };
 }
@@ -163,7 +257,7 @@ function ProductAttributesPreview({
     },
     staleTime: 30_000,
     refetchOnWindowFocus: false,
-    retry: (fc, e) => (!is401(e) && fc < 2),
+    retry: (fc, e) => !is401(e) && fc < 2,
   });
 
   const attributeGuide = (q.data?.attributeGuide ?? []) as AttributeGuideRow[];
@@ -251,6 +345,11 @@ function VariantPreviewList({ variants }: { variants: VariantWire[] }) {
       <div className="mt-3 grid gap-2">
         {variants.map((v) => {
           const label = formatVariantLabel(v);
+          const offer = v.supplierVariantOffer;
+          const shownQty = offer?.availableQty ?? v.availableQty ?? 0;
+          const shownInStock = offer?.inStock ?? v.inStock;
+          const shownPrice = offer?.unitPrice ?? v.retailPrice ?? null;
+
           return (
             <div key={v.id} className="rounded-2xl border bg-white p-3">
               <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
@@ -264,19 +363,22 @@ function VariantPreviewList({ variants }: { variants: VariantWire[] }) {
                         SKU: {v.sku}
                       </span>
                     ) : null}
-                    {v.retailPrice != null ? (
+                    {shownPrice != null ? (
                       <span className="inline-flex items-center rounded-full border bg-zinc-50 px-2.5 py-1 text-[11px] text-zinc-700">
-                        Retail: {NGN.format(toNum(v.retailPrice, 0))}
+                        Price: {NGN.format(toNum(shownPrice, 0))}
                       </span>
                     ) : null}
+                    <span className="inline-flex items-center rounded-full border bg-zinc-50 px-2.5 py-1 text-[11px] text-zinc-700">
+                      Qty: {toNum(shownQty, 0)}
+                    </span>
                     <span
                       className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] ${
-                        v.inStock !== false
+                        shownInStock !== false
                           ? "border-emerald-200 bg-emerald-50 text-emerald-700"
                           : "border-zinc-200 bg-zinc-50 text-zinc-700"
                       }`}
                     >
-                      {v.inStock !== false ? "In stock" : "Out of stock"}
+                      {shownInStock !== false ? "In stock" : "Out of stock"}
                     </span>
                   </div>
                 </div>
@@ -302,26 +404,41 @@ export default function SupplierCatalogOffers() {
   const [q, setQ] = React.useState("");
   const qDebounced = useDebounced(q, 300);
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+  const [page, setPage] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState<number>(30);
+
+  React.useEffect(() => {
+    setPage(1);
+  }, [qDebounced, pageSize]);
 
   const catalogQ = useQuery({
-    queryKey: ["supplier-catalog-template-products", qDebounced],
+    queryKey: ["supplier-catalog-template-products", qDebounced, page, pageSize],
     enabled: hydrated,
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     refetchOnMount: "always",
-    retry: (fc, e) => (!is401(e) && fc < 2),
-    queryFn: async () => {
+    placeholderData: keepPreviousData,
+    retry: (fc, e) => !is401(e) && fc < 2,
+    queryFn: async (): Promise<CatalogResponse> => {
       const { data } = await api.get("/api/supplier/catalog/products", {
-        params: { q: qDebounced, take: 30, skip: 0 },
+        params: { q: qDebounced, page, pageSize },
         withCredentials: true,
       });
 
       const payload = (data as any)?.data ?? data;
-      const items: any[] = payload?.items ?? [];
+      const items: any[] = Array.isArray(payload?.items) ? payload.items : [];
 
       return {
         supplierId: String(payload?.supplierId ?? ""),
         items: items.map(normalizeProduct),
+        total: toNum(payload?.total, 0),
+        page: toNum(payload?.page, page),
+        pageSize: toNum(payload?.pageSize, pageSize),
+        totalPages: Math.max(1, toNum(payload?.totalPages, 1)),
+        hasNextPage: Boolean(payload?.hasNextPage),
+        hasPrevPage: Boolean(payload?.hasPrevPage),
+        skip: toNum(payload?.skip, 0),
+        take: toNum(payload?.take, pageSize),
       };
     },
   });
@@ -333,6 +450,14 @@ export default function SupplierCatalogOffers() {
   }, [hydrated, userId]);
 
   const items = catalogQ.data?.items ?? [];
+  const total = catalogQ.data?.total ?? 0;
+  const currentPage = catalogQ.data?.page ?? page;
+  const currentPageSize = catalogQ.data?.pageSize ?? pageSize;
+  const totalPages = catalogQ.data?.totalPages ?? 1;
+  const hasNextPage = catalogQ.data?.hasNextPage ?? false;
+  const hasPrevPage = catalogQ.data?.hasPrevPage ?? false;
+  const start = total === 0 ? 0 : (currentPage - 1) * currentPageSize + 1;
+  const end = total === 0 ? 0 : Math.min(currentPage * currentPageSize, total);
 
   const goToCreateFromTemplate = React.useCallback(
     (productId: string) => {
@@ -369,7 +494,7 @@ export default function SupplierCatalogOffers() {
               </button>
             </div>
 
-            <div className="mt-3">
+            <div className="mt-3 grid gap-3">
               <div className="relative">
                 <Search className="h-4 w-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
@@ -378,6 +503,56 @@ export default function SupplierCatalogOffers() {
                   placeholder="Search products / variants…"
                   className="w-full pl-9 pr-3 h-10 rounded-2xl border bg-white text-[13px] focus:outline-none focus:ring-4 focus:ring-fuchsia-200"
                 />
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="text-[11px] text-zinc-500">
+                  {catalogQ.isLoading
+                    ? "Loading catalogue…"
+                    : catalogQ.isError
+                    ? "Catalogue unavailable"
+                    : `${start}–${end} of ${total} product${total === 1 ? "" : "s"}`}
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(toNum(e.target.value, 30))}
+                    className="rounded-xl border bg-white px-3 py-2 text-[12px]"
+                    title="Items per page"
+                  >
+                    {PAGE_SIZES.map((n) => (
+                      <option key={n} value={n}>
+                        {n}/page
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    disabled={!hasPrevPage || catalogQ.isFetching}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-[12px] disabled:opacity-50"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Prev
+                  </button>
+
+                  <div className="text-[12px] text-zinc-600">
+                    Page <span className="font-semibold text-zinc-900">{currentPage}</span> /{" "}
+                    <span className="font-semibold text-zinc-900">{totalPages}</span>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={!hasNextPage || catalogQ.isFetching}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-[12px] disabled:opacity-50"
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -392,9 +567,7 @@ export default function SupplierCatalogOffers() {
                   {String((catalogQ.error as any)?.message ?? "")}
                 </div>
                 {is401(catalogQ.error) && (
-                  <div className="mt-2 text-[11px] text-zinc-600">
-                    You may need to login again.
-                  </div>
+                  <div className="mt-2 text-[11px] text-zinc-600">You may need to login again.</div>
                 )}
               </div>
             ) : items.length === 0 ? (
@@ -421,7 +594,9 @@ export default function SupplierCatalogOffers() {
                                 src={img}
                                 alt={p.title}
                                 className="w-full h-full object-cover"
-                                onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+                                onError={(e) => {
+                                  e.currentTarget.style.opacity = "0.25";
+                                }}
                               />
                             </div>
                           </button>
@@ -442,6 +617,12 @@ export default function SupplierCatalogOffers() {
                               {p.brand?.name ? <span className="font-medium">{p.brand.name}</span> : null}
                               {p.brand?.name ? <span className="opacity-60"> • </span> : null}
                               SKU: <span className="font-medium">{p.sku || "—"}</span>
+                              {p.status ? (
+                                <>
+                                  <span className="opacity-60"> • </span>
+                                  <span className="font-medium">{p.status}</span>
+                                </>
+                              ) : null}
                             </div>
 
                             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -458,6 +639,12 @@ export default function SupplierCatalogOffers() {
                               {p.retailPrice != null ? (
                                 <span className="inline-flex items-center rounded-full border bg-zinc-50 px-2.5 py-1 text-[11px] text-zinc-700">
                                   Retail: {NGN.format(toNum(p.retailPrice, 0))}
+                                </span>
+                              ) : null}
+
+                              {p.offer?.basePrice != null ? (
+                                <span className="inline-flex items-center rounded-full border bg-zinc-50 px-2.5 py-1 text-[11px] text-zinc-700">
+                                  Offer: {NGN.format(toNum(p.offer.basePrice, 0))}
                                 </span>
                               ) : null}
 
@@ -528,6 +715,35 @@ export default function SupplierCatalogOffers() {
                     </div>
                   );
                 })}
+
+                {totalPages > 1 && (
+                  <div className="pt-2 flex items-center justify-end gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={!hasPrevPage || catalogQ.isFetching}
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                      Prev
+                    </button>
+
+                    <div className="text-[12px] text-zinc-600">
+                      Page <span className="font-semibold text-zinc-900">{currentPage}</span> /{" "}
+                      <span className="font-semibold text-zinc-900">{totalPages}</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={!hasNextPage || catalogQ.isFetching}
+                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                    >
+                      Next
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

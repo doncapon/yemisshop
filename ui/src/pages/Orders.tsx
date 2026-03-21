@@ -8,7 +8,6 @@ import StatusDot from "../components/StatusDot.js";
 import { useModal } from "../components/ModalProvider";
 import { upsertCartLine } from "../utils/cartModel";
 
-
 /* ---------------- “Silver” UI helpers ---------------- */
 const SILVER_BORDER = "border border-zinc-200/80";
 const SILVER_SHADOW_SM = "shadow-[0_8px_20px_rgba(148,163,184,0.18)]";
@@ -133,22 +132,31 @@ type OrderRow = {
   purchaseOrders?: PurchaseOrderRow[];
 };
 
+type OrdersEnvelope = {
+  rows: OrderRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  serverPagination: boolean;
+};
+
 type OtpPurpose = "PAY_ORDER" | "CANCEL_ORDER" | "REFUND_ORDER";
 
 type OtpState =
   | { open: false }
   | {
-    open: true;
-    orderId: string;
-    purpose: OtpPurpose;
-    requestId: string;
-    expiresAt: number;
-    channelHint?: string | null;
-    otp: string;
-    busy: boolean;
-    error?: string | null;
-    onSuccess: (otpToken: string) => Promise<void> | void;
-  };
+      open: true;
+      orderId: string;
+      purpose: OtpPurpose;
+      requestId: string;
+      expiresAt: number;
+      channelHint?: string | null;
+      otp: string;
+      busy: boolean;
+      error?: string | null;
+      onSuccess: (otpToken: string) => Promise<void> | void;
+    };
 
 type RefundReason =
   | "NOT_RECEIVED"
@@ -219,31 +227,31 @@ function normalizeRefund(r: any): RefundRow {
     supplier: r?.supplier ? { id: String(r.supplier.id ?? ""), name: r.supplier.name ?? null } : null,
     purchaseOrder: r?.purchaseOrder
       ? {
-        id: String(r.purchaseOrder.id ?? ""),
-        status: r.purchaseOrder.status ?? null,
-        payoutStatus: r.purchaseOrder.payoutStatus ?? null,
-      }
+          id: String(r.purchaseOrder.id ?? ""),
+          status: r.purchaseOrder.status ?? null,
+          payoutStatus: r.purchaseOrder.payoutStatus ?? null,
+        }
       : null,
     events: Array.isArray(r?.events)
       ? r.events.map((e: any) => ({
-        id: String(e?.id ?? ""),
-        type: e?.type ?? null,
-        message: e?.message ?? null,
-        createdAt: e?.createdAt ?? null,
-      }))
+          id: String(e?.id ?? ""),
+          type: e?.type ?? null,
+          message: e?.message ?? null,
+          createdAt: e?.createdAt ?? null,
+        }))
       : [],
     items: Array.isArray(r?.items)
       ? r.items.map((it: any) => ({
-        id: String(it?.id ?? ""),
-        orderItem: it?.orderItem
-          ? {
-            id: String(it.orderItem.id ?? ""),
-            title: it.orderItem.title ?? null,
-            quantity: it.orderItem.quantity ?? null,
-            unitPrice: it.orderItem.unitPrice ?? null,
-          }
-          : null,
-      }))
+          id: String(it?.id ?? ""),
+          orderItem: it?.orderItem
+            ? {
+                id: String(it.orderItem.id ?? ""),
+                title: it.orderItem.title ?? null,
+                quantity: it.orderItem.quantity ?? null,
+                unitPrice: it.orderItem.unitPrice ?? null,
+              }
+            : null,
+        }))
       : [],
   };
 }
@@ -277,12 +285,12 @@ const fmtDate = (s?: string | null) => {
   return Number.isNaN(+d)
     ? String(s)
     : d.toLocaleString(undefined, {
-      month: "short",
-      day: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
 };
 
 const todayYMD = () => {
@@ -324,8 +332,6 @@ function buildBuyAgainCartLine(it: OrderItem) {
     selectedOptions,
   };
 }
-
-
 
 function isPaidStatus(status?: string | null): boolean {
   const s = String(status || "").toUpperCase();
@@ -421,10 +427,10 @@ function normalizeItem(it: any): OrderItem {
     selectedOptions,
     variant: variant
       ? {
-        id: String(variant?.id ?? ""),
-        sku: variant?.sku ?? null,
-        imagesJson: variant?.imagesJson ?? variant?.images ?? null,
-      }
+          id: String(variant?.id ?? ""),
+          sku: variant?.sku ?? null,
+          imagesJson: variant?.imagesJson ?? variant?.images ?? null,
+        }
       : null,
   };
 }
@@ -512,33 +518,33 @@ function normalizeOrder(raw: any): OrderRow {
     items,
     payments: payments.length
       ? payments.map((p) => ({
-        id: String(p?.id ?? ""),
-        status: String(p?.status ?? ""),
-        provider: p?.provider ?? null,
-        reference: p?.reference ?? p?.ref ?? null,
-        amount: p?.amount ?? null,
-        createdAt: p?.createdAt ?? p?.created_at ?? null,
-        allocations: Array.isArray(p?.allocations)
-          ? p.allocations.map((a: any) => ({
-            id: String(a?.id ?? ""),
-            supplierId: String(a?.supplierId ?? ""),
-            supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
-            amount: a?.amount ?? null,
-            status: a?.status ?? null,
-            purchaseOrderId: a?.purchaseOrderId ?? null,
-          }))
-          : [],
-      }))
+          id: String(p?.id ?? ""),
+          status: String(p?.status ?? ""),
+          provider: p?.provider ?? null,
+          reference: p?.reference ?? p?.ref ?? null,
+          amount: p?.amount ?? null,
+          createdAt: p?.createdAt ?? p?.created_at ?? null,
+          allocations: Array.isArray(p?.allocations)
+            ? p.allocations.map((a: any) => ({
+                id: String(a?.id ?? ""),
+                supplierId: String(a?.supplierId ?? ""),
+                supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+                amount: a?.amount ?? null,
+                status: a?.status ?? null,
+                purchaseOrderId: a?.purchaseOrderId ?? null,
+              }))
+            : [],
+        }))
       : undefined,
     payment: payment
       ? {
-        id: String(payment?.id ?? ""),
-        status: String(payment?.status ?? ""),
-        provider: payment?.provider ?? null,
-        reference: payment?.reference ?? payment?.ref ?? null,
-        amount: payment?.amount ?? null,
-        createdAt: payment?.createdAt ?? payment?.created_at ?? null,
-      }
+          id: String(payment?.id ?? ""),
+          status: String(payment?.status ?? ""),
+          provider: payment?.provider ?? null,
+          reference: payment?.reference ?? payment?.ref ?? null,
+          amount: payment?.amount ?? null,
+          createdAt: payment?.createdAt ?? payment?.created_at ?? null,
+        }
       : null,
     paidAmount: raw?.paidAmount ?? raw?.paid_amount ?? null,
     metrics: raw?.metrics ?? null,
@@ -556,6 +562,102 @@ function normalizeOrders(payload: any): OrderRow[] {
   return list.map(normalizeOrder);
 }
 
+function readPaginationMeta(payload: any) {
+  const total =
+    payload?.total ??
+    payload?.count ??
+    payload?.meta?.total ??
+    payload?.meta?.count ??
+    payload?.pagination?.total ??
+    payload?.paging?.total ??
+    payload?.pageInfo?.total ??
+    null;
+
+  const page =
+    payload?.page ??
+    payload?.currentPage ??
+    payload?.meta?.page ??
+    payload?.meta?.currentPage ??
+    payload?.pagination?.page ??
+    payload?.paging?.page ??
+    payload?.pageInfo?.page ??
+    null;
+
+  const pageSize =
+    payload?.pageSize ??
+    payload?.limit ??
+    payload?.perPage ??
+    payload?.meta?.pageSize ??
+    payload?.meta?.limit ??
+    payload?.meta?.perPage ??
+    payload?.pagination?.pageSize ??
+    payload?.pagination?.limit ??
+    payload?.paging?.pageSize ??
+    payload?.paging?.limit ??
+    payload?.pageInfo?.pageSize ??
+    payload?.pageInfo?.limit ??
+    null;
+
+  const totalPages =
+    payload?.totalPages ??
+    payload?.pages ??
+    payload?.meta?.totalPages ??
+    payload?.meta?.pages ??
+    payload?.pagination?.totalPages ??
+    payload?.pagination?.pages ??
+    payload?.paging?.totalPages ??
+    payload?.pageInfo?.totalPages ??
+    null;
+
+  const hasMeta =
+    total != null ||
+    page != null ||
+    pageSize != null ||
+    totalPages != null ||
+    !!payload?.meta?.pagination ||
+    !!payload?.pagination ||
+    !!payload?.paging ||
+    !!payload?.pageInfo;
+
+  return {
+    total: total != null ? Number(total) : null,
+    page: page != null ? Number(page) : null,
+    pageSize: pageSize != null ? Number(pageSize) : null,
+    totalPages: totalPages != null ? Number(totalPages) : null,
+    hasMeta,
+  };
+}
+
+function normalizeOrdersEnvelope(payload: any, requestedPage: number, requestedPageSize: number): OrdersEnvelope {
+  const rows = normalizeOrders(payload);
+  const meta = readPaginationMeta(payload);
+
+  if (meta.hasMeta) {
+    const total = Math.max(0, Number(meta.total ?? rows.length) || 0);
+    const pageSize = Math.max(1, Number(meta.pageSize ?? requestedPageSize) || requestedPageSize);
+    const page = Math.max(1, Number(meta.page ?? requestedPage) || requestedPage);
+    const totalPages =
+      Math.max(1, Number(meta.totalPages ?? Math.ceil(total / pageSize)) || Math.ceil(total / pageSize));
+
+    return {
+      rows,
+      total,
+      page,
+      pageSize,
+      totalPages,
+      serverPagination: true,
+    };
+  }
+
+  return {
+    rows,
+    total: rows.length,
+    page: requestedPage,
+    pageSize: requestedPageSize,
+    totalPages: Math.max(1, Math.ceil(rows.length / requestedPageSize)),
+    serverPagination: false,
+  };
+}
 
 function orderServiceRevenue(o: OrderRow): number {
   const candidates = [
@@ -609,9 +711,6 @@ function computeOrderPlatformProfit(o: OrderRow, marginPercent: number): number 
   const serviceFee = orderServiceRevenue(o);
   return commission + serviceFee;
 }
-
-
-
 
 function orderItemsSubtotal(o: OrderRow): number {
   const subtotal = fmtN(o.subtotal);
@@ -770,8 +869,9 @@ function Pagination({
         <>
           <button
             onClick={() => go(1)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-              }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
+              page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+            }`}
           >
             1
           </button>
@@ -783,8 +883,9 @@ function Pagination({
         <button
           key={p}
           onClick={() => go(p)}
-          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-            }`}
+          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
+            p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+          }`}
         >
           {p}
         </button>
@@ -795,8 +896,9 @@ function Pagination({
           {end < totalPages - 1 && <span className={`px-1 ${T_XS} text-ink-soft`}>…</span>}
           <button
             onClick={() => go(totalPages)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-              }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
+              page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+            }`}
           >
             {totalPages}
           </button>
@@ -823,16 +925,18 @@ export default function OrdersPage() {
 
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
 
-  const [q, setQ] = useState("");
+  const initialPage = Math.max(1, Number(searchParams.get("page") || 1) || 1);
+  const [page, setPage] = useState(initialPage);
+
+  const [q, setQ] = useState((searchParams.get("q") || searchParams.get("orderId") || "").trim());
   const [statusFilter, setStatusFilter] = useState<
     "ALL" | "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED"
   >("ALL");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [minTotal, setMinTotal] = useState("");
-  const [maxTotal, setMaxTotal] = useState("");
+  const [from, setFrom] = useState(searchParams.get("from") || "");
+  const [to, setTo] = useState(searchParams.get("to") || "");
+  const [minTotal, setMinTotal] = useState(searchParams.get("minTotal") || "");
+  const [maxTotal, setMaxTotal] = useState(searchParams.get("maxTotal") || "");
 
   const [otpModal, setOtpModal] = useState<OtpState>({ open: false });
 
@@ -864,7 +968,8 @@ export default function OrdersPage() {
     });
   };
 
-  /* ----- Auth / Role (cookie session) ----- */  const storeUser = useAuthStore((s) => s.user);
+  /* ----- Auth / Role (cookie session) ----- */
+  const storeUser = useAuthStore((s) => s.user);
   const storeRole = (storeUser?.role || "") as Role;
   const storeUserId = useAuthStore((s) => s.user?.id ?? null);
   const authHydrated = useAuthStore((s) => s.hydrated);
@@ -914,18 +1019,65 @@ export default function OrdersPage() {
 
   const queriesEnabled = authReady && isSessionAuthenticated && !mustGoSupplier;
 
-  /* ----- Orders ----- */
-  const ordersQ = useQuery({
-    queryKey: ["orders", isAdmin ? "admin" : "mine"],
-    enabled: queriesEnabled,
-    queryFn: async () => {
-      const url = isAdmin ? "/api/orders?limit=50" : "/api/orders/mine?limit=50";
-      const res = await api.get(url, AXIOS_COOKIE_CFG);
-      return normalizeOrders(res.data);
-    },
-    staleTime: 15_000,
-    retry: false,
+  /* ---------------- Sorting ---------------- */
+  type SortKey = "id" | "user" | "items" | "total" | "status" | "date";
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
+    key: "date",
+    dir: "desc",
   });
+
+  const toggleSort = (key: SortKey) => {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "date" ? "desc" : "asc" }
+    );
+  };
+
+  /* ----- Orders ----- */
+const ordersQ = useQuery<OrdersEnvelope>({
+  queryKey: [
+    "orders",
+    isAdmin ? "admin" : "mine",
+    {
+      page,
+      pageSize: PAGE_SIZE,
+      q: q.trim(),
+      status: statusFilter,
+      from: toYMD(from),
+      to: toYMD(to),
+      minTotal: minTotal.trim(),
+      maxTotal: maxTotal.trim(),
+      sortKey: sort.key,
+      sortDir: sort.dir,
+    },
+  ],
+  enabled: queriesEnabled,
+  placeholderData: (prev) => prev,
+  queryFn: async (): Promise<OrdersEnvelope> => {
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("pageSize", String(PAGE_SIZE));
+    params.set("limit", String(PAGE_SIZE));
+    params.set("sortBy", sort.key);
+    params.set("sortDir", sort.dir);
+
+    const qv = q.trim();
+    if (qv) params.set("q", qv);
+    if (statusFilter !== "ALL") params.set("status", statusFilter);
+    if (toYMD(from)) params.set("from", toYMD(from)!);
+    if (toYMD(to)) params.set("to", toYMD(to)!);
+    if (minTotal.trim()) params.set("minTotal", minTotal.trim());
+    if (maxTotal.trim()) params.set("maxTotal", maxTotal.trim());
+
+    const url = isAdmin ? "/api/orders" : "/api/orders/mine";
+    const res = await api.get(`${url}?${params.toString()}`, AXIOS_COOKIE_CFG);
+    return normalizeOrdersEnvelope(res.data, page, PAGE_SIZE);
+  },
+  staleTime: 15_000,
+  retry: false,
+  refetchOnWindowFocus: false,
+});
 
   // If any query comes back 401/403, also kick to login
   const mustLoginFromData =
@@ -933,26 +1085,31 @@ export default function OrdersPage() {
     !isSessionAuthenticated &&
     ((ordersQ.isError && isAuthError(ordersQ.error)) ||
       (meQ.isError && isAuthError(meQ.error)));
-      
+
   /* ---- expanded row from ?open= ---- */
   const openId = useMemo(() => searchParams.get("open") || "", [searchParams]);
   useEffect(() => {
     if (openId) setExpandedId(openId);
   }, [openId]);
 
-  const orders = ordersQ.data || [];
-  const loading = !authReady || ordersQ.isLoading;
+  const serverEnvelope = ordersQ.data;
+  const serverRows = serverEnvelope?.rows || [];
+  const serverPagination = !!serverEnvelope?.serverPagination;
+
   const colSpan = isAdmin ? 7 : 6;
 
   // URL -> state: support /orders?q=... or /orders?orderId=...
   useEffect(() => {
     const qpQ = (searchParams.get("q") || "").trim();
     const qpOrderId = (searchParams.get("orderId") || "").trim();
+    const qpPage = Math.max(1, Number(searchParams.get("page") || 1) || 1);
 
     const next = qpQ || qpOrderId;
-    if (next && next !== q) {
+    if (next !== q) {
       setQ(next);
-      setPage(1);
+    }
+    if (qpPage !== page) {
+      setPage(qpPage);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
@@ -964,9 +1121,9 @@ export default function OrdersPage() {
     if (didAutoOpenRef.current) return;
     const oid = (searchParams.get("orderId") || "").trim();
     if (!oid) return;
-    if (!orders.length) return;
+    if (!serverRows.length) return;
 
-    const exact = orders.find((o) => String(o.id) === oid);
+    const exact = serverRows.find((o) => String(o.id) === oid);
     if (!exact) return;
 
     const sp = new URLSearchParams(searchParams);
@@ -977,8 +1134,7 @@ export default function OrdersPage() {
     didAutoOpenRef.current = true;
     setSearchParams(sp, { replace: true });
     setExpandedId(oid);
-  }, [orders, searchParams, setSearchParams, queriesEnabled]);
-
+  }, [serverRows, searchParams, setSearchParams, queriesEnabled]);
 
   const onBuyAgain = (it: OrderItem) => {
     const productId = String(it.productId || "").trim();
@@ -995,7 +1151,6 @@ export default function OrdersPage() {
       showErrorModal("Could not add item", e?.message || "Could not prepare this item for checkout.");
     }
   };
-
 
   const orderDetailQ = useQuery({
     queryKey: ["order-detail", expandedId, isAdmin],
@@ -1049,20 +1204,20 @@ export default function OrdersPage() {
     setTo("");
     setMinTotal("");
     setMaxTotal("");
+    setPage(1);
+    setExpandedId(null);
 
     const sp = new URLSearchParams(searchParams);
     sp.delete("q");
     sp.delete("orderId");
     sp.delete("open");
+    sp.delete("from");
+    sp.delete("to");
+    sp.delete("minTotal");
+    sp.delete("maxTotal");
+    sp.set("page", "1");
     setSearchParams(sp, { replace: true });
   };
-
-  /* ---------------- Sorting ---------------- */
-  type SortKey = "id" | "user" | "items" | "total" | "status" | "date";
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
-    key: "date",
-    dir: "desc",
-  });
 
   const pricingSettingsQ = useQuery({
     queryKey: ["admin", "settings", "pricing-public-orders"],
@@ -1073,9 +1228,9 @@ export default function OrdersPage() {
         marginPercent:
           Number(
             data?.marginPercent ??
-            data?.pricingMarkupPercent ??
-            data?.platformMarginPercent ??
-            0
+              data?.pricingMarkupPercent ??
+              data?.platformMarginPercent ??
+              0
           ) || 0,
       };
     },
@@ -1085,15 +1240,6 @@ export default function OrdersPage() {
   });
 
   const marginPercent = Number(pricingSettingsQ.data?.marginPercent ?? 0) || 0;
-
-
-  const toggleSort = (key: SortKey) => {
-    setSort((prev) =>
-      prev.key === key
-        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
-        : { key, dir: key === "date" ? "desc" : "asc" }
-    );
-  };
 
   const tdy = todayYMD();
   const isTodayActive = from === tdy && to === tdy;
@@ -1105,17 +1251,23 @@ export default function OrdersPage() {
       setFrom(tdy);
       setTo(tdy);
     }
+    setPage(1);
+    setExpandedId(null);
   };
 
   /* ---------------- Derived: filtered + sorted ---------------- */
   const filteredSorted = useMemo(() => {
+    if (serverPagination) {
+      return serverRows;
+    }
+
     const qnorm = q.trim().toLowerCase();
     const dateFrom = from ? new Date(from).getTime() : null;
     const dateTo = to ? new Date(to + "T23:59:59.999Z").getTime() : null;
     const min = minTotal ? Number(minTotal) : null;
     const max = maxTotal ? Number(maxTotal) : null;
 
-    const list = orders.filter((o) => {
+    const list = serverRows.filter((o) => {
       if (qnorm) {
         const pool: string[] = [];
         pool.push(o.id || "");
@@ -1157,37 +1309,74 @@ export default function OrdersPage() {
       }
       if (s === "total") return (fmtN(a.total) - fmtN(b.total)) * dir;
       if (s === "items") return (((a.items || []).length - (b.items || []).length || 0) * dir);
-      if (s === "status")
+      if (s === "status") {
         return (
           String(a.status || "").localeCompare(String(b.status || ""), undefined, { sensitivity: "base" }) * dir
         );
-      if (s === "user")
+      }
+      if (s === "user") {
         return (
           String(a.userEmail || "").localeCompare(String(b.userEmail || ""), undefined, { sensitivity: "base" }) * dir
         );
+      }
       return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: "base" }) * dir;
     });
 
     return ordered;
-  }, [orders, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
+  }, [serverPagination, serverRows, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
 
   useEffect(() => {
+    const sp = new URLSearchParams(searchParams);
+
+    if (q.trim()) sp.set("q", q.trim());
+    else sp.delete("q");
+
+    if (from) sp.set("from", from);
+    else sp.delete("from");
+
+    if (to) sp.set("to", to);
+    else sp.delete("to");
+
+    if (minTotal.trim()) sp.set("minTotal", minTotal.trim());
+    else sp.delete("minTotal");
+
+    if (maxTotal.trim()) sp.set("maxTotal", maxTotal.trim());
+    else sp.delete("maxTotal");
+
+    sp.set("page", String(page));
+
+    setSearchParams(sp, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, from, to, minTotal, maxTotal, page]);
+
+  useEffect(() => {
+    if (serverPagination) return;
     setPage(1);
-  }, [orders.length, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
+  }, [serverPagination, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE));
-  const currentPage = Math.min(page, totalPages);
+  const totalItems = serverPagination ? serverEnvelope?.total || 0 : filteredSorted.length;
+  const totalPages = serverPagination
+    ? Math.max(1, serverEnvelope?.totalPages || 1)
+    : Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE));
 
-  const pageStart = filteredSorted.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const currentPage = serverPagination
+    ? Math.max(1, serverEnvelope?.page || page)
+    : Math.min(page, totalPages);
+
+  const pageStart = totalItems === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
   const pageEnd =
-    filteredSorted.length === 0
+    totalItems === 0
       ? 0
-      : Math.min(filteredSorted.length, (currentPage - 1) * PAGE_SIZE + PAGE_SIZE);
+      : Math.min(totalItems, (currentPage - 1) * PAGE_SIZE + PAGE_SIZE);
 
   const paginated = useMemo(() => {
+    if (serverPagination) return filteredSorted;
     const start = (currentPage - 1) * PAGE_SIZE;
     return filteredSorted.slice(start, start + PAGE_SIZE);
-  }, [filteredSorted, currentPage]);
+  }, [serverPagination, filteredSorted, currentPage]);
+
+  const loading = !authReady || (ordersQ.isLoading && !ordersQ.data);
+  const refreshing = ordersQ.isFetching && !!ordersQ.data;
 
   /* ---------------- Filter content ---------------- */
   const FilterContent = (
@@ -1200,6 +1389,8 @@ export default function OrdersPage() {
             onChange={(e) => {
               const v = e.target.value;
               setQ(v);
+              setPage(1);
+              setExpandedId(null);
 
               const sp = new URLSearchParams(searchParams);
               if (v.trim()) {
@@ -1209,6 +1400,7 @@ export default function OrdersPage() {
                 sp.delete("q");
                 sp.delete("orderId");
               }
+              sp.set("page", "1");
               setSearchParams(sp, { replace: true });
             }}
             placeholder="Order ID, user, item, payment ref…"
@@ -1220,7 +1412,11 @@ export default function OrdersPage() {
           <label className={T_LABEL}>Status</label>
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
+            onChange={(e) => {
+              setStatusFilter(e.target.value as any);
+              setPage(1);
+              setExpandedId(null);
+            }}
             className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
           >
             <option value="ALL">All</option>
@@ -1237,7 +1433,11 @@ export default function OrdersPage() {
           <input
             type="date"
             value={from}
-            onChange={(e) => setFrom(e.target.value)}
+            onChange={(e) => {
+              setFrom(e.target.value);
+              setPage(1);
+              setExpandedId(null);
+            }}
             className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
           />
         </div>
@@ -1247,7 +1447,11 @@ export default function OrdersPage() {
           <input
             type="date"
             value={to}
-            onChange={(e) => setTo(e.target.value)}
+            onChange={(e) => {
+              setTo(e.target.value);
+              setPage(1);
+              setExpandedId(null);
+            }}
             className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
           />
         </div>
@@ -1258,7 +1462,11 @@ export default function OrdersPage() {
             type="number"
             min={0}
             value={minTotal}
-            onChange={(e) => setMinTotal(e.target.value)}
+            onChange={(e) => {
+              setMinTotal(e.target.value);
+              setPage(1);
+              setExpandedId(null);
+            }}
             className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
           />
         </div>
@@ -1269,7 +1477,11 @@ export default function OrdersPage() {
             type="number"
             min={0}
             value={maxTotal}
-            onChange={(e) => setMaxTotal(e.target.value)}
+            onChange={(e) => {
+              setMaxTotal(e.target.value);
+              setPage(1);
+              setExpandedId(null);
+            }}
             className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
           />
         </div>
@@ -1281,7 +1493,7 @@ export default function OrdersPage() {
           onClick={() => ordersQ.refetch()}
           disabled={!queriesEnabled}
         >
-          Refresh
+          {refreshing ? "Refreshing…" : "Refresh"}
         </button>
 
         <button className={`rounded-lg ${SILVER_BORDER} bg-white px-3 py-2 ${BTN} hover:bg-black/5`} onClick={clearFilters}>
@@ -1292,21 +1504,22 @@ export default function OrdersPage() {
           type="button"
           aria-pressed={isTodayActive}
           onClick={toggleToday}
-          className={`rounded-lg px-3 py-2 ${BTN} border transition ${isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
-            }`}
+          className={`rounded-lg px-3 py-2 ${BTN} border transition ${
+            isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
+          }`}
         >
           Today
         </button>
 
         <div className={`ml-auto ${T_SM} text-ink-soft`}>
-          {filteredSorted.length > 0 ? (
+          {totalItems > 0 ? (
             <>
-              Showing {pageStart}-{pageEnd} of {filteredSorted.length}
+              Showing {pageStart}-{pageEnd} of {totalItems}
             </>
           ) : (
             "No matching orders"
           )}
-          {isTodayActive && filteredSorted.length > 0 && <span className="ml-2">(today)</span>}
+          {isTodayActive && totalItems > 0 && <span className="ml-2">(today)</span>}
         </div>
       </div>
     </>
@@ -1687,16 +1900,18 @@ export default function OrdersPage() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                    }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
+                    draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                  }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "ALL" }))}
                 >
                   All items
                 </button>
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                    }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
+                    draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                  }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "SOME" }))}
                 >
                   Select items
@@ -1826,7 +2041,7 @@ export default function OrdersPage() {
           try {
             w.focus();
             w.print();
-          } catch { }
+          } catch {}
         };
         w.addEventListener("load", onLoad, { once: true });
       }
@@ -1872,7 +2087,7 @@ export default function OrdersPage() {
               className={`rounded-xl ${SILVER_BORDER} px-3 py-2 ${BTN_XS} bg-white ${SILVER_SHADOW_SM}`}
               disabled={!queriesEnabled}
             >
-              Refresh
+              {refreshing ? "Refreshing…" : "Refresh"}
             </button>
           </div>
         </div>
@@ -1881,7 +2096,7 @@ export default function OrdersPage() {
 
         {!isAdmin && (
           <button
-            className={`hidden min-[768px]:inline-flexitems-center gap-2 rounded-lg ${SILVER_BORDER} bg-white hover:bg-black/5 px-3 py-2 ${BTN} ${SILVER_SHADOW_SM}`}
+            className={`hidden min-[768px]:inline-flex items-center gap-2 rounded-lg ${SILVER_BORDER} bg-white hover:bg-black/5 px-3 py-2 ${BTN} ${SILVER_SHADOW_SM}`}
             onClick={() => openModal({ title: "Refunds", message: "Open refunds modal here." })}
             disabled={!queriesEnabled}
           >
@@ -1949,16 +2164,17 @@ export default function OrdersPage() {
             <div className="text-sm text-ink-soft">
               {loading
                 ? "Loading…"
-                : filteredSorted.length
-                  ? `Showing ${pageStart}-${pageEnd} of ${filteredSorted.length} orders`
+                : totalItems
+                  ? `Showing ${pageStart}-${pageEnd} of ${totalItems} orders`
                   : "No orders match your filters."}
+              {refreshing && !loading ? <span className="ml-2">Updating…</span> : null}
             </div>
             <button
               onClick={() => ordersQ.refetch()}
               className="inline-flex items-center gap-2 rounded-lg border border-zinc-200/80 bg-white hover:bg-black/5 px-3 py-2 text-sm shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
               disabled={!queriesEnabled}
             >
-              Refresh
+              {refreshing ? "Refreshing…" : "Refresh"}
             </button>
           </div>
 
@@ -1966,12 +2182,44 @@ export default function OrdersPage() {
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-zinc-50 text-ink">
-                  <th className="text-left px-3 py-2">Order</th>
-                  {isAdmin && <th className="text-left px-3 py-2">User</th>}
-                  <th className="text-left px-3 py-2">Items</th>
-                  <th className="text-left px-3 py-2">Total</th>
-                  <th className="text-left px-3 py-2">Status</th>
-                  <th className="text-left px-3 py-2">Date</th>
+                  <th
+                    className="text-left px-3 py-2 cursor-pointer select-none"
+                    onClick={() => toggleSort("id")}
+                  >
+                    Order
+                  </th>
+                  {isAdmin && (
+                    <th
+                      className="text-left px-3 py-2 cursor-pointer select-none"
+                      onClick={() => toggleSort("user")}
+                    >
+                      User
+                    </th>
+                  )}
+                  <th
+                    className="text-left px-3 py-2 cursor-pointer select-none"
+                    onClick={() => toggleSort("items")}
+                  >
+                    Items
+                  </th>
+                  <th
+                    className="text-left px-3 py-2 cursor-pointer select-none"
+                    onClick={() => toggleSort("total")}
+                  >
+                    Total
+                  </th>
+                  <th
+                    className="text-left px-3 py-2 cursor-pointer select-none"
+                    onClick={() => toggleSort("status")}
+                  >
+                    Status
+                  </th>
+                  <th
+                    className="text-left px-3 py-2 cursor-pointer select-none"
+                    onClick={() => toggleSort("date")}
+                  >
+                    Date
+                  </th>
                   <th className="text-left px-3 py-2">Actions</th>
                 </tr>
               </thead>
@@ -2061,12 +2309,13 @@ export default function OrdersPage() {
 
                           <td className="px-3 py-3">
                             <button
-                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${isPaidEffective
-                                ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
-                                : isPendingOrCreated
-                                  ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
-                                  : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
-                                }`}
+                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${
+                                isPaidEffective
+                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                                  : isPendingOrCreated
+                                    ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+                                    : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
+                              }`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onToggle(o.id);
@@ -2245,8 +2494,6 @@ export default function OrdersPage() {
                                                   className="inline-flex items-center gap-1.5 font-semibold text-blue-600 break-words underline decoration-blue-400 underline-offset-2 hover:text-blue-700 hover:decoration-blue-600 transition"
                                                 >
                                                   {itemTitle}
-
-                                                  {/* link icon */}
                                                   <svg
                                                     xmlns="http://www.w3.org/2000/svg"
                                                     viewBox="0 0 24 24"
@@ -2262,7 +2509,6 @@ export default function OrdersPage() {
                                               ) : (
                                                 <div className="font-medium text-ink break-words">{itemTitle}</div>
                                               )}
-
 
                                               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
                                                 <span>Qty: {qty}</span>
@@ -2316,7 +2562,6 @@ export default function OrdersPage() {
                                             </div>
                                           </div>
                                         </div>
-
                                       );
                                     })}
                                   </div>
@@ -2339,6 +2584,9 @@ export default function OrdersPage() {
               onChange={(p) => {
                 setExpandedId(null);
                 setPage(p);
+                const sp = new URLSearchParams(searchParams);
+                sp.set("page", String(p));
+                setSearchParams(sp, { replace: true });
               }}
             />
           </div>
@@ -2395,7 +2643,7 @@ export default function OrdersPage() {
                       <div className={`${T_SM} text-ink-soft truncate`}>
                         {firstItemTitle
                           ? firstItemTitle.toString().slice(0, 44) +
-                          (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
+                            (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
                           : isOpen && orderDetailQ.isFetching
                             ? "Loading items…"
                             : `${details.items?.length || 0} item(s)`}
@@ -2472,8 +2720,7 @@ export default function OrdersPage() {
                         );
 
                         return (
-                          <div className="min-w-0 flex-1 bg-blue-50/40 rounded-md px-2 py-1">
-
+                          <div key={it.id} className="min-w-0 flex-1 bg-blue-50/40 rounded-md px-2 py-1">
                             <div className="flex justify-between gap-2">
                               <div className="min-w-0 flex-1">
                                 {it.productId ? (
@@ -2483,8 +2730,6 @@ export default function OrdersPage() {
                                     className="inline-flex items-center gap-1.5 font-semibold text-blue-600 text-[12px] sm:text-xs break-words underline decoration-blue-400 underline-offset-2 active:scale-[0.98] transition"
                                   >
                                     {itemTitle}
-
-                                    {/* link icon */}
                                     <svg
                                       xmlns="http://www.w3.org/2000/svg"
                                       viewBox="0 0 24 24"
@@ -2498,7 +2743,6 @@ export default function OrdersPage() {
                                     </svg>
                                   </Link>
                                 ) : (
-
                                   <div className="font-medium text-ink text-[11px] sm:text-xs break-words">{itemTitle}</div>
                                 )}
 
@@ -2542,7 +2786,6 @@ export default function OrdersPage() {
                               </div>
                             )}
                           </div>
-
                         );
                       })}
 
@@ -2563,6 +2806,9 @@ export default function OrdersPage() {
             onChange={(p) => {
               setExpandedId(null);
               setPage(p);
+              const sp = new URLSearchParams(searchParams);
+              sp.set("page", String(p));
+              setSearchParams(sp, { replace: true });
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
           />
@@ -2622,10 +2868,10 @@ export default function OrdersPage() {
                         !s.open
                           ? s
                           : {
-                            ...s,
-                            busy: false,
-                            error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
-                          }
+                              ...s,
+                              busy: false,
+                              error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
+                            }
                       );
                     }
                   }}
@@ -2646,13 +2892,13 @@ export default function OrdersPage() {
                         !s.open
                           ? s
                           : {
-                            ...s,
-                            busy: false,
-                            requestId: r.requestId,
-                            expiresAt: r.expiresAt,
-                            channelHint: r.channelHint,
-                            otp: "",
-                          }
+                              ...s,
+                              busy: false,
+                              requestId: r.requestId,
+                              expiresAt: r.expiresAt,
+                              channelHint: r.channelHint,
+                              otp: "",
+                            }
                       );
                     } catch (e: any) {
                       setOtpModal((s) =>

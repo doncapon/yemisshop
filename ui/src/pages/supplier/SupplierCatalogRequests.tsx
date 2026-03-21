@@ -14,16 +14,17 @@ import {
   XCircle,
   Search,
   Filter,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
-import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useLocation } from "react-router-dom";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import SiteLayout from "../../layouts/SiteLayout";
 import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 import { useCatalogMeta, type CatalogAttribute } from "../../hooks/useCatalogMeta";
-import { useLocation } from "react-router-dom";
 
 /* =========================================================
    Types
@@ -37,61 +38,68 @@ type CatalogRequestRow = {
   type: RequestType;
   status: RequestStatus;
 
-  // common
   name?: string | null;
   slug?: string | null;
   notes?: string | null;
 
-  // category
   parentId?: string | null;
 
-  // attribute
   attributeType?: "TEXT" | "SELECT" | "MULTISELECT" | null;
 
-  // attribute value request
   attributeId?: string | null;
   valueName?: string | null;
   valueCode?: string | null;
 
-  // review info
   adminNote?: string | null;
   reviewedAt?: string | null;
   createdAt?: string | null;
 };
 
+type CatalogRequestsEnvelope = {
+  rows: CatalogRequestRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+};
+
 type CreateRequestPayload =
   | {
-    type: "BRAND";
-    name: string;
-    slug?: string;
-    logoUrl?: string | null;
-    notes?: string | null;
-  }
+      type: "BRAND";
+      name: string;
+      slug?: string;
+      logoUrl?: string | null;
+      notes?: string | null;
+    }
   | {
-    type: "CATEGORY";
-    name: string;
-    slug?: string;
-    parentId?: string | null;
-    notes?: string | null;
-  }
+      type: "CATEGORY";
+      name: string;
+      slug?: string;
+      parentId?: string | null;
+      notes?: string | null;
+    }
   | {
-    type: "ATTRIBUTE";
-    name: string;
-    slug?: string;
-    attributeType: "TEXT" | "SELECT" | "MULTISELECT";
-    notes?: string | null;
-  }
+      type: "ATTRIBUTE";
+      name: string;
+      slug?: string;
+      attributeType: "TEXT" | "SELECT" | "MULTISELECT";
+      notes?: string | null;
+    }
   | {
-    type: "ATTRIBUTE_VALUE";
-    attributeId: string;
-    valueName: string;
-    valueCode?: string | null;
-    notes?: string | null;
-  };
+      type: "ATTRIBUTE_VALUE";
+      attributeId: string;
+      valueName: string;
+      valueCode?: string | null;
+      notes?: string | null;
+    };
 
 /* =========================================================
    Small helpers
 ========================================================= */
+
+const PAGE_SIZES = [10, 20, 50, 100] as const;
 
 function slugifyLocal(s: string) {
   return String(s || "")
@@ -137,7 +145,11 @@ const optId = (s: string | null) => {
 };
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden ${className}`}>{children}</div>;
+  return (
+    <div className={`rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden ${className}`}>
+      {children}
+    </div>
+  );
 }
 
 function asRequestType(v: any): RequestType {
@@ -165,14 +177,58 @@ function prettyDate(v?: string | null) {
   }).format(d);
 }
 
-function safeArrayFromApi(data: any): any[] {
-  // Accept {data: [...]}, {items: [...]}, plain [...], or nested {data:{items:[...]}}
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.data)) return data.data;
-  if (Array.isArray(data?.items)) return data.items;
-  if (Array.isArray(data?.data?.items)) return data.data.items;
-  if (Array.isArray(data?.data?.data)) return data.data.data;
-  return [];
+function toInt(v: any, fallback: number) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function normalizeRequestsResponse(raw: any, fallbackPage: number, fallbackPageSize: number): CatalogRequestsEnvelope {
+  const root = raw?.data ?? raw ?? {};
+  const payload = root?.data ?? root ?? {};
+
+  const rawRows = Array.isArray(payload?.rows)
+    ? payload.rows
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(root?.data)
+        ? root.data
+        : [];
+
+  const rows: CatalogRequestRow[] = rawRows.map((r: any) => ({
+    id: String(r.id),
+    type: asRequestType(r.type),
+    status: asRequestStatus(r.status),
+
+    name: r.name ?? null,
+    slug: r.slug ?? null,
+    notes: r.notes ?? null,
+
+    parentId: r.parentId ?? null,
+
+    attributeType: r.attributeType ?? null,
+    attributeId: r.attributeId ?? null,
+    valueName: r.valueName ?? null,
+    valueCode: r.valueCode ?? null,
+
+    adminNote: r.adminNote ?? r.reviewNote ?? null,
+    reviewedAt: r.reviewedAt ?? null,
+    createdAt: r.createdAt ?? null,
+  }));
+
+  const page = Math.max(1, toInt(payload?.page ?? root?.page, fallbackPage));
+  const pageSize = Math.max(1, toInt(payload?.pageSize ?? root?.pageSize, fallbackPageSize));
+  const total = Math.max(0, toInt(payload?.total ?? root?.total, rows.length));
+  const totalPages = Math.max(1, toInt(payload?.totalPages ?? root?.totalPages, Math.ceil(total / pageSize) || 1));
+
+  return {
+    rows,
+    page,
+    pageSize,
+    total,
+    totalPages,
+    hasNextPage: Boolean(payload?.hasNextPage ?? root?.hasNextPage ?? page < totalPages),
+    hasPrevPage: Boolean(payload?.hasPrevPage ?? root?.hasPrevPage ?? page > 1),
+  };
 }
 
 /* =========================================================
@@ -183,7 +239,6 @@ export default function SupplierCatalogRequests() {
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role) as string | undefined;
 
-  // ✅ cookie-auth: ensure session bootstrap happens
   useEffect(() => {
     useAuthStore.getState().bootstrap?.().catch?.(() => null);
   }, []);
@@ -195,13 +250,11 @@ export default function SupplierCatalogRequests() {
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  // auto-suggest tracking
   const [catSlugTouched, setCatSlugTouched] = useState(false);
   const [brandSlugTouched, setBrandSlugTouched] = useState(false);
   const [attrSlugTouched, setAttrSlugTouched] = useState(false);
   const [valCodeTouched, setValCodeTouched] = useState(false);
 
-  // ----- forms state -----
   const [catName, setCatName] = useState("");
   const [catSlug, setCatSlug] = useState("");
   const [catParentId, setCatParentId] = useState<string | null>(null);
@@ -222,9 +275,11 @@ export default function SupplierCatalogRequests() {
   const [valCode, setValCode] = useState("");
   const [valNotes, setValNotes] = useState("");
 
-  // “My requests” controls
   const [mineSearch, setMineSearch] = useState("");
   const [mineStatus, setMineStatus] = useState<"" | RequestStatus>("");
+  const [mineType, setMineType] = useState<"" | RequestType>("");
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(20);
 
   const location = useLocation();
 
@@ -239,7 +294,6 @@ export default function SupplierCatalogRequests() {
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // ✅ cookie-auth: catalog meta can load once hydrated (no token)
   const { categories, brands, attributes, categoriesQ, brandsQ, attributesQ } = useCatalogMeta({
     enabled: hydrated,
   });
@@ -267,42 +321,37 @@ export default function SupplierCatalogRequests() {
     return m;
   }, [attributes]);
 
-  // ----- My requests list (cookie-auth) -----
-  const myRequestsQ = useQuery<CatalogRequestRow[]>({
-    queryKey: ["supplier", "catalog-requests", "mine"],
+  useEffect(() => {
+    setPage(1);
+  }, [mineSearch, mineStatus, mineType]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize]);
+
+  const myRequestsQ = useQuery<CatalogRequestsEnvelope>({
+    queryKey: ["supplier", "catalog-requests", "mine", { page, pageSize, mineSearch, mineStatus, mineType }],
     enabled: hydrated && isSupplier,
     staleTime: 20_000,
     refetchOnWindowFocus: false,
     refetchOnMount: "always",
-    queryFn: async (): Promise<CatalogRequestRow[]> => {
-      const { data } = await api.get("/api/supplier/catalog-requests", { withCredentials: true });
-      const arr = safeArrayFromApi(data);
+    placeholderData: keepPreviousData,
+    queryFn: async (): Promise<CatalogRequestsEnvelope> => {
+      const { data } = await api.get("/api/supplier/catalog-requests", {
+        withCredentials: true,
+        params: {
+          page,
+          pageSize,
+          ...(mineSearch.trim() ? { q: mineSearch.trim() } : {}),
+          ...(mineStatus ? { status: mineStatus } : {}),
+          ...(mineType ? { type: mineType } : {}),
+        },
+      });
 
-      return (arr as any[]).map((r): CatalogRequestRow => ({
-        id: String(r.id),
-        type: asRequestType(r.type),
-        status: asRequestStatus(r.status),
-
-        name: r.name ?? null,
-        slug: r.slug ?? null,
-        notes: r.notes ?? null,
-
-        parentId: r.parentId ?? null,
-
-        attributeType: r.attributeType ?? null,
-        attributeId: r.attributeId ?? null,
-        valueName: r.valueName ?? null,
-        valueCode: r.valueCode ?? null,
-
-        adminNote: r.adminNote ?? r.reviewNote ?? null,
-        reviewedAt: r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? null,
-        // ^ intentionally tolerant (some backends rename this a lot). If your API is consistent, keep just one.
-        createdAt: r.createdAt ?? null,
-      }));
+      return normalizeRequestsResponse(data, page, pageSize);
     },
   });
 
-  // ----- Create request mutation (cookie-auth) -----
   const createReqM = useMutation({
     mutationFn: async (payload: CreateRequestPayload) => {
       setErr(null);
@@ -319,6 +368,7 @@ export default function SupplierCatalogRequests() {
       await qc.invalidateQueries({ queryKey: ["supplier", "catalog-requests", "mine"] });
       setTimeout(() => setOk(null), 3500);
       setTab("MINE");
+      setPage(1);
     },
     onError: (e: any) => {
       const msg = e?.response?.data?.error || e?.response?.data?.detail || e?.message || "Failed to create request";
@@ -368,8 +418,6 @@ export default function SupplierCatalogRequests() {
     setBrandSlugTouched(false);
   }
 
-
-
   function submitAttribute() {
     setErr(null);
     const name = attrName.trim();
@@ -414,41 +462,18 @@ export default function SupplierCatalogRequests() {
 
   const guardMsg = role && role !== "SUPPLIER" ? "This page is for suppliers only." : null;
 
-  const myRequestsFiltered = useMemo(() => {
-    const list = myRequestsQ.data || [];
-    const q = mineSearch.trim().toLowerCase();
+  const myRequestsRows = myRequestsQ.data?.rows || [];
+  const myRequestsTotal = myRequestsQ.data?.total || 0;
+  const myRequestsPage = myRequestsQ.data?.page || page;
+  const myRequestsPageSize = myRequestsQ.data?.pageSize || pageSize;
+  const myRequestsTotalPages = myRequestsQ.data?.totalPages || 1;
+  const myRequestsHasPrev = myRequestsQ.data?.hasPrevPage || false;
+  const myRequestsHasNext = myRequestsQ.data?.hasNextPage || false;
 
-    return list
-      .filter((r) => (mineStatus ? r.status === mineStatus : true))
-      .filter((r) => {
-        if (!q) return true;
+  const mineStart = myRequestsTotal === 0 ? 0 : (myRequestsPage - 1) * myRequestsPageSize + 1;
+  const mineEnd = myRequestsTotal === 0 ? 0 : Math.min(myRequestsPage * myRequestsPageSize, myRequestsTotal);
 
-        const type = r.type.toLowerCase();
-        const name = String(r.name ?? "").toLowerCase();
-        const slug = String(r.slug ?? "").toLowerCase();
-        const notes = String(r.notes ?? "").toLowerCase();
-        const admin = String(r.adminNote ?? "").toLowerCase();
-        const valueName = String(r.valueName ?? "").toLowerCase();
-        const attrName = String(attributeNameById.get(String(r.attributeId ?? "")) ?? r.attributeId ?? "").toLowerCase();
-
-        return (
-          type.includes(q) ||
-          name.includes(q) ||
-          slug.includes(q) ||
-          notes.includes(q) ||
-          admin.includes(q) ||
-          valueName.includes(q) ||
-          attrName.includes(q)
-        );
-      })
-      .sort((a, b) => {
-        const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return bd - ad;
-      });
-  }, [myRequestsQ.data, mineSearch, mineStatus, attributeNameById]);
   useEffect(() => {
-    // supports: /supplier/catalog-requests?focus=attribute OR /supplier/catalog-requests#attribute
     const sp = new URLSearchParams(location.search);
     const focus = (sp.get("focus") || "").toLowerCase();
     const hash = (location.hash || "").replace("#", "").toLowerCase();
@@ -456,10 +481,8 @@ export default function SupplierCatalogRequests() {
     const target = focus || hash;
     if (!target) return;
 
-    // always show NEW tab first, because sections live there
     setTab("NEW");
 
-    // wait for render, then scroll
     const t = window.setTimeout(() => {
       if (target === "category") scrollToRef(categoryRef);
       if (target === "brand") scrollToRef(brandRef);
@@ -469,10 +492,10 @@ export default function SupplierCatalogRequests() {
 
     return () => window.clearTimeout(t);
   }, [location.search, location.hash]);
+
   return (
     <SiteLayout>
       <SupplierLayout>
-        {/* Hero (compact on mobile) */}
         <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-indigo-700 via-blue-700 to-fuchsia-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,255,255,0.18),transparent_60%)]" />
@@ -507,20 +530,22 @@ export default function SupplierCatalogRequests() {
           </div>
         </div>
 
-        {/* Alerts */}
         {guardMsg && (
           <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
             {guardMsg}
           </div>
         )}
         {err && (
-          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>
+          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+            {err}
+          </div>
         )}
         {ok && (
-          <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">{ok}</div>
+          <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
+            {ok}
+          </div>
         )}
 
-        {/* Tabs (mobile: horizontally scrollable) */}
         <div className="mt-4 sm:mt-6 -mx-4 px-4 sm:mx-0 sm:px-0">
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
             {[
@@ -543,13 +568,10 @@ export default function SupplierCatalogRequests() {
           </div>
         </div>
 
-        {/* Layout */}
         <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* MAIN */}
           <div className="order-1 lg:order-none lg:col-span-2 space-y-4">
             {tab === "NEW" && (
               <>
-                {/* Category request */}
                 <div ref={categoryRef} />
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
@@ -634,14 +656,15 @@ export default function SupplierCatalogRequests() {
                   </div>
                 </Card>
 
-                {/* Brand request */}
                 <div ref={brandRef} />
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
                     <Building2 size={18} className="text-zinc-800" />
                     <div className="min-w-0">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Request a Brand</div>
-                      <div className="text-[11px] sm:text-xs text-zinc-500">Brands should be consistent across the marketplace.</div>
+                      <div className="text-[11px] sm:text-xs text-zinc-500">
+                        Brands should be consistent across the marketplace.
+                      </div>
                     </div>
                   </div>
 
@@ -711,7 +734,6 @@ export default function SupplierCatalogRequests() {
                   </div>
                 </Card>
 
-                {/* Attribute request */}
                 <div ref={attributeRef} />
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
@@ -793,7 +815,6 @@ export default function SupplierCatalogRequests() {
                   </div>
                 </Card>
 
-                {/* Attribute value request */}
                 <div ref={valueRef} />
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
@@ -896,8 +917,7 @@ export default function SupplierCatalogRequests() {
                 </div>
 
                 <div className="p-4 sm:p-5 space-y-3">
-                  {/* Filters */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                     <div className="sm:col-span-2">
                       <div className="relative">
                         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
@@ -909,6 +929,7 @@ export default function SupplierCatalogRequests() {
                         />
                       </div>
                     </div>
+
                     <div className="relative">
                       <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
                       <select
@@ -922,17 +943,79 @@ export default function SupplierCatalogRequests() {
                         <option value="REJECTED">REJECTED</option>
                       </select>
                     </div>
+
+                    <div>
+                      <select
+                        value={mineType}
+                        onChange={(e) => setMineType(e.target.value as any)}
+                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white"
+                      >
+                        <option value="">All types</option>
+                        <option value="BRAND">BRAND</option>
+                        <option value="CATEGORY">CATEGORY</option>
+                        <option value="ATTRIBUTE">ATTRIBUTE</option>
+                        <option value="ATTRIBUTE_VALUE">ATTRIBUTE_VALUE</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div className="text-[12px] text-zinc-500">
+                      {myRequestsQ.isLoading
+                        ? "Loading your requests…"
+                        : `${mineStart}–${mineEnd} of ${myRequestsTotal} request${myRequestsTotal === 1 ? "" : "s"}`}
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <select
+                        value={pageSize}
+                        onChange={(e) => setPageSize(toInt(e.target.value, 20))}
+                        className="rounded-xl border bg-white px-3 py-2 text-[12px]"
+                        title="Page size"
+                      >
+                        {PAGE_SIZES.map((n) => (
+                          <option key={n} value={n}>
+                            {n}/page
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        disabled={!myRequestsHasPrev || myRequestsQ.isFetching}
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                      >
+                        <ChevronLeft size={14} /> Prev
+                      </button>
+
+                      <div className="text-[12px] text-zinc-600">
+                        Page <span className="font-semibold text-zinc-900">{myRequestsPage}</span> /{" "}
+                        <span className="font-semibold text-zinc-900">{myRequestsTotalPages}</span>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={!myRequestsHasNext || myRequestsQ.isFetching}
+                        onClick={() => setPage((p) => Math.min(myRequestsTotalPages, p + 1))}
+                        className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                      >
+                        Next <ChevronRight size={14} />
+                      </button>
+                    </div>
                   </div>
 
                   {myRequestsQ.isLoading && <div className="text-sm text-zinc-500">Loading your requests…</div>}
 
-                  {!myRequestsQ.isLoading && (myRequestsFiltered.length || 0) === 0 && (
-                    <div className="text-sm text-zinc-500">No matching requests. Try clearing filters or create one from “New”.</div>
+                  {!myRequestsQ.isLoading && myRequestsRows.length === 0 && (
+                    <div className="text-sm text-zinc-500">
+                      No matching requests. Try clearing filters or create one from “New”.
+                    </div>
                   )}
 
-                  {(myRequestsFiltered || []).length > 0 && (
+                  {myRequestsRows.length > 0 && (
                     <div className="space-y-3">
-                      {(myRequestsFiltered || []).map((r) => {
+                      {myRequestsRows.map((r) => {
                         const created = prettyDate(r.createdAt);
                         const reviewed = prettyDate(r.reviewedAt);
 
@@ -1031,7 +1114,9 @@ export default function SupplierCatalogRequests() {
               <Card>
                 <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Current catalog</div>
-                  <div className="text-[11px] sm:text-xs text-zinc-500">This is what you can select on product creation.</div>
+                  <div className="text-[11px] sm:text-xs text-zinc-500">
+                    This is what you can select on product creation.
+                  </div>
                 </div>
 
                 <div className="p-4 sm:p-5 space-y-6">
@@ -1091,10 +1176,11 @@ export default function SupplierCatalogRequests() {
                                 </div>
                               </div>
                               <span
-                                className={`px-2 py-1 rounded-full text-[11px] border ${a.isActive !== false
-                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                  : "bg-zinc-50 text-zinc-600 border-zinc-200"
-                                  }`}
+                                className={`px-2 py-1 rounded-full text-[11px] border ${
+                                  a.isActive !== false
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                    : "bg-zinc-50 text-zinc-600 border-zinc-200"
+                                }`}
                               >
                                 {a.isActive !== false ? "ACTIVE" : "INACTIVE"}
                               </span>
@@ -1130,7 +1216,6 @@ export default function SupplierCatalogRequests() {
             )}
           </div>
 
-          {/* SIDEBAR */}
           <div className="order-2 lg:order-none space-y-4">
             <Card>
               <div className="p-4 sm:p-5 flex items-start gap-3">
@@ -1175,7 +1260,9 @@ export default function SupplierCatalogRequests() {
                 >
                   Back to Add Product <ArrowRight size={16} />
                 </Link>
-                <div className="text-[11px] text-zinc-500 mt-2">After approval, refresh Add Product to see the new options.</div>
+                <div className="text-[11px] text-zinc-500 mt-2">
+                  After approval, refresh Add Product to see the new options.
+                </div>
               </div>
             </Card>
           </div>

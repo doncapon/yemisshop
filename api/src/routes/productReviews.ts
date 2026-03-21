@@ -20,6 +20,13 @@ const ReviewBodySchema = z.object({
   variantId: z.string().trim().optional(),
 });
 
+function toPositiveInt(value: unknown, fallback: number) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.floor(n);
+  return v > 0 ? v : fallback;
+}
+
 async function getVerifiedDeliveredPurchase(opts: {
   userId: string;
   productId: string;
@@ -217,11 +224,21 @@ router.get(
   wrap(async (req: Request, res: Response) => {
     const productId = String(req.params.productId ?? "").trim();
 
+    if (!productId) {
+      return res.status(400).json({ error: "Missing productId" });
+    }
+
+    const page = toPositiveInt(req.query.page, 1);
+    const pageSizeRaw = toPositiveInt(req.query.pageSize, 10);
+    const pageSize = Math.min(pageSizeRaw, 100);
+    const skip = (page - 1) * pageSize;
+
     const reviewWithUserSelect =
       Prisma.validator<Prisma.SupplierReviewFindManyArgs>()({
         where: { productId },
         orderBy: { createdAt: "desc" },
-        take: 50,
+        skip,
+        take: pageSize,
         select: {
           id: true,
           rating: true,
@@ -239,14 +256,19 @@ router.get(
         },
       });
 
-    const [rows, agg] = await Promise.all([
+    const [rows, total, agg] = await Promise.all([
       prisma.supplierReview.findMany(reviewWithUserSelect),
+      prisma.supplierReview.count({
+        where: { productId },
+      }),
       prisma.supplierReview.aggregate({
         where: { productId },
         _avg: { rating: true },
         _count: { _all: true },
       }),
     ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
     return res.json({
       data: rows.map((r) => ({
@@ -266,6 +288,10 @@ router.get(
         ratingAvg: Number(agg._avg.rating ?? 0) || 0,
         ratingCount: agg._count._all ?? 0,
       },
+      total,
+      page,
+      pageSize,
+      totalPages,
     });
   })
 );

@@ -31,6 +31,14 @@ const isAdmin = (role?: string) => {
 const isSupplier = (role?: string) => normRole(role) === "SUPPLIER";
 const isRider = (role?: string) => normRole(role) === "SUPPLIER_RIDER";
 
+function parsePositiveInt(v: any, fallback: number, min = 1, max = 100) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.trunc(n);
+  if (i < min) return fallback;
+  return Math.min(i, max);
+}
+
 /**
  * Supplier context:
  * - Admin can impersonate by ?supplierId=
@@ -39,12 +47,12 @@ const isRider = (role?: string) => normRole(role) === "SUPPLIER_RIDER";
  */
 type SupplierCtx =
   | {
-    ok: true;
-    supplierId: string;
-    supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
-    impersonating: boolean;
-    riderId?: string | null; // ✅ present for rider sessions
-  }
+      ok: true;
+      supplierId: string;
+      supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
+      impersonating: boolean;
+      riderId?: string | null; // ✅ present for rider sessions
+    }
   | { ok: false; status: number; error: string };
 
 async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
@@ -135,7 +143,7 @@ async function ensureRefundRequestedForPOTx(
   if (!Refund) {
     throw new Error(
       "Refund model delegate not found on Prisma client. " +
-      "Your Prisma model is not named 'refund'. Rename calls to your real model (e.g. refundRequest/orderRefund)."
+        "Your Prisma model is not named 'refund'. Rename calls to your real model (e.g. refundRequest/orderRefund)."
     );
   }
 
@@ -582,6 +590,12 @@ async function bestEffortSendDeliveryOtp(opts: {
  * GET /api/supplier/orders
  * ✅ SUPPLIER + ADMIN + SUPPLIER_RIDER
  * - rider sees only assigned POs in delivery mode (SHIPPED / OUT_FOR_DELIVERY)
+ * - ✅ now supports true server-side pagination
+ *
+ * Query params:
+ * - page=1
+ * - pageSize=20
+ * - view=active|delivered|all
  */
 router.get("/", requireAuth, async (req: any, res) => {
   try {
@@ -593,11 +607,14 @@ router.get("/", requireAuth, async (req: any, res) => {
     const isRiderSession = isRider(role);
 
     const viewRaw = String(req.query?.view ?? "").trim().toLowerCase();
-    // Rider default view:
     const view: "active" | "delivered" | "all" =
       viewRaw === "delivered" || viewRaw === "all" || viewRaw === "active"
         ? (viewRaw as any)
         : (isRiderSession ? "active" : "all");
+
+    const page = parsePositiveInt(req.query?.page, 1, 1, 100000);
+    const pageSize = parsePositiveInt(req.query?.pageSize, 20, 1, 100);
+    const skip = (page - 1) * pageSize;
 
     // Build rider status filter
     const riderActiveStatuses = [PurchaseOrderStatus.SHIPPED, PurchaseOrderStatus.OUT_FOR_DELIVERY];
@@ -623,10 +640,71 @@ router.get("/", requireAuth, async (req: any, res) => {
 
     const includeRiderId = orderItemHasField("riderId");
 
-    // 1) Pull all order items allocated to this supplier (chosenSupplierId)
+    const poWhere: any = {
+      supplierId,
+      ...(riderId
+        ? {
+            riderId,
+            status: { in: riderStatuses as any },
+            ...(view !== "active" && poHasDeliveredBy ? { deliveredByUserId: userId } : {}),
+          }
+        : {}),
+    };
+
+    const total = await prisma.purchaseOrder.count({ where: poWhere });
+
+    if (!total) {
+      return res.json({
+        data: [],
+        page,
+        pageSize,
+        total: 0,
+        totalPages: 0,
+      });
+    }
+
+    // ✅ Page purchase orders first (server-side pagination)
+    const pos = await prisma.purchaseOrder.findMany({
+      where: poWhere,
+      orderBy: [{ id: "desc" }],
+      skip,
+      take: pageSize,
+      select: {
+        id: true,
+        orderId: true,
+        status: true,
+        riderId: true,
+
+        supplierAmount: true,
+        subtotal: true,
+        payoutStatus: true,
+        paidOutAt: true,
+
+        ...(hasScalarField("PurchaseOrder", "deliveredAt") ? { deliveredAt: true } : {}),
+        ...(poHasDeliveredBy ? { deliveredByUserId: true } : {}),
+
+        refund: { select: { id: true, status: true } },
+      },
+    });
+
+    if (!pos.length) {
+      return res.json({
+        data: [],
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+      });
+    }
+
+    const orderIds = Array.from(new Set(pos.map((p: any) => String(p.orderId)).filter(Boolean)));
+    const poIds = pos.map((p: any) => String(p.id)).filter(Boolean);
+
+    // ✅ Fetch ONLY rows for paged orderIds
     const rows = await prisma.orderItem.findMany({
       where: {
         chosenSupplierId: supplierId,
+        orderId: { in: orderIds },
       },
       orderBy: [{ order: { createdAt: "desc" } }, { id: "asc" }],
       select: {
@@ -666,51 +744,6 @@ router.get("/", requireAuth, async (req: any, res) => {
         },
       },
     });
-
-    const orderIds = Array.from(new Set(rows.map((r: any) => String(r.orderId)).filter(Boolean)));
-
-    if (!orderIds.length) {
-      return res.json({ data: [] });
-    }
-
-    const pos = await prisma.purchaseOrder.findMany({
-      where: {
-        supplierId,
-        orderId: { in: orderIds },
-
-        ...(riderId
-          ? {
-            riderId,
-            status: { in: riderStatuses as any },
-
-            ...(view !== "active" && poHasDeliveredBy ? { deliveredByUserId: userId } : {}),
-          }
-          : {}),
-      },
-      select: {
-        id: true,
-        orderId: true,
-        status: true,
-        riderId: true,
-
-        supplierAmount: true,
-        subtotal: true,
-        payoutStatus: true,
-        paidOutAt: true,
-
-        ...(hasScalarField("PurchaseOrder", "deliveredAt") ? { deliveredAt: true } : {}),
-        ...(poHasDeliveredBy ? { deliveredByUserId: true } : {}),
-
-        refund: { select: { id: true, status: true } },
-      },
-    });
-
-    if (!pos.length) {
-      return res.json({ data: [] });
-    }
-
-    const allowedOrderIds = new Set(pos.map((p: any) => String(p.orderId)).filter(Boolean));
-    const poIds = pos.map((p: any) => String(p.id)).filter(Boolean);
 
     // 3) Delivery OTP verified timestamps per PO
     const verifiedByPoId: Record<string, string> = {};
@@ -758,7 +791,7 @@ router.get("/", requireAuth, async (req: any, res) => {
     for (const r of rows as any[]) {
       const oid = String(r.orderId);
 
-      if (!allowedOrderIds.has(oid)) continue;
+      if (!poByOrder[oid]) continue;
 
       if (!grouped[oid]) {
         const riderView = isRider(req.user?.role);
@@ -776,13 +809,13 @@ router.get("/", requireAuth, async (req: any, res) => {
           ...(riderView
             ? {}
             : {
-              supplierAmount: poByOrder[oid]?.supplierAmount ?? null,
-              poSubtotal: poByOrder[oid]?.subtotal ?? null,
-              payoutStatus: poByOrder[oid]?.payoutStatus ?? null,
-              paidOutAt: poByOrder[oid]?.paidOutAt ?? null,
-              refundId: poByOrder[oid]?.refundId ?? null,
-              refundStatus: poByOrder[oid]?.refundStatus ?? null,
-            }),
+                supplierAmount: poByOrder[oid]?.supplierAmount ?? null,
+                poSubtotal: poByOrder[oid]?.subtotal ?? null,
+                payoutStatus: poByOrder[oid]?.payoutStatus ?? null,
+                paidOutAt: poByOrder[oid]?.paidOutAt ?? null,
+                refundId: poByOrder[oid]?.refundId ?? null,
+                refundStatus: poByOrder[oid]?.refundStatus ?? null,
+              }),
 
           riderId: poByOrder[oid]?.riderId ?? null,
           deliveryOtpVerifiedAt: poByOrder[oid]?.deliveryOtpVerifiedAt ?? null,
@@ -804,7 +837,18 @@ router.get("/", requireAuth, async (req: any, res) => {
       });
     }
 
-    return res.json({ data: Object.values(grouped) });
+    // ✅ Preserve PO page order even if some grouped rows arrive in different order
+    const orderedData = orderIds
+      .map((oid) => grouped[String(oid)])
+      .filter(Boolean);
+
+    return res.json({
+      data: orderedData,
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+    });
   } catch (e: any) {
     console.error("GET /api/supplier/orders failed:", e);
     return res.status(500).json({ error: e?.message || "Failed to fetch supplier orders" });
@@ -839,17 +883,13 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
         throw new Error("Delivery OTP can only be requested when PO is SHIPPED / OUT_FOR_DELIVERY");
       }
 
-      const userSelect: any = { email: true };
-      if (hasScalarField("User", "phone")) userSelect.phone = true;
       const order = await tx.order.findUnique({
         where: { id: po.orderId },
-        // ✅ select only scalars to avoid relation typing issues
         select: { id: true, userId: true, shippingAddressId: true } as any,
       });
 
       if (!order) throw new Error("Order not found");
 
-      // ✅ fetch user contact separately (relation name differences won't break typing)
       const userRow = await (tx as any).user?.findUnique?.({
         where: { id: order.userId },
         select: {
@@ -860,7 +900,6 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
 
       let addressPhone: string | null = null;
 
-      // ✅ fetch address phone ONLY if the field exists in your schema
       if (hasScalarField("ShippingAddress", "phone") && order.shippingAddressId) {
         const addr = await (tx as any).shippingAddress?.findUnique?.({
           where: { id: order.shippingAddressId },
@@ -1014,17 +1053,19 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         },
       });
 
+      const now = new Date();
+
       const updatedPo = await tx.purchaseOrder.update({
         where: { id: po.id },
         data: {
           status: "DELIVERED",
-          deliveredAt: new Date(),
+          deliveredAt: now,
           deliveredByUserId: userId,
           deliveredMetaJson: {
             byRole: req.user?.role,
             byUserId: userId,
             riderId: po.riderId ?? null,
-            verifiedAt: new Date().toISOString(),
+            verifiedAt: now.toISOString(),
           },
         },
       });
@@ -1098,7 +1139,7 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         if (allDelivered) {
           await tx.order.update({ where: { id: updatedPo.orderId }, data: { status: "DELIVERED" } });
         }
-      } catch { }
+      } catch {}
 
       return { po: updatedPo, payout };
     });
@@ -1429,7 +1470,6 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         return { po, refund: null, payout };
       }
 
-      // ✅ intermediate statuses (CONFIRMED, PACKED, SHIPPED, OUT_FOR_DELIVERY, etc.)
       try {
         if (shopperId) {
           const friendly = normalizedNext.replace(/_/g, " ").toLowerCase();
@@ -1564,7 +1604,6 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
           select: { id: true, riderId: true, status: true, orderId: true, supplierId: true },
         });
 
-        // ✅ Notifications on rider assignment
         try {
           const orderRow = await tx.order.findUnique({
             where: { id: updated.orderId },

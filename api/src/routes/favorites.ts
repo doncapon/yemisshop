@@ -6,6 +6,34 @@ import { prisma } from "../lib/prisma.js";
 const router = Router();
 router.use(requireAuth);
 
+
+type FavoriteListArgs = {
+  userId: string;
+  page: number;
+  pageSize: number;
+};
+
+type FavoriteListResult = {
+  items: any[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+
+function clampPage(v: any, fallback = 1) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.floor(n));
+}
+
+function clampPageSize(v: any, fallback = 12, max = 48) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(n)));
+}
+
 function normalizeImages(imagesJson: any): string[] {
   if (!imagesJson) return [];
   if (Array.isArray(imagesJson)) return imagesJson.filter(Boolean).map(String);
@@ -96,8 +124,8 @@ async function getMarginPercentCached(): Promise<number> {
       Number.isFinite(vA as any)
         ? (vA as number)
         : Number.isFinite(vB as any)
-        ? (vB as number)
-        : 0
+          ? (vB as number)
+          : 0
     );
     cachedMargin = { v, at: now };
     return v;
@@ -107,48 +135,68 @@ async function getMarginPercentCached(): Promise<number> {
   }
 }
 
-async function buildFavoritesItems(userId: string) {
+async function buildFavoritesItemsPaginated(args: FavoriteListArgs): Promise<FavoriteListResult> {
+  const { userId, page, pageSize } = args;
+
   const marginPercent = await getMarginPercentCached();
 
-  const rows = await prisma.favorite.findMany({
-    where: { userId },
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      productId: true,
-      createdAt: true,
-      product: {
-        select: {
-          id: true,
-          title: true,
-          retailPrice: true,
-          imagesJson: true,
-          sku: true,
+  const [total, rows] = await prisma.$transaction([
+    prisma.favorite.count({
+      where: { userId },
+    }),
 
-          // ✅ Needed to compute cheapest offer like Catalog/ProductDetail
-          supplierProductOffers: {
-            select: {
-              id: true,
-              basePrice: true,
-              isActive: true,
-              inStock: true,
-              availableQty: true,
+    prisma.favorite.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: {
+        id: true,
+        productId: true,
+        createdAt: true,
+        product: {
+          select: {
+            id: true,
+            title: true,
+            retailPrice: true,
+            imagesJson: true,
+            sku: true,
+
+            // ✅ schema says ProductVariant, not variants
+            ProductVariant: {
+              select: { id: true },
+              take: 1,
             },
-          },
-          supplierVariantOffers: {
-            select: {
-              id: true,
-              unitPrice: true,
-              isActive: true,
-              inStock: true,
-              availableQty: true,
-              variantId: true,
+
+            // ✅ schema says SupplierProductOffer has basePrice, NOT unitPrice
+            supplierProductOffers: {
+              select: {
+                id: true,
+                supplierId: true,
+                basePrice: true,
+                isActive: true,
+                inStock: true,
+                availableQty: true,
+              },
+            },
+
+            // ✅ schema says SupplierVariantOffer has unitPrice
+            supplierVariantOffers: {
+              select: {
+                id: true,
+                supplierId: true,
+                unitPrice: true,
+                isActive: true,
+                inStock: true,
+                availableQty: true,
+                variantId: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    }),
+  ]);
 
   const items = rows.map((r) => {
     const p = r.product;
@@ -169,7 +217,6 @@ async function buildFavoritesItems(userId: string) {
       productId: r.productId,
       createdAt: r.createdAt?.toISOString?.() ?? String(r.createdAt ?? ""),
 
-      // ✅ top-level computed fields (easy for UI)
       supplierMinPrice,
       computedRetailPrice,
 
@@ -177,16 +224,30 @@ async function buildFavoritesItems(userId: string) {
         ? {
             id: p.id,
             title: p.title,
-            slug: null as null, // keep your UI shape stable
+            slug: null as null,
             retailPrice: p.retailPrice != null ? Number(p.retailPrice as any) : null,
-            images: normalizeImages((p as any).imagesJson),
-            sku: (p as any).sku ?? null,
+            images: normalizeImages(p.imagesJson),
+            imagesJson: normalizeImages(p.imagesJson),
+            sku: p.sku ?? null,
+
+            // ✅ keep frontend shape stable as "variants"
+            variants: Array.isArray(p.ProductVariant)
+              ? p.ProductVariant.map((v) => ({ id: String(v.id) }))
+              : [],
           }
         : null,
     };
   });
 
-  return items;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    totalPages,
+  };
 }
 
 /**
@@ -196,8 +257,16 @@ async function buildFavoritesItems(userId: string) {
  */
 router.get("/", async (req, res, next) => {
   try {
-    const items = await buildFavoritesItems(req.user!.id);
-    return res.json({ items });
+    const page = clampPage(req.query.page, 1);
+    const pageSize = clampPageSize(req.query.pageSize ?? req.query.take, 12, 48);
+
+    const result = await buildFavoritesItemsPaginated({
+      userId: req.user!.id,
+      page,
+      pageSize,
+    });
+
+    return res.json(result);
   } catch (e) {
     next(e);
   }
@@ -210,8 +279,13 @@ router.get("/", async (req, res, next) => {
  */
 router.get("/mine", async (req, res, next) => {
   try {
-    const items = await buildFavoritesItems(req.user!.id);
-    const productIds = items.map((it) => it.productId);
+    const rows = await prisma.favorite.findMany({
+      where: { userId: req.user!.id },
+      select: { productId: true },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const productIds = rows.map((it) => String(it.productId));
     return res.json({ productIds });
   } catch (e) {
     next(e);

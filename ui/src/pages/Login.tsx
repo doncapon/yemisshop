@@ -91,10 +91,10 @@ function normRole(r: any): Role {
 
   return (
     x === "ADMIN" ||
-    x === "SUPER_ADMIN" ||
-    x === "SHOPPER" ||
-    x === "SUPPLIER" ||
-    x === "SUPPLIER_RIDER"
+      x === "SUPER_ADMIN" ||
+      x === "SHOPPER" ||
+      x === "SUPPLIER" ||
+      x === "SUPPLIER_RIDER"
       ? x
       : "SHOPPER"
   ) as Role;
@@ -113,6 +113,12 @@ function getDefaultPathByRole(role: Role): string {
 
 function pickMePayload(payload: any): any {
   return payload?.data?.user ?? payload?.data?.data ?? payload?.data ?? payload?.user ?? payload ?? null;
+}
+
+function getAuthUserKey(user: any) {
+  const id = String(user?.id ?? "").trim();
+  const email = String(user?.email ?? "").trim().toLowerCase();
+  return id || email || "";
 }
 
 export default function Login() {
@@ -143,6 +149,7 @@ export default function Login() {
   // shopper choice gate
   const [pendingShopperProfile, setPendingShopperProfile] = useState<MeResponse | null>(null);
   const [shopperNoticeOpen, setShopperNoticeOpen] = useState(false);
+  const preLoginTimedOutUserKeyRef = useRef<string>("");
 
   const nav = useNavigate();
   const loc = useLocation();
@@ -190,10 +197,15 @@ export default function Login() {
     if (suppressAutoRedirectRef.current) return;
     if (shopperNoticeOpen) return;
 
-    const target = returnToRef.current || getDefaultPathByRole(normRole(user.role));
+    const profile = normalizeProfile(user);
+    const target = profile
+      ? resolvePostLoginTarget(profile)
+      : getDefaultPathByRole(normRole(user?.role));
+
     nav(target, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, user?.id, shopperNoticeOpen]);
+
 
   useEffect(() => {
     if (fullyVerified) {
@@ -244,6 +256,38 @@ export default function Login() {
     }
   }
 
+  function resolvePostLoginTarget(profile: MeResponse) {
+    const currentUserKey = getAuthUserKey(profile);
+
+    let timedOutUserKey = preLoginTimedOutUserKeyRef.current;
+    let genericReturnTo = "";
+
+    try {
+      if (!timedOutUserKey) {
+        timedOutUserKey = sessionStorage.getItem("auth:timedOutUserKey") || "";
+      }
+      genericReturnTo = sessionStorage.getItem(RETURN_TO_KEY) || "";
+    } catch {
+      //
+    }
+
+    const safeGenericReturnTo = safeReturnTo(genericReturnTo);
+    const sameTimedOutUser =
+      !!currentUserKey &&
+      !!timedOutUserKey &&
+      currentUserKey === timedOutUserKey;
+
+    if (sameTimedOutUser) {
+      return returnToRef.current || safeGenericReturnTo || getDefaultPathByRole(normRole(profile.role));
+    }
+
+    if (!timedOutUserKey) {
+      return returnToRef.current || safeGenericReturnTo || getDefaultPathByRole(normRole(profile.role));
+    }
+
+    return getDefaultPathByRole(normRole(profile.role));
+  }
+
   function finalizeNavigate(path: string) {
     suppressAutoRedirectRef.current = true;
 
@@ -282,6 +326,13 @@ export default function Login() {
       // Do NOT clear auth here.
       // Clearing auth before the new cookie-backed session is confirmed
       // can cause false logout/race issues on older pages.
+
+      try {
+        preLoginTimedOutUserKeyRef.current =
+          sessionStorage.getItem("auth:timedOutUserKey") || "";
+      } catch {
+        preLoginTimedOutUserKeyRef.current = "";
+      }
 
       const res = await api.post<LoginOk>(
         "/api/auth/login",
@@ -331,9 +382,10 @@ export default function Login() {
 
       commitLogin(canonicalProfile, needsVer, vt);
 
-      const target = returnToRef.current || getDefaultPathByRole(normRole(canonicalProfile.role));
+      const target = resolvePostLoginTarget(canonicalProfile);
       finalizeNavigate(target);
     } catch (e: any) {
+
       const status = e?.response?.status;
 
       if (status === 403 && e?.response?.data?.needsVerification) {

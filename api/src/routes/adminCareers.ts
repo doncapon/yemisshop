@@ -13,8 +13,8 @@ const router = express.Router();
  * --------------------------------------------------------------------------*/
 const wrap =
   (fn: (req: Request, res: Response, next: NextFunction) => any): RequestHandler =>
-  (req, res, next) =>
-    Promise.resolve(fn(req, res, next)).catch(next);
+    (req, res, next) =>
+      Promise.resolve(fn(req, res, next)).catch(next);
 
 /* ----------------------------------------------------------------------------
  * Helpers
@@ -35,6 +35,62 @@ const coerceOptionalNumber = z.preprocess((v) => {
   return Number.isFinite(n) ? n : undefined;
 }, z.number().optional());
 
+function parsePositiveInt(v: unknown, fallback: number, min = 1, max = 100) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.trunc(n);
+  if (i < min) return fallback;
+  return Math.min(i, max);
+}
+
+function toPagination(req: Request, defaults?: { pageSize?: number; maxPageSize?: number }) {
+  const defaultPageSize = Math.max(1, Number(defaults?.pageSize ?? 20));
+  const maxPageSize = Math.max(defaultPageSize, Number(defaults?.maxPageSize ?? 100));
+
+  const rawPage = Number(req.query.page);
+  const rawPageSize = Number(req.query.pageSize);
+  const hasPageStyle = Number.isFinite(rawPage) || Number.isFinite(rawPageSize);
+
+  if (hasPageStyle) {
+    const page = parsePositiveInt(req.query.page, 1, 1, 100000);
+    const pageSize = parsePositiveInt(req.query.pageSize, defaultPageSize, 1, maxPageSize);
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+    return { page, pageSize, skip, take };
+  }
+
+  const take = parsePositiveInt(req.query.take, defaultPageSize, 1, maxPageSize);
+  const skipRaw = Number(req.query.skip);
+  const skip = Number.isFinite(skipRaw) && skipRaw >= 0 ? Math.trunc(skipRaw) : 0;
+  const pageSize = take;
+  const page = Math.floor(skip / take) + 1;
+
+  return { page, pageSize, skip, take };
+}
+
+function paginatedResult<T>(args: {
+  rows: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  extra?: Record<string, any>;
+}) {
+  const { rows, total, page, pageSize, extra } = args;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+
+  return {
+    rows,
+    total,
+    page: safePage,
+    pageSize,
+    totalPages,
+    hasNextPage: safePage < totalPages,
+    hasPrevPage: safePage > 1,
+    ...(extra ?? {}),
+  };
+}
+
 /* ----------------------------------------------------------------------------
  * Zod schemas
  * --------------------------------------------------------------------------*/
@@ -50,7 +106,6 @@ const careersJobRoleBase = z.object({
   employmentType: z.enum(employmentTypes).nullable().optional(),
   locationType: z.enum(locationTypes).nullable().optional(),
 
-  // 🔢 These can arrive as strings from the form; coerce them
   minSalary: coerceNullableNumber.optional(),
   maxSalary: coerceNullableNumber.optional(),
   currency: z.string().nullable().optional(),
@@ -58,7 +113,6 @@ const careersJobRoleBase = z.object({
   isPublished: z.boolean().optional(),
   isDeleted: z.boolean().optional(),
 
-  // 🔢 sortOrder also comes as a string – coerce to number, optional
   sortOrder: coerceOptionalNumber,
 
   applicationEmail: z.string().email().nullable().optional(),
@@ -68,7 +122,6 @@ const careersJobRoleBase = z.object({
   requirementsJson: z.any().nullable().optional(),
   benefitsJson: z.any().nullable().optional(),
 
-  // Comes from <input type="date" /> as "YYYY-MM-DD"
   closingDate: z.string().nullable().optional(),
 });
 
@@ -82,29 +135,62 @@ const updateJobSchema = careersJobRoleBase.partial();
 router.use(requireAuth, requireAdmin);
 
 /* ----------------------------------------------------------------------------
- * Jobs – list (with basic pagination)
+ * Jobs – list (server-side pagination)
+ * Supports:
+ * - page=1&pageSize=20
+ * - take=20&skip=0
+ * Optional:
+ * - q=search
+ * - isPublished=true|false
+ * - isDeleted=true|false
  * --------------------------------------------------------------------------*/
 
 router.get(
   "/jobs",
   wrap(async (req: Request, res: Response) => {
-    const page = Number(req.query.page ?? 1) || 1;
-    const pageSize = Number(req.query.pageSize ?? 20) || 20;
+    const { page, pageSize, skip, take } = toPagination(req, {
+      pageSize: 20,
+      maxPageSize: 100,
+    });
 
-    const [items, total] = await Promise.all([
+    const q = String(req.query.q ?? "").trim();
+    const rawIsPublished = String(req.query.isPublished ?? "").trim().toLowerCase();
+    const rawIsDeleted = String(req.query.isDeleted ?? "").trim().toLowerCase();
+
+    const where: any = {};
+
+    if (q) {
+      where.OR = [
+        { title: { contains: q, mode: "insensitive" } },
+        { slug: { contains: q, mode: "insensitive" } },
+        { department: { contains: q, mode: "insensitive" } },
+        { location: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    if (rawIsPublished === "true") where.isPublished = true;
+    if (rawIsPublished === "false") where.isPublished = false;
+
+    if (rawIsDeleted === "true") where.isDeleted = true;
+    if (rawIsDeleted === "false") where.isDeleted = false;
+
+    const [rows, total] = await prisma.$transaction([
       prisma.careersJobRole.findMany({
+        where,
         orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
+        skip,
+        take,
       }),
-      prisma.careersJobRole.count(),
+      prisma.careersJobRole.count({ where }),
     ]);
 
     res.json({
-      items,
-      total,
-      page,
-      pageSize,
+      data: paginatedResult({
+        rows,
+        total,
+        page,
+        pageSize,
+      }),
     });
   })
 );
@@ -138,8 +224,6 @@ router.post(
         responsibilitiesJson: parsed.responsibilitiesJson ?? null,
         requirementsJson: parsed.requirementsJson ?? null,
         benefitsJson: parsed.benefitsJson ?? null,
-
-        // 🔑 FIX: convert "2026-03-27" → Date object for Prisma
         closingDate: parsed.closingDate ? new Date(parsed.closingDate) : null,
       },
     });
@@ -155,7 +239,7 @@ router.post(
 router.patch(
   "/jobs/:id",
   wrap(async (req: Request, res: Response) => {
-    const id =  requiredString(req.params.id);
+    const id = requiredString(req.params.id);
     const parsed = updateJobSchema.parse(req.body);
 
     const job = await prisma.careersJobRole.update({
@@ -183,8 +267,6 @@ router.patch(
           requirementsJson: parsed.requirementsJson,
         }),
         ...(parsed.benefitsJson !== undefined && { benefitsJson: parsed.benefitsJson }),
-
-        // 🔑 FIX: same conversion logic on update
         ...(parsed.closingDate !== undefined && {
           closingDate: parsed.closingDate ? new Date(parsed.closingDate) : null,
         }),
@@ -202,7 +284,7 @@ router.patch(
 router.delete(
   "/jobs/:id",
   wrap(async (req: Request, res: Response) => {
-    const id =  requiredString(req.params.id);
+    const id = requiredString(req.params.id);
 
     const job = await prisma.careersJobRole.update({
       where: { id },
@@ -216,23 +298,17 @@ router.delete(
   })
 );
 
-
 /* ----------------------------------------------------------------------------
  * Zod schemas
  * --------------------------------------------------------------------------*/
-const listQuerySchema = z.object({
+const applicationsQuerySchema = z.object({
   roleId: z.string().max(200).optional().or(z.literal("")),
   status: z.enum(["NEW", "REVIEWED", "SHORTLISTED", "REJECTED"]).optional(),
   search: z.string().max(200).optional().or(z.literal("")),
-  cursor: z.string().optional().or(z.literal("")),
-  limit: z
-    .string()
-    .optional()
-    .transform((v) => {
-      const n = Number(v);
-      if (!Number.isFinite(n) || n <= 0) return 20;
-      return Math.min(100, Math.max(1, n));
-    }),
+  page: z.string().optional().or(z.literal("")),
+  pageSize: z.string().optional().or(z.literal("")),
+  take: z.string().optional().or(z.literal("")),
+  skip: z.string().optional().or(z.literal("")),
 });
 
 const updateBodySchema = z.object({
@@ -246,13 +322,35 @@ const updateBodySchema = z.object({
 router.use(requireAuth);
 router.use(requireAdmin);
 
+function readGroupCount(v: unknown): number {
+  if (!v || typeof v !== "object") return 0;
+
+  const x = v as Record<string, unknown>;
+
+  if (typeof x.id === "number") return x.id;
+  if (typeof x._all === "number") return x._all;
+
+  return 0;
+}
+
 /* ----------------------------------------------------------------------------
  * GET /api/admin/careers/applications
+ * Server-side pagination:
+ * - page=1&pageSize=20
+ * - take=20&skip=0
+ * Optional:
+ * - roleId
+ * - status
+ * - search
  * --------------------------------------------------------------------------*/
 router.get(
   "/applications",
   wrap(async (req: Request, res: Response) => {
-    const q = listQuerySchema.parse(req.query);
+    const q = applicationsQuerySchema.parse(req.query);
+    const { page, pageSize, skip, take } = toPagination(req, {
+      pageSize: 20,
+      maxPageSize: 100,
+    });
 
     const where: any = {};
 
@@ -273,59 +371,55 @@ router.get(
       ];
     }
 
-    const take = q.limit ?? 20;
-    const cursor = q.cursor && q.cursor.trim() ? { id: q.cursor.trim() } : null;
-
-    const apps = await prisma.jobApplication.findMany({
-      where,
-      take: take + 1, // fetch one extra to know if there's a next page
-      ...(cursor ? { cursor, skip: 1 } : {}),
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        createdAt: true,
-        name: true,
-        email: true,
-        roleId: true,
-        roleTitle: true,
-        linkedinUrl: true,
-        cvFilename: true,
-        cvMimeType: true,
-        cvSize: true,
-        message: true,
-        status: true,
-        notes: true,
-      },
-    });
-
-    let nextCursor: string | null = null;
-    if (apps.length > take) {
-      const last = apps[apps.length - 1];
-      nextCursor = last.id;
-      apps.pop();
-    }
-
-    // role summary – useful for filters
-    // NOTE: Prisma 6.19.2 does NOT allow `_all` inside `orderBy._count`
-    // so we sort by the count of `id` instead (equivalent to total rows).
-    const roleSummary = await prisma.jobApplication.groupBy({
-      by: ["roleId", "roleTitle"],
-      _count: { _all: true },
-      orderBy: {
-        _count: {
-          id: "desc", // ✅ valid: sort by count of `id` per group
+    const [items, total, roleSummary] = await prisma.$transaction([
+      prisma.jobApplication.findMany({
+        where,
+        skip,
+        take,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: {
+          id: true,
+          createdAt: true,
+          name: true,
+          email: true,
+          roleId: true,
+          roleTitle: true,
+          linkedinUrl: true,
+          cvFilename: true,
+          cvMimeType: true,
+          cvSize: true,
+          message: true,
+          status: true,
+          notes: true,
         },
-      },
-    });
+      }),
+      prisma.jobApplication.count({ where }),
+      prisma.jobApplication.groupBy({
+        by: ["roleId", "roleTitle"],
+        _count: { _all: true, id: true },
+        orderBy: {
+          _count: {
+            id: "desc",
+          },
+        },
+      }),
+    ]);
+
 
     res.json({
-      items: apps,
-      nextCursor,
-      roleSummary: roleSummary.map((r) => ({
-        roleId: r.roleId,
-        roleTitle: r.roleTitle,
-        count: r._count._all,
-      })),
+      data: paginatedResult({
+        rows: items,
+        total,
+        page,
+        pageSize,
+        extra: {
+          roleSummary: roleSummary.map((r) => ({
+            roleId: r.roleId,
+            roleTitle: r.roleTitle,
+            count: readGroupCount(r._count),
+          })),
+        },
+      }),
     });
   })
 );
@@ -336,7 +430,7 @@ router.get(
 router.patch(
   "/applications/:id",
   wrap(async (req: Request, res: Response) => {
-    const id = requiredString( req.params.id);
+    const id = requiredString(req.params.id);
     if (!id) {
       return res.status(400).json({ error: "Missing application id" });
     }

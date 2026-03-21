@@ -43,9 +43,8 @@ const settingsSchema = z.object({
 /* ----------------------------------------------------------------------------
  * Helpers
  * --------------------------------------------------------------------------*/
-
 async function getOrCreateSettings() {
-  let settings = await prisma.careersSettings.findFirst({
+  let settings = await prisma.careersSettings.findUnique({
     where: { id: 1 },
   });
 
@@ -67,13 +66,21 @@ async function getOrCreateSettings() {
  * --------------------------------------------------------------------------*/
 
 // GET /api/admin/careers/settings
-router.get(
+router.patch(
   "/",
   requireAuth,
   requireAdmin,
   wrap(async (req, res) => {
-    const settings = await getOrCreateSettings();
-    res.json(settings);
+    const payload = settingsSchema.parse(req.body);
+
+    await getOrCreateSettings();
+
+    const updated = await prisma.careersSettings.update({
+      where: { id: 1 },
+      data: payload,
+    });
+
+    res.json(updated);
   })
 );
 

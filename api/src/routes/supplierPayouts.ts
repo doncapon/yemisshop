@@ -7,12 +7,11 @@ import { paySupplierForPurchaseOrder } from "../services/payout.service.js";
 
 const router = Router();
 
-
 const PAYOUT_EXECUTION_MODE = String(
   process.env.PAYOUT_EXECUTION_MODE ??
-  (String(process.env.NODE_ENV || "").toLowerCase() === "production"
-    ? "provider"
-    : "mock")
+    (String(process.env.NODE_ENV || "").toLowerCase() === "production"
+      ? "provider"
+      : "mock")
 ).toLowerCase();
 
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
@@ -28,11 +27,11 @@ function asNum(v: any, d = 0) {
 
 type SupplierCtx =
   | {
-    ok: true;
-    supplierId: string;
-    supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
-    impersonating: boolean;
-  }
+      ok: true;
+      supplierId: string;
+      supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
+      impersonating: boolean;
+    }
   | { ok: false; status: number; error: string };
 
 async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
@@ -63,8 +62,9 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
       where: { userId },
       select: { id: true, name: true, status: true, userId: true },
     });
-    if (!supplier)
+    if (!supplier) {
       return { ok: false, status: 403, error: "Supplier profile not found for this user" };
+    }
 
     return { ok: true, supplierId: supplier.id, supplier, impersonating: false };
   }
@@ -72,12 +72,64 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
   return { ok: false, status: 403, error: "Forbidden" };
 }
 
-function toTakeSkip(req: Request) {
-  const takeRaw = asNum((req.query as any).take, 20);
-  const skipRaw = asNum((req.query as any).skip, 0);
+function toPagination(req: Request) {
+  const q = req.query as any;
+
+  const rawPage = asNum(q.page, 0);
+  const rawPageSize = asNum(q.pageSize, 0);
+
+  const hasPageStyle = rawPage > 0 || rawPageSize > 0;
+
+  if (hasPageStyle) {
+    const pageSize = Math.min(100, Math.max(1, rawPageSize || 20));
+    const page = Math.max(1, rawPage || 1);
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    return {
+      page,
+      pageSize,
+      take,
+      skip,
+      mode: "page" as const,
+    };
+  }
+
+  const takeRaw = asNum(q.take, 20);
+  const skipRaw = asNum(q.skip, 0);
   const take = Math.min(100, Math.max(1, takeRaw));
   const skip = Math.max(0, skipRaw);
-  return { take, skip };
+  const pageSize = take;
+  const page = Math.floor(skip / take) + 1;
+
+  return {
+    page,
+    pageSize,
+    take,
+    skip,
+    mode: "offset" as const,
+  };
+}
+
+function buildPaginatedResult<T>(params: {
+  rows: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}) {
+  const { rows, total, page, pageSize } = params;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, totalPages);
+
+  return {
+    rows,
+    total,
+    page: safePage,
+    pageSize,
+    totalPages,
+    hasNextPage: safePage < totalPages,
+    hasPrevPage: safePage > 1,
+  };
 }
 
 async function getSupplierForUser(userId: string) {
@@ -134,7 +186,6 @@ export async function computeSupplierBalance(supplierId: string) {
     _sum: { amount: true },
   });
 
-  // Explicit known types (you can expand later)
   const debitTypes = new Set([
     "DEBIT",
     "WITHDRAWAL",
@@ -144,7 +195,6 @@ export async function computeSupplierBalance(supplierId: string) {
     "PENALTY_DEBIT",
   ]);
 
-  // Treat these as "manual credits/adjustments", NOT payout credits (payout credits are allocations PAID)
   const creditTypes = new Set(["CREDIT", "REVERSAL_CREDIT", "ADJUSTMENT_CREDIT"]);
 
   let ledgerCredits = 0;
@@ -173,7 +223,6 @@ export async function computeSupplierBalance(supplierId: string) {
       continue;
     }
 
-    // Fallback for unknown types:
     if (amt > 0) ledgerCredits += amt;
     else ledgerDebits += Math.abs(amt);
   }
@@ -181,10 +230,6 @@ export async function computeSupplierBalance(supplierId: string) {
   // ----------------------------
   // 3) Net computation
   // ----------------------------
-  // Intent:
-  // - "earned credits" = allocations released (paidOut)
-  // - plus any explicit ledger credits (manual adjustments/reversals)
-  // - minus ledger debits (refunds/withdrawals/etc)
   const credits = paidOut + ledgerCredits;
   const debits = ledgerDebits;
 
@@ -213,8 +258,11 @@ export async function computeSupplierBalance(supplierId: string) {
   };
 }
 
-
-async function mockFinalizePayoutForPOTx(tx: any, purchaseOrderId: string, actor?: { id?: string; role?: string }) {
+async function mockFinalizePayoutForPOTx(
+  tx: any,
+  purchaseOrderId: string,
+  actor?: { id?: string; role?: string }
+) {
   const po = await tx.purchaseOrder.findUnique({
     where: { id: purchaseOrderId },
     select: {
@@ -369,8 +417,6 @@ async function mockFinalizePayoutForPOTx(tx: any, purchaseOrderId: string, actor
   };
 }
 
-
-
 /**
  * GET /api/supplier/payouts/summary
  */
@@ -380,7 +426,6 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    // supplierId resolution (admin can query any supplier via ?supplierId=)
     let supplierId: string | null = null;
     if (isAdmin(role) && req.query?.supplierId) supplierId = String(req.query.supplierId);
     else if (isSupplier(role)) supplierId = (await getSupplierForUser(String(userId)))?.id ?? null;
@@ -395,10 +440,10 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
         currency: bal.currency,
 
         availableBalance: bal.availableBalance,
-        outstandingDebt: bal.outstandingDebt, // ✅ if refunds exceed payout credits
+        outstandingDebt: bal.outstandingDebt,
 
-        credits: bal.credits, // paid allocations total
-        debits: bal.debits, // ledger debits total
+        credits: bal.credits,
+        debits: bal.debits,
 
         pending: bal.pending,
         approved: bal.approved,
@@ -417,6 +462,7 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
 });
 
 /**
+ * GET /api/supplier/payouts/history?page=1&pageSize=20
  * GET /api/supplier/payouts/history?take=20&skip=0
  * Returns allocation rows (credits source).
  */
@@ -432,7 +478,7 @@ router.get("/history", requireAuth, async (req: any, res: Response) => {
 
     if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
 
-    const { take, skip } = toTakeSkip(req);
+    const { take, skip, page, pageSize } = toPagination(req);
     const status = req.query?.status ? String(req.query.status).toUpperCase() : null;
 
     const where: any = {
@@ -463,7 +509,7 @@ router.get("/history", requireAuth, async (req: any, res: Response) => {
       }),
     ]);
 
-    const out = (rows as any[]).map((r) => {
+    const mappedRows = (rows as any[]).map((r) => {
       const date = r.releasedAt ?? r.updatedAt ?? r.createdAt;
       return {
         id: String(r.id),
@@ -476,14 +522,21 @@ router.get("/history", requireAuth, async (req: any, res: Response) => {
         amount: asNum(r.amount, 0),
         status: String(r.status),
         purchaseOrderId: r.purchaseOrderId ?? null,
-        orderId: String(r.orderId),
-        paymentId: String(r.paymentId),
+        orderId: r.orderId ? String(r.orderId) : null,
+        paymentId: r.paymentId ? String(r.paymentId) : null,
         supplierName: r.supplierNameSnapshot ?? null,
         meta: r.meta ?? null,
       };
     });
 
-    return res.json({ data: { rows: out, total } });
+    return res.json({
+      data: buildPaginatedResult({
+        rows: mappedRows,
+        total,
+        page,
+        pageSize,
+      }),
+    });
   } catch (e: any) {
     console.error("GET /api/supplier/payouts/history failed:", e);
     return res.status(500).json({ error: e?.message || "Failed to load payout history" });
@@ -491,6 +544,7 @@ router.get("/history", requireAuth, async (req: any, res: Response) => {
 });
 
 /**
+ * GET /api/supplier/payouts/ledger?page=1&pageSize=20
  * GET /api/supplier/payouts/ledger?take=20&skip=0
  * Returns ledger debits/credits (refunds & adjustments).
  */
@@ -506,7 +560,7 @@ router.get("/ledger", requireAuth, async (req: any, res: Response) => {
 
     if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
 
-    const { take, skip } = toTakeSkip(req);
+    const { take, skip, page, pageSize } = toPagination(req);
     const type = req.query?.type ? String(req.query.type).toUpperCase() : null;
 
     const where: any = {
@@ -534,20 +588,24 @@ router.get("/ledger", requireAuth, async (req: any, res: Response) => {
       }),
     ]);
 
+    const mappedRows = (rows as any[]).map((r) => ({
+      id: String(r.id),
+      type: String(r.type),
+      amount: asNum(r.amount, 0),
+      currency: r.currency ?? "NGN",
+      referenceType: r.referenceType ?? null,
+      referenceId: r.referenceId ?? null,
+      createdAt: r.createdAt?.toISOString?.() ?? String(r.createdAt),
+      meta: r.meta ?? null,
+    }));
+
     return res.json({
-      data: {
+      data: buildPaginatedResult({
+        rows: mappedRows,
         total,
-        rows: (rows as any[]).map((r) => ({
-          id: String(r.id),
-          type: String(r.type),
-          amount: asNum(r.amount, 0),
-          currency: r.currency ?? "NGN",
-          referenceType: r.referenceType ?? null,
-          referenceId: r.referenceId ?? null,
-          createdAt: r.createdAt?.toISOString?.() ?? String(r.createdAt),
-          meta: r.meta ?? null,
-        })),
-      },
+        page,
+        pageSize,
+      }),
     });
   } catch (e: any) {
     console.error("GET /api/supplier/payouts/ledger failed:", e);
@@ -583,22 +641,15 @@ async function getDeliveryOtpVerifiedAtForPO(tx: any, purchaseOrderId: string): 
 }
 
 async function hasOpenComplaintsForPO(tx: any, purchaseOrderId: string): Promise<boolean> {
-  // RefundRequest still open
   const openRefundRequests = await tx.refundRequest.count({
     where: {
       purchaseOrderId,
       status: {
-        notIn: [
-          "APPROVED",
-          "REJECTED",
-          "REFUNDED",
-          "CLOSED",
-        ] as any,
+        notIn: ["APPROVED", "REJECTED", "REFUNDED", "CLOSED"] as any,
       },
     },
   });
 
-  // DisputeCase still open
   const openDisputes = await tx.disputeCase.count({
     where: {
       purchaseOrderId,
@@ -608,17 +659,11 @@ async function hasOpenComplaintsForPO(tx: any, purchaseOrderId: string): Promise
     },
   });
 
-  // If you also want to block when a concrete Refund is in-flight, you can add:
   const openRefunds = await tx.refund.count({
     where: {
       purchaseOrderId,
       status: {
-        notIn: [
-          "APPROVED",
-          "REJECTED",
-          "REFUNDED",
-          "CLOSED",
-        ] as any,
+        notIn: ["APPROVED", "REJECTED", "REFUNDED", "CLOSED"] as any,
       },
     },
   });
@@ -647,7 +692,6 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     throw new Error("Cannot request payout unless PO is DELIVERED");
   }
 
-  // Use normalized delivery OTP record as the "delivered" truth
   const verifiedAt = await getDeliveryOtpVerifiedAtForPO(tx, po.id);
   if (!verifiedAt) {
     const err: any = new Error("Payout not allowed until delivery OTP is verified");
@@ -655,7 +699,6 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     throw err;
   }
 
-  // ❗ If there is any open complaint/refund/dispute, don't even start hold.
   if (await hasOpenComplaintsForPO(tx, po.id)) {
     const err: any = new Error(
       "Order has an open customer complaint/refund or dispute; payout cannot be requested yet."
@@ -664,17 +707,14 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     throw err;
   }
 
-  // Supplier must be payout-ready
   await assertSupplierPayoutReadyTx(tx, po.supplierId);
 
   const payoutStatus = String(po.payoutStatus || "").toUpperCase();
 
-  // Idempotency: already fully released
   if (po.paidOutAt || payoutStatus === "RELEASED") {
     return { ok: true, alreadyReleased: true, mode: "released" };
   }
 
-  // Idempotency: already HELD
   if (payoutStatus === "HELD" && po.payoutHoldUntil) {
     return {
       ok: true,
@@ -684,7 +724,6 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     };
   }
 
-  // Find the eligible allocation for this PO
   const payment = await tx.payment.findFirst({
     where: { orderId: po.orderId, status: "PAID" as any },
     orderBy: { createdAt: "desc" },
@@ -697,7 +736,7 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
       paymentId: payment.id,
       purchaseOrderId: po.id,
       supplierId: po.supplierId,
-      status: { in: allocEligibleStatuses() }, // PENDING / APPROVED
+      status: { in: allocEligibleStatuses() },
     },
     orderBy: { createdAt: "desc" },
     select: {
@@ -709,7 +748,6 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     },
   });
 
-  // If no PENDING/APPROVED allocation, see if we've already HELD or PAID
   if (!alloc) {
     const heldAlloc = await tx.supplierPaymentAllocation.findFirst({
       where: {
@@ -761,11 +799,9 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     throw err;
   }
 
-  // ✅ Compute holdUntil = verifiedAt + PAYOUT_HOLD_DAYS
   const holdUntil = new Date(verifiedAt);
   holdUntil.setDate(holdUntil.getDate() + PAYOUT_HOLD_DAYS);
 
-  // Move allocation into HELD
   await tx.supplierPaymentAllocation.update({
     where: { id: alloc.id },
     data: {
@@ -774,7 +810,6 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     } as any,
   });
 
-  // Update PO payoutStatus + payoutHoldUntil
   await tx.purchaseOrder.update({
     where: { id: po.id },
     data: {
@@ -859,7 +894,6 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    // If hold window is active, this endpoint places payout into HELD first
     if (PAYOUT_HOLD_DAYS > 0) {
       const out = await prisma.$transaction(async (tx) => {
         return releasePayoutForPOTx(tx, poId);
@@ -872,7 +906,6 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
       });
     }
 
-    // If hold window is disabled, release immediately
     if (PAYOUT_EXECUTION_MODE !== "provider") {
       const out = await prisma.$transaction(async (tx) => {
         return mockFinalizePayoutForPOTx(tx, poId, {
@@ -888,7 +921,6 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
       });
     }
 
-    // Production / real provider path
     const out = await paySupplierForPurchaseOrder(poId, {
       id: req.user?.id,
       role: req.user?.role,

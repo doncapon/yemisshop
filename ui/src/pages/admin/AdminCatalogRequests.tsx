@@ -1,7 +1,15 @@
 // src/pages/admin/AdminCatalogRequests.tsx
 import React, { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, X, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Check,
+  X,
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  ChevronsLeft,
+  ChevronsRight,
+} from "lucide-react";
 import SiteLayout from "../../layouts/SiteLayout";
 import api from "../../api/client";
 
@@ -17,8 +25,18 @@ type CatalogRequest = {
   reviewedBy?: { id: string; email: string } | null;
 };
 
+type CatalogRequestsResponse = {
+  data: CatalogRequest[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
 const STATUS_OPTS: Array<CatalogRequest["status"]> = ["PENDING", "APPROVED", "REJECTED"];
 const TYPE_OPTS: Array<"" | CatalogRequest["type"]> = ["", "BRAND", "CATEGORY", "ATTRIBUTE", "ATTRIBUTE_VALUE"];
+
+const PAGE_SIZE = 20;
 
 function clsx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -29,18 +47,31 @@ export default function AdminCatalogRequests() {
 
   const [status, setStatus] = useState<CatalogRequest["status"]>("PENDING");
   const [type, setType] = useState<string>("");
+  const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const q = useQuery<CatalogRequest[]>({
-    queryKey: ["admin", "catalog-requests", status, type],
+  const q = useQuery<CatalogRequestsResponse>({
+    queryKey: ["admin", "catalog-requests", status, type, page, PAGE_SIZE],
     queryFn: async () => {
       const { data } = await api.get("/api/admin/catalog-requests", {
-        // ✅ cookie-based auth
         withCredentials: true,
-        params: { status, ...(type ? { type } : {}) },
+        params: {
+          status,
+          ...(type ? { type } : {}),
+          page,
+          pageSize: PAGE_SIZE,
+        },
       });
-      return (data?.data ?? []) as CatalogRequest[];
+
+      return {
+        data: Array.isArray(data?.data) ? data.data : [],
+        total: Number(data?.total ?? 0),
+        page: Number(data?.page ?? page),
+        pageSize: Number(data?.pageSize ?? PAGE_SIZE),
+        totalPages: Math.max(1, Number(data?.totalPages ?? 1)),
+      };
     },
+    placeholderData: (prev) => prev,
   });
 
   const approveM = useMutation({
@@ -49,7 +80,6 @@ export default function AdminCatalogRequests() {
         `/api/admin/catalog-requests/${id}/approve`,
         {},
         {
-          // ✅ cookie-based auth
           withCredentials: true,
         }
       );
@@ -72,7 +102,6 @@ export default function AdminCatalogRequests() {
         `/api/admin/catalog-requests/${id}/reject`,
         {},
         {
-          // ✅ cookie-based auth
           withCredentials: true,
         }
       );
@@ -83,7 +112,11 @@ export default function AdminCatalogRequests() {
     },
   });
 
-  const rows = q.data ?? [];
+  const rows = q.data?.data ?? [];
+  const total = q.data?.total ?? 0;
+  const currentPage = q.data?.page ?? page;
+  const pageSize = q.data?.pageSize ?? PAGE_SIZE;
+  const totalPages = Math.max(1, q.data?.totalPages ?? 1);
 
   const prettyPayload = (p: any) => {
     try {
@@ -94,14 +127,19 @@ export default function AdminCatalogRequests() {
   };
 
   const title = useMemo(() => `Catalog requests`, []);
-  const subtitle = useMemo(() => `Showing ${status}${type ? ` • ${type}` : ""}`, [status, type]);
+  const subtitle = useMemo(
+    () => `Showing ${status}${type ? ` • ${type}` : ""}`,
+    [status, type]
+  );
 
   const anyPending = approveM.isPending || rejectM.isPending;
+
+  const from = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const to = total === 0 ? 0 : Math.min(currentPage * pageSize, total);
 
   return (
     <SiteLayout>
       <div className="mx-auto w-full max-w-6xl px-3 sm:px-4 py-5 sm:py-6">
-        {/* Header */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h1 className="text-lg sm:text-xl font-bold text-zinc-900">{title}</h1>
@@ -126,13 +164,16 @@ export default function AdminCatalogRequests() {
           </button>
         </div>
 
-        {/* Filters */}
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
           <label className="block">
             <span className="sr-only">Status</span>
             <select
               value={status}
-              onChange={(e) => setStatus(e.target.value as any)}
+              onChange={(e) => {
+                setStatus(e.target.value as CatalogRequest["status"]);
+                setPage(1);
+                setExpanded({});
+              }}
               className="w-full rounded-xl border bg-white px-3 py-2 text-sm"
             >
               {STATUS_OPTS.map((s) => (
@@ -147,7 +188,11 @@ export default function AdminCatalogRequests() {
             <span className="sr-only">Type</span>
             <select
               value={type}
-              onChange={(e) => setType(e.target.value)}
+              onChange={(e) => {
+                setType(e.target.value);
+                setPage(1);
+                setExpanded({});
+              }}
               className="w-full rounded-xl border bg-white px-3 py-2 text-sm"
             >
               {TYPE_OPTS.map((t) => (
@@ -159,17 +204,62 @@ export default function AdminCatalogRequests() {
           </label>
         </div>
 
-        {/* Card */}
         <div className="mt-4 rounded-2xl border bg-white overflow-hidden">
-          <div className="px-4 py-3 border-b bg-zinc-50 flex items-center justify-between gap-3">
+          <div className="px-4 py-3 border-b bg-zinc-50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="text-sm font-semibold text-zinc-900">Requests</div>
-            <div className="text-xs text-zinc-600">
-              {q.isLoading ? "…" : `${rows.length}`}
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="text-xs text-zinc-600">
+                {q.isLoading ? "…" : `Showing ${from}-${to} of ${total}`}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage(1)}
+                  disabled={currentPage <= 1 || q.isFetching}
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                  aria-label="First page"
+                >
+                  <ChevronsLeft size={15} />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage <= 1 || q.isFetching}
+                  className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                >
+                  Prev
+                </button>
+
+                <div className="text-xs text-zinc-600 min-w-[84px] text-center">
+                  Page {currentPage} / {totalPages}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage >= totalPages || q.isFetching}
+                  className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                >
+                  Next
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPage(totalPages)}
+                  disabled={currentPage >= totalPages || q.isFetching}
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                  aria-label="Last page"
+                >
+                  <ChevronsRight size={15} />
+                </button>
+              </div>
             </div>
           </div>
 
-          {/* States */}
-          {q.isLoading && (
+          {q.isLoading && !q.data && (
             <div className="p-4 text-sm text-zinc-600">Loading…</div>
           )}
 
@@ -183,7 +273,6 @@ export default function AdminCatalogRequests() {
             <div className="p-4 text-sm text-zinc-600">No requests.</div>
           )}
 
-          {/* Rows */}
           <div className="divide-y">
             {rows.map((r) => {
               const supplierLabel = r.supplier?.name || r.supplier?.id || "—";
@@ -194,7 +283,6 @@ export default function AdminCatalogRequests() {
               return (
                 <div key={r.id} className="p-4">
                   <div className="flex flex-col gap-3">
-                    {/* Top line */}
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -231,7 +319,6 @@ export default function AdminCatalogRequests() {
                         )}
                       </div>
 
-                      {/* Actions (desktop right) */}
                       {isPending && (
                         <div className="hidden sm:flex gap-2 shrink-0">
                           <button
@@ -254,7 +341,6 @@ export default function AdminCatalogRequests() {
                       )}
                     </div>
 
-                    {/* Actions (mobile full width) */}
                     {isPending && (
                       <div className="grid grid-cols-2 gap-2 sm:hidden">
                         <button
@@ -276,7 +362,6 @@ export default function AdminCatalogRequests() {
                       </div>
                     )}
 
-                    {/* Payload toggle */}
                     <div className="flex items-center justify-between gap-3">
                       <button
                         type="button"
@@ -287,7 +372,6 @@ export default function AdminCatalogRequests() {
                         {isExpanded ? "Hide payload" : "Show payload"}
                       </button>
 
-                      {/* ReviewedBy hint */}
                       {r.reviewedBy?.email && (
                         <div className="text-[11px] text-zinc-500">
                           Reviewed by: <span className="font-semibold">{r.reviewedBy.email}</span>
@@ -295,7 +379,6 @@ export default function AdminCatalogRequests() {
                       )}
                     </div>
 
-                    {/* Payload */}
                     {isExpanded && (
                       <pre className="text-[11px] rounded-xl border bg-zinc-50 p-3 overflow-auto max-h-[280px]">
                         {prettyPayload(r.payload)}
@@ -308,7 +391,58 @@ export default function AdminCatalogRequests() {
           </div>
         </div>
 
-        {/* subtle footer note */}
+        {totalPages > 1 && (
+          <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="text-xs text-zinc-500">
+              Showing {from}-{to} of {total} request(s)
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage(1)}
+                disabled={currentPage <= 1 || q.isFetching}
+                className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                aria-label="First page"
+              >
+                <ChevronsLeft size={15} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage <= 1 || q.isFetching}
+                className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+              >
+                Prev
+              </button>
+
+              <div className="text-xs text-zinc-600 min-w-[84px] text-center">
+                Page {currentPage} / {totalPages}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages || q.isFetching}
+                className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+              >
+                Next
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPage(totalPages)}
+                disabled={currentPage >= totalPages || q.isFetching}
+                className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                aria-label="Last page"
+              >
+                <ChevronsRight size={15} />
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="mt-3 text-[11px] text-zinc-500">
           Tip: On mobile, expand payload only when needed to keep the list readable.
         </div>

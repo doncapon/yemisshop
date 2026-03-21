@@ -1,5 +1,5 @@
 // api/src/routes/riders.ts
-import { Router, type Response } from "express";
+import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { prisma } from "../lib/prisma.js";
@@ -25,6 +25,61 @@ function getAppUrl() {
     String(process.env.PUBLIC_APP_URL || "").trim() ||
     "http://localhost:5173"
   ).replace(/\/+$/, "");
+}
+
+function asNum(v: any, d = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+
+function toPagination(req: Request, defaults?: { pageSize?: number; maxPageSize?: number }) {
+  const q = req.query as any;
+  const defaultPageSize = Math.max(1, asNum(defaults?.pageSize, 20));
+  const maxPageSize = Math.max(defaultPageSize, asNum(defaults?.maxPageSize, 100));
+
+  const rawPage = asNum(q.page, 0);
+  const rawPageSize = asNum(q.pageSize, 0);
+  const hasPageStyle = rawPage > 0 || rawPageSize > 0;
+
+  if (hasPageStyle) {
+    const pageSize = Math.min(maxPageSize, Math.max(1, rawPageSize || defaultPageSize));
+    const page = Math.max(1, rawPage || 1);
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+    return { page, pageSize, take, skip };
+  }
+
+  const takeRaw = asNum(q.take, defaultPageSize);
+  const skipRaw = asNum(q.skip, 0);
+  const take = Math.min(maxPageSize, Math.max(1, takeRaw));
+  const skip = Math.max(0, skipRaw);
+  const pageSize = take;
+  const page = Math.floor(skip / take) + 1;
+
+  return { page, pageSize, take, skip };
+}
+
+function buildPaginatedResult<T>(params: {
+  rows: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  extra?: Record<string, any>;
+}) {
+  const { rows, total, page, pageSize, extra } = params;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+
+  return {
+    rows,
+    total,
+    page: safePage,
+    pageSize,
+    totalPages,
+    hasNextPage: safePage < totalPages,
+    hasPrevPage: safePage > 1,
+    ...(extra ?? {}),
+  };
 }
 
 type SupplierCtx = { supplierId: string; supplierName?: string | null };
@@ -65,38 +120,196 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
 /**
  * GET /api/riders
  * Supplier/Admin: list riders for supplier
+ * Supports:
+ * - ?page=1&pageSize=20
+ * - ?take=20&skip=0
+ * Optional:
+ * - ?tab=ACTIVE|INACTIVE|ALL
+ * - ?q=search
  */
 router.get("/", requireAuth, async (req: any, res: Response) => {
   try {
     const ctx = await resolveSupplierContext(req);
+    const { page, pageSize, take, skip } = toPagination(req, { pageSize: 20, maxPageSize: 100 });
 
-    const riders = await prisma.supplierRider.findMany({
-      where: { supplierId: ctx.supplierId },
-      orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
-      select: {
-        id: true,
-        supplierId: true,
-        userId: true,
-        name: true,
-        phone: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-        user: {
-          select: {
-            email: true,
-            firstName: true,
-            lastName: true,
-            phone: true,
-            status: true,
-            emailVerifiedAt: true,
-            phoneVerifiedAt: true,
+    const tabRaw = String(req.query?.tab ?? req.query?.status ?? "ALL").trim().toUpperCase();
+    const q = String(req.query?.q ?? "").trim();
+
+    const isActiveFilter =
+      tabRaw === "ACTIVE" ? true : tabRaw === "INACTIVE" ? false : undefined;
+
+    const where: any = {
+      supplierId: ctx.supplierId,
+      ...(typeof isActiveFilter === "boolean" ? { isActive: isActiveFilter } : {}),
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { phone: { contains: q, mode: "insensitive" } },
+              {
+                user: {
+                  is: {
+                    email: { contains: q, mode: "insensitive" },
+                  },
+                },
+              },
+              {
+                user: {
+                  is: {
+                    firstName: { contains: q, mode: "insensitive" },
+                  },
+                },
+              },
+              {
+                user: {
+                  is: {
+                    lastName: { contains: q, mode: "insensitive" },
+                  },
+                },
+              },
+              {
+                user: {
+                  is: {
+                    phone: { contains: q, mode: "insensitive" },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const [total, activeCount, inactiveCount, riders] = await prisma.$transaction([
+      prisma.supplierRider.count({ where }),
+      prisma.supplierRider.count({
+        where: {
+          supplierId: ctx.supplierId,
+          isActive: true,
+          ...(q
+            ? {
+                OR: [
+                  { name: { contains: q, mode: "insensitive" } },
+                  { phone: { contains: q, mode: "insensitive" } },
+                  {
+                    user: {
+                      is: {
+                        email: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                  {
+                    user: {
+                      is: {
+                        firstName: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                  {
+                    user: {
+                      is: {
+                        lastName: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                  {
+                    user: {
+                      is: {
+                        phone: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                ],
+              }
+            : {}),
+        },
+      }),
+      prisma.supplierRider.count({
+        where: {
+          supplierId: ctx.supplierId,
+          isActive: false,
+          ...(q
+            ? {
+                OR: [
+                  { name: { contains: q, mode: "insensitive" } },
+                  { phone: { contains: q, mode: "insensitive" } },
+                  {
+                    user: {
+                      is: {
+                        email: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                  {
+                    user: {
+                      is: {
+                        firstName: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                  {
+                    user: {
+                      is: {
+                        lastName: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                  {
+                    user: {
+                      is: {
+                        phone: { contains: q, mode: "insensitive" },
+                      },
+                    },
+                  },
+                ],
+              }
+            : {}),
+        },
+      }),
+      prisma.supplierRider.findMany({
+        where,
+        orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
+        take,
+        skip,
+        select: {
+          id: true,
+          supplierId: true,
+          userId: true,
+          name: true,
+          phone: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+          user: {
+            select: {
+              email: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+              status: true,
+              emailVerifiedAt: true,
+              phoneVerifiedAt: true,
+            },
           },
         },
-      },
-    });
+      }),
+    ]);
 
-    return res.json({ ok: true, data: riders });
+    return res.json({
+      ok: true,
+      data: buildPaginatedResult({
+        rows: riders,
+        total,
+        page,
+        pageSize,
+        extra: {
+          counts: {
+            active: activeCount,
+            inactive: inactiveCount,
+          },
+          supplierId: ctx.supplierId,
+        },
+      }),
+    });
   } catch (e: any) {
     const msg = e?.message || "Failed to list riders";
     const status = e?.status ? Number(e.status) : 500;
@@ -158,7 +371,9 @@ router.post("/invite", requireAuth, async (req: any, res: Response) => {
         });
       } else {
         if (String(user.role) !== "SUPPLIER_RIDER") {
-          throw Object.assign(new Error("Email already belongs to a non-rider account"), { status: 409 });
+          throw Object.assign(new Error("Email already belongs to a non-rider account"), {
+            status: 409,
+          });
         }
 
         await tx.user.update({
@@ -191,7 +406,9 @@ router.post("/invite", requireAuth, async (req: any, res: Response) => {
         });
       } else {
         if (String(existing.supplierId) !== String(ctx.supplierId)) {
-          throw Object.assign(new Error("This rider is already linked to another supplier"), { status: 409 });
+          throw Object.assign(new Error("This rider is already linked to another supplier"), {
+            status: 409,
+          });
         }
 
         await tx.supplierRider.update({
@@ -207,8 +424,7 @@ router.post("/invite", requireAuth, async (req: any, res: Response) => {
       return { userId: user.id };
     });
 
-    const acceptUrl =
-      `${getAppUrl()}/rider/accept?email=${encodeURIComponent(email)}&token=${encodeURIComponent(inviteToken)}`;
+    const acceptUrl = `${getAppUrl()}/rider/accept?email=${encodeURIComponent(email)}&token=${encodeURIComponent(inviteToken)}`;
 
     // ✅ Send invite email (in sandbox your email.ts should force to lordshegz)
     let emailSent = false;
@@ -216,12 +432,11 @@ router.post("/invite", requireAuth, async (req: any, res: Response) => {
     let emailError: string | null = null;
 
     try {
-      const resp: any =
-        await sendRiderInviteEmail(email, acceptUrl, {
-          supplierName: ctx.supplierName ?? undefined,
-          invitedName: `${firstName} ${lastName}`.trim(),
-          intendedTo: email,
-        });
+      const resp: any = await sendRiderInviteEmail(email, acceptUrl, {
+        supplierName: ctx.supplierName ?? undefined,
+        invitedName: `${firstName} ${lastName}`.trim(),
+        intendedTo: email,
+      });
 
       emailSent = true;
       emailId = resp?.id ? String(resp.id) : null;
@@ -263,7 +478,9 @@ router.post("/accept-invite", async (req: any, res: Response) => {
     const token = String(req.body?.token ?? "").trim();
     const password = String(req.body?.password ?? "");
 
-    if (!email || !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: "Valid email is required" });
+    if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
+      return res.status(400).json({ error: "Valid email is required" });
+    }
     if (!token) return res.status(400).json({ error: "Missing token" });
 
     const hasMinLen = password.length >= 8;
@@ -271,7 +488,9 @@ router.post("/accept-invite", async (req: any, res: Response) => {
     const hasNumber = /\d/.test(password);
     const hasSpecial = /[^A-Za-z0-9]/.test(password);
     if (!hasMinLen || !hasLetter || !hasNumber || !hasSpecial) {
-      return res.status(400).json({ error: "Password must be 8+ chars and include letter, number, special char" });
+      return res
+        .status(400)
+        .json({ error: "Password must be 8+ chars and include letter, number, special char" });
     }
 
     const firstName = req.body?.firstName ? String(req.body.firstName).trim() : undefined;
@@ -294,13 +513,23 @@ router.post("/accept-invite", async (req: any, res: Response) => {
       });
 
       if (!user) throw Object.assign(new Error("Invite not found"), { status: 404 });
-      if (String(user.role) !== "SUPPLIER_RIDER") throw Object.assign(new Error("Invite is not for a rider account"), { status: 400 });
+      if (String(user.role) !== "SUPPLIER_RIDER") {
+        throw Object.assign(new Error("Invite is not for a rider account"), { status: 400 });
+      }
 
-      const expired = user.resetPasswordExpiresAt ? user.resetPasswordExpiresAt.getTime() < Date.now() : true;
+      const expired = user.resetPasswordExpiresAt
+        ? user.resetPasswordExpiresAt.getTime() < Date.now()
+        : true;
       const stored = user.resetPasswordToken ? String(user.resetPasswordToken) : "";
 
-      if (!stored || expired) throw Object.assign(new Error("This invite has expired. Please request a new one."), { status: 400 });
-      if (stored !== tokenHash) throw Object.assign(new Error("Invalid invite token"), { status: 400 });
+      if (!stored || expired) {
+        throw Object.assign(new Error("This invite has expired. Please request a new one."), {
+          status: 400,
+        });
+      }
+      if (stored !== tokenHash) {
+        throw Object.assign(new Error("Invalid invite token"), { status: 400 });
+      }
 
       const pwdHash = await bcrypt.hash(password, 10);
 
@@ -351,7 +580,9 @@ router.patch("/:riderId", requireAuth, async (req: any, res: Response) => {
     if (!riderId) return res.status(400).json({ error: "Missing riderId" });
 
     const isActive = req.body?.isActive;
-    if (typeof isActive !== "boolean") return res.status(400).json({ error: "isActive must be boolean" });
+    if (typeof isActive !== "boolean") {
+      return res.status(400).json({ error: "isActive must be boolean" });
+    }
 
     const rider = await prisma.supplierRider.findUnique({
       where: { id: riderId },
@@ -359,7 +590,9 @@ router.patch("/:riderId", requireAuth, async (req: any, res: Response) => {
     });
 
     if (!rider) return res.status(404).json({ error: "Rider not found" });
-    if (String(rider.supplierId) !== String(ctx.supplierId)) return res.status(403).json({ error: "Forbidden" });
+    if (String(rider.supplierId) !== String(ctx.supplierId)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const updated = await prisma.supplierRider.update({
       where: { id: riderId },

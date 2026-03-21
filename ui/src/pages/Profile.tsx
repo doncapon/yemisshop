@@ -1,5 +1,5 @@
 // src/pages/Profile.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
@@ -90,6 +90,18 @@ type MeResponse = {
   shippingAddresses?: UserShippingAddress[] | null;
   defaultShippingAddressId?: string | null;
 };
+
+type ShippingAddressesResponse = {
+  data?: UserShippingAddress[];
+  meta?: {
+    total?: number;
+    page?: number;
+    pageSize?: number;
+    totalPages?: number;
+  };
+};
+
+const SHIPPING_PAGE_SIZE = 5;
 
 const emptyAddr: Address = {
   houseNumber: "",
@@ -218,12 +230,42 @@ function maskPhone(phone?: string | null) {
   return `${"*".repeat(Math.max(0, raw.length - 4))}${raw.slice(-4)}`;
 }
 
+function toDeliveryDetails(
+  shippingSource: UserShippingAddress | null | undefined,
+  me?: MeResponse | null
+): DeliveryDetails {
+  return {
+    id: shippingSource?.id ?? null,
+    label: shippingSource?.label ?? "Default delivery",
+    recipientName:
+      shippingSource?.recipientName ??
+      [me?.firstName, me?.lastName].filter(Boolean).join(" ").trim(),
+    phone: shippingSource?.phone ?? "",
+    whatsappPhone: shippingSource?.whatsappPhone ?? shippingSource?.phone ?? "",
+    houseNumber: shippingSource?.houseNumber ?? "",
+    streetName: shippingSource?.streetName ?? "",
+    postCode: shippingSource?.postCode ?? "",
+    town: shippingSource?.town ?? "",
+    city: shippingSource?.city ?? "",
+    state: shippingSource?.state ?? "",
+    country: shippingSource?.country ?? "Nigeria",
+    lga: shippingSource?.lga ?? "",
+    landmark: shippingSource?.landmark ?? "",
+    directionsNote: shippingSource?.directionsNote ?? "",
+    isDefault: !!shippingSource?.isDefault,
+    phoneVerifiedAt: shippingSource?.phoneVerifiedAt ?? null,
+    phoneVerifiedBy: shippingSource?.phoneVerifiedBy ?? null,
+    verificationMeta: shippingSource?.verificationMeta ?? null,
+  };
+}
+
 export default function Profile() {
   const nav = useNavigate();
   const location = useLocation();
 
   const [me, setMe] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [shippingLoading, setShippingLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -236,6 +278,16 @@ export default function Profile() {
   const [otpSendBusy, setOtpSendBusy] = useState(false);
   const [otpMessage, setOtpMessage] = useState<string | null>(null);
   const [otpMaskedPhone, setOtpMaskedPhone] = useState<string | null>(null);
+
+  const [shippingPage, setShippingPage] = useState(1);
+  const [shippingAddresses, setShippingAddresses] = useState<UserShippingAddress[]>([]);
+  const [shippingMeta, setShippingMeta] = useState({
+    total: 0,
+    page: 1,
+    pageSize: SHIPPING_PAGE_SIZE,
+    totalPages: 1,
+  });
+  const [selectedShippingId, setSelectedShippingId] = useState<string | null>(null);
 
   function isAddrEqual(a?: Address | null, b?: Partial<Address | DeliveryDetails> | null) {
     const ax = a || {};
@@ -315,6 +367,42 @@ export default function Profile() {
     });
   };
 
+  const fetchShippingAddresses = useCallback(
+    async (page = shippingPage) => {
+      setShippingLoading(true);
+      try {
+        const res = await api.get("/api/profile/shipping-addresses", {
+          ...AXIOS_COOKIE_CFG,
+          params: { page, pageSize: SHIPPING_PAGE_SIZE },
+        });
+
+        const payload = (res.data || {}) as ShippingAddressesResponse;
+        const rows = Array.isArray(payload.data) ? payload.data : [];
+        const meta = payload.meta || {};
+
+        setShippingAddresses(rows);
+        setShippingMeta({
+          total: Number(meta.total ?? rows.length ?? 0),
+          page: Number(meta.page ?? page),
+          pageSize: Number(meta.pageSize ?? SHIPPING_PAGE_SIZE),
+          totalPages: Math.max(1, Number(meta.totalPages ?? 1)),
+        });
+
+        return rows;
+      } catch (e: any) {
+        if (isAuthError(e)) {
+          redirectToLogin();
+          return [];
+        }
+        setErr(e?.response?.data?.error || "Failed to load saved delivery addresses");
+        return [];
+      } finally {
+        setShippingLoading(false);
+      }
+    },
+    [shippingPage, nav]
+  );
+
   useEffect(() => {
     const currentPhone = normalizePhoneForCompare(ship.phone || "");
     const verifiedMetaPhone = normalizePhoneForCompare(
@@ -378,32 +466,11 @@ export default function Profile() {
           lga: a.lga ?? "",
         };
 
-        const nextShip: DeliveryDetails = {
-          id: shippingSource?.id ?? null,
-          label: shippingSource?.label ?? "Default delivery",
-          recipientName:
-            shippingSource?.recipientName ??
-            [payload.firstName, payload.lastName].filter(Boolean).join(" ").trim(),
-          phone: shippingSource?.phone ?? "",
-          whatsappPhone: shippingSource?.whatsappPhone ?? shippingSource?.phone ?? "",
-          houseNumber: shippingSource?.houseNumber ?? "",
-          streetName: shippingSource?.streetName ?? "",
-          postCode: shippingSource?.postCode ?? "",
-          town: shippingSource?.town ?? "",
-          city: shippingSource?.city ?? "",
-          state: shippingSource?.state ?? "",
-          country: shippingSource?.country ?? "Nigeria",
-          lga: shippingSource?.lga ?? "",
-          landmark: shippingSource?.landmark ?? "",
-          directionsNote: shippingSource?.directionsNote ?? "",
-          isDefault: true,
-          phoneVerifiedAt: shippingSource?.phoneVerifiedAt ?? null,
-          phoneVerifiedBy: shippingSource?.phoneVerifiedBy ?? null,
-          verificationMeta: shippingSource?.verificationMeta ?? null,
-        };
+        const nextShip = toDeliveryDetails(shippingSource, payload);
 
         setHome(nextHome);
         setShip(nextShip);
+        setSelectedShippingId(shippingSource?.id ?? payload.defaultShippingAddressId ?? null);
         setOtpMaskedPhone(
           shippingSource?.whatsappPhone
             ? maskPhone(shippingSource.whatsappPhone)
@@ -411,6 +478,21 @@ export default function Profile() {
               ? maskPhone(shippingSource.phone)
               : null
         );
+
+        const bootstrapRows = await fetchShippingAddresses(1);
+        if (cancelled) return;
+
+        if (!shippingSource && bootstrapRows.length > 0) {
+          const defaultRow =
+            bootstrapRows.find((x) => x.isDefault) ||
+            bootstrapRows[0] ||
+            null;
+
+          if (defaultRow) {
+            setShip(toDeliveryDetails(defaultRow, payload));
+            setSelectedShippingId(defaultRow.id ?? null);
+          }
+        }
       } catch (e: any) {
         if (cancelled) return;
 
@@ -428,7 +510,12 @@ export default function Profile() {
     return () => {
       cancelled = true;
     };
-  }, [nav]);
+  }, [nav, fetchShippingAddresses]);
+
+  useEffect(() => {
+    if (!me) return;
+    void fetchShippingAddresses(shippingPage);
+  }, [shippingPage, me, fetchShippingAddresses]);
 
   const onHome =
     (k: keyof Address) =>
@@ -503,17 +590,33 @@ export default function Profile() {
       const latestShipping =
         latest?.shippingAddress && String(latest.shippingAddress.id || "") === String(ship.id)
           ? latest.shippingAddress
-          : (latest?.shippingAddresses || []).find(
-              (x) => String(x?.id || "") === String(ship.id)
-            ) || null;
+          : null;
 
       if (!latestShipping) {
-        setErr("Could not find your saved delivery details. Please save them again.");
-        return;
+        const rows = await fetchShippingAddresses(shippingPage);
+        const matched =
+          rows.find((x) => String(x?.id || "") === String(ship.id)) || null;
+
+        if (!matched) {
+          setErr("Could not find your saved delivery details. Please save them again.");
+          return;
+        }
+
+        const rawWhatsapp2 = normalizeText(matched.whatsappPhone || ship.whatsappPhone || "");
+        const rawPhone2 = normalizeText(matched.phone || ship.phone || "");
+        const normalizedWhatsapp2 = normalizePhoneForCompare(rawWhatsapp2);
+        const normalizedPhone2 = normalizePhoneForCompare(rawPhone2);
+
+        if (!normalizedWhatsapp2 && !normalizedPhone2) {
+          setErr("Please enter a valid delivery phone or WhatsApp number before requesting OTP.");
+          return;
+        }
       }
 
-      const rawWhatsapp = normalizeText(latestShipping.whatsappPhone || ship.whatsappPhone || "");
-      const rawPhone = normalizeText(latestShipping.phone || ship.phone || "");
+      const source = latestShipping || ship;
+
+      const rawWhatsapp = normalizeText(source.whatsappPhone || ship.whatsappPhone || "");
+      const rawPhone = normalizeText(source.phone || ship.phone || "");
 
       const normalizedWhatsapp = normalizePhoneForCompare(rawWhatsapp);
       const normalizedPhone = normalizePhoneForCompare(rawPhone);
@@ -523,11 +626,11 @@ export default function Profile() {
 
       setShip((prev) => ({
         ...prev,
-        phone: latestShipping?.phone ?? prev.phone,
-        whatsappPhone: latestShipping?.whatsappPhone ?? prev.whatsappPhone,
-        phoneVerifiedAt: latestShipping?.phoneVerifiedAt ?? null,
-        phoneVerifiedBy: latestShipping?.phoneVerifiedBy ?? null,
-        verificationMeta: latestShipping?.verificationMeta ?? prev.verificationMeta ?? null,
+        phone: source?.phone ?? prev.phone,
+        whatsappPhone: source?.whatsappPhone ?? prev.whatsappPhone,
+        phoneVerifiedAt: source?.phoneVerifiedAt ?? null,
+        phoneVerifiedBy: source?.phoneVerifiedBy ?? null,
+        verificationMeta: source?.verificationMeta ?? prev.verificationMeta ?? null,
       }));
 
       if (!whatsappLooksValid && !phoneLooksValid) {
@@ -535,7 +638,7 @@ export default function Profile() {
         return;
       }
 
-      if (latestShipping?.phoneVerifiedAt) {
+      if (source?.phoneVerifiedAt) {
         const maskedAlreadyVerified = rawWhatsapp
           ? maskPhone(rawWhatsapp)
           : rawPhone
@@ -641,6 +744,14 @@ export default function Profile() {
           : prev
       );
 
+      setShippingAddresses((prev) =>
+        prev.map((x) =>
+          String(x.id || "") === String(updated?.id || "")
+            ? { ...x, ...(updated || {}), phoneVerifiedAt: verifiedAt }
+            : x
+        )
+      );
+
       setOtp("");
       setOtpMaskedPhone(
         maskPhone(updated?.whatsappPhone || updated?.phone || ship.whatsappPhone || ship.phone)
@@ -668,6 +779,102 @@ export default function Profile() {
       setErr(String(apiError));
     } finally {
       setOtpBusy(false);
+    }
+  };
+
+  const selectSavedAddress = (row: UserShippingAddress) => {
+    setSelectedShippingId(row.id ?? null);
+    setShip(toDeliveryDetails(row, me));
+    setOtp("");
+    setOtpMessage(null);
+    setOtpMaskedPhone(
+      row.whatsappPhone ? maskPhone(row.whatsappPhone) : row.phone ? maskPhone(row.phone) : null
+    );
+  };
+
+  const makeDefaultAddress = async (id?: string | null) => {
+    if (!id) return;
+    setErr(null);
+    setMsg(null);
+
+    try {
+      await api.post(
+        `/api/profile/shipping-addresses/${encodeURIComponent(String(id))}/default`,
+        {},
+        AXIOS_COOKIE_CFG
+      );
+
+      setShippingAddresses((prev) =>
+        prev.map((x) => ({
+          ...x,
+          isDefault: String(x.id || "") === String(id),
+        }))
+      );
+
+      const chosen =
+        shippingAddresses.find((x) => String(x.id || "") === String(id)) || null;
+
+      if (chosen) {
+        setShip(toDeliveryDetails({ ...chosen, isDefault: true }, me));
+      }
+
+      setSelectedShippingId(String(id));
+      setMe((prev) =>
+        prev
+          ? {
+              ...prev,
+              defaultShippingAddressId: String(id),
+              shippingAddress:
+                chosen != null ? { ...chosen, isDefault: true } : prev.shippingAddress,
+            }
+          : prev
+      );
+
+      setMsg("Default delivery address updated.");
+      await fetchShippingAddresses(shippingPage);
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        redirectToLogin();
+        return;
+      }
+      setErr(e?.response?.data?.error || "Failed to set default address");
+    }
+  };
+
+  const deleteSavedAddress = async (id?: string | null) => {
+    if (!id) return;
+    if (!window.confirm("Delete this saved delivery address?")) return;
+
+    setErr(null);
+    setMsg(null);
+
+    try {
+      await api.delete(
+        `/api/profile/shipping-addresses/${encodeURIComponent(String(id))}`,
+        AXIOS_COOKIE_CFG
+      );
+
+      if (String(ship.id || "") === String(id)) {
+        setShip(emptyDelivery());
+        setSelectedShippingId(null);
+        setOtp("");
+        setOtpMessage(null);
+        setOtpMaskedPhone(null);
+      }
+
+      const nextTotal = Math.max(0, shippingMeta.total - 1);
+      const nextTotalPages = Math.max(1, Math.ceil(nextTotal / SHIPPING_PAGE_SIZE));
+      const nextPage = Math.min(shippingPage, nextTotalPages);
+
+      setMsg("Saved delivery address deleted.");
+      setShippingPage(nextPage);
+      await fetchShippingAddresses(nextPage);
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        redirectToLogin();
+        return;
+      }
+      setErr(e?.response?.data?.error || "Failed to delete address");
     }
   };
 
@@ -758,14 +965,14 @@ export default function Profile() {
 
       if (ship.id) {
         const { data } = await api.patch(
-          `/api/profile/shipping-addresses/${encodeURIComponent(ship.id)}`,
+          `/api/profile/shipping-addresses/${encodeURIComponent(String(ship.id))}`,
           shippingPayload,
           AXIOS_COOKIE_CFG
         );
         savedShipping = data?.data ?? data;
 
         await api.post(
-          `/api/profile/shipping-addresses/${encodeURIComponent(ship.id)}/default`,
+          `/api/profile/shipping-addresses/${encodeURIComponent(String(ship.id))}/default`,
           {},
           AXIOS_COOKIE_CFG
         );
@@ -803,26 +1010,10 @@ export default function Profile() {
 
       setShip((prev) => ({
         ...prev,
-        id: normalizedSavedShipping.id ?? prev.id ?? null,
-        label: normalizedSavedShipping.label ?? prev.label,
-        recipientName: normalizedSavedShipping.recipientName ?? prev.recipientName,
-        phone: normalizedSavedShipping.phone ?? prev.phone,
-        whatsappPhone: normalizedSavedShipping.whatsappPhone ?? prev.whatsappPhone,
-        houseNumber: normalizedSavedShipping.houseNumber ?? prev.houseNumber,
-        streetName: normalizedSavedShipping.streetName ?? prev.streetName,
-        postCode: normalizedSavedShipping.postCode ?? prev.postCode,
-        town: normalizedSavedShipping.town ?? prev.town,
-        city: normalizedSavedShipping.city ?? prev.city,
-        state: normalizedSavedShipping.state ?? prev.state,
-        country: normalizedSavedShipping.country ?? prev.country,
-        lga: normalizedSavedShipping.lga ?? prev.lga,
-        landmark: normalizedSavedShipping.landmark ?? prev.landmark,
-        directionsNote: normalizedSavedShipping.directionsNote ?? prev.directionsNote,
-        isDefault: true,
-        phoneVerifiedAt: normalizedSavedShipping.phoneVerifiedAt ?? null,
-        phoneVerifiedBy: normalizedSavedShipping.phoneVerifiedBy ?? null,
-        verificationMeta: normalizedSavedShipping.verificationMeta ?? null,
+        ...toDeliveryDetails(normalizedSavedShipping, me),
       }));
+
+      setSelectedShippingId(normalizedSavedShipping.id ?? null);
 
       setMe((prev) =>
         prev
@@ -852,6 +1043,7 @@ export default function Profile() {
       }
 
       setMsg("Addresses saved successfully.");
+      await fetchShippingAddresses(shippingPage);
     } catch (e: any) {
       if (isAuthError(e)) {
         redirectToLogin();
@@ -884,6 +1076,16 @@ export default function Profile() {
       </SiteLayout>
     );
   }
+
+  const shippingPageStart =
+    shippingMeta.total === 0 ? 0 : (shippingMeta.page - 1) * shippingMeta.pageSize + 1;
+  const shippingPageEnd =
+    shippingMeta.total === 0
+      ? 0
+      : Math.min(
+          shippingMeta.total,
+          (shippingMeta.page - 1) * shippingMeta.pageSize + shippingAddresses.length
+        );
 
   return (
     <SiteLayout>
@@ -978,6 +1180,167 @@ export default function Profile() {
             </div>
           </section>
         )}
+
+        <section className="rounded-2xl border bg-white p-5 space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+              <h2 className="font-semibold text-ink">Saved delivery addresses</h2>
+              <p className="text-xs text-ink-soft mt-1">
+                This section now reads from the paginated backend endpoint.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fetchShippingAddresses(shippingPage)}
+                disabled={shippingLoading}
+                className="rounded-md border px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50"
+              >
+                {shippingLoading ? "Refreshing…" : "Refresh addresses"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedShippingId(null);
+                  setShip(emptyDelivery());
+                  setOtp("");
+                  setOtpMessage(null);
+                  setOtpMaskedPhone(null);
+                }}
+                className="rounded-md border px-3 py-2 text-sm hover:bg-zinc-50"
+              >
+                New address
+              </button>
+            </div>
+          </div>
+
+          <div className="text-sm text-zinc-600">
+            {shippingMeta.total > 0
+              ? `Showing ${shippingPageStart}-${shippingPageEnd} of ${shippingMeta.total}`
+              : shippingLoading
+                ? "Loading addresses…"
+                : "No saved delivery addresses yet."}
+          </div>
+
+          <div className="space-y-3">
+            {shippingAddresses.map((addr) => {
+              const isSelected = String(selectedShippingId || "") === String(addr.id || "");
+              return (
+                <div
+                  key={String(addr.id || Math.random())}
+                  className={`rounded-xl border p-4 ${
+                    isSelected ? "border-primary-300 bg-primary-50/40" : "border-zinc-200 bg-white"
+                  }`}
+                >
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="font-medium text-ink">
+                          {normalizeText(addr.label) || "Saved delivery"}
+                        </div>
+                        {addr.isDefault ? (
+                          <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
+                            Default
+                          </span>
+                        ) : null}
+                        {addr.phoneVerifiedAt ? (
+                          <span className="inline-flex items-center rounded-full border border-green-200 bg-green-50 px-2 py-0.5 text-[11px] text-green-700">
+                            Phone verified
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+                            Phone not verified
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-sm text-ink">{normalizeText(addr.recipientName) || "—"}</div>
+                      <div className="text-sm text-zinc-600 break-words">
+                        {joinAddressLines(addr)}
+                      </div>
+                      <div className="text-xs text-zinc-500">
+                        Phone: {normalizeText(addr.phone) || "—"}{" "}
+                        {normalizeText(addr.whatsappPhone)
+                          ? `• WhatsApp: ${normalizeText(addr.whatsappPhone)}`
+                          : ""}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => selectSavedAddress(addr)}
+                        className="rounded-md border px-3 py-2 text-sm hover:bg-zinc-50"
+                      >
+                        {isSelected ? "Loaded" : "Load into form"}
+                      </button>
+
+                      {!addr.isDefault ? (
+                        <button
+                          type="button"
+                          onClick={() => makeDefaultAddress(addr.id)}
+                          className="rounded-md border px-3 py-2 text-sm hover:bg-zinc-50"
+                        >
+                          Make default
+                        </button>
+                      ) : null}
+
+                      <button
+                        type="button"
+                        onClick={() => deleteSavedAddress(addr.id)}
+                        className="rounded-md border border-red-200 px-3 py-2 text-sm text-red-700 hover:bg-red-50"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {shippingMeta.totalPages > 1 && (
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                disabled={shippingMeta.page <= 1 || shippingLoading}
+                onClick={() => setShippingPage(1)}
+                className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
+              >
+                First
+              </button>
+              <button
+                type="button"
+                disabled={shippingMeta.page <= 1 || shippingLoading}
+                onClick={() => setShippingPage((p) => Math.max(1, p - 1))}
+                className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
+              >
+                Prev
+              </button>
+              <div className="px-2 text-sm text-zinc-600">
+                Page {shippingMeta.page} of {shippingMeta.totalPages}
+              </div>
+              <button
+                type="button"
+                disabled={shippingMeta.page >= shippingMeta.totalPages || shippingLoading}
+                onClick={() =>
+                  setShippingPage((p) => Math.min(shippingMeta.totalPages, p + 1))
+                }
+                className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
+              >
+                Next
+              </button>
+              <button
+                type="button"
+                disabled={shippingMeta.page >= shippingMeta.totalPages || shippingLoading}
+                onClick={() => setShippingPage(shippingMeta.totalPages)}
+                className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
+              >
+                Last
+              </button>
+            </div>
+          )}
+        </section>
 
         <section className="grid grid-cols-1 gap-4">
           <div className="rounded-xl border bg-white p-4">

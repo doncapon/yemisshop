@@ -1,6 +1,6 @@
 // src/pages/admin/AdminEmployees.tsx
-import React, { useMemo, useState, type FormEvent } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import React, { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import api from "../../api/client";
 import { format } from "date-fns";
@@ -51,6 +51,8 @@ type EmployeesListResponse = {
     page: number;
     pageSize: number;
     pageCount: number;
+    hasNextPage?: boolean;
+    hasPrevPage?: boolean;
 };
 
 /* ----------------------------- Filters / UI State ----------------------------- */
@@ -79,7 +81,7 @@ type EditingState =
 /* ----------------------------- Helpers ----------------------------- */
 
 function buildListQuery(filters: Filters) {
-    const params: any = {
+    const params: Record<string, string | number> = {
         page: filters.page,
         pageSize: filters.pageSize,
     };
@@ -91,32 +93,61 @@ function buildListQuery(filters: Filters) {
     return params;
 }
 
-// Robustly unwrap either EmployeesListResponse or plain Employee[]
-function getEmployeesFromResponse(data: EmployeesListResponse | Employee[] | undefined) {
-    if (!data) return [] as Employee[];
-    if (Array.isArray(data)) return data;
-    return data.items ?? [];
-}
-
-function getPaginationMeta(
+function normaliseEmployeesResponse(
     data: EmployeesListResponse | Employee[] | undefined,
-    fallbackPage: number,
-    fallbackPageSize: number
-) {
-    if (!data || Array.isArray(data)) {
+    filters: Filters
+): EmployeesListResponse {
+    if (!data) {
         return {
-            page: fallbackPage,
-            pageSize: fallbackPageSize,
-            total: Array.isArray(data) ? data.length : 0,
+            items: [],
+            total: 0,
+            page: filters.page,
+            pageSize: filters.pageSize,
             pageCount: 1,
+            hasNextPage: false,
+            hasPrevPage: false,
         };
     }
+
+    if (Array.isArray(data)) {
+        const pageCount = Math.max(1, Math.ceil(data.length / filters.pageSize));
+        return {
+            items: data,
+            total: data.length,
+            page: filters.page,
+            pageSize: filters.pageSize,
+            pageCount,
+            hasNextPage: filters.page < pageCount,
+            hasPrevPage: filters.page > 1,
+        };
+    }
+
     return {
-        page: data.page,
-        pageSize: data.pageSize,
-        total: data.total,
-        pageCount: data.pageCount,
+        items: Array.isArray(data.items) ? data.items : [],
+        total: Number.isFinite(data.total) ? data.total : 0,
+        page: Number.isFinite(data.page) ? data.page : filters.page,
+        pageSize: Number.isFinite(data.pageSize) ? data.pageSize : filters.pageSize,
+        pageCount: Math.max(1, Number.isFinite(data.pageCount) ? data.pageCount : 1),
+        hasNextPage:
+            typeof data.hasNextPage === "boolean"
+                ? data.hasNextPage
+                : (Number.isFinite(data.page) ? data.page : filters.page) <
+                  Math.max(1, Number.isFinite(data.pageCount) ? data.pageCount : 1),
+        hasPrevPage:
+            typeof data.hasPrevPage === "boolean"
+                ? data.hasPrevPage
+                : (Number.isFinite(data.page) ? data.page : filters.page) > 1,
     };
+}
+
+function getRangeStart(total: number, page: number, pageSize: number) {
+    if (total === 0) return 0;
+    return (page - 1) * pageSize + 1;
+}
+
+function getRangeEnd(total: number, page: number, pageSize: number) {
+    if (total === 0) return 0;
+    return Math.min(total, page * pageSize);
 }
 
 /* ----------------------------- Component ----------------------------- */
@@ -126,10 +157,48 @@ const AdminEmployees: React.FC = () => {
     const navigate = useNavigate();
 
     const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+    const [searchInput, setSearchInput] = useState(DEFAULT_FILTERS.search);
+    const [departmentInput, setDepartmentInput] = useState(DEFAULT_FILTERS.department);
+
     const [editing, setEditing] = useState<EditingState>(null);
     const [isFormOpen, setIsFormOpen] = useState(false);
 
-    const queryKey = useMemo(() => ["admin-employees", filters], [filters]);
+    useEffect(() => {
+        const timeout = window.setTimeout(() => {
+            setFilters((prev) => {
+                const nextSearch = searchInput.trimStart();
+                const nextDepartment = departmentInput.trimStart();
+
+                if (
+                    prev.search === nextSearch &&
+                    prev.department === nextDepartment
+                ) {
+                    return prev;
+                }
+
+                return {
+                    ...prev,
+                    search: nextSearch,
+                    department: nextDepartment,
+                    page: 1,
+                };
+            });
+        }, 350);
+
+        return () => window.clearTimeout(timeout);
+    }, [searchInput, departmentInput]);
+
+    const queryKey = useMemo(
+        () => [
+            "admin-employees",
+            filters.search,
+            filters.department,
+            filters.status,
+            filters.page,
+            filters.pageSize,
+        ],
+        [filters]
+    );
 
     const employeesQuery = useQuery({
         queryKey,
@@ -140,6 +209,7 @@ const AdminEmployees: React.FC = () => {
             });
             return res.data;
         },
+        placeholderData: keepPreviousData,
     });
 
     const banksQuery = useQuery({
@@ -155,10 +225,11 @@ const AdminEmployees: React.FC = () => {
             const res = await api.post<Employee>("/api/admin/employees", payload);
             return res.data;
         },
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
+        onSuccess: async () => {
+            await queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
             setIsFormOpen(false);
             setEditing(null);
+            setFilters((prev) => ({ ...prev, page: 1 }));
         },
     });
 
@@ -168,8 +239,8 @@ const AdminEmployees: React.FC = () => {
             const res = await api.patch<Employee>(`/api/admin/employees/${id}`, data);
             return res.data;
         },
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
+        onSuccess: async () => {
+            await queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
             setIsFormOpen(false);
             setEditing(null);
         },
@@ -182,17 +253,30 @@ const AdminEmployees: React.FC = () => {
             });
             return res.data;
         },
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
+        onSuccess: async () => {
+            await queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
         },
     });
 
     const isSaving = createMutation.isPending || updateMutation.isPending;
     const isTogglingPayroll = togglePayrollMutation.isPending;
-    const { data, isLoading, isError } = employeesQuery;
 
-    const employees = getEmployeesFromResponse(data);
-    const pagination = getPaginationMeta(data, filters.page, filters.pageSize);
+    const rawData = employeesQuery.data;
+    const isLoading = employeesQuery.isLoading;
+    const isFetching = employeesQuery.isFetching;
+    const isError = employeesQuery.isError;
+
+    const data = normaliseEmployeesResponse(rawData, filters);
+    const employees = data.items;
+    const page = data.page;
+    const pageSize = data.pageSize;
+    const total = data.total;
+    const pageCount = data.pageCount;
+    const hasPrevPage = !!data.hasPrevPage;
+    const hasNextPage = !!data.hasNextPage;
+
+    const rangeStart = getRangeStart(total, page, pageSize);
+    const rangeEnd = getRangeEnd(total, page, pageSize);
 
     /* ----------------------------- Handlers ----------------------------- */
 
@@ -288,6 +372,13 @@ const AdminEmployees: React.FC = () => {
         });
     }
 
+    function goToPage(nextPage: number) {
+        setFilters((prev) => ({
+            ...prev,
+            page: Math.min(Math.max(1, nextPage), Math.max(1, pageCount)),
+        }));
+    }
+
     /* ----------------------------- Render ----------------------------- */
 
     return (
@@ -317,10 +408,8 @@ const AdminEmployees: React.FC = () => {
                         <input
                             type="text"
                             className="border rounded px-2 py-1 text-sm"
-                            value={filters.search}
-                            onChange={(e) =>
-                                setFilters((f) => ({ ...f, search: e.target.value, page: 1 }))
-                            }
+                            value={searchInput}
+                            onChange={(e) => setSearchInput(e.target.value)}
                             placeholder="Name, email, job title..."
                         />
                     </div>
@@ -330,10 +419,8 @@ const AdminEmployees: React.FC = () => {
                         <input
                             type="text"
                             className="border rounded px-2 py-1 text-sm"
-                            value={filters.department}
-                            onChange={(e) =>
-                                setFilters((f) => ({ ...f, department: e.target.value, page: 1 }))
-                            }
+                            value={departmentInput}
+                            onChange={(e) => setDepartmentInput(e.target.value)}
                             placeholder="e.g. Operations"
                         />
                     </div>
@@ -358,6 +445,26 @@ const AdminEmployees: React.FC = () => {
                             <option value="EXITED">Exited</option>
                         </select>
                     </div>
+
+                    <div className="flex flex-col">
+                        <label className="text-xs font-medium text-gray-600">Rows per page</label>
+                        <select
+                            className="border rounded px-2 py-1 text-sm"
+                            value={filters.pageSize}
+                            onChange={(e) =>
+                                setFilters((f) => ({
+                                    ...f,
+                                    pageSize: Number(e.target.value) || 20,
+                                    page: 1,
+                                }))
+                            }
+                        >
+                            <option value={10}>10</option>
+                            <option value={20}>20</option>
+                            <option value={50}>50</option>
+                            <option value={100}>100</option>
+                        </select>
+                    </div>
                 </div>
             </section>
 
@@ -366,163 +473,206 @@ const AdminEmployees: React.FC = () => {
                 {isLoading && (
                     <div className="p-6 text-sm text-gray-500">Loading employees…</div>
                 )}
+
                 {isError && !isLoading && (
                     <div className="p-6 text-sm text-red-600">
                         Failed to load employees. Please try again.
                     </div>
                 )}
-                {!isLoading && employees.length === 0 && (
+
+                {!isLoading && !isError && employees.length === 0 && (
                     <div className="p-6 text-sm text-gray-500">No employees found.</div>
                 )}
 
                 {employees.length > 0 && (
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full text-sm">
-                            <thead className="bg-gray-50 border-b">
-                                <tr>
-                                    <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
-                                        Name
-                                    </th>
-                                    <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
-                                        Job / Dept
-                                    </th>
-                                    <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
-                                        Email
-                                    </th>
-                                    <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
-                                        Status
-                                    </th>
-                                    <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
-                                        Payroll
-                                    </th>
-                                    <th className="px-3 py-2 text-right font-medium text-xs text-gray-500">
-                                        Actions
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {employees.map((emp) => {
-                                    const fullName = `${emp.firstName} ${emp.lastName}`.trim();
-                                    const primaryEmail = emp.emailWork || emp.emailPersonal || "—";
+                    <>
+                        <div className="flex items-center justify-between px-4 py-3 border-b text-xs text-gray-600">
+                            <div>
+                                Showing {rangeStart}-{rangeEnd} of {total} employees
+                            </div>
+                            {isFetching && !isLoading ? (
+                                <div className="text-gray-500">Updating…</div>
+                            ) : (
+                                <div>Page {page} of {pageCount}</div>
+                            )}
+                        </div>
 
-                                    return (
-                                        <tr
-                                            key={emp.id}
-                                            className={`border-b last:border-b-0 ${emp.status === "EXITED" ? "opacity-60 bg-gray-50" : ""
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full text-sm">
+                                <thead className="bg-gray-50 border-b">
+                                    <tr>
+                                        <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                                            Name
+                                        </th>
+                                        <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                                            Job / Dept
+                                        </th>
+                                        <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                                            Email
+                                        </th>
+                                        <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                                            Status
+                                        </th>
+                                        <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                                            Payroll
+                                        </th>
+                                        <th className="px-3 py-2 text-right font-medium text-xs text-gray-500">
+                                            Actions
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {employees.map((emp) => {
+                                        const fullName = `${emp.firstName} ${emp.lastName}`.trim();
+                                        const primaryEmail = emp.emailWork || emp.emailPersonal || "—";
+
+                                        return (
+                                            <tr
+                                                key={emp.id}
+                                                className={`border-b last:border-b-0 ${
+                                                    emp.status === "EXITED" ? "opacity-60 bg-gray-50" : ""
                                                 }`}
-                                        >
-                                            <td className="px-3 py-2 align-top">
-                                                <div className="font-medium">{fullName || "—"}</div>
-                                                <div className="text-[11px] text-gray-500">
-                                                    Joined{" "}
-                                                    {emp.startDate
-                                                        ? format(new Date(emp.startDate), "dd MMM yyyy")
-                                                        : "—"}
-                                                </div>
-                                            </td>
-                                            <td className="px-3 py-2 align-top text-xs text-gray-700">
-                                                <div>{emp.jobTitle || "—"}</div>
-                                                <div className="text-[11px] text-gray-500">
-                                                    {emp.department || "—"}
-                                                </div>
-                                            </td>
-                                            <td className="px-3 py-2 align-top text-xs text-gray-700">
-                                                {primaryEmail}
-                                            </td>
-                                            <td className="px-3 py-2 align-top text-xs">
-                                                <span
-                                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] ${emp.status === "ACTIVE"
-                                                        ? "bg-emerald-100 text-emerald-800"
-                                                        : emp.status === "PROBATION"
-                                                            ? "bg-yellow-100 text-yellow-800"
-                                                            : emp.status === "ON_LEAVE"
+                                            >
+                                                <td className="px-3 py-2 align-top">
+                                                    <div className="font-medium">{fullName || "—"}</div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        Joined{" "}
+                                                        {emp.startDate
+                                                            ? format(new Date(emp.startDate), "dd MMM yyyy")
+                                                            : "—"}
+                                                    </div>
+                                                </td>
+
+                                                <td className="px-3 py-2 align-top text-xs text-gray-700">
+                                                    <div>{emp.jobTitle || "—"}</div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        {emp.department || "—"}
+                                                    </div>
+                                                </td>
+
+                                                <td className="px-3 py-2 align-top text-xs text-gray-700">
+                                                    {primaryEmail}
+                                                </td>
+
+                                                <td className="px-3 py-2 align-top text-xs">
+                                                    <span
+                                                        className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] ${
+                                                            emp.status === "ACTIVE"
+                                                                ? "bg-emerald-100 text-emerald-800"
+                                                                : emp.status === "PROBATION"
+                                                                ? "bg-yellow-100 text-yellow-800"
+                                                                : emp.status === "ON_LEAVE"
                                                                 ? "bg-blue-100 text-blue-800"
                                                                 : "bg-gray-200 text-gray-700"
                                                         }`}
-                                                >
-                                                    {emp.status.replace("_", " ")}
-                                                </span>
-                                            </td>
-                                            <td className="px-3 py-2 align-top text-xs">
-                                                <div className="flex flex-col gap-1">
+                                                    >
+                                                        {emp.status.replace("_", " ")}
+                                                    </span>
+                                                </td>
+
+                                                <td className="px-3 py-2 align-top text-xs">
+                                                    <div className="flex flex-col gap-1">
+                                                        <button
+                                                            type="button"
+                                                            disabled={isTogglingPayroll}
+                                                            onClick={() => handlePayrollToggle(emp)}
+                                                            className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] ${
+                                                                emp.isPayrollReady
+                                                                    ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                                                    : "bg-white border-gray-200 text-gray-600"
+                                                            } disabled:opacity-50`}
+                                                        >
+                                                            {emp.isPayrollReady
+                                                                ? "Payroll ready"
+                                                                : "Mark payroll ready"}
+                                                        </button>
+
+                                                        <div className="text-[10px] text-gray-500">
+                                                            Docs:{" "}
+                                                            {[
+                                                                emp.hasPassportDoc ? "Passport" : null,
+                                                                emp.hasNinSlipDoc ? "NIN" : null,
+                                                                emp.hasTaxDoc ? "Tax" : null,
+                                                            ]
+                                                                .filter(Boolean)
+                                                                .join(", ") || "None"}
+                                                        </div>
+                                                    </div>
+                                                </td>
+
+                                                <td className="px-3 py-2 align-top text-right text-xs space-x-2">
                                                     <button
                                                         type="button"
-                                                        disabled={isTogglingPayroll}
-                                                        onClick={() => handlePayrollToggle(emp)}
-                                                        className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] ${emp.isPayrollReady
-                                                            ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                                                            : "bg-white border-gray-200 text-gray-600"
-                                                            } disabled:opacity-50`}
+                                                        onClick={() => openEdit(emp)}
+                                                        className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
                                                     >
-                                                        {emp.isPayrollReady ? "Payroll ready" : "Mark payroll ready"}
+                                                        Edit
                                                     </button>
-                                                    <div className="text-[10px] text-gray-500">
-                                                        Docs:{" "}
-                                                        {[
-                                                            emp.hasPassportDoc ? "Passport" : null,
-                                                            emp.hasNinSlipDoc ? "NIN" : null,
-                                                            emp.hasTaxDoc ? "Tax" : null,
-                                                        ]
-                                                            .filter(Boolean)
-                                                            .join(", ") || "None"}
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td className="px-3 py-2 align-top text-right text-xs space-x-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openEdit(emp)}
-                                                    className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
-                                                >
-                                                    Edit
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                        navigate(`/admin/employees/${emp.id}/documents`)
-                                                    }
-                                                    className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
-                                                >
-                                                    Documents
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            navigate(`/admin/employees/${emp.id}/documents`)
+                                                        }
+                                                        className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
+                                                    >
+                                                        Documents
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </>
                 )}
 
-                {/* Pagination (only if backend provides it) */}
-                {pagination.pageCount > 1 && (
-                    <div className="px-4 py-3 flex items-center justify-between text-xs text-gray-600 border-t">
+                {/* Pagination */}
+                {!isLoading && !isError && pageCount > 0 && (
+                    <div className="px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between text-xs text-gray-600 border-t">
                         <div>
-                            Page {pagination.page} of {pagination.pageCount} • {pagination.total} employees
+                            {total > 0
+                                ? `Showing ${rangeStart}-${rangeEnd} of ${total} employees`
+                                : "No employees"}
                         </div>
-                        <div className="space-x-2">
+
+                        <div className="flex items-center gap-2">
                             <button
                                 type="button"
-                                disabled={filters.page <= 1}
-                                onClick={() =>
-                                    setFilters((f) => ({ ...f, page: Math.max(1, f.page - 1) }))
-                                }
+                                disabled={!hasPrevPage}
+                                onClick={() => goToPage(1)}
+                                className="px-2 py-1 border rounded disabled:opacity-50"
+                            >
+                                First
+                            </button>
+                            <button
+                                type="button"
+                                disabled={!hasPrevPage}
+                                onClick={() => goToPage(page - 1)}
                                 className="px-2 py-1 border rounded disabled:opacity-50"
                             >
                                 Prev
                             </button>
+
+                            <span className="px-2">
+                                Page {page} of {pageCount}
+                            </span>
+
                             <button
                                 type="button"
-                                disabled={filters.page >= pagination.pageCount}
-                                onClick={() =>
-                                    setFilters((f) => ({
-                                        ...f,
-                                        page: Math.min(pagination.pageCount, f.page + 1),
-                                    }))
-                                }
+                                disabled={!hasNextPage}
+                                onClick={() => goToPage(page + 1)}
                                 className="px-2 py-1 border rounded disabled:opacity-50"
                             >
                                 Next
+                            </button>
+                            <button
+                                type="button"
+                                disabled={!hasNextPage}
+                                onClick={() => goToPage(pageCount)}
+                                className="px-2 py-1 border rounded disabled:opacity-50"
+                            >
+                                Last
                             </button>
                         </div>
                     </div>
@@ -532,14 +682,12 @@ const AdminEmployees: React.FC = () => {
             {/* Form Drawer / Modal */}
             {isFormOpen && editing && (
                 <div className="fixed inset-0 z-40 flex">
-                    {/* Backdrop */}
                     <div
                         className="flex-1 bg-black/40"
                         onClick={closeForm}
                         aria-hidden="true"
                     />
 
-                    {/* Panel */}
                     <div className="w-full max-w-xl bg-white shadow-xl p-6 overflow-y-auto">
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-lg font-semibold">
@@ -556,7 +704,6 @@ const AdminEmployees: React.FC = () => {
                         </div>
 
                         <form onSubmit={handleSubmit} className="space-y-4 text-sm">
-                            {/* Name */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-xs font-medium text-gray-600">
@@ -582,7 +729,6 @@ const AdminEmployees: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Emails / phone */}
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-xs font-medium text-gray-600">
@@ -618,7 +764,6 @@ const AdminEmployees: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Job / dept / status */}
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-xs font-medium text-gray-600">
@@ -657,7 +802,6 @@ const AdminEmployees: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Start date / salary / frequency */}
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-xs font-medium text-gray-600">
@@ -703,9 +847,7 @@ const AdminEmployees: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Bank details + payroll ready */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                {/* Bank Selection */}
                                 <div className="space-y-3">
                                     <div>
                                         <label className="block text-xs font-medium text-gray-600">
@@ -726,7 +868,6 @@ const AdminEmployees: React.FC = () => {
                                                         (b: any) => b.name === selectedName
                                                     );
 
-                                                    // Auto-fill bankCode input
                                                     if (selectedBank) {
                                                         const codeInput = document.querySelector(
                                                             "input[name='bankCode']"
@@ -760,7 +901,6 @@ const AdminEmployees: React.FC = () => {
                                     </div>
                                 </div>
 
-                                {/* Account fields */}
                                 <div className="space-y-3">
                                     <div>
                                         <label className="block text-xs font-medium text-gray-600">
@@ -802,7 +942,6 @@ const AdminEmployees: React.FC = () => {
                                 </label>
                             </div>
 
-                            {/* Actions */}
                             <div className="pt-4 flex items-center justify-between border-t">
                                 <button
                                     type="button"
@@ -822,8 +961,8 @@ const AdminEmployees: React.FC = () => {
                                             ? "Creating…"
                                             : "Saving…"
                                         : editing.mode === "create"
-                                            ? "Create employee"
-                                            : "Save changes"}
+                                        ? "Create employee"
+                                        : "Save changes"}
                                 </button>
                             </div>
                         </form>

@@ -1,9 +1,12 @@
-import React, {
+// src/App.tsx
+import * as React from "react";
+import {
   createContext,
   useContext,
   useEffect,
   useMemo,
   useState,
+  Suspense,
 } from "react";
 import {
   Route,
@@ -17,81 +20,145 @@ import {
 
 import Footer from "./components/Footer";
 import ProtectedRoute from "./components/ProtectedRoute";
-
-import Catalog from "./pages/Catalog";
-import ProductDetail from "./pages/ProductDetail";
-import Cart from "./pages/Cart";
-import Checkout from "./pages/Checkout";
-import Login from "./pages/Login";
-import Register from "./pages/Register";
-import Verify from "./pages/Verify";
-import Profile from "./pages/Profile";
-import ForgotPassword from "./pages/ForgotPassword";
-import ResetPassword from "./pages/ResetPassword";
-import Payment from "./pages/Payment";
-import PaymentCallback from "./pages/PaymentCallback";
-import Wishlist from "./pages/Wishlist";
-import Orders from "./pages/Orders";
-import ReceiptPage from "./pages/Receipts";
-import ResetGuard from "./routes/ResetGuard";
-
-import AdminDashboard from "./pages/admin/AdminDashboard";
-import SettingsAdminPage from "./pages/admin/SettingsAdminPage";
-import AdminApplicants from "./pages/admin/AdminApplicants";
-import UserDashboard from "./pages/UserDashboard";
-import SupplierRegister from "./pages/supplier/SupplierRegister";
-
-import { useAuthStore } from "./store/auth";
-import { useIdleLogout } from "./hooks/useIdleLogout";
-
-import SupplierDashboard from "./pages/supplier/SupplierDashboard";
-import SupplierProductsPage from "./pages/supplier/SupplierProducts";
-import SupplierAddProductsPage from "./pages/supplier/SupplierAddProducts";
-import SupplierEditProduct from "./pages/supplier/SupplierEditProduct";
-import SupplierOrdersPage from "./pages/supplier/SupplierOrders";
-import SupplierPayoutsPage from "./pages/supplier/SupplierPayouts";
-import SupplierSettingsPage from "./pages/supplier/SupplierSettings";
-import SupplierCatalogRequests from "./pages/supplier/SupplierCatalogRequests";
-import AccountSessions from "./pages/supplier/AccountSessions";
-import SupplierRefunds from "./pages/supplier/SupplierRefunds";
-import SupplierRiders from "./pages/supplier/SupplierRiders";
-import SupplierCatalogOffers from "./pages/supplier/SupplierCatalogOffers";
-
-import RiderAcceptInvite from "./pages/RiderAcceptInvite";
-
 import ModalProvider from "./components/ModalProvider";
 import { Toaster } from "react-hot-toast";
 import toast from "react-hot-toast";
-
-import DataPrivacy from "./pages/DataPrivacy";
-import AuthBootstrap from "./components/AuthBootstrap";
-import AdminOfferChangeRequests from "./pages/admin/AdminOfferChangeRequests";
 import ScrollToTop from "./components/ScrollToTop";
-import About from "./pages/AboutUs";
-import Contact from "./pages/Contact";
-import Careers from "./pages/Careers";
-import AdminEmployeeDocuments from "./pages/admin/AdminEmployeeDocuments";
-import AdminEmployees from "./pages/admin/AdminEmployees";
-import AdminCareersConfig from "./pages/admin/AdminCareersConfig";
-import AdminCareersJobs from "./pages/admin/AdminCareersJobs";
-import CareersIndex from "./pages/CareersIndex";
-import CareerJobDetail from "./pages/CareerJobDetail";
-import AdminEmployeeDetails from "./pages/admin/AdminEmployeeDetails";
-import ReturnsRefunds from "./pages/ReturnsRefunds";
-import HelpCenter from "./pages/HelpCenter";
-import TermsConditions from "./pages/TermsConditions";
-import CookiesPage from "./pages/Cookies";
-import UnsubscribeNewsletter from "./pages/UnsubscribeNewsletter";
-import AdminNewsletterPage from "./pages/admin/AdminNewsletter";
-import SupplierVerifyContact from "./pages/supplier/SupplierVerifyContact";
-import SupplierBusinessDetails from "./pages/supplier/SupplierBusinessDetails";
-import SupplierOnboardingAddress from "./pages/supplier/SupplierOnboardingAddress";
-import SupplierOnboardingDocuments from "./pages/supplier/SupplierOnboardingDocuments";
+import AuthBootstrap from "./components/AuthBootstrap";
 
+import { useAuthStore } from "./store/auth";
+import { useIdleLogout } from "./hooks/useIdleLogout";
 import api from "./api/client";
-import AdminSupplierDocuments from "./pages/admin/AdminSupplierDocuments";
-import AdminShipping from "./pages/admin/AdminShipping";
-import ProductReviews from "./pages/ProductReviews";
+
+/* -----------------------------
+   Lazy-loaded pages
+----------------------------- */
+const Catalog = React.lazy(() => import("./pages/Catalog"));
+const ProductDetail = React.lazy(() => import("./pages/ProductDetail"));
+const ProductReviews = React.lazy(() => import("./pages/ProductReviews"));
+const Cart = React.lazy(() => import("./pages/Cart"));
+const Checkout = React.lazy(() => import("./pages/Checkout"));
+const Login = React.lazy(() => import("./pages/Login"));
+const Register = React.lazy(() => import("./pages/Register"));
+const Verify = React.lazy(() => import("./pages/Verify"));
+const Profile = React.lazy(() => import("./pages/Profile"));
+const ForgotPassword = React.lazy(() => import("./pages/ForgotPassword"));
+const ResetPassword = React.lazy(() => import("./pages/ResetPassword"));
+const Payment = React.lazy(() => import("./pages/Payment"));
+const PaymentCallback = React.lazy(() => import("./pages/PaymentCallback"));
+const Wishlist = React.lazy(() => import("./pages/Wishlist"));
+const Orders = React.lazy(() => import("./pages/Orders"));
+const ReceiptPage = React.lazy(() => import("./pages/Receipts"));
+const ResetGuard = React.lazy(() => import("./routes/ResetGuard"));
+
+const AdminDashboard = React.lazy(() => import("./pages/admin/AdminDashboard"));
+const SettingsAdminPage = React.lazy(() => import("./pages/admin/SettingsAdminPage"));
+const AdminApplicants = React.lazy(() => import("./pages/admin/AdminApplicants"));
+const AdminOfferChangeRequests = React.lazy(
+  () => import("./pages/admin/AdminOfferChangeRequests")
+);
+const AdminEmployeeDocuments = React.lazy(
+  () => import("./pages/admin/AdminEmployeeDocuments")
+);
+const AdminEmployees = React.lazy(() => import("./pages/admin/AdminEmployees"));
+const AdminCareersConfig = React.lazy(
+  () => import("./pages/admin/AdminCareersConfig")
+);
+const AdminCareersJobs = React.lazy(() => import("./pages/admin/AdminCareersJobs"));
+const AdminEmployeeDetails = React.lazy(
+  () => import("./pages/admin/AdminEmployeeDetails")
+);
+const AdminNewsletterPage = React.lazy(
+  () => import("./pages/admin/AdminNewsletter")
+);
+const AdminSupplierDocuments = React.lazy(
+  () => import("./pages/admin/AdminSupplierDocuments")
+);
+const AdminShipping = React.lazy(() => import("./pages/admin/AdminShipping"));
+
+const UserDashboard = React.lazy(() => import("./pages/UserDashboard"));
+const SupplierRegister = React.lazy(() => import("./pages/supplier/SupplierRegister"));
+const SupplierDashboard = React.lazy(
+  () => import("./pages/supplier/SupplierDashboard")
+);
+const SupplierProductsPage = React.lazy(
+  () => import("./pages/supplier/SupplierProducts")
+);
+const SupplierAddProductsPage = React.lazy(
+  () => import("./pages/supplier/SupplierAddProducts")
+);
+const SupplierEditProduct = React.lazy(
+  () => import("./pages/supplier/SupplierEditProduct")
+);
+const SupplierOrdersPage = React.lazy(
+  () => import("./pages/supplier/SupplierOrders")
+);
+const SupplierPayoutsPage = React.lazy(
+  () => import("./pages/supplier/SupplierPayouts")
+);
+const SupplierSettingsPage = React.lazy(
+  () => import("./pages/supplier/SupplierSettings")
+);
+const SupplierCatalogRequests = React.lazy(
+  () => import("./pages/supplier/SupplierCatalogRequests")
+);
+const AccountSessions = React.lazy(
+  () => import("./pages/supplier/AccountSessions")
+);
+const SupplierRefunds = React.lazy(() => import("./pages/supplier/SupplierRefunds"));
+const SupplierRiders = React.lazy(() => import("./pages/supplier/SupplierRiders"));
+const SupplierCatalogOffers = React.lazy(
+  () => import("./pages/supplier/SupplierCatalogOffers")
+);
+const SupplierVerifyContact = React.lazy(
+  () => import("./pages/supplier/SupplierVerifyContact")
+);
+const SupplierBusinessDetails = React.lazy(
+  () => import("./pages/supplier/SupplierBusinessDetails")
+);
+const SupplierOnboardingAddress = React.lazy(
+  () => import("./pages/supplier/SupplierOnboardingAddress")
+);
+const SupplierOnboardingDocuments = React.lazy(
+  () => import("./pages/supplier/SupplierOnboardingDocuments")
+);
+
+const RiderAcceptInvite = React.lazy(() => import("./pages/RiderAcceptInvite"));
+
+const DataPrivacy = React.lazy(() => import("./pages/DataPrivacy"));
+const About = React.lazy(() => import("./pages/AboutUs"));
+const Contact = React.lazy(() => import("./pages/Contact"));
+const Careers = React.lazy(() => import("./pages/Careers"));
+const CareersIndex = React.lazy(() => import("./pages/CareersIndex"));
+const CareerJobDetail = React.lazy(() => import("./pages/CareerJobDetail"));
+const ReturnsRefunds = React.lazy(() => import("./pages/ReturnsRefunds"));
+const HelpCenter = React.lazy(() => import("./pages/HelpCenter"));
+const TermsConditions = React.lazy(() => import("./pages/TermsConditions"));
+const CookiesPage = React.lazy(() => import("./pages/Cookies"));
+const UnsubscribeNewsletter = React.lazy(
+  () => import("./pages/UnsubscribeNewsletter")
+);
+
+/* -----------------------------
+   Small shared fallback
+----------------------------- */
+function RouteFallback({
+  label = "Loading…",
+  full = false,
+}: {
+  label?: string;
+  full?: boolean;
+}) {
+  return (
+    <div
+      className={`${
+        full ? "min-h-[60vh]" : "min-h-[40vh]"
+      } flex items-center justify-center px-4`}
+    >
+      <div className="text-sm text-zinc-500">{label}</div>
+    </div>
+  );
+}
 
 /* -----------------------------
    Role normalization + aliases
@@ -439,11 +506,7 @@ function SupplierRestrictedPageGuard({ children }: { children: React.ReactNode }
   const role = normRole(user?.role);
 
   if (!hydrated) {
-    return (
-      <div className="min-h-[40vh] flex items-center justify-center px-4">
-        <div className="text-sm text-zinc-500">Loading supplier access…</div>
-      </div>
-    );
+    return <RouteFallback label="Loading supplier access…" />;
   }
 
   if (!user?.id) {
@@ -459,11 +522,7 @@ function SupplierRestrictedPageGuard({ children }: { children: React.ReactNode }
   if (role !== "SUPPLIER") return <>{children}</>;
 
   if (stage.loading) {
-    return (
-      <div className="min-h-[40vh] flex items-center justify-center px-4">
-        <div className="text-sm text-zinc-500">Loading supplier access…</div>
-      </div>
-    );
+    return <RouteFallback label="Loading supplier access…" />;
   }
 
   if (!stage.onboardingDone && stage.nextPath) {
@@ -494,11 +553,7 @@ function SupplierSequentialStepGuard({
   const role = normRole(user?.role);
 
   if (!hydrated) {
-    return (
-      <div className="min-h-[40vh] flex items-center justify-center px-4">
-        <div className="text-sm text-zinc-500">Loading supplier onboarding…</div>
-      </div>
-    );
+    return <RouteFallback label="Loading supplier onboarding…" />;
   }
 
   if (!user?.id) {
@@ -514,11 +569,7 @@ function SupplierSequentialStepGuard({
   if (role !== "SUPPLIER") return <>{children}</>;
 
   if (stage.loading) {
-    return (
-      <div className="min-h-[40vh] flex items-center justify-center px-4">
-        <div className="text-sm text-zinc-500">Loading supplier onboarding…</div>
-      </div>
-    );
+    return <RouteFallback label="Loading supplier onboarding…" />;
   }
 
   const requiredPath = getRequiredPathForStep(step, stage);
@@ -539,11 +590,7 @@ function SupplierEntryRoute() {
   const role = normRole(user?.role);
 
   if (!hydrated) {
-    return (
-      <div className="min-h-[40vh] flex items-center justify-center px-4">
-        <div className="text-sm text-zinc-500">Opening supplier dashboard…</div>
-      </div>
-    );
+    return <RouteFallback label="Opening supplier dashboard…" />;
   }
 
   if (!user?.id) {
@@ -555,11 +602,7 @@ function SupplierEntryRoute() {
   }
 
   if (stage.loading) {
-    return (
-      <div className="min-h-[40vh] flex items-center justify-center px-4">
-        <div className="text-sm text-zinc-500">Opening supplier dashboard…</div>
-      </div>
-    );
+    return <RouteFallback label="Opening supplier dashboard…" />;
   }
 
   if (stage.nextPath) {
@@ -586,18 +629,18 @@ function RoleDashboardRoute() {
   return <UserDashboard />;
 }
 
-/** Role-aware landing page */
+/** Role-aware landing page
+ * Improvement:
+ * - do not block public home on auth hydration
+ * - render Catalog immediately while auth bootstraps
+ */
 function HomeRoute() {
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
   const stage = useSupplierStage();
 
   if (!hydrated) {
-    return (
-      <div className="min-h-[40vh] flex items-center justify-center px-4">
-        <div className="text-sm text-zinc-500">Loading…</div>
-      </div>
-    );
+    return <Catalog />;
   }
 
   const isAuthed = !!user?.id;
@@ -605,11 +648,7 @@ function HomeRoute() {
 
   if (isAuthed && r === "SUPPLIER") {
     if (stage.loading) {
-      return (
-        <div className="min-h-[40vh] flex items-center justify-center px-4">
-          <div className="text-sm text-zinc-500">Opening supplier area…</div>
-        </div>
-      );
+      return <RouteFallback label="Opening supplier area…" />;
     }
     return <Navigate to={stage.nextPath || "/supplier"} replace />;
   }
@@ -633,7 +672,7 @@ function GuestOnlyPageGuard({ children }: { children: React.ReactNode }) {
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
 
-  if (!hydrated) return null;
+  if (!hydrated) return <RouteFallback label="Loading…" />;
 
   if (user?.id) {
     return <Navigate to={defaultAuthedPathForRole(user?.role)} replace />;
@@ -651,7 +690,7 @@ function LoginRouteGuard() {
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
 
-  if (!hydrated) return null;
+  if (!hydrated) return <RouteFallback label="Loading…" />;
   if (user?.id) return null;
 
   return <Login />;
@@ -812,14 +851,21 @@ export default function App() {
       genericReturnTo = sessionStorage.getItem("auth:returnTo") || "";
     } catch {}
 
+    const hasTimedOutUser = !!timedOutUserKey;
     const sameTimedOutUser =
       !!currentUserKey &&
       !!timedOutUserKey &&
       currentUserKey === timedOutUserKey;
 
-    const target = sameTimedOutUser
-      ? timedOutReturnTo || genericReturnTo || defaultAuthedPathForRole(user?.role)
-      : genericReturnTo || defaultAuthedPathForRole(user?.role);
+    let target = defaultAuthedPathForRole(user?.role);
+
+    if (sameTimedOutUser) {
+      target = timedOutReturnTo || genericReturnTo || defaultAuthedPathForRole(user?.role);
+    } else if (!hasTimedOutUser) {
+      target = genericReturnTo || defaultAuthedPathForRole(user?.role);
+    } else {
+      target = defaultAuthedPathForRole(user?.role);
+    }
 
     try {
       sessionStorage.removeItem("auth:returnTo");
@@ -841,497 +887,557 @@ export default function App() {
               <Toaster position="top-right" />
               <ScrollToTop />
 
-              {hydrated ? (
-                <Routes>
-                  <Route path="/" element={<HomeRoute />} />
-                  <Route path="/products/:id" element={<ProductDetail />} />
-                  <Route path="/products/:id/reviews" element={<ProductReviews />} />
-                  <Route path="/cart" element={<Cart />} />
-                  <Route path="/verify" element={<Verify />} />
-                  <Route path="/privacy" element={<DataPrivacy />} />
-                  <Route path="/payment" element={<Payment />} />
-                  <Route path="/payment-callback" element={<PaymentCallback />} />
-                  <Route path="/receipt/:paymentId" element={<ReceiptPage />} />
-                  <Route path="/rider/accept" element={<RiderAcceptInvite />} />
+              <Suspense fallback={<RouteFallback label="Loading page…" full />}>
+                {hydrated ? (
+                  <Routes>
+                    <Route path="/" element={<HomeRoute />} />
+                    <Route path="/products/:id" element={<ProductDetail />} />
+                    <Route path="/products/:id/reviews" element={<ProductReviews />} />
+                    <Route path="/cart" element={<Cart />} />
+                    <Route path="/verify" element={<Verify />} />
+                    <Route path="/privacy" element={<DataPrivacy />} />
+                    <Route path="/payment" element={<Payment />} />
+                    <Route path="/payment-callback" element={<PaymentCallback />} />
+                    <Route path="/receipt/:paymentId" element={<ReceiptPage />} />
+                    <Route path="/rider/accept" element={<RiderAcceptInvite />} />
 
-                  <Route path="/login" element={<LoginRouteGuard />} />
-                  <Route path="/about" element={<About />} />
-                  <Route path="/contact" element={<Contact />} />
-                  <Route path="/help" element={<HelpCenter />} />
-
-                  <Route
-                    path="/register"
-                    element={
-                      <GuestOnlyPageGuard>
-                        <Register />
-                      </GuestOnlyPageGuard>
-                    }
-                  />
-                  <Route
-                    path="/register-supplier"
-                    element={
-                      <GuestOnlyPageGuard>
-                        <SupplierRegister />
-                      </GuestOnlyPageGuard>
-                    }
-                  />
-                  <Route
-                    path="/forgot-password"
-                    element={
-                      <GuestOnlyPageGuard>
-                        <ForgotPassword />
-                      </GuestOnlyPageGuard>
-                    }
-                  />
-                  <Route
-                    path="/reset-password"
-                    element={
-                      <GuestOnlyPageGuard>
-                        <ResetGuard>
-                          <ResetPassword />
-                        </ResetGuard>
-                      </GuestOnlyPageGuard>
-                    }
-                  />
-
-                  <Route
-                    path="/profile"
-                    element={
-                      <ProtectedRoute
-                        roles={[
-                          "SHOPPER",
-                          "ADMIN",
-                          "SUPER_ADMIN",
-                          "SUPPLIER",
-                          "SUPERADMIN",
-                          "SUPER ADMIN",
-                        ]}
-                      >
-                        <Profile />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/orders"
-                    element={
-                      <ProtectedRoute
-                        roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <Orders />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/returns-refunds"
-                    element={
-                      <ProtectedRoute
-                        roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <ReturnsRefunds />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/checkout"
-                    element={
-                      <ProtectedRoute roles={["SHOPPER", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
-                        <Checkout />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/wishlist"
-                    element={
-                      <ProtectedRoute
-                        roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <Wishlist />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/account/sessions"
-                    element={
-                      <ProtectedRoute
-                        roles={[
-                          "SHOPPER",
-                          "SUPPLIER",
-                          "ADMIN",
-                          "SUPER_ADMIN",
-                          "SUPERADMIN",
-                          "SUPER ADMIN",
-                        ]}
-                      >
-                        <AccountSessions />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/dashboard"
-                    element={
-                      <ProtectedRoute
-                        roles={[
-                          "SHOPPER",
-                          "ADMIN",
-                          "SUPER_ADMIN",
-                          "SUPPLIER",
-                          "SUPPLIER_RIDER",
-                          "SUPERADMIN",
-                          "SUPER ADMIN",
-                        ]}
-                      >
-                        <RoleDashboardRoute />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/customer-dashboard"
-                    element={
-                      <ProtectedRoute
-                        roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <UserDashboard />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/rider"
-                    element={
-                      <ProtectedRoute
-                        roles={["SUPPLIER_RIDER", "SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN"]}
-                      >
-                        <Navigate to="/supplier/orders" replace />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/u/:userId/dashboard"
-                    element={
-                      <ProtectedRoute
-                        roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <DashboardAsUser />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/u/:userId/profile"
-                    element={
-                      <ProtectedRoute
-                        roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <ProfileAsUser />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/u/:userId/orders"
-                    element={
-                      <ProtectedRoute
-                        roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <OrdersAsUser />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/u/:userId/wishlist"
-                    element={
-                      <ProtectedRoute
-                        roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <WishlistAsUser />
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route path="/supplier/verify-contact" element={<SupplierVerifyContact />} />
-
-                  <Route
-                    path="/supplier/onboarding"
-                    element={
-                      <ProtectedRoute
-                        roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <SupplierSequentialStepGuard step="business">
-                          <SupplierBusinessDetails />
-                        </SupplierSequentialStepGuard>
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/supplier/onboarding/address"
-                    element={
-                      <ProtectedRoute
-                        roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <SupplierSequentialStepGuard step="address">
-                          <SupplierOnboardingAddress />
-                        </SupplierSequentialStepGuard>
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/supplier/onboarding/documents"
-                    element={
-                      <ProtectedRoute
-                        roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <SupplierSequentialStepGuard step="documents">
-                          <SupplierOnboardingDocuments />
-                        </SupplierSequentialStepGuard>
-                      </ProtectedRoute>
-                    }
-                  />
-
-                  <Route
-                    path="/supplier"
-                    element={
-                      <ProtectedRoute
-                        roles={[
-                          "SUPPLIER",
-                          "SUPPLIER_RIDER",
-                          "ADMIN",
-                          "SUPER_ADMIN",
-                          "SUPERADMIN",
-                          "SUPER ADMIN",
-                        ]}
-                        riderAllowPrefixes={riderAllowPrefixes}
-                      >
-                        <SupplierLayoutShell />
-                      </ProtectedRoute>
-                    }
-                  >
-                    <Route index element={<SupplierEntryRoute />} />
+                    <Route path="/login" element={<LoginRouteGuard />} />
+                    <Route path="/about" element={<About />} />
+                    <Route path="/contact" element={<Contact />} />
+                    <Route path="/help" element={<HelpCenter />} />
 
                     <Route
-                      path="catalog-offers"
+                      path="/register"
                       element={
-                        <ProtectedRoute roles={["SUPPLIER"]}>
-                          <SupplierRestrictedPageGuard>
-                            <SupplierCatalogOffers />
-                          </SupplierRestrictedPageGuard>
+                        <GuestOnlyPageGuard>
+                          <Register />
+                        </GuestOnlyPageGuard>
+                      }
+                    />
+                    <Route
+                      path="/register-supplier"
+                      element={
+                        <GuestOnlyPageGuard>
+                          <SupplierRegister />
+                        </GuestOnlyPageGuard>
+                      }
+                    />
+                    <Route
+                      path="/forgot-password"
+                      element={
+                        <GuestOnlyPageGuard>
+                          <ForgotPassword />
+                        </GuestOnlyPageGuard>
+                      }
+                    />
+                    <Route
+                      path="/reset-password"
+                      element={
+                        <GuestOnlyPageGuard>
+                          <ResetGuard>
+                            <ResetPassword />
+                          </ResetGuard>
+                        </GuestOnlyPageGuard>
+                      }
+                    />
+
+                    <Route
+                      path="/profile"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SHOPPER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPPLIER",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <Profile />
                         </ProtectedRoute>
                       }
                     />
 
                     <Route
-                      path="products"
+                      path="/orders"
                       element={
-                        <ProtectedRoute roles={["SUPPLIER"]}>
-                          <SupplierRestrictedPageGuard>
-                            <Outlet />
-                          </SupplierRestrictedPageGuard>
+                        <ProtectedRoute
+                          roles={[
+                            "SHOPPER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <Orders />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/returns-refunds"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SHOPPER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <ReturnsRefunds />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/checkout"
+                      element={
+                        <ProtectedRoute
+                          roles={["SHOPPER", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
+                        >
+                          <Checkout />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/wishlist"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SHOPPER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <Wishlist />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/account/sessions"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SHOPPER",
+                            "SUPPLIER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <AccountSessions />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/dashboard"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SHOPPER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPPLIER",
+                            "SUPPLIER_RIDER",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <RoleDashboardRoute />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/customer-dashboard"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SHOPPER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <UserDashboard />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/rider"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SUPPLIER_RIDER",
+                            "SUPPLIER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                          ]}
+                        >
+                          <Navigate to="/supplier/orders" replace />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/u/:userId/dashboard"
+                      element={
+                        <ProtectedRoute
+                          roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
+                        >
+                          <DashboardAsUser />
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/u/:userId/profile"
+                      element={
+                        <ProtectedRoute
+                          roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
+                        >
+                          <ProfileAsUser />
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/u/:userId/orders"
+                      element={
+                        <ProtectedRoute
+                          roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
+                        >
+                          <OrdersAsUser />
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/u/:userId/wishlist"
+                      element={
+                        <ProtectedRoute
+                          roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
+                        >
+                          <WishlistAsUser />
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route path="/supplier/verify-contact" element={<SupplierVerifyContact />} />
+
+                    <Route
+                      path="/supplier/onboarding"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SUPPLIER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <SupplierSequentialStepGuard step="business">
+                            <SupplierBusinessDetails />
+                          </SupplierSequentialStepGuard>
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/supplier/onboarding/address"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SUPPLIER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <SupplierSequentialStepGuard step="address">
+                            <SupplierOnboardingAddress />
+                          </SupplierSequentialStepGuard>
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/supplier/onboarding/documents"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SUPPLIER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                        >
+                          <SupplierSequentialStepGuard step="documents">
+                            <SupplierOnboardingDocuments />
+                          </SupplierSequentialStepGuard>
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="/supplier"
+                      element={
+                        <ProtectedRoute
+                          roles={[
+                            "SUPPLIER",
+                            "SUPPLIER_RIDER",
+                            "ADMIN",
+                            "SUPER_ADMIN",
+                            "SUPERADMIN",
+                            "SUPER ADMIN",
+                          ]}
+                          riderAllowPrefixes={riderAllowPrefixes}
+                        >
+                          <SupplierLayoutShell />
                         </ProtectedRoute>
                       }
                     >
-                      <Route index element={<SupplierProductsPage />} />
-                      <Route path="add" element={<SupplierAddProductsPage />} />
-                      <Route path=":id/edit" element={<SupplierEditProduct />} />
+                      <Route index element={<SupplierEntryRoute />} />
+
+                      <Route
+                        path="catalog-offers"
+                        element={
+                          <ProtectedRoute roles={["SUPPLIER"]}>
+                            <SupplierRestrictedPageGuard>
+                              <SupplierCatalogOffers />
+                            </SupplierRestrictedPageGuard>
+                          </ProtectedRoute>
+                        }
+                      />
+
+                      <Route
+                        path="products"
+                        element={
+                          <ProtectedRoute roles={["SUPPLIER"]}>
+                            <SupplierRestrictedPageGuard>
+                              <Outlet />
+                            </SupplierRestrictedPageGuard>
+                          </ProtectedRoute>
+                        }
+                      >
+                        <Route index element={<SupplierProductsPage />} />
+                        <Route path="add" element={<SupplierAddProductsPage />} />
+                        <Route path=":id/edit" element={<SupplierEditProduct />} />
+                      </Route>
+
+                      <Route
+                        path="orders"
+                        element={
+                          <ProtectedRoute
+                            roles={[
+                              "SUPPLIER",
+                              "SUPPLIER_RIDER",
+                              "ADMIN",
+                              "SUPER_ADMIN",
+                              "SUPERADMIN",
+                              "SUPER ADMIN",
+                            ]}
+                          >
+                            {normRole(user?.role) === "SUPPLIER" ? (
+                              <SupplierRestrictedPageGuard>
+                                <SupplierOrdersPage />
+                              </SupplierRestrictedPageGuard>
+                            ) : (
+                              <SupplierOrdersPage />
+                            )}
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="orders/:orderId"
+                        element={
+                          <ProtectedRoute
+                            roles={[
+                              "SUPPLIER",
+                              "SUPPLIER_RIDER",
+                              "ADMIN",
+                              "SUPER_ADMIN",
+                              "SUPERADMIN",
+                              "SUPER ADMIN",
+                            ]}
+                          >
+                            {normRole(user?.role) === "SUPPLIER" ? (
+                              <SupplierRestrictedPageGuard>
+                                <SupplierOrdersPage />
+                              </SupplierRestrictedPageGuard>
+                            ) : (
+                              <SupplierOrdersPage />
+                            )}
+                          </ProtectedRoute>
+                        }
+                      />
+
+                      <Route
+                        path="refunds"
+                        element={
+                          <ProtectedRoute roles={["SUPPLIER"]}>
+                            <SupplierRestrictedPageGuard>
+                              <SupplierRefunds />
+                            </SupplierRestrictedPageGuard>
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="refund/:refundId"
+                        element={
+                          <ProtectedRoute roles={["SUPPLIER"]}>
+                            <SupplierRestrictedPageGuard>
+                              <SupplierRefunds />
+                            </SupplierRestrictedPageGuard>
+                          </ProtectedRoute>
+                        }
+                      />
+
+                      <Route
+                        path="riders"
+                        element={
+                          <ProtectedRoute
+                            roles={[
+                              "SUPPLIER",
+                              "ADMIN",
+                              "SUPER_ADMIN",
+                              "SUPERADMIN",
+                              "SUPER ADMIN",
+                            ]}
+                          >
+                            {normRole(user?.role) === "SUPPLIER" ? (
+                              <SupplierRestrictedPageGuard>
+                                <SupplierRiders />
+                              </SupplierRestrictedPageGuard>
+                            ) : (
+                              <SupplierRiders />
+                            )}
+                          </ProtectedRoute>
+                        }
+                      />
+
+                      <Route
+                        path="catalog-requests"
+                        element={
+                          <ProtectedRoute roles={["SUPPLIER"]}>
+                            <SupplierRestrictedPageGuard>
+                              <SupplierCatalogRequests />
+                            </SupplierRestrictedPageGuard>
+                          </ProtectedRoute>
+                        }
+                      />
+
+                      <Route
+                        path="payouts"
+                        element={
+                          <ProtectedRoute roles={["SUPPLIER"]}>
+                            <SupplierRestrictedPageGuard>
+                              <SupplierPayoutsPage />
+                            </SupplierRestrictedPageGuard>
+                          </ProtectedRoute>
+                        }
+                      />
+
+                      <Route
+                        path="settings"
+                        element={
+                          <ProtectedRoute roles={["SUPPLIER"]}>
+                            <SupplierRestrictedPageGuard>
+                              <SupplierSettingsPage />
+                            </SupplierRestrictedPageGuard>
+                          </ProtectedRoute>
+                        }
+                      />
+
+                      <Route path="*" element={<Navigate to="/supplier" replace />} />
                     </Route>
 
                     <Route
-                      path="orders"
+                      path="/admin"
                       element={
                         <ProtectedRoute
-                          roles={[
-                            "SUPPLIER",
-                            "SUPPLIER_RIDER",
-                            "ADMIN",
-                            "SUPER_ADMIN",
-                            "SUPERADMIN",
-                            "SUPER ADMIN",
-                          ]}
+                          roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
                         >
-                          {normRole(user?.role) === "SUPPLIER" ? (
-                            <SupplierRestrictedPageGuard>
-                              <SupplierOrdersPage />
-                            </SupplierRestrictedPageGuard>
-                          ) : (
-                            <SupplierOrdersPage />
-                          )}
+                          <AdminLayout />
                         </ProtectedRoute>
                       }
-                    />
-                    <Route
-                      path="orders/:orderId"
-                      element={
-                        <ProtectedRoute
-                          roles={[
-                            "SUPPLIER",
-                            "SUPPLIER_RIDER",
-                            "ADMIN",
-                            "SUPER_ADMIN",
-                            "SUPERADMIN",
-                            "SUPER ADMIN",
-                          ]}
-                        >
-                          {normRole(user?.role) === "SUPPLIER" ? (
-                            <SupplierRestrictedPageGuard>
-                              <SupplierOrdersPage />
-                            </SupplierRestrictedPageGuard>
-                          ) : (
-                            <SupplierOrdersPage />
-                          )}
-                        </ProtectedRoute>
-                      }
-                    />
+                    >
+                      <Route index element={<AdminDashboard />} />
+                      <Route path="supplier-documents" element={<AdminSupplierDocuments />} />
+                      <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
+                      <Route path="newsletter" element={<AdminNewsletterPage />} />
+                      <Route path="dashboard" element={<Navigate to="/admin" replace />} />
+                      <Route path="shipping" element={<AdminShipping />} />
+                      <Route
+                        path="products"
+                        element={<Navigate to="/admin?tab=products&pTab=manage" replace />}
+                      />
+                      <Route
+                        path="products/moderation"
+                        element={<Navigate to="/admin?tab=products&pTab=moderation" replace />}
+                      />
+                      <Route
+                        path="orders"
+                        element={<Navigate to="/admin?tab=transactions" replace />}
+                      />
+
+                      <Route path="applicants" element={<AdminApplicants />} />
+                      <Route path="careers/jobs" element={<AdminCareersJobs />} />
+                      <Route path="careers/config" element={<AdminCareersConfig />} />
+                      <Route
+                        path="employees/:employeeId/documents"
+                        element={<AdminEmployeeDocuments />}
+                      />
+                      <Route path="employees" element={<AdminEmployees />} />
+                      <Route
+                        path="employees/:employeeId"
+                        element={<AdminEmployeeDetails />}
+                      />
+
+                      <Route
+                        path="settings"
+                        element={
+                          <ProtectedRoute
+                            roles={["SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
+                          >
+                            <SettingsAdminPage />
+                          </ProtectedRoute>
+                        }
+                      />
+
+                      <Route path="*" element={<Navigate to="/admin" replace />} />
+                    </Route>
 
                     <Route
-                      path="refunds"
-                      element={
-                        <ProtectedRoute roles={["SUPPLIER"]}>
-                          <SupplierRestrictedPageGuard>
-                            <SupplierRefunds />
-                          </SupplierRestrictedPageGuard>
-                        </ProtectedRoute>
-                      }
-                    />
-                    <Route
-                      path="refund/:refundId"
-                      element={
-                        <ProtectedRoute roles={["SUPPLIER"]}>
-                          <SupplierRestrictedPageGuard>
-                            <SupplierRefunds />
-                          </SupplierRestrictedPageGuard>
-                        </ProtectedRoute>
-                      }
+                      path="/admin/dashboard"
+                      element={<Navigate to="/admin" replace />}
                     />
 
-                    <Route
-                      path="riders"
-                      element={
-                        <ProtectedRoute
-                          roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                        >
-                          {normRole(user?.role) === "SUPPLIER" ? (
-                            <SupplierRestrictedPageGuard>
-                              <SupplierRiders />
-                            </SupplierRestrictedPageGuard>
-                          ) : (
-                            <SupplierRiders />
-                          )}
-                        </ProtectedRoute>
-                      }
-                    />
+                    <Route path="/careers" element={<CareersIndex />} />
+                    <Route path="/careers/:slug" element={<CareerJobDetail />} />
+                    <Route path="/careers/apply" element={<Careers />} />
 
-                    <Route
-                      path="catalog-requests"
-                      element={
-                        <ProtectedRoute roles={["SUPPLIER"]}>
-                          <SupplierRestrictedPageGuard>
-                            <SupplierCatalogRequests />
-                          </SupplierRestrictedPageGuard>
-                        </ProtectedRoute>
-                      }
-                    />
+                    <Route path="/terms" element={<TermsConditions />} />
+                    <Route path="/cookies" element={<CookiesPage />} />
+                    <Route path="/unsubscribe" element={<UnsubscribeNewsletter />} />
 
-                    <Route
-                      path="payouts"
-                      element={
-                        <ProtectedRoute roles={["SUPPLIER"]}>
-                          <SupplierRestrictedPageGuard>
-                            <SupplierPayoutsPage />
-                          </SupplierRestrictedPageGuard>
-                        </ProtectedRoute>
-                      }
-                    />
-
-                    <Route
-                      path="settings"
-                      element={
-                        <ProtectedRoute roles={["SUPPLIER"]}>
-                          <SupplierRestrictedPageGuard>
-                            <SupplierSettingsPage />
-                          </SupplierRestrictedPageGuard>
-                        </ProtectedRoute>
-                      }
-                    />
-
-                    <Route path="*" element={<Navigate to="/supplier" replace />} />
-                  </Route>
-
-                  <Route
-                    path="/admin"
-                    element={
-                      <ProtectedRoute
-                        roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                      >
-                        <AdminLayout />
-                      </ProtectedRoute>
-                    }
-                  >
-                    <Route index element={<AdminDashboard />} />
-                    <Route path="supplier-documents" element={<AdminSupplierDocuments />} />
-                    <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
-                    <Route path="newsletter" element={<AdminNewsletterPage />} />
-                    <Route path="dashboard" element={<Navigate to="/admin" replace />} />
-                    <Route path="shipping" element={<AdminShipping />} />
-                    <Route
-                      path="products"
-                      element={<Navigate to="/admin?tab=products&pTab=manage" replace />}
-                    />
-                    <Route
-                      path="products/moderation"
-                      element={<Navigate to="/admin?tab=products&pTab=moderation" replace />}
-                    />
-                    <Route
-                      path="orders"
-                      element={<Navigate to="/admin?tab=transactions" replace />}
-                    />
-
-                    <Route path="applicants" element={<AdminApplicants />} />
-                    <Route path="careers/jobs" element={<AdminCareersJobs />} />
-                    <Route path="careers/config" element={<AdminCareersConfig />} />
-                    <Route
-                      path="employees/:employeeId/documents"
-                      element={<AdminEmployeeDocuments />}
-                    />
-                    <Route path="employees" element={<AdminEmployees />} />
-                    <Route
-                      path="employees/:employeeId"
-                      element={<AdminEmployeeDetails />}
-                    />
-
-                    <Route
-                      path="settings"
-                      element={
-                        <ProtectedRoute
-                          roles={["SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                        >
-                          <SettingsAdminPage />
-                        </ProtectedRoute>
-                      }
-                    />
-
-                    <Route path="*" element={<Navigate to="/admin" replace />} />
-                  </Route>
-
-                  <Route
-                    path="/admin/dashboard"
-                    element={<Navigate to="/admin" replace />}
-                  />
-
-                  <Route path="/careers" element={<CareersIndex />} />
-                  <Route path="/careers/:slug" element={<CareerJobDetail />} />
-                  <Route path="/careers/apply" element={<Careers />} />
-
-                  <Route path="/terms" element={<TermsConditions />} />
-                  <Route path="/cookies" element={<CookiesPage />} />
-                  <Route path="/unsubscribe" element={<UnsubscribeNewsletter />} />
-
-                  <Route path="*" element={<Navigate to="/" replace />} />
-                </Routes>
-              ) : null}
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
+                ) : (
+                  <RouteFallback label="Preparing app…" full />
+                )}
+              </Suspense>
             </div>
           </main>
 
@@ -1339,5 +1445,5 @@ export default function App() {
         </div>
       </SupplierStageProvider>
     </ModalProvider>
-  )
+  );
 }

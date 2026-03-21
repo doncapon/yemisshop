@@ -339,7 +339,7 @@ router.get("/users/:userId/payments/summary", async (req, res, next) => {
         orderId: true,
         order: { select: { total: true } },
       } as any,
-      take: 500, // prevent huge scans; adjust if needed
+      take: 50, // prevent huge scans; adjust if needed
     });
 
     // 2) Decide what counts as "paid"
