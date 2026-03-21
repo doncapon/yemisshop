@@ -31,9 +31,9 @@ api.interceptors.request.use((config) => {
   // Only rewrite relative URLs (leave absolute URLs alone)
   const isAbsolute = /^https?:\/\//i.test(url);
 
-  if (!isAbsolute && base.endsWith("/api") && url.startsWith("/api/")) {
-    config.url = url.replace(/^\/api/, "");
-  }
+  // if (!isAbsolute && base.endsWith("/api") && url.startsWith("/api/")) {
+  //   config.url = url.replace(/^\/api/, "");
+  // }
 
   // Also handle weird "api/..." (without leading slash)
   if (!isAbsolute && base.endsWith("/api") && url.startsWith("api/")) {
