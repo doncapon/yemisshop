@@ -2,11 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const SITE_URL = process.env.SITE_URL || "https://dayspringhouse.com";
+const SITE_URL = process.env.VITE_APP_URL || "https://dayspringhouse.com";
 
 // IMPORTANT: this must be reachable from Cloudflare build.
 // If your API is same domain in production, keep it like this:
-const API_BASE = process.env.API_BASE || "https://dayspringhouse.com";
+const API_BASE = process.env.VITE_API_URL || "https://api.dayspringhouse.com";
 
 // Your public products endpoint
 const PRODUCTS_URL = `${API_BASE}/api/products`;
