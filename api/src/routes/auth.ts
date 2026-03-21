@@ -161,6 +161,50 @@ function toE164(dialCode?: string, local?: string): string | null {
   return `${normalizedDial}${localDigits}`;
 }
 
+
+
+function normRoleLoose(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
+function getSessionTtlDays(role: unknown) {
+  const r = normRoleLoose(role);
+  return r === "ADMIN" ||
+    r === "SUPER_ADMIN" ||
+    r === "SUPPLIER" ||
+    r === "SUPPLIER_RIDER"
+    ? 7
+    : 30;
+}
+
+function buildPublicProfile(user: {
+  id: string;
+  email?: string | null;
+  role?: string | null;
+  firstName?: string | null;
+  middleName?: string | null;
+  lastName?: string | null;
+  emailVerifiedAt?: Date | string | null;
+  phoneVerifiedAt?: Date | string | null;
+  status?: string | null;
+}) {
+  return {
+    id: String(user.id),
+    email: String(user.email ?? ""),
+    role: normRoleLoose(user.role),
+    firstName: user.firstName ?? null,
+    middleName: user.middleName ?? null,
+    lastName: user.lastName ?? null,
+    emailVerified: !!user.emailVerifiedAt,
+    phoneVerified: !!user.phoneVerifiedAt,
+    status: user.status ?? null,
+  };
+}
+
 function asNum(v: any, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
@@ -227,35 +271,34 @@ async function createUserSession(req: Request, userId: string, role?: string | n
 
   const deviceName = String(req.headers["x-device-name"] ?? "").slice(0, 120) || null;
 
-  const r = String(role || "").replace(/[\s-]/g, "").toUpperCase();
+  const expiresAt = new Date(Date.now() + getSessionTtlDays(role) * 24 * 60 * 60 * 1000);
 
-  const ABSOLUTE_DAYS =
-    r === "ADMIN" || r === "SUPER_ADMIN" || r === "SUPPLIER" || r === "SUPPLIER_RIDER" ? 7 : 30;
+  try {
+    const session = await prisma.userSession.create({
+      data: {
+        userId,
+        ip,
+        userAgent: ua,
+        deviceName,
+        lastSeenAt: new Date(),
+        expiresAt,
+      } as any,
+      select: { id: true },
+    });
 
-  const expiresAt = new Date(Date.now() + ABSOLUTE_DAYS * 24 * 60 * 60 * 1000);
-
-  const session = await prisma.userSession.create({
-    data: {
-      userId,
-      ip,
-      userAgent: ua,
-      deviceName,
-      lastSeenAt: new Date(),
-      expiresAt,
-    } as any,
-    select: { id: true },
-  });
-
-  return session.id;
+    return String(session.id);
+  } catch (err) {
+    console.error("[auth.createUserSession] failed:", err);
+    return "";
+  }
 }
-
 async function activateSupplierIfFullyVerified(user: {
   id: string;
   role: any;
   emailVerifiedAt?: Date | string | null;
   phoneVerifiedAt?: Date | string | null;
 }) {
-  const isSupplier = String(user.role) === "SUPPLIER";
+  const isSupplier = normRoleLoose(user.role) === "SUPPLIER";
   const fullyVerified = !!user.emailVerifiedAt && !!user.phoneVerifiedAt;
 
   if (!isSupplier || !fullyVerified) return;
@@ -272,63 +315,81 @@ async function activateSupplierIfFullyVerified(user: {
 router.post(
   "/login",
   wrap(async (req, res) => {
-    const { email, password } = (req.body || {}) as { email?: string; password?: string };
+    const { email, password } = (req.body || {}) as {
+      email?: string;
+      password?: string;
+    };
 
-    if (!email?.trim() || !password?.trim()) {
+    const emailNorm = String(email ?? "").trim().toLowerCase();
+    const passwordRaw = String(password ?? "");
+
+    if (!emailNorm || !passwordRaw) {
       return res.status(400).json({ error: "Email and password are required" });
     }
 
-    const emailNorm = String(email).trim();
+    const loginUserSelect = {
+      id: true,
+      email: true,
+      password: true,
+      role: true,
+      firstName: true,
+      middleName: true,
+      lastName: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true,
+      status: true,
+      phone: true,
+    } satisfies Prisma.UserSelect;
 
-    const user = await prisma.user.findFirst({
-      where: { email: { equals: emailNorm, mode: "insensitive" } },
+    type LoginUserRow = Prisma.UserGetPayload<{
+      select: typeof loginUserSelect;
+    }>;
+
+    const user: LoginUserRow | null = await prisma.user.findFirst({
+      where: {
+        email: {
+          equals: emailNorm,
+          mode: "insensitive",
+        },
+      },
+      select: loginUserSelect,
     });
 
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    if (!user) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
 
-    const ok = await bcrypt.compare(password, user.password || "");
-    if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+    const ok = await bcrypt.compare(passwordRaw, String(user.password ?? ""));
+    if (!ok) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
 
-    const profile = {
-      id: user.id,
-      email: user.email,
-      role: user.role as any,
-      firstName: user.firstName,
-      middleName: (user as any).middleName ?? null,
-      lastName: user.lastName,
-      emailVerified: !!user.emailVerifiedAt,
-      phoneVerified: !!user.phoneVerifiedAt,
-      status: (user as any).status ?? null,
-    };
+    const userId = String(user.id);
+    const userRole = String(user.role ?? "");
+    const profile = buildPublicProfile(user);
 
-    // ✅ Create session id (sid) (server-side)
-    const sid = await createUserSession(req, user.id, user.role);
+    const sid = await createUserSession(req, userId, userRole);
+    const ttlDays = getSessionTtlDays(userRole);
 
-    const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
-    const ttlDays =
-      roleNorm === "ADMIN" ||
-      roleNorm === "SUPER_ADMIN" ||
-      roleNorm === "SUPPLIER" ||
-      roleNorm === "SUPPLIER_RIDER"
-        ? 7
-        : 30;
-
-    // ✅ Sign JWT and set HttpOnly cookie (DO NOT return token)
     const token = signAccessJwt(
-      { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
+      {
+        id: userId,
+        sub: userId,
+        email: String(user.email ?? ""),
+        role: normRoleLoose(userRole),
+        k: "access",
+        sid: sid || undefined,
+      } as any,
       `${ttlDays}d`
     );
 
     setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
-
-    // ✅ Optional: prevent caches storing auth responses
     res.setHeader("Cache-Control", "no-store");
 
-    // ✅ Allow login even if supplier not verified, but flag it
+    const roleNorm = normRoleLoose(userRole);
     const needsVerification =
-      String(user.role) === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified);
+      roleNorm === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified);
 
-    // ✅ Cookie-mode response: NO token / sid / verifyToken
     return res.json({
       profile,
       needsVerification,
@@ -337,18 +398,20 @@ router.post(
 );
 
 // ---------------- LOGOUT ----------------
-// ---------------- LOGOUT ----------------
 router.post(
   "/logout",
   wrap(async (req, res) => {
-    // ✅ revoke session in DB so cookie cannot be used again
     try {
       const cookieName = getAccessTokenCookieName();
-      const token = (req as any)?.cookies?.[cookieName] ? String((req as any).cookies[cookieName]) : "";
+      const token = (req as any)?.cookies?.[cookieName]
+        ? String((req as any).cookies[cookieName])
+        : "";
 
       if (token) {
         const secret =
-          process.env.ACCESS_JWT_SECRET || process.env.JWT_SECRET || "CHANGE_ME_DEV_SECRET";
+          process.env.ACCESS_JWT_SECRET ||
+          process.env.JWT_SECRET ||
+          "CHANGE_ME_DEV_SECRET";
 
         const decoded = jwt.verify(token, secret) as any;
 
@@ -362,26 +425,25 @@ router.post(
           });
         }
       }
-    } catch {
-      // ignore (cookie still cleared)
+    } catch (err) {
+      console.warn("[auth.logout] session revoke skipped:", err);
     }
 
-    // ✅ clear auth cookies (robust across paths/domains/samesite/secure)
     clearAuthCookies(res);
-
     res.setHeader("Cache-Control", "no-store");
     return res.json({ ok: true });
   })
 );
 
 // ---------------- ME ----------------
-// ---------------- ME ----------------
 router.get(
   "/me",
   requireAuth,
   wrap(async (req, res) => {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const userId = String(req.user?.id ?? "").trim();
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
     const { page, pageSize, take, skip } = toPagination(req, {
       pageSize: 10,
@@ -405,44 +467,67 @@ router.get(
       defaultShippingAddress: true,
     } satisfies Prisma.UserSelect;
 
-    type AuthMeUser = Prisma.UserGetPayload<{
-      select: typeof authMeSelect;
-    }>;
+    const u = await prisma.user.findUnique({
+      where: { id: userId },
+      select: authMeSelect,
+    });
 
-    const [u, shippingAddressesTotal, shippingAddressesRows] = await prisma.$transaction([
-      prisma.user.findUnique({
-        where: { id: userId },
-        select: authMeSelect,
-      }),
-      prisma.userShippingAddress.count({
-        where: { userId, isActive: true } as any,
-      }),
-      prisma.userShippingAddress.findMany({
-        where: { userId, isActive: true } as any,
-        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-        take,
-        skip,
-      }),
-    ]);
+    if (!u) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-    if (!u) return res.status(404).json({ error: "User not found" });
+    let shippingAddressesTotal = 0;
+    let shippingAddressesRows: any[] = [];
+
+    try {
+      const out = await prisma.$transaction([
+        prisma.userShippingAddress.count({
+          where: { userId, isActive: true } as any,
+        }),
+        prisma.userShippingAddress.findMany({
+          where: { userId, isActive: true } as any,
+          orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+          take,
+          skip,
+        }),
+      ]);
+
+      shippingAddressesTotal = Number(out[0] ?? 0);
+      shippingAddressesRows = Array.isArray(out[1]) ? out[1] : [];
+    } catch (err) {
+      console.error("[auth.me] shipping address lookup failed:", err);
+      shippingAddressesTotal = 0;
+      shippingAddressesRows = [];
+    }
 
     const fallbackPrimaryShippingAddress =
-      u.defaultShippingAddress ??
-      shippingAddressesRows.find((a: any) => a.isDefault) ??
+      (u as any).defaultShippingAddress ??
+      shippingAddressesRows.find((a: any) => a?.isDefault) ??
       shippingAddressesRows[0] ??
-      (await prisma.userShippingAddress.findFirst({
-        where: { userId, isActive: true } as any,
-        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-      })) ??
       null;
 
     return res.json({
       data: {
-        ...u,
-        shippingAddress: fallbackPrimaryShippingAddress, // legacy compatibility
+        id: u.id,
+        email: u.email,
+        role: normRoleLoose(u.role),
+        firstName: u.firstName ?? null,
+        middleName: (u as any).middleName ?? null,
+        lastName: u.lastName ?? null,
+        status: (u as any).status ?? null,
+        phone: (u as any).phone ?? null,
+        joinedAt: (u as any).joinedAt ?? null,
+        address: (u as any).address ?? null,
+        emailVerified: !!(u as any).emailVerifiedAt,
+        phoneVerified: !!(u as any).phoneVerifiedAt,
+        emailVerifiedAt: (u as any).emailVerifiedAt ?? null,
+        phoneVerifiedAt: (u as any).phoneVerifiedAt ?? null,
+
+        shippingAddress: fallbackPrimaryShippingAddress,
+        defaultShippingAddress: (u as any).defaultShippingAddress ?? fallbackPrimaryShippingAddress,
         defaultShippingAddressId:
-          u.defaultShippingAddressId ?? fallbackPrimaryShippingAddress?.id ?? null,
+          (u as any).defaultShippingAddressId ?? fallbackPrimaryShippingAddress?.id ?? null,
+
         shippingAddresses: buildPaginatedResult({
           rows: shippingAddressesRows,
           total: shippingAddressesTotal,
