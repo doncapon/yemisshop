@@ -135,12 +135,7 @@ async function issueAndEmailEmailVerification(userId: string, email: string) {
   });
 
   // ✅ MUST hit API route (this router), not UI.
-  let verifyUrl;
-  if (process.env.NODE_ENV === "development") {
-    verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
-  } else {
-    verifyUrl = `${API_BASE_URL}/auth/verify-email?token=${encodeURIComponent(token)}`;
-  }
+  let verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
 
   await sendVerifyEmail(email, verifyUrl);
 }
