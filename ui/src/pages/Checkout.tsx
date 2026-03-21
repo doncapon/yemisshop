@@ -2704,6 +2704,68 @@ export default function Checkout() {
     },
   });
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const raw = sessionStorage.getItem("payment:init");
+        if (!raw) return;
+
+        const parsed = JSON.parse(raw);
+        const orderId = String(parsed?.orderId ?? "").trim();
+        if (!orderId) return;
+        if (redirectingOrderId) return;
+
+        const detailResp = await api.get(
+          `/api/orders/${encodeURIComponent(orderId)}`,
+          AXIOS_COOKIE_CFG
+        );
+        if (cancelled) return;
+
+        const detailRoot = detailResp?.data?.data ?? detailResp?.data ?? {};
+        const payment =
+          detailRoot?.payment ??
+          (Array.isArray(detailRoot?.payments) ? detailRoot.payments[0] : null) ??
+          null;
+
+        const maybeHostedUrl = String(
+          payment?.authorization_url ??
+          payment?.authorizationUrl ??
+          detailRoot?.authorization_url ??
+          detailRoot?.authorizationUrl ??
+          ""
+        ).trim();
+
+        const hasReference = !!String(
+          payment?.reference ?? detailRoot?.reference ?? ""
+        ).trim();
+
+        const hasPaymentId = !!String(
+          payment?.id ?? detailRoot?.paymentId ?? ""
+        ).trim();
+
+        if (maybeHostedUrl) {
+          clearCheckoutCartForSuccessfulHostedExit();
+          markPaystackExit();
+          window.location.assign(maybeHostedUrl);
+          return;
+        }
+
+        if (hasReference || hasPaymentId) {
+          window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
+        }
+      } catch {
+        //
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [redirectingOrderId]);
 
   if (redirectingOrderId) {
     return (
@@ -2809,70 +2871,6 @@ export default function Checkout() {
     );
   };
 
-
-useEffect(() => {
-  let cancelled = false;
-
-  const run = async () => {
-    try {
-      const raw = sessionStorage.getItem("payment:init");
-      if (!raw) return;
-
-      const parsed = JSON.parse(raw);
-      const orderId = String(parsed?.orderId ?? "").trim();
-      if (!orderId) return;
-      if (redirectingOrderId) return;
-
-      const detailResp = await api.get(
-        `/api/orders/${encodeURIComponent(orderId)}`,
-        AXIOS_COOKIE_CFG
-      );
-      if (cancelled) return;
-
-      const detailRoot = detailResp?.data?.data ?? detailResp?.data ?? {};
-      const payment =
-        detailRoot?.payment ??
-        (Array.isArray(detailRoot?.payments) ? detailRoot.payments[0] : null) ??
-        null;
-
-      const maybeHostedUrl = String(
-        payment?.authorization_url ??
-          payment?.authorizationUrl ??
-          detailRoot?.authorization_url ??
-          detailRoot?.authorizationUrl ??
-          ""
-      ).trim();
-
-      const hasReference = !!String(
-        payment?.reference ?? detailRoot?.reference ?? ""
-      ).trim();
-
-      const hasPaymentId = !!String(
-        payment?.id ?? detailRoot?.paymentId ?? ""
-      ).trim();
-
-      if (maybeHostedUrl) {
-        clearCheckoutCartForSuccessfulHostedExit();
-        markPaystackExit();
-        window.location.assign(maybeHostedUrl);
-        return;
-      }
-
-      if (hasReference || hasPaymentId) {
-        // keep cart intact on internal payment page
-        window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
-      }
-    } catch {
-      //
-    }
-  };
-
-  void run();
-
-  return () => {
-    cancelled = true;
-  };
-}, [redirectingOrderId]);
   const showShippingIncludedRibbon = !publicSettingsQ.isLoading && !shippingEnabled;
 
   const placeOrderDisabled =
