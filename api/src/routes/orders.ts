@@ -1437,8 +1437,38 @@ async function fetchActiveOffersTx(
 }
 
 /* ---------------- Stock decrement (atomic) ---------------- */
+async function flushTouchedProductsTx(tx: any, touchedProductIds: Set<string>) {
+  for (const productId of touchedProductIds) {
+    await recomputeProductStockTx(tx, productId);
+    await syncProductInStockCacheTx(tx, productId);
+  }
+}
 
-async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number) {
+async function attachShippingQuotesToOrderTx(
+  tx: any,
+  args: { quoteIds: string[]; orderId: string }
+) {
+  const ids = Array.from(
+    new Set((args.quoteIds || []).map((x) => String(x ?? "").trim()).filter(Boolean))
+  );
+
+  if (!ids.length) return;
+
+  await tx.shippingQuote.updateMany({
+    where: { id: { in: ids } },
+    data: {
+      orderId: args.orderId,
+      status: "CONVERTED_TO_ORDER",
+    } as any,
+  });
+}
+
+async function decrementOfferQtyTx(
+  tx: any,
+  offer: CandidateOffer,
+  take: number,
+  touchedProductIds?: Set<string>
+) {
   if (take <= 0) return;
 
   if (offer.model === "BASE_OFFER") {
@@ -1453,10 +1483,15 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
       select: { availableQty: true, productId: true },
     });
 
-    if (after?.productId) await recomputeProductStockTx(tx, String(after.productId));
+    if (after?.productId && touchedProductIds) {
+      touchedProductIds.add(String(after.productId));
+    }
 
     if (asNumber(after?.availableQty, 0) <= 0) {
-      await tx.supplierProductOffer.update({ where: { id: offer.id }, data: { inStock: false } });
+      await tx.supplierProductOffer.update({
+        where: { id: offer.id },
+        data: { inStock: false },
+      });
     }
     return;
   }
@@ -1478,7 +1513,9 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
     } as any);
 
     const pid = String((afterVar as any)?.variant?.productId ?? afterVar?.productId ?? "");
-    if (pid) await recomputeProductStockTx(tx, pid);
+    if (pid && touchedProductIds) {
+      touchedProductIds.add(pid);
+    }
 
     if (asNumber(afterVar?.availableQty, 0) <= 0) {
       await tx.supplierVariantOffer.update({
@@ -1500,10 +1537,15 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
     select: { availableQty: true, productId: true },
   });
 
-  if (after?.productId) await recomputeProductStockTx(tx, String(after.productId));
+  if (after?.productId && touchedProductIds) {
+    touchedProductIds.add(String(after.productId));
+  }
 
   if (asNumber(after?.availableQty, 0) <= 0) {
-    await tx.supplierOffer.update({ where: { id: offer.id }, data: { inStock: false } });
+    await tx.supplierOffer.update({
+      where: { id: offer.id },
+      data: { inStock: false },
+    });
   }
 }
 
@@ -1731,7 +1773,6 @@ async function ensurePurchaseOrdersForOrderTx(
     if (!sid) continue;
 
     const qty = Math.max(0, Number(it.quantity ?? 0));
-
     const supplierUnit = money(it.chosenSupplierUnitPrice);
     const supplierLine = round2(supplierUnit * qty);
 
@@ -1766,9 +1807,6 @@ async function ensurePurchaseOrdersForOrderTx(
   );
 
   const quotes = quotesBySupplier ?? {};
-
-  // Build fallback shipping map from order.shippingBreakdownJson
-  // so this still works even when quotesBySupplier is not passed in.
   const breakdown = (order.shippingBreakdownJson ?? null) as any;
 
   const breakdownQuoteMap = new Map<
@@ -1789,18 +1827,11 @@ async function ensurePurchaseOrdersForOrderTx(
       if (!sid) continue;
 
       const totalFee = round2(
-        Number(
-          row?.totalFee ??
-          row?.totals?.totalFee ??
-          0
-        )
+        Number(row?.totalFee ?? row?.totals?.totalFee ?? 0)
       );
 
       const shippingCurrency = String(
-        row?.currency ??
-        breakdown?.currency ??
-        order.shippingCurrency ??
-        "NGN"
+        row?.currency ?? breakdown?.currency ?? order.shippingCurrency ?? "NGN"
       );
 
       const shippingServiceLevel = row?.serviceLevel
@@ -1818,10 +1849,10 @@ async function ensurePurchaseOrdersForOrderTx(
       const shippingCarrierName =
         String(row?.rateSource ?? "").toUpperCase() === "LIVE_CARRIER"
           ? String(
-            row?.pricingMeta?.carrierName ??
-            row?.pricingMetaJson?.carrierName ??
-            ""
-          ).trim() || null
+              row?.pricingMeta?.carrierName ??
+                row?.pricingMetaJson?.carrierName ??
+                ""
+            ).trim() || null
           : null;
 
       breakdownQuoteMap.set(sid, {
@@ -1882,7 +1913,6 @@ async function ensurePurchaseOrdersForOrderTx(
       shippedToAddressId = fallbackQuote.shippedToAddressId ?? null;
       shippingCarrierName = fallbackQuote.shippingCarrierName ?? null;
     } else if (totalOrderShippingFee > 0 && totalCustomerSubtotal > 0) {
-      // final fallback: prorate order-level shipping if no per-supplier breakdown exists
       shippingFeeChargedToCustomer = round2(
         (customerSubtotal / totalCustomerSubtotal) * totalOrderShippingFee
       );
@@ -1897,7 +1927,6 @@ async function ensurePurchaseOrdersForOrderTx(
         platformFee,
         supplierAmount,
         status: "CREATED",
-
         shippingFeeChargedToCustomer,
         shippingCurrency,
         shippingServiceLevel,
@@ -1909,7 +1938,6 @@ async function ensurePurchaseOrdersForOrderTx(
         subtotal: customerSubtotal,
         platformFee,
         supplierAmount,
-
         shippingFeeChargedToCustomer,
         shippingCurrency,
         shippingServiceLevel,
@@ -1924,9 +1952,12 @@ async function ensurePurchaseOrdersForOrderTx(
       where: { purchaseOrderId: po.id },
     });
 
-    for (const orderItemId of g.itemIds) {
-      await tx.purchaseOrderItem.create({
-        data: { purchaseOrderId: po.id, orderItemId },
+    if (g.itemIds.length) {
+      await tx.purchaseOrderItem.createMany({
+        data: g.itemIds.map((orderItemId) => ({
+          purchaseOrderId: po.id,
+          orderItemId,
+        })),
       });
     }
 
@@ -2164,21 +2195,12 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return Number.isFinite(n) ? n : def;
   };
 
-  const getClientCheckoutUnitPrice = (line: any): number | null => {
-    const direct = Number(line?.unitPrice);
-    if (Number.isFinite(direct) && direct > 0) return round2(direct);
-
-    const cached = Number(line?.unitPriceCache);
-    if (Number.isFinite(cached) && cached > 0) return round2(cached);
-
-    return null;
-  };
-
   try {
-    const created = await prisma.$transaction(
+    const txResult = await prisma.$transaction(
       async (tx: any) => {
         const settings = await loadCheckoutSettingsTx(tx);
         const shippingEnabledTxVal = shippingEnabled;
+        const touchedProductIds = new Set<string>();
 
         let selectedShippingQuotesBySupplier: SelectedShippingQuoteMap = {};
         let shippingFeeFinal = 0;
@@ -2238,10 +2260,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         const DELIVERY_PHONE_UNVERIFIED_MSG =
           "The selected delivery phone is not verified. Please verify it before placing your order.";
 
-        /* ------------------------------------------------------------------ */
-        /* SHIPPING ADDRESS RESOLUTION + VERIFICATION ENFORCEMENT              */
-        /* ------------------------------------------------------------------ */
-
         if (body.selectedUserShippingAddressId) {
           const saved = await getUserShippingAddressForCheckoutTx(tx, {
             userId,
@@ -2272,8 +2290,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         } else if (body.shippingAddressId) {
           const rawShippingAddressId = String(body.shippingAddressId).trim();
 
-          // Backward-compatible path:
-          // Treat shippingAddressId primarily as a saved user shipping address id.
           const savedUserShipping = await tx.userShippingAddress.findFirst({
             where: {
               id: rawShippingAddressId,
@@ -2325,14 +2341,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             shippingAddressId = String(snapshot.id);
             selectedUserShippingAddressId = String(savedUserShipping.id);
           } else {
-            // Optional strictness:
-            // do not allow raw Address.id shopper checkout bypass anymore
             throw new Error(
               "Selected delivery address was not found. Please reselect your saved delivery detail."
             );
           }
         } else if (body.shippingAddress) {
-          // Legacy/manual fallback. For your modern shopper flow, you may remove this entirely.
           const a = body.shippingAddress;
 
           const createdShipping = await tx.address.create({
@@ -2417,51 +2430,50 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           billingAddressId = String(createdBilling.id);
         }
 
-        const data: any = {
-          userId,
-          shippingAddressId,
-          selectedUserShippingAddressId,
-          billingAddressId,
-
-          subtotal: 0,
-          tax: 0,
-          total: 0,
-          status: "CREATED",
-
-          shippingFee: shippingEnabledTxVal ? shippingFeeFinal : 0,
-          shippingCurrency: shippingCurrencyFinal,
-          ...(shippingEnabledTxVal && shippingRateSourceFinal
-            ? { shippingRateSource: shippingRateSourceFinal as any }
-            : {}),
-          shippingBreakdownJson:
-            shippingEnabledTxVal && Object.keys(selectedShippingQuotesBySupplier).length
-              ? buildOrderShippingBreakdownFromQuotes(selectedShippingQuotesBySupplier)
-              : shippingEnabledTxVal && shippingFeeFinal > 0
-                ? {
-                    quoteId: null,
-                    serviceLevel: "STANDARD",
-                    zoneCode: null,
-                    zoneName: null,
-                    currency: shippingCurrencyFinal,
-                    rateSource:
-                      (shippingRateSourceFinal as any) ??
-                      normalizeShippingRateSource("MANUAL"),
-                    components: {
-                      shippingFee: shippingFeeFinal,
-                      remoteSurcharge: 0,
-                      fuelSurcharge: 0,
-                      handlingFee: 0,
-                      insuranceFee: 0,
-                    },
-                    totalFee: shippingFeeFinal,
-                    etaMinDays: null,
-                    etaMaxDays: null,
-                    pricingMeta: { source: "checkout_fallback" },
-                  }
-                : null,
-        };
-
-        const order = await tx.order.create({ data });
+        const order = await tx.order.create({
+          data: {
+            userId,
+            shippingAddressId,
+            selectedUserShippingAddressId,
+            billingAddressId,
+            subtotal: 0,
+            tax: 0,
+            total: 0,
+            status: "CREATED",
+            shippingFee: shippingEnabledTxVal ? shippingFeeFinal : 0,
+            shippingCurrency: shippingCurrencyFinal,
+            ...(shippingEnabledTxVal && shippingRateSourceFinal
+              ? { shippingRateSource: shippingRateSourceFinal as any }
+              : {}),
+            shippingBreakdownJson:
+              shippingEnabledTxVal && Object.keys(selectedShippingQuotesBySupplier).length
+                ? buildOrderShippingBreakdownFromQuotes(selectedShippingQuotesBySupplier)
+                : shippingEnabledTxVal && shippingFeeFinal > 0
+                  ? {
+                      quoteId: null,
+                      serviceLevel: "STANDARD",
+                      zoneCode: null,
+                      zoneName: null,
+                      currency: shippingCurrencyFinal,
+                      rateSource:
+                        (shippingRateSourceFinal as any) ??
+                        normalizeShippingRateSource("MANUAL"),
+                      components: {
+                        shippingFee: shippingFeeFinal,
+                        remoteSurcharge: 0,
+                        fuelSurcharge: 0,
+                        handlingFee: 0,
+                        insuranceFee: 0,
+                      },
+                      totalFee: shippingFeeFinal,
+                      etaMinDays: null,
+                      etaMaxDays: null,
+                      pricingMeta: { source: "checkout_fallback" },
+                    }
+                  : null,
+          },
+          select: { id: true },
+        });
 
         await logOrderActivityTx(tx, order.id, ACT.ORDER_CREATED as any, "Order created");
         if (body.notes && String(body.notes).trim()) {
@@ -2634,14 +2646,8 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             if (need <= 0) break;
             if (o.availableQty <= 0) continue;
 
-            if (!o.supplierId) {
-              throw new Error(`Bad offer data: missing supplierId for offer ${o.id}`);
-            }
-
-            await assertSupplierPurchasableTx(tx, o.supplierId);
-
             const take = Math.min(need, o.availableQty);
-            await decrementOfferQtyTx(tx, o, take);
+            await decrementOfferQtyTx(tx, o, take, touchedProductIds);
 
             allocations.push({
               supplierId: o.supplierId,
@@ -2669,7 +2675,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             );
           }
 
-          for (const alloc of allocations) {
+          const orderItemRows = allocations.map((alloc) => {
             const supplierUnitCost = round2(Number(alloc.supplierUnitCost || 0));
             if (!(supplierUnitCost > 0)) {
               throw new Error(
@@ -2677,50 +2683,55 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               );
             }
 
-            await tx.orderItem.create({
-              data: {
-                orderId: order.id,
-                productId,
-                variantId,
+            return {
+              orderId: order.id,
+              productId,
+              variantId,
+              chosenSupplierProductOfferId: alloc.supplierProductOfferId,
+              chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
+              chosenSupplierId: alloc.supplierId,
+              chosenSupplierUnitPrice: supplierUnitCost,
+              title: productTitle,
+              unitPrice: round2(Number(checkoutUnit)),
+              quantity: alloc.qty,
+              lineTotal: round2(Number(checkoutUnit) * alloc.qty),
+              selectedOptions: selectedOptions ?? null,
+            };
+          });
 
-                chosenSupplierProductOfferId: alloc.supplierProductOfferId,
-                chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
-                chosenSupplierId: alloc.supplierId,
-
-                chosenSupplierUnitPrice: supplierUnitCost,
-
-                title: productTitle,
-                unitPrice: round2(Number(checkoutUnit)),
-                quantity: alloc.qty,
-                lineTotal: round2(Number(checkoutUnit) * alloc.qty),
-
-                selectedOptions: selectedOptions ?? null,
-              },
+          if (orderItemRows.length) {
+            await tx.orderItem.createMany({
+              data: orderItemRows,
             });
-
-            runningSubtotal += round2(Number(checkoutUnit) * alloc.qty);
-
-            await logOrderActivityTx(
-              tx,
-              order.id,
-              "PRICING_SNAPSHOT" as any,
-              "Order item priced via CHECKOUT_PRICE",
-              {
-                productId,
-                variantId,
-                productTitle,
-                supplierId: alloc.supplierId,
-                qty: alloc.qty,
-                supplierUnitCost,
-                checkoutUnitSent: checkoutUnit,
-                finalCustomerUnit: round2(Number(checkoutUnit)),
-                pricingSource: "CHECKOUT_PRICE",
-              }
-            );
           }
 
-          await syncProductInStockCacheTx(tx, productId);
+          for (const row of orderItemRows) {
+            runningSubtotal += round2(Number(row.lineTotal));
+          }
+
+          await logOrderActivityTx(
+            tx,
+            order.id,
+            "PRICING_SNAPSHOT" as any,
+            `Order item priced via CHECKOUT_PRICE for ${productTitle}${optionsLabel}`,
+            {
+              productId,
+              variantId,
+              productTitle,
+              qtyNeeded,
+              allocations: orderItemRows.map((r) => ({
+                supplierId: r.chosenSupplierId,
+                qty: r.quantity,
+                supplierUnitCost: r.chosenSupplierUnitPrice,
+                finalCustomerUnit: r.unitPrice,
+                lineTotal: r.lineTotal,
+              })),
+              pricingSource: "CHECKOUT_PRICE",
+            }
+          );
         }
+
+        await flushTouchedProductsTx(tx, touchedProductIds);
 
         const subtotal = round2(runningSubtotal);
 
@@ -2755,13 +2766,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                   : 0
             ),
             total,
-
             serviceFeeBase: serviceFeeBaseSnapshot,
             serviceFeeComms: serviceFeeCommsSnapshot,
             serviceFeeGateway: serviceFeeGatewaySnapshot,
             serviceFeeTotal: serviceFeeTotalSnapshot,
             serviceFee: serviceFeeTotalSnapshot,
-
             shippingFee,
             shippingCurrency: shippingCurrencyFinal,
             ...(shippingEnabledTxVal && shippingRateSourceFinal
@@ -2819,83 +2828,106 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         );
 
         if (shippingEnabledTxVal) {
-          for (const q of Object.values(selectedShippingQuotesBySupplier)) {
-            await attachShippingQuoteToOrderTx(tx, {
-              quoteId: q.id,
-              orderId: updatedOrder.id,
-            });
-          }
-        }
-
-        try {
-          await notifyUser(
-            userId,
-            {
-              type: NotificationType.ORDER_PLACED,
-              title: "Order placed",
-              body: `Your order ${updatedOrder.id} has been created.`,
-              data: { orderId: updatedOrder.id, total: updatedOrder.total },
-            },
-            tx
-          );
-
-          await notifySuppliersForOrderTx(tx, updatedOrder.id, {
-            type: NotificationType.PURCHASE_ORDER_CREATED,
-            title: "New order received",
-            body: `You have received a new purchase order for order ${updatedOrder.id}.`,
-            data: { total: updatedOrder.total },
+          await attachShippingQuotesToOrderTx(tx, {
+            quoteIds: Object.values(selectedShippingQuotesBySupplier).map((q) => q.id),
+            orderId: updatedOrder.id,
           });
-
-          await notifyAdmins(
-            {
-              type: NotificationType.ORDER_PLACED,
-              title: "New order created",
-              body: `Order ${updatedOrder.id} was created with total ₦${updatedOrder.total}.`,
-              data: { orderId: updatedOrder.id, total: updatedOrder.total },
-            },
-            tx
-          );
-        } catch (notifyErr) {
-          console.error("Failed to send order-created notifications:", notifyErr);
-        }
-
-        try {
-          await clearActiveCartForUserTx(tx, userId);
-        } catch (cartErr) {
-          console.error("Failed to clear active cart after order create:", cartErr);
         }
 
         return {
-          ...updatedOrder,
-          meta: {
-            taxMode,
-            taxRatePct,
-            vatIncluded: round2(vatIncluded),
-            vatAddOn: round2(vatAddOn),
-            serviceFeeMeta: {
-              source: Number.isFinite(Number(body?.serviceFeeBase))
-                ? "checkout_snapshot"
-                : "settings_fallback",
-              serviceFeeBase: serviceFeeBaseSnapshot,
-              serviceFeeComms: serviceFeeCommsSnapshot,
-              serviceFeeGateway: serviceFeeGatewaySnapshot,
-              serviceFeeTotal: serviceFeeTotalSnapshot,
-              includedInRetailPrice: true,
-              addedAgainToOrderTotal: false,
+          response: {
+            ...updatedOrder,
+            meta: {
+              taxMode,
+              taxRatePct,
+              vatIncluded: round2(vatIncluded),
+              vatAddOn: round2(vatAddOn),
+              serviceFeeMeta: {
+                source: Number.isFinite(Number(body?.serviceFeeBase))
+                  ? "checkout_snapshot"
+                  : "settings_fallback",
+                serviceFeeBase: serviceFeeBaseSnapshot,
+                serviceFeeComms: serviceFeeCommsSnapshot,
+                serviceFeeGateway: serviceFeeGatewaySnapshot,
+                serviceFeeTotal: serviceFeeTotalSnapshot,
+                includedInRetailPrice: true,
+                addedAgainToOrderTotal: false,
+              },
+              purchaseOrders,
+              pricing: {
+                mode: "retail-price-with-supplier-cost-allocation",
+              },
             },
-            purchaseOrders,
-            pricing: {
-              mode: "retail-price-with-supplier-cost-allocation",
-            },
+          },
+          postCommit: {
+            orderId: updatedOrder.id,
+            total: updatedOrder.total,
+            userId: String(userId),
           },
         };
       },
       {
-        isolationLevel: "Serializable" as any,
-        maxWait: 10_000,
-        timeout: 30_000,
+        isolationLevel: "ReadCommitted" as any,
+        maxWait: 5_000,
+        timeout: 20_000,
       }
     );
+
+    const created = txResult.response;
+
+    try {
+      await notifyUser(
+        txResult.postCommit.userId,
+        {
+          type: NotificationType.ORDER_PLACED,
+          title: "Order placed",
+          body: `Your order ${txResult.postCommit.orderId} has been created.`,
+          data: {
+            orderId: txResult.postCommit.orderId,
+            total: txResult.postCommit.total,
+          },
+        },
+        prisma as any
+      );
+    } catch (notifyErr) {
+      console.error("Failed to notify user after order create:", notifyErr);
+    }
+
+    try {
+      await notifySuppliersForOrderTx(prisma as any, txResult.postCommit.orderId, {
+        type: NotificationType.PURCHASE_ORDER_CREATED,
+        title: "New order received",
+        body: `You have received a new purchase order for order ${txResult.postCommit.orderId}.`,
+        data: { total: txResult.postCommit.total },
+      });
+    } catch (notifyErr) {
+      console.error("Failed to notify suppliers after order create:", notifyErr);
+    }
+
+    try {
+      await notifyAdmins(
+        {
+          type: NotificationType.ORDER_PLACED,
+          title: "New order created",
+          body: `Order ${txResult.postCommit.orderId} was created with total ₦${txResult.postCommit.total}.`,
+          data: {
+            orderId: txResult.postCommit.orderId,
+            total: txResult.postCommit.total,
+          },
+        },
+        prisma as any
+      );
+    } catch (notifyErr) {
+      console.error("Failed to notify admins after order create:", notifyErr);
+    }
+
+    try {
+      await prisma.$transaction(async (tx: any) => {
+        await clearActiveCartForUserTx(tx, txResult.postCommit.userId);
+      });
+    } catch (cartErr) {
+      console.error("Failed to clear active cart after order create:", cartErr);
+    }
 
     return res.status(201).json({ data: created });
   } catch (e: any) {
@@ -2903,7 +2935,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return res.status(400).json({ error: e?.message || "Could not create order" });
   }
 });
-
 /* ---------------- Availability helpers (used by GET routes) ---------------- */
 
 type Pair = { productId: string; variantId: string | null };

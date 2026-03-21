@@ -1511,6 +1511,89 @@ function makeEmptyShippingForm(defaultCountry = NIGERIA_COUNTRY): ShippingAddres
   };
 }
 
+
+function isAxiosTimeoutError(err: any) {
+  const code = String(err?.code ?? "").toUpperCase();
+  const msg = String(err?.message ?? "").toLowerCase();
+  return code === "ECONNABORTED" || msg.includes("timeout");
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function readPaymentInitResponse(payload: any) {
+  const root = payload?.data ?? payload ?? {};
+
+  const mode = String(root?.mode ?? "").trim();
+  const authorizationUrl = String(root?.authorization_url ?? root?.authorizationUrl ?? "").trim();
+  const reference = String(root?.reference ?? "").trim();
+
+  const amount =
+    Number.isFinite(Number(root?.amount)) && Number(root?.amount) > 0
+      ? Number(root.amount)
+      : null;
+
+  return {
+    mode,
+    authorizationUrl,
+    reference,
+    amount,
+  };
+}
+
+function persistPendingPaymentInit(args: {
+  orderId: string;
+  total: number;
+  shippingFee: number;
+  homeAddr: Address;
+  selectedShippingAddress: SavedShippingAddress | null;
+}) {
+  try {
+    sessionStorage.setItem(
+      "payment:init",
+      JSON.stringify({
+        orderId: args.orderId,
+        total: args.total,
+        serviceFeeTotal: args.shippingFee,
+        homeAddress: args.homeAddr,
+        shippingAddress: args.selectedShippingAddress,
+        selectedUserShippingAddressId: args.selectedShippingAddress?.id ?? null,
+        at: Date.now(),
+      })
+    );
+  } catch {
+    //
+  }
+}
+
+function persistResolvedPaymentInit(args: {
+  orderId: string;
+  total: number;
+  shippingFee: number;
+  reference?: string | null;
+  homeAddr: Address;
+  selectedShippingAddress: SavedShippingAddress | null;
+}) {
+  try {
+    sessionStorage.setItem(
+      "payment:init",
+      JSON.stringify({
+        orderId: args.orderId,
+        total: args.total,
+        serviceFeeTotal: args.shippingFee,
+        reference: args.reference ?? null,
+        homeAddress: args.homeAddr,
+        shippingAddress: args.selectedShippingAddress,
+        selectedUserShippingAddressId: args.selectedShippingAddress?.id ?? null,
+        at: Date.now(),
+      })
+    );
+  } catch {
+    //
+  }
+}
+
 /* ----------------------------- Component ----------------------------- */
 export default function Checkout() {
   const nav = useNavigate();
@@ -1638,18 +1721,64 @@ export default function Checkout() {
 
   const quoteSubtotalSupplier = (pricingQ.data as QuotePayload | null)?.subtotal ?? 0;
 
-  function countryCodeFromCodeOrName(value?: string | null) {
-    const raw = String(value ?? "").trim();
-    if (!raw) return "";
+  const pollForPaymentInitAfterTimeout = useCallback(
+    async (orderId: string) => {
+      const startedAt = Date.now();
+      const maxWaitMs = 45_000;
+      const stepMs = 2_500;
 
-    const byCode = COUNTRIES.find((c) => c.code.toLowerCase() === raw.toLowerCase());
-    if (byCode) return byCode.code;
+      while (Date.now() - startedAt < maxWaitMs) {
+        try {
+          const detailResp = await api.get(
+            `/api/orders/${encodeURIComponent(orderId)}`,
+            AXIOS_COOKIE_CFG
+          );
+          const detailRoot = detailResp?.data?.data ?? detailResp?.data ?? {};
 
-    const byName = COUNTRIES.find((c) => c.name.toLowerCase() === raw.toLowerCase());
-    if (byName) return byName.code;
+          const payment =
+            detailRoot?.payment ??
+            (Array.isArray(detailRoot?.payments) ? detailRoot.payments[0] : null) ??
+            null;
 
-    return "";
-  }
+          const hasReference = !!String(
+            payment?.reference ?? detailRoot?.reference ?? ""
+          ).trim();
+
+          const hasPaymentId = !!String(
+            payment?.id ?? detailRoot?.paymentId ?? ""
+          ).trim();
+
+          const maybeHostedUrl = String(
+            payment?.authorization_url ??
+            payment?.authorizationUrl ??
+            detailRoot?.authorization_url ??
+            detailRoot?.authorizationUrl ??
+            ""
+          ).trim();
+
+          if (maybeHostedUrl) {
+            clearCheckoutCartForSuccessfulHostedExit();
+            markPaystackExit();
+            window.location.assign(maybeHostedUrl);
+            return true;
+          }
+
+          if (hasReference || hasPaymentId) {
+            // keep cart intact so user can still amend if payment page loads
+            window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
+            return true;
+          }
+        } catch {
+          //
+        }
+
+        await sleep(stepMs);
+      }
+
+      return false;
+    },
+    []
+  );
 
   const cartSubtotal = useMemo(() => {
     return round2(
@@ -1708,6 +1837,12 @@ export default function Checkout() {
     if (!selectedShippingAddress) return false;
     return isSavedAddressPhoneVerified(selectedShippingAddress);
   }, [selectedShippingAddress]);
+
+
+  function clearCheckoutCartForSuccessfulHostedExit() {
+    writeCart([]);
+  }
+
 
   useEffect(() => {
     if (!selectedShippingAddress) {
@@ -2505,21 +2640,13 @@ export default function Checkout() {
 
       setRedirectingOrderId(orderId);
 
-      try {
-        sessionStorage.setItem(
-          "payment:init",
-          JSON.stringify({
-            orderId,
-            total: payableTotal,
-            homeAddress: homeAddr,
-            shippingAddress: selectedShippingAddress,
-            selectedUserShippingAddressId: selectedShippingAddress?.id ?? null,
-            at: Date.now(),
-          })
-        );
-      } catch {
-        //
-      }
+      persistPendingPaymentInit({
+        orderId,
+        total: payableTotal,
+        shippingFee: shippingEnabled ? shippingFee : 0,
+        homeAddr,
+        selectedShippingAddress,
+      });
 
       try {
         const initResp = await api.post(
@@ -2529,50 +2656,54 @@ export default function Checkout() {
             channel: "paystack",
             expectedTotal: payableTotal,
           },
-          AXIOS_COOKIE_CFG
+          {
+            ...AXIOS_COOKIE_CFG,
+            timeout: 20_000,
+          }
         );
 
-        const initData = initResp?.data;
+        const parsed = readPaymentInitResponse(initResp?.data);
 
-        if (
-          initData?.mode === "paystack" &&
-          initData?.authorization_url &&
-          String(initData.authorization_url).trim()
-        ) {
-          try {
-            sessionStorage.setItem(
-              "payment:init",
-              JSON.stringify({
-                orderId,
-                total: typeof initData.amount === "number" ? initData.amount : payableTotal,
-                serviceFeeTotal: shippingEnabled ? shippingFee : 0,
-                reference: initData.reference ?? null,
-                homeAddress: homeAddr,
-                shippingAddress: selectedShippingAddress,
-                selectedUserShippingAddressId: selectedShippingAddress?.id ?? null,
-                at: Date.now(),
-              })
-            );
-          } catch {
-            //
-          }
+        if (parsed.mode === "paystack" && parsed.authorizationUrl) {
+          persistResolvedPaymentInit({
+            orderId,
+            total: parsed.amount ?? payableTotal,
+            shippingFee: shippingEnabled ? shippingFee : 0,
+            reference: parsed.reference || null,
+            homeAddr,
+            selectedShippingAddress,
+          });
 
-          writeCart([]);
+          clearCheckoutCartForSuccessfulHostedExit();
           markPaystackExit();
-          window.location.assign(initData.authorization_url);
+          window.location.assign(parsed.authorizationUrl);
           return;
         }
 
-        // non-hosted fallback
-        writeCart([]);
+        // keep cart intact on internal payment page
         window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
-      } catch {
-        // payment init fallback page
-        writeCart([]);
+      } catch (e: any) {
+        if (isAxiosTimeoutError(e)) {
+          const recovered = await pollForPaymentInitAfterTimeout(orderId);
+
+          if (recovered) return;
+
+          openModal({
+            title: "Payment is taking longer than expected",
+            message:
+              "Your order may already have been created, but payment setup has not been confirmed yet. Please check My Orders before trying again to avoid duplicate orders.",
+          });
+
+          setRedirectingOrderId(null);
+          return;
+        }
+
+        // keep cart intact on internal payment page fallback
         window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
       }
     },
   });
+
 
   if (redirectingOrderId) {
     return (
@@ -2678,6 +2809,70 @@ export default function Checkout() {
     );
   };
 
+
+useEffect(() => {
+  let cancelled = false;
+
+  const run = async () => {
+    try {
+      const raw = sessionStorage.getItem("payment:init");
+      if (!raw) return;
+
+      const parsed = JSON.parse(raw);
+      const orderId = String(parsed?.orderId ?? "").trim();
+      if (!orderId) return;
+      if (redirectingOrderId) return;
+
+      const detailResp = await api.get(
+        `/api/orders/${encodeURIComponent(orderId)}`,
+        AXIOS_COOKIE_CFG
+      );
+      if (cancelled) return;
+
+      const detailRoot = detailResp?.data?.data ?? detailResp?.data ?? {};
+      const payment =
+        detailRoot?.payment ??
+        (Array.isArray(detailRoot?.payments) ? detailRoot.payments[0] : null) ??
+        null;
+
+      const maybeHostedUrl = String(
+        payment?.authorization_url ??
+          payment?.authorizationUrl ??
+          detailRoot?.authorization_url ??
+          detailRoot?.authorizationUrl ??
+          ""
+      ).trim();
+
+      const hasReference = !!String(
+        payment?.reference ?? detailRoot?.reference ?? ""
+      ).trim();
+
+      const hasPaymentId = !!String(
+        payment?.id ?? detailRoot?.paymentId ?? ""
+      ).trim();
+
+      if (maybeHostedUrl) {
+        clearCheckoutCartForSuccessfulHostedExit();
+        markPaystackExit();
+        window.location.assign(maybeHostedUrl);
+        return;
+      }
+
+      if (hasReference || hasPaymentId) {
+        // keep cart intact on internal payment page
+        window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
+      }
+    } catch {
+      //
+    }
+  };
+
+  void run();
+
+  return () => {
+    cancelled = true;
+  };
+}, [redirectingOrderId]);
   const showShippingIncludedRibbon = !publicSettingsQ.isLoading && !shippingEnabled;
 
   const placeOrderDisabled =
@@ -3251,7 +3446,7 @@ export default function Checkout() {
                           </p>
                         ) : selectedPhoneVerified ? (
                           <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs sm:text-sm text-emerald-800">
-                           {"This delivery phone was already verified for this saved delivery detail."}
+                            {"This delivery phone was already verified for this saved delivery detail."}
                           </div>
                         ) : (
                           <>
