@@ -20,6 +20,7 @@ import {
   notifyUser,
   notifyAdmins,
   notifySupplierBySupplierId,
+  notifyMany,
 } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
 import { hasSuccessfulPaymentForOrderTx, markPendingPaymentsCanceledTx, restoreOrderInventoryTx } from "../services/orderInventory.service.js";
@@ -3006,6 +3007,308 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   }
 });
 /* ---------------- Availability helpers (used by GET routes) ---------------- */
+
+
+function isRefundOpenStatus(status: any) {
+  const s = String(status ?? "").toUpperCase();
+  return [
+    "REQUESTED",
+    "SUPPLIER_REVIEW",
+    "SUPPLIER_ACCEPTED",
+    "SUPPLIER_REJECTED",
+    "ESCALATED",
+    "APPROVED",
+    "PROCESSING",
+  ].includes(s);
+}
+
+router.post("/refund-request", requireAuth, async (req: any, res) => {
+  const actorId = String(req.user?.id ?? "").trim();
+  const role = String(req.user?.role ?? "").trim().toUpperCase();
+
+  if (!actorId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (role === "SUPPLIER" || ["ADMIN", "SUPER_ADMIN"].includes(role)) {
+    return res.status(403).json({
+      error: "Only customers can create refund requests here.",
+    });
+  }
+
+  try {
+    const out = await prisma.$transaction(async (tx: any) => {
+      const orderId = String(req.body?.orderId ?? "").trim();
+      if (!orderId) throw new Error("Missing orderId");
+
+      const reason = String(
+        req.body?.reason ??
+        req.body?.refundReason ??
+        req.body?.message ??
+        req.body?.note ??
+        req.body?.description ??
+        ""
+      ).trim();
+
+      if (!reason) throw new Error("Please provide a refund reason.");
+
+      const itemIds = Array.from(
+        new Set(
+          [
+            ...(Array.isArray(req.body?.itemIds) ? req.body.itemIds : []),
+            ...(Array.isArray(req.body?.orderItemIds) ? req.body.orderItemIds : []),
+            ...(Array.isArray(req.body?.items)
+              ? req.body.items.map((x: any) => x?.orderItemId ?? x?.id)
+              : []),
+          ]
+            .map((x) => String(x ?? "").trim())
+            .filter(Boolean)
+        )
+      );
+
+      const purchaseOrderId = String(
+        req.body?.purchaseOrderId ?? req.body?.poId ?? ""
+      ).trim();
+
+      const note = String(
+        req.body?.customerNote ?? req.body?.note ?? ""
+      ).trim();
+
+      const providerReference = String(
+        req.body?.providerReference ?? req.body?.reference ?? ""
+      ).trim();
+
+      const order = await tx.order.findFirst({
+        where: { id: orderId, userId: actorId },
+        select: {
+          id: true,
+          userId: true,
+          items: {
+            select: {
+              id: true,
+              title: true,
+              quantity: true,
+              unitPrice: true,
+              lineTotal: true,
+              chosenSupplierId: true,
+            },
+          },
+          purchaseOrders: {
+            select: {
+              id: true,
+              supplierId: true,
+            },
+          },
+        },
+      });
+
+      if (!order) throw new Error("Order not found.");
+
+      let selectedOrderItems = Array.isArray(order.items) ? order.items : [];
+
+      if (itemIds.length) {
+        selectedOrderItems = selectedOrderItems.filter((it: any) =>
+          itemIds.includes(String(it.id))
+        );
+      }
+
+      if (!selectedOrderItems.length) {
+        throw new Error("Selected refund items were not found on this order.");
+      }
+
+      const supplierIds = Array.from(
+        new Set(
+          selectedOrderItems
+            .map((it: any) => String(it?.chosenSupplierId ?? "").trim())
+            .filter(Boolean)
+        )
+      );
+
+      let supplierId: string | null =
+        supplierIds.length === 1 ? String(supplierIds[0]) : null;
+
+      let finalPurchaseOrderId: string | null = purchaseOrderId || null;
+
+      if (finalPurchaseOrderId) {
+        const matchedPo = (order.purchaseOrders || []).find(
+          (x: any) => String(x.id) === String(finalPurchaseOrderId)
+        );
+
+        if (!matchedPo) {
+          throw new Error("Selected purchase order was not found on this order.");
+        }
+
+        if (matchedPo?.supplierId) {
+          supplierId = String(matchedPo.supplierId);
+        }
+      } else if (supplierId) {
+        const po = (order.purchaseOrders || []).find(
+          (x: any) => String(x.supplierId) === String(supplierId)
+        );
+        if (po?.id) finalPurchaseOrderId = String(po.id);
+      }
+
+      const existingRefunds = await tx.refund.findMany({
+        where: {
+          orderId,
+          requestedByUserId: actorId,
+          ...(finalPurchaseOrderId ? { purchaseOrderId: finalPurchaseOrderId } : {}),
+        },
+        select: {
+          id: true,
+          status: true,
+        },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      });
+
+      const existingOpen = existingRefunds.find((r: any) =>
+        isRefundOpenStatus(r?.status)
+      );
+
+      if (existingOpen) {
+        throw new Error("A refund request already exists for this order.");
+      }
+
+      const requestedAmount = selectedOrderItems.reduce((sum: number, it: any) => {
+        const lineTotal =
+          it?.lineTotal != null
+            ? Number(it.lineTotal)
+            : Number(it.unitPrice ?? 0) * Number(it.quantity ?? 0);
+
+        return sum + (Number.isFinite(lineTotal) ? lineTotal : 0);
+      }, 0);
+
+      const refundAmountDecimal = new Prisma.Decimal(String(requestedAmount));
+
+      const refund = await tx.refund.create({
+        data: {
+          orderId,
+          purchaseOrderId: finalPurchaseOrderId || undefined,
+          supplierId: supplierId || undefined,
+          requestedByUserId: actorId,
+          status: "REQUESTED" as any,
+          reason,
+          itemsAmount: refundAmountDecimal,
+          totalAmount: refundAmountDecimal,
+          customerNote: note || undefined,
+          providerReference: providerReference || undefined,
+        },
+      });
+
+      if (selectedOrderItems.length) {
+        await tx.refundItem.createMany({
+          data: selectedOrderItems.map((it: any) => ({
+            refundId: refund.id,
+            orderItemId: String(it.id),
+            qty: Math.max(1, Number(it.quantity || 1)),
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      await tx.refundEvent.create({
+        data: {
+          refundId: refund.id,
+          type: "CUSTOMER_REQUESTED",
+          message: reason,
+          meta: {
+            orderId,
+            purchaseOrderId: finalPurchaseOrderId,
+            supplierId,
+            itemIds: selectedOrderItems.map((it: any) => String(it.id)),
+          },
+        },
+      });
+
+      if (finalPurchaseOrderId) {
+        try {
+          await tx.purchaseOrder.update({
+            where: { id: finalPurchaseOrderId },
+            data: { status: "REFUND_REQUESTED" as any },
+          });
+        } catch {
+          //
+        }
+      }
+
+      return {
+        refund,
+        supplierId,
+        purchaseOrderId: finalPurchaseOrderId,
+        itemCount: selectedOrderItems.length,
+      };
+    });
+
+    if (out.refund.requestedByUserId) {
+      await notifyUser(out.refund.requestedByUserId, {
+        type: "REFUND_REQUESTED",
+        title: "Refund request submitted",
+        body: `Your refund request for order ${out.refund.orderId} has been submitted.`,
+        data: {
+          refundId: out.refund.id,
+          orderId: out.refund.orderId,
+          purchaseOrderId: out.purchaseOrderId ?? null,
+        },
+      });
+    }
+
+    if (out.supplierId) {
+      const supplier = await prisma.supplier.findUnique({
+        where: { id: out.supplierId },
+        select: { userId: true },
+      });
+
+      if (supplier?.userId) {
+        await notifyUser(supplier.userId, {
+          type: "REFUND_REQUESTED",
+          title: "Refund request received",
+          body: `A customer submitted a refund request for order ${out.refund.orderId}.`,
+          data: {
+            refundId: out.refund.id,
+            orderId: out.refund.orderId,
+            purchaseOrderId: out.purchaseOrderId ?? null,
+          },
+        });
+      }
+    }
+
+    const admins = await prisma.user.findMany({
+      where: { role: { in: ["ADMIN", "SUPER_ADMIN"] } as any },
+      select: { id: true },
+    });
+
+    await notifyMany(
+      admins.map((a: any) => String(a.id)),
+      {
+        type: "REFUND_REQUESTED",
+        title: "New refund request",
+        body: `A refund request was submitted for order ${out.refund.orderId}.`,
+        data: {
+          refundId: out.refund.id,
+          orderId: out.refund.orderId,
+          purchaseOrderId: out.purchaseOrderId ?? null,
+        },
+      }
+    );
+
+    return res.status(201).json({
+      ok: true,
+      data: out.refund,
+      meta: {
+        created: true,
+        purchaseOrderId: out.purchaseOrderId ?? null,
+        supplierId: out.supplierId ?? null,
+        itemCount: out.itemCount,
+      },
+    });
+  } catch (e: any) {
+    return res.status(400).json({
+      error: e?.message || "Failed to submit refund request",
+    });
+  }
+});
+
 
 type Pair = { productId: string; variantId: string | null };
 type AvailabilityRow = { productId: string; variantId: string | null; totalAvailable: number };

@@ -241,6 +241,359 @@ router.get("/", requireAuth, async (req: any, res) => {
   });
 });
 
+
+function uniqStrings(values: any[]): string[] {
+  return Array.from(
+    new Set(
+      (values || [])
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function isRefundOpenStatus(status: any) {
+  const s = String(status ?? "").toUpperCase();
+  return [
+    "REQUESTED",
+    "SUPPLIER_REVIEW",
+    "SUPPLIER_ACCEPTED",
+    "SUPPLIER_REJECTED",
+    "ESCALATED",
+    "APPROVED",
+    "PROCESSING",
+  ].includes(s);
+}
+
+function pickRefundReason(body: any) {
+  return normStr(
+    body?.reason ??
+      body?.refundReason ??
+      body?.message ??
+      body?.note ??
+      body?.description
+  );
+}
+
+function pickRefundItemIds(body: any): string[] {
+  const direct = Array.isArray(body?.itemIds) ? body.itemIds : [];
+  const orderItemIds = Array.isArray(body?.orderItemIds) ? body.orderItemIds : [];
+  const itemsFromObjects = Array.isArray(body?.items)
+    ? body.items.map((x: any) => x?.orderItemId ?? x?.id)
+    : [];
+
+  return uniqStrings([...direct, ...orderItemIds, ...itemsFromObjects]);
+}
+
+function pickRefundPurchaseOrderId(body: any) {
+  return normStr(body?.purchaseOrderId ?? body?.poId ?? "");
+}
+
+async function createCustomerRefundRequestTx(
+  tx: any,
+  args: {
+    actorId: string;
+    role: string;
+    body: any;
+  }
+) {
+  const actorId = normStr(args.actorId);
+  const role = normRole(args.role);
+  const body = args.body ?? {};
+
+  if (!actorId) throw new Error("Unauthorized");
+  if (role === "SUPPLIER" || isAdmin(role)) {
+    throw new Error("Only customers can create refund requests here.");
+  }
+
+  const orderId = normStr(body?.orderId);
+  if (!orderId) throw new Error("Missing orderId");
+
+  const reason = pickRefundReason(body);
+  if (!reason) throw new Error("Please provide a refund reason.");
+
+  const requestedPurchaseOrderId = pickRefundPurchaseOrderId(body);
+  const requestedItemIds = pickRefundItemIds(body);
+
+  const order = await tx.order.findFirst({
+    where: { id: orderId, userId: actorId },
+    select: {
+      id: true,
+      userId: true,
+      status: true,
+      total: true,
+      items: {
+        select: {
+          id: true,
+          title: true,
+          quantity: true,
+          unitPrice: true,
+          lineTotal: true,
+          orderId: true,
+          chosenSupplierId: true,
+        },
+      },
+      purchaseOrders: {
+        select: {
+          id: true,
+          supplierId: true,
+          status: true,
+          payoutStatus: true,
+        },
+      },
+    },
+  });
+
+  if (!order) {
+    throw new Error("Order not found.");
+  }
+
+  const allOrderItems = Array.isArray(order.items) ? order.items : [];
+  if (!allOrderItems.length) {
+    throw new Error("This order has no refundable items.");
+  }
+
+  let selectedOrderItems = allOrderItems;
+
+  if (requestedItemIds.length) {
+    selectedOrderItems = allOrderItems.filter((it: any) =>
+      requestedItemIds.includes(String(it.id))
+    );
+
+    if (!selectedOrderItems.length) {
+      throw new Error("Selected refund items were not found on this order.");
+    }
+  }
+
+  const supplierIds = uniqStrings(
+    selectedOrderItems.map((it: any) => it?.chosenSupplierId)
+  );
+
+  let supplierId: string | null = null;
+  if (supplierIds.length === 1) {
+    supplierId = supplierIds[0];
+  }
+
+  let purchaseOrderId: string | null = null;
+
+  if (requestedPurchaseOrderId) {
+    const po = (order.purchaseOrders || []).find(
+      (x: any) => String(x.id) === requestedPurchaseOrderId
+    );
+    if (!po) {
+      throw new Error("Selected purchase order was not found on this order.");
+    }
+    purchaseOrderId = String(po.id);
+    supplierId = String(po.supplierId ?? supplierId ?? "");
+  } else if (supplierId) {
+    const matchedPo = (order.purchaseOrders || []).find(
+      (x: any) => String(x.supplierId) === String(supplierId)
+    );
+    if (matchedPo?.id) {
+      purchaseOrderId = String(matchedPo.id);
+    }
+  }
+
+  const existingRefunds = await tx.refund.findMany({
+    where: {
+      orderId,
+      requestedByUserId: actorId,
+      ...(purchaseOrderId ? { purchaseOrderId } : {}),
+    },
+    select: { id: true, status: true },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+
+  const existingOpen = existingRefunds.find((r: any) =>
+    isRefundOpenStatus(r?.status)
+  );
+
+  if (existingOpen) {
+    throw new Error("A refund request already exists for this order.");
+  }
+
+  const refundAmount = selectedOrderItems.reduce((sum: Prisma.Decimal, it: any) => {
+    const lineTotal =
+      it?.lineTotal != null
+        ? toDecimal(it.lineTotal)
+        : toDecimal(it.unitPrice).mul(new Prisma.Decimal(Number(it.quantity || 0)));
+    return sum.plus(lineTotal);
+  }, new Prisma.Decimal(0));
+
+const created = await tx.refund.create({
+  data: {
+    orderId,
+    purchaseOrderId: purchaseOrderId || undefined,
+    supplierId: supplierId || undefined,
+    requestedByUserId: actorId,
+    status: "REQUESTED" as any,
+    reason,
+    itemsAmount: refundAmount,
+    totalAmount: refundAmount,
+    customerNote: normStr(body?.note || body?.customerNote || "") || undefined,
+    providerReference: normStr(body?.providerReference || body?.reference || "") || undefined,
+  } as any,
+  select: {
+    id: true,
+    orderId: true,
+    purchaseOrderId: true,
+    supplierId: true,
+    requestedByUserId: true,
+    status: true,
+    itemsAmount: true,
+    totalAmount: true,
+    createdAt: true,
+  },
+});
+
+  if (selectedOrderItems.length) {
+    await tx.refundItem.createMany({
+      data: selectedOrderItems.map((it: any) => ({
+        refundId: created.id,
+        orderItemId: String(it.id),
+        qty: Math.max(1, Number(it.quantity || 1)),
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  await tx.refundEvent.create({
+    data: {
+      refundId: created.id,
+      type: "CUSTOMER_REQUESTED",
+      message: reason,
+      meta: {
+        orderId,
+        purchaseOrderId,
+        supplierId,
+        itemCount: selectedOrderItems.length,
+        itemIds: selectedOrderItems.map((it: any) => String(it.id)),
+      },
+    },
+  });
+
+  if (purchaseOrderId) {
+    try {
+      await tx.purchaseOrder.update({
+        where: { id: purchaseOrderId },
+        data: {
+          status: "REFUND_REQUESTED" as any,
+        },
+      });
+    } catch {
+      //
+    }
+  }
+
+  return {
+    refund: created,
+    selectedOrderItems,
+    supplierId,
+    purchaseOrderId,
+  };
+}
+
+
+/**
+ * POST /api/refunds
+ * POST /api/refunds/request
+ *
+ * Shopper creates a refund request.
+ * Accepted body shapes (backward compatible):
+ * {
+ *   orderId: string,
+ *   purchaseOrderId?: string,
+ *   reason?: string,
+ *   refundReason?: string,
+ *   note?: string,
+ *   itemIds?: string[],
+ *   orderItemIds?: string[],
+ *   items?: Array<{ orderItemId?: string; id?: string }>
+ * }
+ */
+async function handleCreateRefundRequest(req: any, res: any) {
+  const actorId = normStr(req.user?.id);
+  const role = normRole(req.user?.role);
+
+  if (!actorId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const out = await prisma.$transaction(async (tx) => {
+      return createCustomerRefundRequestTx(tx, {
+        actorId,
+        role,
+        body: req.body,
+      });
+    });
+
+    if (out.refund.requestedByUserId) {
+      await notifyUser(out.refund.requestedByUserId, {
+        type: "REFUND_REQUESTED",
+        title: "Refund request submitted",
+        body: `Your refund request for order ${out.refund.orderId} has been submitted.`,
+        data: {
+          refundId: out.refund.id,
+          orderId: out.refund.orderId,
+          purchaseOrderId: out.refund.purchaseOrderId ?? null,
+        },
+      });
+    }
+
+    if (out.supplierId) {
+      const supplier = await prisma.supplier.findUnique({
+        where: { id: out.supplierId },
+        select: { id: true, userId: true, name: true },
+      });
+
+      if (supplier?.userId) {
+        await notifyUser(supplier.userId, {
+          type: "REFUND_REQUESTED",
+          title: "Refund request received",
+          body: `A customer submitted a refund request for order ${out.refund.orderId}.`,
+          data: {
+            refundId: out.refund.id,
+            orderId: out.refund.orderId,
+            purchaseOrderId: out.purchaseOrderId ?? null,
+          },
+        });
+      }
+    }
+
+    const adminUserIds = await getAdminUserIds();
+    await notifyMany(adminUserIds, {
+      type: "REFUND_REQUESTED",
+      title: "New refund request",
+      body: `A refund request was submitted for order ${out.refund.orderId}.`,
+      data: {
+        refundId: out.refund.id,
+        orderId: out.refund.orderId,
+        purchaseOrderId: out.purchaseOrderId ?? null,
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      data: out.refund,
+      meta: {
+        created: true,
+        purchaseOrderId: out.purchaseOrderId ?? null,
+        supplierId: out.supplierId ?? null,
+        itemCount: out.selectedOrderItems.length,
+      },
+    });
+  } catch (e: any) {
+    return res.status(400).json({
+      error: e?.message || "Failed to submit refund request",
+    });
+  }
+}
+
+router.post("/", requireAuth, handleCreateRefundRequest);
+router.post("/request", requireAuth, handleCreateRefundRequest);
+
 const isAdmin = (role?: string) =>
   ["ADMIN", "SUPER_ADMIN"].includes(String(role || "").toUpperCase());
 
@@ -263,6 +616,167 @@ async function getAdminUserIds() {
   });
   return admins.map((a: { id: string }) => a.id);
 }
+
+/**
+ * GET /api/refunds/mine
+ *
+ * Backward-compatible shopper endpoint used by frontend pages.
+ * Returns only refunds requested by the authenticated user.
+ */
+router.get("/mine", requireAuth, async (req: any, res) => {
+  const actorId = normStr(req.user?.id);
+  const role = normRole(req.user?.role);
+
+  if (!actorId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  // keep this endpoint shopper-focused only
+  if (role === "SUPPLIER" || isAdmin(role)) {
+    return res.json({
+      ok: true,
+      data: [],
+      meta: {
+        total: 0,
+        page: 1,
+        pageSize: 20,
+        totalPages: 1,
+        take: 20,
+        skip: 0,
+        role,
+      },
+    });
+  }
+
+  const q = normStr(req.query.q).toLowerCase();
+  const status = normStr(req.query.status).toUpperCase();
+
+  const pageRaw = req.query.page;
+  const pageSizeRaw = req.query.pageSize;
+
+  const hasPageMode = pageRaw !== undefined || pageSizeRaw !== undefined;
+
+  const page = hasPageMode ? toPositiveInt(pageRaw, 1) : 1;
+  const pageSize = Math.min(100, toPositiveInt(pageSizeRaw, 20));
+
+  const take = hasPageMode
+    ? pageSize
+    : Math.min(100, Math.max(1, Number(req.query.take ?? req.query.limit ?? 50)));
+
+  const skip = hasPageMode
+    ? (page - 1) * pageSize
+    : Math.max(0, Number(req.query.skip ?? 0));
+
+  const resolvedPage = hasPageMode ? page : Math.floor(skip / Math.max(1, take)) + 1;
+  const resolvedPageSize = hasPageMode ? pageSize : take;
+
+  const where: any = {
+    requestedByUserId: actorId,
+  };
+
+  if (status) {
+    where.status = status;
+  }
+
+  if (q) {
+    where.AND = [
+      { requestedByUserId: actorId },
+      {
+        OR: [
+          { orderId: { contains: q, mode: "insensitive" } },
+          { purchaseOrderId: { contains: q, mode: "insensitive" } },
+          { providerReference: { contains: q, mode: "insensitive" } },
+        ],
+      },
+    ];
+    delete where.requestedByUserId;
+  }
+
+  const [rows, total] = await Promise.all([
+    prisma.refund.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take,
+      skip,
+      include: {
+        order: {
+          select: {
+            id: true,
+            userId: true,
+            status: true,
+            createdAt: true,
+            total: true,
+          },
+        },
+        purchaseOrder: {
+          select: {
+            id: true,
+            status: true,
+            payoutStatus: true,
+            supplierId: true,
+          },
+        },
+        supplier: {
+          select: {
+            id: true,
+            name: true,
+            userId: true,
+          },
+        },
+        requestedBy: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        adminResolvedBy: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        items: {
+          include: {
+            orderItem: {
+              select: {
+                id: true,
+                title: true,
+                quantity: true,
+                unitPrice: true,
+                lineTotal: true,
+              },
+            },
+          },
+        },
+        events: {
+          orderBy: { createdAt: "desc" },
+          take: 8,
+        },
+      },
+    }),
+    prisma.refund.count({ where }),
+  ]);
+
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, resolvedPageSize)));
+
+  return res.json({
+    ok: true,
+    data: rows,
+    meta: {
+      total,
+      page: resolvedPage,
+      pageSize: resolvedPageSize,
+      totalPages,
+      take,
+      skip,
+      role,
+    },
+  });
+});
 
 /**
  * PATCH /api/refunds/:id/decision

@@ -45,6 +45,20 @@ const upload = multer({
     },
 });
 
+
+
+function isRefundOpenStatus(status: any) {
+    const s = String(status ?? "").toUpperCase();
+    return [
+        "REQUESTED",
+        "SUPPLIER_REVIEW",
+        "SUPPLIER_ACCEPTED",
+        "SUPPLIER_REJECTED",
+        "ESCALATED",
+        "APPROVED",
+        "PROCESSING",
+    ].includes(s);
+}
 /* ----------------------------------------------------------------------------
  * Zod schema (fields come from multipart/form-data)
  * --------------------------------------------------------------------------*/
