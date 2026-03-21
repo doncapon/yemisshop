@@ -175,10 +175,37 @@ const ngn = new Intl.NumberFormat("en-NG", {
 const CATALOG_STATE_KEY = "catalog:ui-state:v4";
 const CATALOG_SCROLL_KEY = "catalog:scroll:v4";
 const CATALOG_RETURN_KEY = "catalog:return:v4";
+const CATALOG_OWNER_KEY = "catalog:owner-user-key:v1";
 
 /* =========================================================
    Persistence helpers
 ========================================================= */
+function getCatalogOwnerKey(): string {
+  try {
+    return sessionStorage.getItem(CATALOG_OWNER_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setCatalogOwnerKey(userKey: string) {
+  try {
+    if (userKey) sessionStorage.setItem(CATALOG_OWNER_KEY, userKey);
+    else sessionStorage.removeItem(CATALOG_OWNER_KEY);
+  } catch {
+    //
+  }
+}
+
+function clearCatalogPersistedState() {
+  try {
+    sessionStorage.removeItem(CATALOG_STATE_KEY);
+    sessionStorage.removeItem(CATALOG_SCROLL_KEY);
+    sessionStorage.removeItem(CATALOG_RETURN_KEY);
+  } catch {
+    //
+  }
+}
 
 function readCatalogState(): CatalogPersistedState | null {
   try {
@@ -1454,6 +1481,36 @@ export default function Catalog() {
   const role = String(user?.role ?? "");
   const isSupplier = role === "SUPPLIER";
   const isAuthed = !!user?.id;
+  const currentUserKey = useMemo(() => {
+    const id = String(user?.id ?? "").trim();
+    const email = String(user?.email ?? "").trim().toLowerCase();
+    return id || email || "";
+  }, [user?.id, user?.email]);
+
+  const resetCatalogUiForNewUser = useCallback(() => {
+    setSelectedCategories([]);
+    setSelectedBucketIdxs([]);
+    setSelectedBrands([]);
+    setSortKey("relevance");
+    setQuery("");
+    setSearchFocused(false);
+    setActiveIdx(0);
+    setRefineOpen(false);
+    setTouchStartX(null);
+    setInStockOnly(true);
+    setExpandedCats({});
+    setPage(1);
+    setPageSize(12);
+    setJumpVal("");
+
+    clearCatalogPersistedState();
+
+    try {
+      window.scrollTo(0, 0);
+    } catch {
+      //
+    }
+  }, []);
 
   const { openModal } = useModal();
   const nav = useNavigate();
@@ -2094,6 +2151,46 @@ export default function Catalog() {
 
   const hydrated = useAuthStore((s) => s.hydrated);
 
+
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!isAuthed || !currentUserKey) return;
+
+    const previousOwnerKey = getCatalogOwnerKey();
+
+    // First authenticated visit to catalog in this browser session.
+    if (!previousOwnerKey) {
+      setCatalogOwnerKey(currentUserKey);
+      return;
+    }
+
+    // Same user logging back in -> keep filters/search exactly as they were.
+    if (previousOwnerKey === currentUserKey) {
+      return;
+    }
+
+    // Different user -> reset catalog-specific UI/persistence.
+    resetCatalogUiForNewUser();
+    setCatalogOwnerKey(currentUserKey);
+  }, [hydrated, isAuthed, currentUserKey, resetCatalogUiForNewUser]);
+
+
+    useEffect(() => {
+    const onUserSwitched = (ev: Event) => {
+      const nextUserKey =
+        String((ev as CustomEvent<{ userKey?: string }>)?.detail?.userKey ?? "").trim();
+
+      resetCatalogUiForNewUser();
+      setCatalogOwnerKey(nextUserKey);
+    };
+
+    window.addEventListener("app:user-switched", onUserSwitched as EventListener);
+    return () =>
+      window.removeEventListener("app:user-switched", onUserSwitched as EventListener);
+  }, [resetCatalogUiForNewUser]);
+
+  
   const normalizeFavoriteIds = useCallback((payload: any): string[] => {
     const root = payload ?? {};
 
