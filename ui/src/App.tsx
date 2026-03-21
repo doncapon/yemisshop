@@ -8,6 +8,7 @@ import {
   useState,
   Suspense,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Route,
   Routes,
@@ -668,6 +669,101 @@ function defaultAuthedPathForRole(role: unknown) {
   return "/";
 }
 
+const PRESERVE_LOCAL_STORAGE_EXACT = new Set([
+  "auth-storage",
+  "persist:auth-storage",
+  "auth:lastUserKey",
+  "theme",
+  "appearance",
+  "accent_color",
+]);
+
+const PRESERVE_SESSION_STORAGE_EXACT = new Set([
+  "auth:lastUserKey",
+]);
+
+function shouldPreserveLocalStorageKey(key: string) {
+  const k = String(key || "").trim();
+  if (!k) return true;
+
+  if (PRESERVE_LOCAL_STORAGE_EXACT.has(k)) return true;
+
+  // Keep obvious auth persistence buckets intact.
+  if (
+    k === "auth" ||
+    k.startsWith("auth-storage") ||
+    k.startsWith("persist:auth") ||
+    k.startsWith("zustand-auth") ||
+    k.startsWith("supabase.auth")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function shouldPreserveSessionStorageKey(key: string) {
+  const k = String(key || "").trim();
+  if (!k) return true;
+
+  if (PRESERVE_SESSION_STORAGE_EXACT.has(k)) return true;
+
+  return false;
+}
+
+function clearStorageBucket(
+  storage: Storage,
+  shouldPreserve: (key: string) => boolean
+) {
+  const keysToRemove: string[] = [];
+
+  for (let i = 0; i < storage.length; i += 1) {
+    const key = storage.key(i);
+    if (!key) continue;
+    if (shouldPreserve(key)) continue;
+    keysToRemove.push(key);
+  }
+
+  for (const key of keysToRemove) {
+    try {
+      storage.removeItem(key);
+    } catch {
+      //
+    }
+  }
+}
+
+function clearUserScopedBrowserStateForUserSwitch(nextUserKey: string) {
+  try {
+    clearStorageBucket(window.localStorage, shouldPreserveLocalStorageKey);
+  } catch {
+    //
+  }
+
+  try {
+    clearStorageBucket(window.sessionStorage, shouldPreserveSessionStorageKey);
+  } catch {
+    //
+  }
+
+  try {
+    sessionStorage.setItem("auth:lastUserKey", nextUserKey);
+  } catch {
+    //
+  }
+
+  try {
+    window.dispatchEvent(
+      new CustomEvent("app:user-switched", {
+        detail: { userKey: nextUserKey },
+      })
+    );
+  } catch {
+    //
+  }
+}
+
+
 function GuestOnlyPageGuard({ children }: { children: React.ReactNode }) {
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
@@ -699,6 +795,7 @@ function LoginRouteGuard() {
 export default function App() {
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
+  const queryClient = useQueryClient();
 
   const isAuthed = !!user?.id;
 
@@ -712,6 +809,73 @@ export default function App() {
   const lastAuthedPathRef = React.useRef<string>("/");
 
   useIdleLogout();
+
+    useEffect(() => {
+    if (!hydrated) return;
+    if (!isAuthed || !user?.id) return;
+
+    const currentUserKey = getAuthUserKey(user);
+    if (!currentUserKey) return;
+
+    let previousUserKey = "";
+
+    try {
+      previousUserKey = sessionStorage.getItem("auth:lastUserKey") || "";
+    } catch {
+      //
+    }
+
+    // First authenticated user in this browser session/app session:
+    // remember them and do nothing else.
+    if (!previousUserKey) {
+      try {
+        sessionStorage.setItem("auth:lastUserKey", currentUserKey);
+      } catch {
+        //
+      }
+      return;
+    }
+
+    // Same user -> keep history/search/page state.
+    if (previousUserKey === currentUserKey) {
+      return;
+    }
+
+    // Different user -> clear user-scoped browser state and cached data.
+    clearUserScopedBrowserStateForUserSwitch(currentUserKey);
+
+    try {
+      queryClient.clear();
+    } catch {
+      //
+    }
+
+    const target = defaultAuthedPathForRole(user?.role);
+    const currentFullPath = `${loc.pathname}${loc.search}`;
+    const targetFullPath = String(target || "/");
+
+    // Replace navigation so the new user does not inherit the previous user's
+    // query-string/page trail.
+    if (currentFullPath !== targetFullPath) {
+      nav(targetFullPath, { replace: true });
+      return;
+    }
+
+    // Even if already on the target path, strip any stale search/hash state.
+    if (loc.search || window.location.hash) {
+      nav(targetFullPath, { replace: true });
+    }
+  }, [
+    hydrated,
+    isAuthed,
+    user,
+    user?.id,
+    user?.role,
+    loc.pathname,
+    loc.search,
+    nav,
+    queryClient,
+  ]);
 
   useEffect(() => {
     try {
@@ -777,8 +941,8 @@ export default function App() {
 
     prevAuthedRef.current = false;
     prevUserKeyRef.current = "";
-  }, [hydrated, isAuthed, user, loc.pathname, loc.search]);
-
+  }, [hydrated, isAuthed, user?.id, user?.role, loc.pathname, loc.search]);
+  
   useEffect(() => {
     if (!hydrated || user === undefined) return;
     if (isAuthed) return;
