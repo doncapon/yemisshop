@@ -96,6 +96,69 @@ function normalizePhoneToE164(input: unknown, defaultCountryCode = "234"): strin
   return null;
 }
 
+function normalizedPhoneOrRaw(input: unknown): string | null {
+  const raw = cleanString(String(input ?? ""));
+  if (!raw) return null;
+  return normalizePhoneToE164(raw) || raw;
+}
+
+function phonesEquivalent(a: unknown, b: unknown) {
+  const na = normalizePhoneToE164(a);
+  const nb = normalizePhoneToE164(b);
+
+  if (na && nb) return na === nb;
+
+  const ra = cleanString(String(a ?? ""));
+  const rb = cleanString(String(b ?? ""));
+  return ra === rb;
+}
+
+function pickOtpTargets(row: {
+  phone?: string | null;
+  whatsappPhone?: string | null;
+}) {
+  const rawWhatsappPhone = cleanString(row.whatsappPhone ?? undefined);
+  const rawPhone = cleanString(row.phone ?? undefined);
+
+  const whatsappPhone = rawWhatsappPhone
+    ? normalizePhoneToE164(rawWhatsappPhone)
+    : null;
+
+  const phone = rawPhone
+    ? normalizePhoneToE164(rawPhone)
+    : null;
+
+  const hasRawWhatsapp = !!rawWhatsappPhone;
+  const hasRawPhone = !!rawPhone;
+  const hasValidWhatsapp = !!whatsappPhone;
+  const hasValidPhone = !!phone;
+
+  const preferredPhone = whatsappPhone || phone || null;
+  const fallbackPhone =
+    whatsappPhone && phone && whatsappPhone !== phone ? phone : null;
+
+  const preferredChannel: "whatsapp" | "sms" =
+    hasValidWhatsapp ? "whatsapp" : "sms";
+
+  return {
+    rawWhatsappPhone,
+    rawPhone,
+    whatsappPhone,
+    phone,
+    hasRawWhatsapp,
+    hasRawPhone,
+    hasValidWhatsapp,
+    hasValidPhone,
+    preferredPhone,
+    fallbackPhone,
+    preferredChannel,
+  };
+}
+
+function getShippingAddressOtpIdentifier(shippingAddressId: string, targetPhone: string) {
+  return `shipping-address:${shippingAddressId}:${targetPhone}`;
+}
+
 /**
  * GET /api/profile/me
  * Returns:
@@ -282,6 +345,9 @@ router.post("/shipping", requireAuth, async (req, res, next) => {
       isDefault: true,
     });
 
+    const normalizedPhone = normalizedPhoneOrRaw(data.phone);
+    const normalizedWhatsappPhone = normalizedPhoneOrRaw(data.whatsappPhone);
+
     const saved = await prisma.$transaction(async (tx) => {
       await tx.userShippingAddress.updateMany({
         where: { userId },
@@ -293,10 +359,8 @@ router.post("/shipping", requireAuth, async (req, res, next) => {
           userId,
           label: toNullIfBlank(data.label),
           recipientName: toNullIfBlank(data.recipientName),
-          phone: normalizePhoneToE164(cleanString(data.phone)) || cleanString(data.phone),
-          whatsappPhone:
-            normalizePhoneToE164(cleanString(data.whatsappPhone)) ||
-            toNullIfBlank(data.whatsappPhone),
+          phone: normalizedPhone || cleanString(data.phone),
+          whatsappPhone: normalizedWhatsappPhone || toNullIfBlank(data.whatsappPhone),
           houseNumber: toNullIfBlank(data.houseNumber),
           streetName: toNullIfBlank(data.streetName),
           postCode: toNullIfBlank(data.postCode),
@@ -309,6 +373,9 @@ router.post("/shipping", requireAuth, async (req, res, next) => {
           directionsNote: toNullIfBlank(data.directionsNote),
           isDefault: true,
           isActive: true,
+          phoneVerifiedAt: null,
+          phoneVerifiedBy: null,
+          verificationMeta: Prisma.JsonNull,
         },
       });
 
@@ -381,6 +448,9 @@ router.post("/shipping-addresses", requireAuth, async (req, res, next) => {
     const userId = req.user!.id;
     const data = savedShippingAddressSchema.parse(req.body);
 
+    const normalizedPhone = normalizedPhoneOrRaw(data.phone);
+    const normalizedWhatsappPhone = normalizedPhoneOrRaw(data.whatsappPhone);
+
     const saved = await prisma.$transaction(async (tx) => {
       if (data.isDefault) {
         await tx.userShippingAddress.updateMany({
@@ -394,11 +464,8 @@ router.post("/shipping-addresses", requireAuth, async (req, res, next) => {
           userId,
           label: toNullIfBlank(data.label),
           recipientName: toNullIfBlank(data.recipientName),
-          phone:
-            normalizePhoneToE164(cleanString(data.phone)) || cleanString(data.phone),
-          whatsappPhone:
-            normalizePhoneToE164(cleanString(data.whatsappPhone)) ||
-            toNullIfBlank(data.whatsappPhone),
+          phone: normalizedPhone || cleanString(data.phone),
+          whatsappPhone: normalizedWhatsappPhone || toNullIfBlank(data.whatsappPhone),
           houseNumber: toNullIfBlank(data.houseNumber),
           streetName: toNullIfBlank(data.streetName),
           postCode: toNullIfBlank(data.postCode),
@@ -411,6 +478,9 @@ router.post("/shipping-addresses", requireAuth, async (req, res, next) => {
           directionsNote: toNullIfBlank(data.directionsNote),
           isDefault: !!data.isDefault,
           isActive: true,
+          phoneVerifiedAt: null,
+          phoneVerifiedBy: null,
+          verificationMeta: Prisma.JsonNull,
         },
       });
 
@@ -441,12 +511,39 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
 
     const existing = await prisma.userShippingAddress.findFirst({
       where: { id, userId, isActive: true },
-      select: { id: true },
+      select: {
+        id: true,
+        phone: true,
+        whatsappPhone: true,
+        phoneVerifiedAt: true,
+        phoneVerifiedBy: true,
+        verificationMeta: true,
+      },
     });
 
     if (!existing) {
       return res.status(404).json({ error: "Shipping address not found" });
     }
+
+    const nextPhone =
+      data.phone !== undefined
+        ? normalizedPhoneOrRaw(data.phone)
+        : existing.phone;
+
+    const nextWhatsappPhone =
+      data.whatsappPhone !== undefined
+        ? normalizedPhoneOrRaw(data.whatsappPhone)
+        : existing.whatsappPhone;
+
+    const phoneChanged =
+      data.phone !== undefined &&
+      !phonesEquivalent(existing.phone, nextPhone);
+
+    const whatsappChanged =
+      data.whatsappPhone !== undefined &&
+      !phonesEquivalent(existing.whatsappPhone, nextWhatsappPhone);
+
+    const shouldResetDeliveryPhoneVerification = phoneChanged || whatsappChanged;
 
     const saved = await prisma.$transaction(async (tx) => {
       if (data.isDefault === true) {
@@ -464,17 +561,10 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
             ? { recipientName: toNullIfBlank(data.recipientName) }
             : {}),
           ...(data.phone !== undefined
-            ? {
-                phone:
-                  normalizePhoneToE164(cleanString(data.phone)) || cleanString(data.phone),
-              }
+            ? { phone: nextPhone || cleanString(data.phone) }
             : {}),
           ...(data.whatsappPhone !== undefined
-            ? {
-                whatsappPhone:
-                  normalizePhoneToE164(cleanString(data.whatsappPhone)) ||
-                  toNullIfBlank(data.whatsappPhone),
-              }
+            ? { whatsappPhone: nextWhatsappPhone || toNullIfBlank(data.whatsappPhone) }
             : {}),
           ...(data.houseNumber !== undefined
             ? { houseNumber: toNullIfBlank(data.houseNumber) }
@@ -499,6 +589,13 @@ router.patch("/shipping-addresses/:id", requireAuth, async (req, res, next) => {
             ? { directionsNote: toNullIfBlank(data.directionsNote) }
             : {}),
           ...(data.isDefault !== undefined ? { isDefault: !!data.isDefault } : {}),
+          ...(shouldResetDeliveryPhoneVerification
+            ? {
+                phoneVerifiedAt: null,
+                phoneVerifiedBy: null,
+                verificationMeta: Prisma.JsonNull,
+              }
+            : {}),
         },
       });
 
@@ -666,47 +763,38 @@ router.post("/shipping-addresses/:id/request-phone-otp", requireAuth, async (req
       });
     }
 
-    const rawWhatsappPhone = cleanString(existing.whatsappPhone ?? undefined);
-    const rawPhone = cleanString(existing.phone ?? undefined);
+    const target = pickOtpTargets(existing);
 
     console.log("[PROFILE OTP] step 5 - raw numbers", {
-      rawWhatsappPhone,
-      rawPhone,
+      rawWhatsappPhone: target.rawWhatsappPhone,
+      rawPhone: target.rawPhone,
     });
-
-    const whatsappPhone = rawWhatsappPhone
-      ? normalizePhoneToE164(rawWhatsappPhone)
-      : null;
-
-    const phone = rawPhone
-      ? normalizePhoneToE164(rawPhone)
-      : null;
 
     console.log("[PROFILE OTP] step 6 - normalized numbers", {
-      whatsappPhone,
-      phone,
+      whatsappPhone: target.whatsappPhone,
+      phone: target.phone,
     });
-
-    const hasRawWhatsapp = !!rawWhatsappPhone;
-    const hasRawPhone = !!rawPhone;
-    const hasValidWhatsapp = !!whatsappPhone;
-    const hasValidPhone = !!phone;
 
     console.log("[PROFILE OTP] step 7 - channel flags", {
-      hasRawWhatsapp,
-      hasRawPhone,
-      hasValidWhatsapp,
-      hasValidPhone,
+      hasRawWhatsapp: target.hasRawWhatsapp,
+      hasRawPhone: target.hasRawPhone,
+      hasValidWhatsapp: target.hasValidWhatsapp,
+      hasValidPhone: target.hasValidPhone,
     });
 
-    if (!hasValidWhatsapp && !hasValidPhone) {
+    if (!target.hasValidWhatsapp && !target.hasValidPhone) {
       let error = "Please save a valid delivery phone or WhatsApp number before requesting OTP.";
 
-      if (hasRawWhatsapp && !hasRawPhone) {
+      if (target.hasRawWhatsapp && !target.hasRawPhone) {
         error = "Your WhatsApp number is invalid. Please update it and try again.";
-      } else if (!hasRawWhatsapp && hasRawPhone && !hasValidPhone) {
+      } else if (!target.hasRawWhatsapp && target.hasRawPhone && !target.hasValidPhone) {
         error = "Your delivery phone number is invalid. Please update it and try again.";
-      } else if (hasRawWhatsapp && !hasValidWhatsapp && hasRawPhone && !hasValidPhone) {
+      } else if (
+        target.hasRawWhatsapp &&
+        !target.hasValidWhatsapp &&
+        target.hasRawPhone &&
+        !target.hasValidPhone
+      ) {
         error =
           "Your saved delivery phone and WhatsApp number are invalid. Please update at least one valid number and try again.";
       }
@@ -715,33 +803,39 @@ router.post("/shipping-addresses/:id/request-phone-otp", requireAuth, async (req
       return res.status(400).json({ error });
     }
 
-    const preferredPhone = whatsappPhone || phone;
-    const fallbackPhone =
-      whatsappPhone && phone && whatsappPhone !== phone ? phone : null;
+    const preferredPhone = target.preferredPhone!;
+    const fallbackPhone = target.fallbackPhone;
+    const identifier = getShippingAddressOtpIdentifier(id, preferredPhone);
 
     console.log("[PROFILE OTP] step 9 - before issueOtp", {
+      identifier,
       preferredPhone,
       fallbackPhone,
-      channelPref: hasValidWhatsapp ? "whatsapp" : "sms",
+      channelPref: target.preferredChannel,
     });
 
-    let sentChannel: "whatsapp" | "sms" = hasValidWhatsapp ? "whatsapp" : "sms";
-    let sentPhone = preferredPhone!;
+    let sentChannel: "whatsapp" | "sms" = target.preferredChannel;
+    let sentPhone = preferredPhone;
     let result = await issueOtp({
-      identifier: `shipping-address:${id}`,
+      identifier,
       userId,
-      phone: preferredPhone!,
-      whatsappPhone: whatsappPhone || undefined,
-      channelPref: hasValidWhatsapp ? "whatsapp" : "sms",
+      phone: preferredPhone,
+      whatsappPhone: target.whatsappPhone || undefined,
+      channelPref: target.preferredChannel,
     });
 
     console.log("[PROFILE OTP] step 10 - after issueOtp", { result });
 
-    if (!result.ok && hasValidWhatsapp && fallbackPhone) {
-      console.log("[PROFILE OTP] step 11 - trying SMS fallback");
+    if (!result.ok && target.hasValidWhatsapp && fallbackPhone) {
+      const fallbackIdentifier = getShippingAddressOtpIdentifier(id, fallbackPhone);
+
+      console.log("[PROFILE OTP] step 11 - trying SMS fallback", {
+        fallbackIdentifier,
+        fallbackPhone,
+      });
 
       const fallbackResult = await issueOtp({
-        identifier: `shipping-address:${id}`,
+        identifier: fallbackIdentifier,
         userId,
         phone: fallbackPhone,
         channelPref: "sms",
@@ -761,7 +855,7 @@ router.post("/shipping-addresses/:id/request-phone-otp", requireAuth, async (req
       return res.status(400).json({
         error:
           result.error ||
-          (hasValidWhatsapp
+          (target.hasValidWhatsapp
             ? "Could not send OTP to your WhatsApp number or delivery phone. Please confirm your saved numbers and try again."
             : "Could not send OTP to your delivery phone. Please confirm your saved number and try again."),
       });
@@ -831,10 +925,29 @@ router.post("/shipping-addresses/:id/verify-phone", requireAuth, async (req, res
       });
     }
 
-    const out = await verifyOtp({
-      identifier: `shipping-address:${id}`,
+    const target = pickOtpTargets(existing);
+
+    if (!target.preferredPhone) {
+      return res.status(400).json({
+        error: "Please save a valid delivery phone or WhatsApp number before verifying OTP.",
+      });
+    }
+
+    const preferredIdentifier = getShippingAddressOtpIdentifier(id, target.preferredPhone);
+
+    let out = await verifyOtp({
+      identifier: preferredIdentifier,
       code: rawCode,
     });
+
+    if (!out.ok && target.fallbackPhone) {
+      const fallbackIdentifier = getShippingAddressOtpIdentifier(id, target.fallbackPhone);
+
+      out = await verifyOtp({
+        identifier: fallbackIdentifier,
+        code: rawCode,
+      });
+    }
 
     if (!out.ok) {
       return res.status(400).json({
@@ -853,6 +966,7 @@ router.post("/shipping-addresses/:id/verify-phone", requireAuth, async (req, res
           source: "CHECKOUT_DELIVERY_OTP",
           verifiedPhone: existing.phone ?? null,
           verifiedWhatsappPhone: existing.whatsappPhone ?? null,
+          verifiedTargetPhone: target.preferredPhone,
           verifiedAt: now.toISOString(),
         } as Prisma.InputJsonValue,
       },

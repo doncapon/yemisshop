@@ -1,6 +1,7 @@
 // src/pages/Register.tsx
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Eye, EyeOff } from "lucide-react";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
 
@@ -168,10 +169,10 @@ export default function Register() {
 
   const labelBase = "block text-sm font-semibold text-slate-800 mb-1";
 
-  const passwordInputBase = `${inputBase} pr-20`;
+  const passwordInputBase = `${inputBase} pr-12`;
 
   const toggleBtnBase =
-    "absolute inset-y-0 right-2 flex items-center text-xs font-medium text-slate-500 hover:text-slate-700";
+    "absolute inset-y-0 right-0 w-11 flex items-center justify-center text-slate-500 hover:text-slate-700";
 
   return (
     <SiteLayout>
@@ -271,7 +272,7 @@ export default function Register() {
                       className={toggleBtnBase}
                       aria-label={showPassword ? "Hide password" : "Show password"}
                     >
-                      {showPassword ? "Hide" : "Show"}
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
                   </div>
                   <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
@@ -280,10 +281,10 @@ export default function Register() {
                         pwdStrength <= 1
                           ? "w-1/4 bg-rose-400"
                           : pwdStrength === 2
-                          ? "w-2/4 bg-amber-400"
-                          : pwdStrength === 3
-                          ? "w-3/4 bg-lime-400"
-                          : "w-full bg-emerald-400"
+                            ? "w-2/4 bg-amber-400"
+                            : pwdStrength === 3
+                              ? "w-3/4 bg-lime-400"
+                              : "w-full bg-emerald-400"
                       }`}
                     />
                   </div>
@@ -310,7 +311,7 @@ export default function Register() {
                       className={toggleBtnBase}
                       aria-label={showConfirmPassword ? "Hide password" : "Show password"}
                     >
-                      {showConfirmPassword ? "Hide" : "Show"}
+                      {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
                   </div>
                   {form.confirmPassword && (
