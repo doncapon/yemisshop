@@ -251,6 +251,19 @@ function markVerifiedShippingPhoneLocally(shippingAddressId: string, phone: stri
   writeVerifiedShippingPhoneCache(cache);
 }
 
+function getPreferredShippingPhone(addr?: SavedShippingAddress | null) {
+  return String(addr?.whatsappPhone ?? addr?.phone ?? "").trim();
+}
+
+function isResolvedShippingAddressPhoneVerified(addr?: SavedShippingAddress | null) {
+  if (!addr) return false;
+
+  return (
+    isSavedAddressPhoneVerified(addr) ||
+    isShippingPhoneVerifiedLocally(addr.id, getPreferredShippingPhone(addr))
+  );
+}
+
 function isShippingPhoneVerifiedLocally(shippingAddressId?: string | null, phone?: string | null) {
   const sid = String(shippingAddressId ?? "").trim();
   const normalizedPhone = normalizePhoneForCompare(String(phone ?? ""));
@@ -1181,10 +1194,10 @@ async function fetchShippingQuotesForCart(args: {
   });
 
   const attempts: Array<{ url: string; body: any }> = [
+    { url: "/api/checkout/shipping-fee-local", body: quoteBodyWithFallbackAddress },
     { url: "/api/checkout/shipping-quotes", body: quoteBodyWithFallbackAddress },
     { url: "/api/shipping/quotes/cart", body: quoteBodyWithFallbackAddress },
     { url: "/api/shipping/quote-cart", body: quoteBodyWithFallbackAddress },
-    { url: "/api/checkout/shipping-fee-local", body: quoteBodyWithFallbackAddress },
   ];
 
   for (const attempt of attempts) {
@@ -1833,17 +1846,7 @@ export default function Checkout() {
   }, [selectedShippingAddress]);
 
   const selectedPhoneVerified = useMemo(() => {
-    if (!selectedShippingAddress) return false;
-
-    const phoneToCheck =
-      selectedShippingAddress.whatsappPhone ||
-      selectedShippingAddress.phone ||
-      "";
-
-    return (
-      isSavedAddressPhoneVerified(selectedShippingAddress) ||
-      isShippingPhoneVerifiedLocally(selectedShippingAddress.id, phoneToCheck)
-    );
+    return isResolvedShippingAddressPhoneVerified(selectedShippingAddress);
   }, [selectedShippingAddress]);
 
 
@@ -1860,16 +1863,7 @@ export default function Checkout() {
       return;
     }
 
-    const phoneToCheck =
-      selectedShippingAddress.whatsappPhone ||
-      selectedShippingAddress.phone ||
-      "";
-
-    const alreadyVerified =
-      isSavedAddressPhoneVerified(selectedShippingAddress) ||
-      isShippingPhoneVerifiedLocally(selectedShippingAddress.id, phoneToCheck);
-
-    if (alreadyVerified) {
+    if (isResolvedShippingAddressPhoneVerified(selectedShippingAddress)) {
       setOtpCode("");
       setOtpSentToPhone(null);
       setOtpMessage("This delivery phone is already verified.");
@@ -2331,9 +2325,7 @@ export default function Checkout() {
       return;
     }
 
-    const targetPhone =
-      String(selectedShippingAddress.whatsappPhone ?? "").trim() ||
-      String(selectedShippingAddress.phone ?? "").trim();
+    const targetPhone = getPreferredShippingPhone(selectedShippingAddress);
 
     console.log("[CHECKOUT sendOtp] target", {
       shippingAddressId: selectedShippingAddress.id,
@@ -2414,7 +2406,7 @@ export default function Checkout() {
         prev.map((addr) => {
           if (addr.id !== selectedShippingAddress.id) return addr;
 
-          return {
+          const merged = {
             ...addr,
             ...(updated ?? {}),
             id: addr.id,
@@ -2433,14 +2425,14 @@ export default function Checkout() {
                 verifiedAt,
             },
           };
+
+          return merged;
         })
       );
 
       markVerifiedShippingPhoneLocally(
         selectedShippingAddress.id,
-        selectedShippingAddress.whatsappPhone ||
-        selectedShippingAddress.phone ||
-        ""
+        getPreferredShippingPhone(selectedShippingAddress)
       );
 
       setOtpSentToPhone(null);
@@ -3172,7 +3164,7 @@ export default function Checkout() {
                       {shippingAddresses.map((addr) => {
                         const isSelected = selectedShippingId === addr.id;
                         const isDefault = !!addr.isDefault;
-                        const isVerifiedNow = isSavedAddressPhoneVerified(addr);
+                        const isVerifiedNow = isResolvedShippingAddressPhoneVerified(addr);
                         return (
                           <div
                             key={addr.id}
@@ -3508,7 +3500,11 @@ export default function Checkout() {
                         ) : (
                           <>
                             <p className="mt-1 text-xs sm:text-sm text-ink-soft">
-                              Send an OTP to whatsapp number: <span className="font-medium text-ink">{selectedShippingAddress.whatsappPhone}</span> and verify it here.
+                              Send an OTP to WhatsApp number:{" "}
+                              <span className="font-medium text-ink">
+                                {selectedShippingAddress.whatsappPhone || selectedShippingAddress.phone || "No number set"}
+                              </span>{" "}
+                              and verify it here.
                             </p>
 
                             <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
