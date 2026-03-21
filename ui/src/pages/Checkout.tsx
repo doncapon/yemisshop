@@ -2493,11 +2493,17 @@ export default function Checkout() {
               : "BASE");
 
         const variantId =
-          qLine?.variantId != null
-            ? qLine.variantId
-            : it.variantId != null
-              ? it.variantId
-              : undefined;
+          kind === "VARIANT"
+            ? qLine?.variantId != null
+              ? qLine.variantId
+              : it.variantId != null
+                ? it.variantId
+                : undefined
+            : undefined;
+
+        const normalizedOptions = Array.isArray(it.selectedOptions)
+          ? normalizeSelectedOptions(it.selectedOptions)
+          : undefined;
 
         const retailUnit = asMoney(
           it.unitPrice,
@@ -2510,12 +2516,10 @@ export default function Checkout() {
         return {
           key,
           productId: it.productId,
-          variantId: variantId || undefined,
+          variantId,
           qty: Math.max(1, num(it.qty, 1)),
           kind,
-          selectedOptions: Array.isArray(it.selectedOptions)
-            ? normalizeSelectedOptions(it.selectedOptions)
-            : undefined,
+          selectedOptions: kind === "VARIANT" ? normalizedOptions : undefined,
           supplierId: firstAlloc?.supplierId || it.supplierId || undefined,
           offerId: firstAlloc?.offerId || undefined,
           unitPrice: retailUnit,

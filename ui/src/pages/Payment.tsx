@@ -11,6 +11,7 @@ type InitResp = {
   currency?: string;
   mode: "trial" | "paystack" | "paystack_inline_bank";
   authorization_url?: string;
+  authorizationUrl?: string;
   bank?: {
     bank_name: string;
     account_name: string;
@@ -90,6 +91,59 @@ function shouldRetryWithoutExpectedTotal(e: any): boolean {
   return false;
 }
 
+function readPaymentInitResponse(payload: any): InitResp | null {
+  const root =
+    payload?.data?.data ??
+    payload?.data ??
+    payload ??
+    null;
+
+  if (!root || typeof root !== "object") return null;
+
+  const modeRaw = String(root?.mode ?? root?.channel ?? "").trim().toLowerCase();
+  const mode: InitResp["mode"] =
+    modeRaw === "trial"
+      ? "trial"
+      : modeRaw === "paystack_inline_bank"
+        ? "paystack_inline_bank"
+        : "paystack";
+
+  const reference = String(
+    root?.reference ??
+    root?.paymentReference ??
+    ""
+  ).trim();
+
+  const authorization_url = String(
+    root?.authorization_url ??
+    root?.authorizationUrl ??
+    root?.paymentUrl ??
+    ""
+  ).trim();
+
+  const amount = safeNumber(root?.amount);
+  const currency = String(root?.currency ?? "NGN").trim() || "NGN";
+
+  const bank =
+    root?.bank && typeof root.bank === "object"
+      ? {
+        bank_name: String(root.bank.bank_name ?? "").trim(),
+        account_name: String(root.bank.account_name ?? "").trim(),
+        account_number: String(root.bank.account_number ?? "").trim(),
+      }
+      : undefined;
+
+  return {
+    reference,
+    amount,
+    currency,
+    mode,
+    authorization_url: authorization_url || undefined,
+    authorizationUrl: authorization_url || undefined,
+    bank,
+  };
+}
+
 export default function Payment() {
   const nav = useNavigate();
   const loc = useLocation();
@@ -145,10 +199,20 @@ export default function Payment() {
   const gotoCart = () => nav("/cart");
 
   const redirectToHosted = (url: string) => {
-    if (!url || redirectStartedRef.current) return;
+    const finalUrl = String(url || "").trim();
+
+    console.log("[payment] redirectToHosted called", {
+      finalUrl,
+      redirectStarted: redirectStartedRef.current,
+    });
+
+    if (!finalUrl || redirectStartedRef.current) return;
+
     redirectStartedRef.current = true;
     setStatus("redirecting");
-    window.location.href = url;
+
+    // use href directly for the hardest redirect possible
+    window.location.href = finalUrl;
   };
 
   useEffect(() => {
@@ -190,25 +254,35 @@ export default function Payment() {
 
       try {
         const resp = await withTimeout(
-          api.post<InitResp>("/api/payments/init", payloadWithExpectedTotal, {
+          api.post("/api/payments/init", payloadWithExpectedTotal, {
             withCredentials: true,
           }),
           INIT_TIMEOUT_MS,
           "Payment initialization is taking too long."
         );
 
-        return { data: resp.data, retriedWithoutExpectedTotal: false };
+        const parsed = readPaymentInitResponse(resp);
+        if (!parsed) {
+          throw new Error("Invalid payment initialization response.");
+        }
+
+        return { data: parsed, retriedWithoutExpectedTotal: false };
       } catch (firstErr: any) {
         if (shouldRetryWithoutExpectedTotal(firstErr)) {
           const retryResp = await withTimeout(
-            api.post<InitResp>("/api/payments/init", basePayload, {
+            api.post("/api/payments/init", basePayload, {
               withCredentials: true,
             }),
             INIT_TIMEOUT_MS,
             "Payment initialization is taking too long."
           );
 
-          return { data: retryResp.data, retriedWithoutExpectedTotal: true };
+          const parsed = readPaymentInitResponse(retryResp);
+          if (!parsed) {
+            throw new Error("Invalid payment initialization response.");
+          }
+
+          return { data: parsed, retriedWithoutExpectedTotal: true };
         }
 
         throw firstErr;
@@ -224,6 +298,8 @@ export default function Payment() {
 
       try {
         const { data, retriedWithoutExpectedTotal } = await runInitRequest();
+        console.log("[payment] init parsed", data);
+
         if (!alive) return;
 
         if (!data?.reference) {
@@ -264,13 +340,25 @@ export default function Payment() {
         }
 
         if (data.mode === "paystack") {
-          if (!data.authorization_url) {
+          const hostedUrl = String(
+            data.authorization_url ?? data.authorizationUrl ?? ""
+          ).trim();
+
+          console.log("[payment] paystack branch", {
+            hostedUrl,
+            hasHostedUrl: !!hostedUrl,
+            reference: data.reference,
+          });
+
+          if (!hostedUrl) {
             setStatus("error");
-            setErr("Payment link was not returned. Please try again or go to your orders.");
+            setErr(
+              "Payment was initialized but no redirect link was returned. Please retry or go to your orders."
+            );
             return;
           }
 
-          redirectToHosted(data.authorization_url);
+          redirectToHosted(hostedUrl);
           return;
         }
 
@@ -279,7 +367,7 @@ export default function Payment() {
         if (!alive) return;
 
         const statusCode = Number(e?.response?.status || 0);
-        const message = getErrorMessage(e) || "Failed to initialize payment.";
+        const message = getErrorMessage(e) || e?.message || "Failed to initialize payment.";
 
         if (!autoRetriedRef.current && attempt === 0 && isRetriableInitError(e)) {
           autoRetriedRef.current = true;
@@ -363,7 +451,7 @@ export default function Payment() {
         replace: true,
       });
     } catch (e: any) {
-      setErr(getErrorMessage(e) || "Verification failed");
+      setErr(getErrorMessage(e) || e?.message || "Verification failed");
       setStatus("error");
     }
   };
@@ -384,10 +472,32 @@ export default function Payment() {
     }
   };
 
+  useEffect(() => {
+    if (redirectStartedRef.current) return;
+    if (!init) return;
+    if (init.mode !== "paystack") return;
+
+    const url = String(
+      init.authorization_url ?? init.authorizationUrl ?? ""
+    ).trim();
+
+    console.log("[payment] redirect effect", {
+      mode: init.mode,
+      reference: init.reference,
+      url,
+      hasUrl: !!url,
+      status,
+    });
+
+    if (!url) return;
+
+    redirectToHosted(url);
+  }, [init, status]);
+
   const shareRef = async () => {
     if (!init?.reference) return;
     const text = `Payment reference: ${init.reference}\nOrder: ${orderId}`;
-    const url = init.authorization_url || window.location.href;
+    const url = init.authorization_url || init.authorizationUrl || window.location.href;
 
     if (navigator.share) {
       try {
@@ -424,13 +534,15 @@ export default function Payment() {
   };
 
   const goToPaystack = () => {
-    if (!init?.authorization_url) {
+    const url = String(init?.authorization_url ?? init?.authorizationUrl ?? "").trim();
+
+    if (!url) {
       setErr("Payment link is missing. Please try again.");
       setStatus("error");
       return;
     }
 
-    redirectToHosted(init.authorization_url);
+    redirectToHosted(url);
   };
 
   if (!orderId) {
@@ -453,6 +565,8 @@ export default function Payment() {
 
   const isBankFlow =
     init?.mode === "trial" || init?.mode === "paystack_inline_bank";
+
+  const hostedUrl = String(init?.authorization_url ?? init?.authorizationUrl ?? "").trim();
 
   return (
     <SiteLayout>
@@ -599,7 +713,7 @@ export default function Payment() {
           !redirecting &&
           init &&
           init.mode === "paystack" &&
-          !!init.authorization_url && (
+          !!hostedUrl && (
             <div className="rounded-xl border bg-white p-4 space-y-3">
               <div className="text-sm text-zinc-700">
                 Your payment is ready. Automatic redirect did not complete.
@@ -646,7 +760,7 @@ export default function Payment() {
           !redirecting &&
           init &&
           init.mode === "paystack" &&
-          !init.authorization_url && (
+          !hostedUrl && (
             <div className="rounded-xl border bg-red-50 text-red-700 px-4 py-3 text-sm">
               Payment link was not returned. Please try again from your orders page.
             </div>

@@ -46,10 +46,12 @@ type Address = {
   country?: string;
 };
 type CartItem = {
+  kind?: "BASE" | "VARIANT";
+
   productId: string;
   variantId?: string | null;
 
-  // explicit chosen offer id from client (SupplierVariantOffer.id or SupplierProductOffer.id or legacy SupplierOffer.id)
+  // explicit chosen offer id from client
   offerId?: string | null;
 
   qty: number;
@@ -61,7 +63,6 @@ type CartItem = {
     value: string;
   }>;
 
-  // customer-facing checkout price snapshot
   unitPrice?: number;
   unitPriceCache?: number;
 };
@@ -195,6 +196,18 @@ async function getSelectedShippingQuotesTx(
       pricingMetaJson: true,
     },
   });
+
+  function normalizeRequestedKind(line: any): "BASE" | "VARIANT" {
+    const raw = String(line?.kind ?? "").trim().toUpperCase();
+    if (raw === "VARIANT") return "VARIANT";
+    if (raw === "BASE") return "BASE";
+
+    if (line?.variantId != null && String(line.variantId).trim()) {
+      return "VARIANT";
+    }
+
+    return "BASE";
+  }
 
   if (rows.length !== uniqueIds.length) {
     throw new Error("One or more selected shipping quotes were not found.");
@@ -1849,10 +1862,10 @@ async function ensurePurchaseOrdersForOrderTx(
       const shippingCarrierName =
         String(row?.rateSource ?? "").toUpperCase() === "LIVE_CARRIER"
           ? String(
-              row?.pricingMeta?.carrierName ??
-                row?.pricingMetaJson?.carrierName ??
-                ""
-            ).trim() || null
+            row?.pricingMeta?.carrierName ??
+            row?.pricingMetaJson?.carrierName ??
+            ""
+          ).trim() || null
           : null;
 
       breakdownQuoteMap.set(sid, {
@@ -2161,9 +2174,26 @@ async function notifyOneSupplierForPoTx(
   }
 }
 
+
+
 /* =========================================================
    POST /api/orders — create + allocate across offers
 ========================================================= */
+
+function normalizeRequestedKind(line: any): "BASE" | "VARIANT" {
+  const raw = String(line?.kind ?? "").trim().toUpperCase();
+
+  if (raw === "VARIANT") return "VARIANT";
+  if (raw === "BASE") return "BASE";
+
+  if (line?.variantId != null && String(line.variantId).trim()) {
+    return "VARIANT";
+  }
+
+  return "BASE";
+}
+
+
 router.post("/", requireAuth, async (req: Request, res: Response) => {
   const body = req.body as CreateOrderBody;
   const items = Array.isArray(body.items) ? body.items : [];
@@ -2450,26 +2480,26 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 ? buildOrderShippingBreakdownFromQuotes(selectedShippingQuotesBySupplier)
                 : shippingEnabledTxVal && shippingFeeFinal > 0
                   ? {
-                      quoteId: null,
-                      serviceLevel: "STANDARD",
-                      zoneCode: null,
-                      zoneName: null,
-                      currency: shippingCurrencyFinal,
-                      rateSource:
-                        (shippingRateSourceFinal as any) ??
-                        normalizeShippingRateSource("MANUAL"),
-                      components: {
-                        shippingFee: shippingFeeFinal,
-                        remoteSurcharge: 0,
-                        fuelSurcharge: 0,
-                        handlingFee: 0,
-                        insuranceFee: 0,
-                      },
-                      totalFee: shippingFeeFinal,
-                      etaMinDays: null,
-                      etaMaxDays: null,
-                      pricingMeta: { source: "checkout_fallback" },
-                    }
+                    quoteId: null,
+                    serviceLevel: "STANDARD",
+                    zoneCode: null,
+                    zoneName: null,
+                    currency: shippingCurrencyFinal,
+                    rateSource:
+                      (shippingRateSourceFinal as any) ??
+                      normalizeShippingRateSource("MANUAL"),
+                    components: {
+                      shippingFee: shippingFeeFinal,
+                      remoteSurcharge: 0,
+                      fuelSurcharge: 0,
+                      handlingFee: 0,
+                      insuranceFee: 0,
+                    },
+                    totalFee: shippingFeeFinal,
+                    etaMinDays: null,
+                    etaMaxDays: null,
+                    pricingMeta: { source: "checkout_fallback" },
+                  }
                   : null,
           },
           select: { id: true },
@@ -2505,28 +2535,19 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             selectedOptions = selectedOptionsRaw;
           }
 
-          const optionsLabel = formatSelectedOptionsForMsg(selectedOptions);
-
           const explicitOfferIdRaw =
             (line as any).offerId ?? (line as any).supplierOfferId ?? null;
           const explicitOfferId = explicitOfferIdRaw
             ? String(explicitOfferIdRaw).trim()
             : null;
 
+          const requestedKind = normalizeRequestedKind(line);
+
           const rawVariantId = (line as any).variantId ?? null;
           const directVariantId =
             rawVariantId && String(rawVariantId).trim()
               ? String(rawVariantId).trim()
               : null;
-
-          const variantFromOptions = await resolveVariantIdFromSelectedOptionsTx(
-            tx,
-            productId,
-            selectedOptions
-          );
-
-          let variantId: string | null =
-            directVariantId ?? (variantFromOptions ? String(variantFromOptions) : null);
 
           let explicitOffer:
             | (CandidateOffer & { productId: string; variantId: string | null })
@@ -2549,12 +2570,36 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             }
           }
 
-          if (explicitOffer?.variantId) {
+          let variantId: string | null = null;
+
+          if (explicitOffer?.model === "VARIANT_OFFER" && explicitOffer.variantId) {
+            variantId = String(explicitOffer.variantId);
+          } else if (
+            explicitOffer?.model === "BASE_OFFER" ||
+            (explicitOffer?.model === "LEGACY_OFFER" && !explicitOffer.variantId)
+          ) {
+            variantId = null;
+          } else if (requestedKind === "VARIANT") {
+            if (directVariantId) {
+              variantId = directVariantId;
+            } else {
+              const variantFromOptions = await resolveVariantIdFromSelectedOptionsTx(
+                tx,
+                productId,
+                selectedOptions
+              );
+              variantId = variantFromOptions ? String(variantFromOptions) : null;
+            }
+          } else {
+            variantId = null;
+          }
+
+          if (explicitOffer?.model === "VARIANT_OFFER" && explicitOffer.variantId) {
             const explicitVariantId = String(explicitOffer.variantId);
 
             if (variantId && String(variantId) !== explicitVariantId) {
               console.warn(
-                "[create-order] explicit offer variant differs from requested variant; using requested variant",
+                "[create-order] explicit offer variant differs from requested variant; forcing explicit variant",
                 {
                   productId,
                   explicitOfferId,
@@ -2562,10 +2607,44 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                   requestedVariantId: variantId,
                 }
               );
-            } else {
-              variantId = explicitVariantId;
             }
+
+            variantId = explicitVariantId;
           }
+
+          if (
+            explicitOffer?.model === "BASE_OFFER" ||
+            (explicitOffer?.model === "LEGACY_OFFER" && !explicitOffer.variantId)
+          ) {
+            if (variantId) {
+              console.warn(
+                "[create-order] explicit base offer received with variant-like selections; forcing base path",
+                {
+                  productId,
+                  explicitOfferId,
+                  requestedVariantId: variantId,
+                  selectedOptions,
+                }
+              );
+            }
+
+            variantId = null;
+          }
+
+          console.debug("[create-order] normalized line intent", {
+            productId,
+            requestedKind,
+            directVariantId,
+            resolvedVariantId: variantId,
+            explicitOfferId,
+            explicitOfferModel: explicitOffer?.model ?? null,
+            explicitOfferVariantId: explicitOffer?.variantId ?? null,
+            selectedOptions,
+          });
+
+          const optionsLabel = formatSelectedOptionsForMsg(
+            variantId ? selectedOptions : null
+          );
 
           if (variantId) {
             await assertVariantSellableTx(tx, productId, variantId);
@@ -2575,7 +2654,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           }
 
           if (explicitOffer) {
-            const explicitStillAvailable = candidates.find((c) => c.id === explicitOffer!.id);
+            const explicitStillAvailable = candidates.find((c) => c.id === explicitOffer.id);
             if (explicitStillAvailable) {
               candidates = [
                 explicitStillAvailable,
@@ -2592,15 +2671,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 }
               );
             }
-          } else if (explicitOfferId) {
-            console.warn(
-              "[create-order] explicit offer not found; falling back to fresh candidates",
-              {
-                productId,
-                variantId,
-                explicitOfferId,
-              }
-            );
           }
 
           const candidatesBefore = candidates.slice();
@@ -2695,7 +2765,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               unitPrice: round2(Number(checkoutUnit)),
               quantity: alloc.qty,
               lineTotal: round2(Number(checkoutUnit) * alloc.qty),
-              selectedOptions: selectedOptions ?? null,
+              selectedOptions: variantId ? selectedOptions ?? null : null,
             };
           });
 
@@ -2781,26 +2851,26 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 ? buildOrderShippingBreakdownFromQuotes(selectedShippingQuotesBySupplier)
                 : shippingEnabledTxVal && shippingFee > 0
                   ? {
-                      quoteId: null,
-                      serviceLevel: "STANDARD",
-                      zoneCode: null,
-                      zoneName: null,
-                      currency: shippingCurrencyFinal,
-                      rateSource:
-                        (shippingRateSourceFinal as any) ??
-                        normalizeShippingRateSource("MANUAL"),
-                      components: {
-                        shippingFee,
-                        remoteSurcharge: 0,
-                        fuelSurcharge: 0,
-                        handlingFee: 0,
-                        insuranceFee: 0,
-                      },
-                      totalFee: shippingFee,
-                      etaMinDays: null,
-                      etaMaxDays: null,
-                      pricingMeta: { source: "checkout_fallback" },
-                    }
+                    quoteId: null,
+                    serviceLevel: "STANDARD",
+                    zoneCode: null,
+                    zoneName: null,
+                    currency: shippingCurrencyFinal,
+                    rateSource:
+                      (shippingRateSourceFinal as any) ??
+                      normalizeShippingRateSource("MANUAL"),
+                    components: {
+                      shippingFee,
+                      remoteSurcharge: 0,
+                      fuelSurcharge: 0,
+                      handlingFee: 0,
+                      insuranceFee: 0,
+                    },
+                    totalFee: shippingFee,
+                    etaMinDays: null,
+                    etaMaxDays: null,
+                    pricingMeta: { source: "checkout_fallback" },
+                  }
                   : null,
           },
           select: {
