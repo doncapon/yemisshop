@@ -20,7 +20,9 @@ type InitResp = {
 };
 
 const LAST_REF_KEY = "paystack:lastRef";
-const INIT_TIMEOUT_MS = 15000;
+const INIT_TIMEOUT_MS = 25000;
+const ORDER_POLL_TOTAL_MS = 30000;
+const ORDER_POLL_STEP_MS = 2500;
 
 const ngn = new Intl.NumberFormat("en-NG", {
   style: "currency",
@@ -92,12 +94,7 @@ function shouldRetryWithoutExpectedTotal(e: any): boolean {
 }
 
 function readPaymentInitResponse(payload: any): InitResp | null {
-  const root =
-    payload?.data?.data ??
-    payload?.data ??
-    payload ??
-    null;
-
+  const root = payload?.data?.data ?? payload?.data ?? payload ?? null;
   if (!root || typeof root !== "object") return null;
 
   const modeRaw = String(root?.mode ?? root?.channel ?? "").trim().toLowerCase();
@@ -108,17 +105,13 @@ function readPaymentInitResponse(payload: any): InitResp | null {
         ? "paystack_inline_bank"
         : "paystack";
 
-  const reference = String(
-    root?.reference ??
-    root?.paymentReference ??
-    ""
-  ).trim();
+  const reference = String(root?.reference ?? root?.paymentReference ?? "").trim();
 
   const authorization_url = String(
     root?.authorization_url ??
-    root?.authorizationUrl ??
-    root?.paymentUrl ??
-    ""
+      root?.authorizationUrl ??
+      root?.paymentUrl ??
+      ""
   ).trim();
 
   const amount = safeNumber(root?.amount);
@@ -127,10 +120,10 @@ function readPaymentInitResponse(payload: any): InitResp | null {
   const bank =
     root?.bank && typeof root.bank === "object"
       ? {
-        bank_name: String(root.bank.bank_name ?? "").trim(),
-        account_name: String(root.bank.account_name ?? "").trim(),
-        account_number: String(root.bank.account_number ?? "").trim(),
-      }
+          bank_name: String(root.bank.bank_name ?? "").trim(),
+          account_name: String(root.bank.account_name ?? "").trim(),
+          account_number: String(root.bank.account_number ?? "").trim(),
+        }
       : undefined;
 
   return {
@@ -142,6 +135,68 @@ function readPaymentInitResponse(payload: any): InitResp | null {
     authorizationUrl: authorization_url || undefined,
     bank,
   };
+}
+
+function normalizeOrderPaymentPayload(orderPayload: any): InitResp | null {
+  const root = orderPayload?.data?.data ?? orderPayload?.data ?? orderPayload ?? {};
+  const payment =
+    root?.payment ??
+    (Array.isArray(root?.payments) ? root.payments[0] : null) ??
+    null;
+
+  const reference = String(
+    payment?.reference ?? root?.reference ?? ""
+  ).trim();
+
+  const authorization_url = String(
+    payment?.authorization_url ??
+      payment?.authorizationUrl ??
+      root?.authorization_url ??
+      root?.authorizationUrl ??
+      ""
+  ).trim();
+
+  const amount = safeNumber(
+    payment?.amount ?? root?.amount ?? root?.total
+  );
+
+  const currency = String(
+    payment?.currency ?? root?.currency ?? "NGN"
+  ).trim() || "NGN";
+
+  const modeRaw = String(
+    payment?.mode ?? root?.mode ?? "paystack"
+  ).trim().toLowerCase();
+
+  const mode: InitResp["mode"] =
+    modeRaw === "trial"
+      ? "trial"
+      : modeRaw === "paystack_inline_bank"
+        ? "paystack_inline_bank"
+        : "paystack";
+
+  if (!reference && !authorization_url) return null;
+
+  return {
+    reference,
+    amount,
+    currency,
+    mode,
+    authorization_url: authorization_url || undefined,
+    authorizationUrl: authorization_url || undefined,
+    bank:
+      payment?.bank && typeof payment.bank === "object"
+        ? {
+            bank_name: String(payment.bank.bank_name ?? "").trim(),
+            account_name: String(payment.bank.account_name ?? "").trim(),
+            account_number: String(payment.bank.account_number ?? "").trim(),
+          }
+        : undefined,
+  };
+}
+
+function getHostedUrl(init?: InitResp | null) {
+  return String(init?.authorization_url ?? init?.authorizationUrl ?? "").trim();
 }
 
 export default function Payment() {
@@ -181,15 +236,20 @@ export default function Payment() {
       ? bootstrap.serviceFeeTotal
       : safeNumber(bootstrap.serviceFeeTotal);
 
+  const bootReference = String(bootstrap.reference ?? "").trim();
+  const bootAuthorizationUrl = String(
+    bootstrap.authorization_url ?? bootstrap.authorizationUrl ?? ""
+  ).trim();
+
   const [status, setStatus] = useState<PageStatus>("idle");
   const [init, setInit] = useState<InitResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
-  const initRunRef = useRef<string | null>(null);
   const autoRetriedRef = useRef(false);
   const redirectStartedRef = useRef(false);
+  const effectRunIdRef = useRef(0);
 
   const loading = status === "initializing";
   const redirecting = status === "redirecting";
@@ -211,8 +271,39 @@ export default function Payment() {
     redirectStartedRef.current = true;
     setStatus("redirecting");
 
-    // use href directly for the hardest redirect possible
-    window.location.href = finalUrl;
+    try {
+      window.location.assign(finalUrl);
+    } catch {
+      window.location.href = finalUrl;
+    }
+  };
+
+  const pollOrderForPaymentInit = async (targetOrderId: string): Promise<InitResp | null> => {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < ORDER_POLL_TOTAL_MS) {
+      try {
+        const detailResp = await api.get(`/api/orders/${encodeURIComponent(targetOrderId)}`, {
+          withCredentials: true,
+        });
+
+        const normalized = normalizeOrderPaymentPayload(detailResp);
+        console.log("[payment] pollOrderForPaymentInit", {
+          orderId: targetOrderId,
+          normalized,
+        });
+
+        if (normalized && (normalized.reference || getHostedUrl(normalized))) {
+          return normalized;
+        }
+      } catch (e) {
+        console.warn("[payment] poll order failed", e);
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, ORDER_POLL_STEP_MS));
+    }
+
+    return null;
   };
 
   useEffect(() => {
@@ -226,17 +317,14 @@ export default function Payment() {
       autoRetriedRef.current = false;
     }
 
-    const runKey = `${orderId}:${attempt}`;
-    if (initRunRef.current === runKey) return;
-    initRunRef.current = runKey;
-
+    const runId = ++effectRunIdRef.current;
     let alive = true;
 
     const uiTimeout = window.setTimeout(() => {
-      if (!alive) return;
+      if (!alive || effectRunIdRef.current !== runId) return;
       setStatus("error");
       setErr("Payment initialization is taking too long. Please retry.");
-    }, INIT_TIMEOUT_MS + 1500);
+    }, INIT_TIMEOUT_MS + 2500);
 
     const runInitRequest = async (): Promise<{
       data: InitResp;
@@ -293,16 +381,37 @@ export default function Payment() {
       setStatus("initializing");
       setErr(null);
       setInfo(null);
-      setInit(null);
       redirectStartedRef.current = false;
 
       try {
+        if (bootReference || bootAuthorizationUrl) {
+          const bootInit: InitResp = {
+            reference: bootReference,
+            amount: estimatedTotal,
+            currency: "NGN",
+            mode: "paystack",
+            authorization_url: bootAuthorizationUrl || undefined,
+            authorizationUrl: bootAuthorizationUrl || undefined,
+          };
+
+          console.log("[payment] using bootstrap payment init", bootInit);
+
+          if (!alive || effectRunIdRef.current !== runId) return;
+
+          setInit(bootInit);
+
+          if (getHostedUrl(bootInit)) {
+            redirectToHosted(getHostedUrl(bootInit));
+            return;
+          }
+        }
+
         const { data, retriedWithoutExpectedTotal } = await runInitRequest();
         console.log("[payment] init parsed", data);
 
-        if (!alive) return;
+        if (!alive || effectRunIdRef.current !== runId) return;
 
-        if (!data?.reference) {
+        if (!data?.reference && !getHostedUrl(data)) {
           throw new Error("Payment reference was not returned.");
         }
 
@@ -315,6 +424,24 @@ export default function Payment() {
               reference: data.reference,
               orderId,
               at: new Date().toISOString(),
+            })
+          );
+        } catch {
+          //
+        }
+
+        try {
+          sessionStorage.setItem(
+            "payment:init",
+            JSON.stringify({
+              ...(sessionInit || {}),
+              orderId,
+              reference: data.reference,
+              authorization_url: data.authorization_url ?? data.authorizationUrl ?? null,
+              authorizationUrl: data.authorization_url ?? data.authorizationUrl ?? null,
+              total: data.amount ?? estimatedTotal ?? null,
+              serviceFeeTotal: estimatedServiceFeeTotal ?? null,
+              at: Date.now(),
             })
           );
         } catch {
@@ -340,9 +467,7 @@ export default function Payment() {
         }
 
         if (data.mode === "paystack") {
-          const hostedUrl = String(
-            data.authorization_url ?? data.authorizationUrl ?? ""
-          ).trim();
+          const hostedUrl = getHostedUrl(data);
 
           console.log("[payment] paystack branch", {
             hostedUrl,
@@ -350,34 +475,66 @@ export default function Payment() {
             reference: data.reference,
           });
 
-          if (!hostedUrl) {
-            setStatus("error");
-            setErr(
-              "Payment was initialized but no redirect link was returned. Please retry or go to your orders."
-            );
+          if (hostedUrl) {
+            redirectToHosted(hostedUrl);
             return;
           }
 
-          redirectToHosted(hostedUrl);
+          const polled = await pollOrderForPaymentInit(orderId);
+
+          if (!alive || effectRunIdRef.current !== runId) return;
+
+          if (polled) {
+            console.log("[payment] polled payment init", polled);
+            setInit(polled);
+
+            const polledUrl = getHostedUrl(polled);
+            if (polledUrl) {
+              redirectToHosted(polledUrl);
+              return;
+            }
+          }
+
+          setStatus("error");
+          setErr(
+            "Payment was initialized but no redirect link was returned yet. Please retry or go to your orders."
+          );
           return;
         }
 
         setStatus("ready");
       } catch (e: any) {
-        if (!alive) return;
+        if (!alive || effectRunIdRef.current !== runId) return;
 
         const statusCode = Number(e?.response?.status || 0);
         const message = getErrorMessage(e) || e?.message || "Failed to initialize payment.";
+
+        const polled = await pollOrderForPaymentInit(orderId);
+
+        if (!alive || effectRunIdRef.current !== runId) return;
+
+        if (polled) {
+          console.log("[payment] recovered from poll after error", polled);
+          setInit(polled);
+
+          const recoveredUrl = getHostedUrl(polled);
+          if (recoveredUrl) {
+            redirectToHosted(recoveredUrl);
+            return;
+          }
+
+          setStatus("ready");
+          return;
+        }
 
         if (!autoRetriedRef.current && attempt === 0 && isRetriableInitError(e)) {
           autoRetriedRef.current = true;
           setInfo("Payment initialization is taking longer than expected. Retrying automatically…");
 
           window.setTimeout(() => {
-            if (!alive) return;
-            initRunRef.current = null;
+            if (!alive || effectRunIdRef.current !== runId) return;
             setAttempt((n) => n + 1);
-          }, 400);
+          }, 500);
 
           return;
         }
@@ -404,26 +561,37 @@ export default function Payment() {
       alive = false;
       window.clearTimeout(uiTimeout);
     };
-  }, [orderId, estimatedTotal, attempt]);
+  }, [
+    orderId,
+    estimatedTotal,
+    estimatedServiceFeeTotal,
+    attempt,
+    bootReference,
+    bootAuthorizationUrl,
+    sessionInit,
+  ]);
 
   useEffect(() => {
-    if (!orderId) return;
+    if (redirectStartedRef.current) return;
+    if (!init) return;
+    if (init.mode !== "paystack") return;
 
-    try {
-      const raw = sessionStorage.getItem("payment:init");
-      if (!raw) return;
+    const url = getHostedUrl(init);
 
-      const parsed = JSON.parse(raw) as any;
-      if (String(parsed?.orderId || "") === String(orderId)) {
-        sessionStorage.removeItem("payment:init");
-      }
-    } catch {
-      //
-    }
-  }, [orderId]);
+    console.log("[payment] redirect effect", {
+      mode: init.mode,
+      reference: init.reference,
+      url,
+      hasUrl: !!url,
+      status,
+    });
+
+    if (!url) return;
+
+    redirectToHosted(url);
+  }, [init, status]);
 
   const retryInit = () => {
-    initRunRef.current = null;
     autoRetriedRef.current = false;
     redirectStartedRef.current = false;
     setAttempt((n) => n + 1);
@@ -472,32 +640,10 @@ export default function Payment() {
     }
   };
 
-  useEffect(() => {
-    if (redirectStartedRef.current) return;
-    if (!init) return;
-    if (init.mode !== "paystack") return;
-
-    const url = String(
-      init.authorization_url ?? init.authorizationUrl ?? ""
-    ).trim();
-
-    console.log("[payment] redirect effect", {
-      mode: init.mode,
-      reference: init.reference,
-      url,
-      hasUrl: !!url,
-      status,
-    });
-
-    if (!url) return;
-
-    redirectToHosted(url);
-  }, [init, status]);
-
   const shareRef = async () => {
     if (!init?.reference) return;
     const text = `Payment reference: ${init.reference}\nOrder: ${orderId}`;
-    const url = init.authorization_url || init.authorizationUrl || window.location.href;
+    const url = getHostedUrl(init) || window.location.href;
 
     if (navigator.share) {
       try {
@@ -534,7 +680,7 @@ export default function Payment() {
   };
 
   const goToPaystack = () => {
-    const url = String(init?.authorization_url ?? init?.authorizationUrl ?? "").trim();
+    const url = getHostedUrl(init);
 
     if (!url) {
       setErr("Payment link is missing. Please try again.");
@@ -566,7 +712,7 @@ export default function Payment() {
   const isBankFlow =
     init?.mode === "trial" || init?.mode === "paystack_inline_bank";
 
-  const hostedUrl = String(init?.authorization_url ?? init?.authorizationUrl ?? "").trim();
+  const hostedUrl = getHostedUrl(init);
 
   return (
     <SiteLayout>

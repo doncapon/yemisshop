@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Navigate, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client.js";
 import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
@@ -313,6 +313,7 @@ const ngn = new Intl.NumberFormat("en-NG", {
   currency: "NGN",
   maximumFractionDigits: 2,
 });
+
 
 /* ----------------------------- Helpers ----------------------------- */
 const num = (v: any, d = 0) => {
@@ -1606,10 +1607,13 @@ function persistResolvedPaymentInit(args: {
   }
 }
 
+
 /* ----------------------------- Component ----------------------------- */
 export default function Checkout() {
   const nav = useNavigate();
+  const location = useLocation();
   const { openModal } = useModal();
+
 
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
@@ -1630,19 +1634,6 @@ export default function Checkout() {
   }, [meQ.data, user]);
 
   const isSessionAuthenticated = !!sessionUser?.id;
-
-  useEffect(() => {
-    if (!hydrated) return;
-    if (meQ.isLoading) return;
-
-    const status = (meQ.error as any)?.response?.status;
-
-    // Only redirect if BOTH the local auth store and cookie-session check say unauthenticated.
-    if (!user?.id && !meQ.data && (status === 401 || status === 403)) {
-      nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
-    }
-  }, [hydrated, meQ.isLoading, meQ.data, meQ.error, user?.id, nav]);
-
 
   const [checkingVerification, setCheckingVerification] = useState(true);
   const [emailOk, setEmailOk] = useState(false);
@@ -2004,15 +1995,24 @@ export default function Checkout() {
     return v === "nigeria" || v === "ng";
   }, [homeAddr.country]);
 
-  const didHydrateCartRef = useRef(false);
 
   useEffect(() => {
-    if (!didHydrateCartRef.current) {
-      didHydrateCartRef.current = true;
-      return;
+    if (!hydrated) return;
+    if (meQ.isLoading) return;
+
+    if (!isSessionAuthenticated && location.pathname !== "/login") {
+      nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
     }
-    writeCart(cart);
-  }, [cart]);
+  }, [hydrated, meQ.isLoading, isSessionAuthenticated, nav, location.pathname]);
+
+  useEffect(() => {
+    if (meQ.isLoading) return;
+    if (!isSessionAuthenticated) return;
+
+    if (cart.length === 0 && location.pathname !== "/cart") {
+      nav("/cart", { replace: true, state: { from: "/checkout" } });
+    }
+  }, [cart.length, isSessionAuthenticated, meQ.isLoading, nav, location.pathname]);
 
   useEffect(() => {
     if (!showShippingEditor) return;
@@ -2030,14 +2030,6 @@ export default function Checkout() {
 
     return () => window.cancelAnimationFrame(id);
   }, [showShippingEditor, editingShippingId]);
-
-  useEffect(() => {
-    const syncFromCart = () => setCart(readCart());
-    window.addEventListener("cart:updated", syncFromCart);
-    return () => window.removeEventListener("cart:updated", syncFromCart);
-  }, []);
-
-
 
   const applySameAsHomeToShippingFormOnce = () => {
     if (!sameAsHomeAvailable) return;
@@ -2066,6 +2058,14 @@ export default function Checkout() {
     setSameAsHomeUsage(next);
     writeSameAsHomeUsage(next);
   };
+
+  const checkoutCartLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (checkoutCartLoadedRef.current) return;
+    checkoutCartLoadedRef.current = true;
+    setCart(readCart());
+  }, []);
 
   const onChangeHome =
     (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -2760,13 +2760,26 @@ export default function Checkout() {
 
     const run = async () => {
       try {
+        if (redirectingOrderId) return;
+
         const raw = sessionStorage.getItem("payment:init");
         if (!raw) return;
 
         const parsed = JSON.parse(raw);
         const orderId = String(parsed?.orderId ?? "").trim();
-        if (!orderId) return;
-        if (redirectingOrderId) return;
+        const createdAt = Number(parsed?.at ?? 0);
+
+        if (!orderId) {
+          sessionStorage.removeItem("payment:init");
+          return;
+        }
+
+        // ignore stale payment recovery sessions
+        const ageMs = Date.now() - createdAt;
+        if (!Number.isFinite(ageMs) || ageMs > 10 * 60 * 1000) {
+          sessionStorage.removeItem("payment:init");
+          return;
+        }
 
         const detailResp = await api.get(
           `/api/orders/${encodeURIComponent(orderId)}`,
@@ -2795,6 +2808,11 @@ export default function Checkout() {
         const hasPaymentId = !!String(
           payment?.id ?? detailRoot?.paymentId ?? ""
         ).trim();
+
+        // only resume if this checkout page itself just created the order
+        if (!redirectingOrderId || orderId !== redirectingOrderId) {
+          return;
+        }
 
         if (maybeHostedUrl) {
           clearCheckoutCartForSuccessfulHostedExit();
@@ -2842,13 +2860,24 @@ export default function Checkout() {
   }
 
   if (hydrated && !meQ.isLoading && !isSessionAuthenticated) {
-    return <Navigate to="/login" replace state={{ from: { pathname: "/checkout" } }} />;
+    return (
+      <SiteLayout>
+        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
+          <div className="text-sm text-ink-soft">Redirecting to login…</div>
+        </div>
+      </SiteLayout>
+    );
   }
 
   if (cart.length === 0) {
-    return <Navigate to="/cart" replace state={{ from: "/checkout" }} />;
+    return (
+      <SiteLayout>
+        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
+          <div className="text-sm text-ink-soft">Redirecting to cart…</div>
+        </div>
+      </SiteLayout>
+    );
   }
-
   const NotVerifiedModal = () => {
     const title =
       !emailOk && !phoneOk

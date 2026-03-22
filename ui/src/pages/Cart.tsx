@@ -41,6 +41,11 @@ type ServerCartItem = {
   unitPriceCache?: any;
 };
 
+type ServerCartNormalizationResult = {
+  items: CartItem[];
+  duplicateIdsToDelete: string[];
+};
+
 const ngn = new Intl.NumberFormat("en-NG", {
   style: "currency",
   currency: "NGN",
@@ -151,12 +156,17 @@ function lineKeyFor(item: Pick<CartItem, "productId" | "variantId" | "selectedOp
   const sel = normalizeSelectedOptions(item.selectedOptions);
 
   const kind: "BASE" | "VARIANT" =
-    item.kind === "BASE" || item.kind === "VARIANT" ? item.kind : item.variantId ? "VARIANT" : "BASE";
+    item.kind === "BASE" || item.kind === "VARIANT"
+      ? item.kind
+      : item.variantId
+        ? "VARIANT"
+        : "BASE";
 
   if (kind === "VARIANT") {
     if (vid) return `${pid}::v:${vid}`;
     return sel.length ? `${pid}::o:${optionsKey(sel)}` : `${pid}::v:unknown`;
   }
+
   return `${pid}::base`;
 }
 
@@ -190,7 +200,6 @@ function sameCartItems(a: CartItem[], b: CartItem[]) {
     if (!y) return false;
 
     if (lineKeyFor(x) !== lineKeyFor(y)) return false;
-    if (String(x.id ?? "") !== String(y.id ?? "")) return false;
     if (String(x.title ?? "") !== String(y.title ?? "")) return false;
     if (String(x.image ?? "") !== String(y.image ?? "")) return false;
     if (Math.max(1, Number(x.qty) || 1) !== Math.max(1, Number(y.qty) || 1)) return false;
@@ -224,7 +233,6 @@ function cartSignature(items: CartItem[]) {
         .join(",");
       return [
         lineKeyFor(x),
-        String(x.id ?? ""),
         Math.max(0, Number(x.qty) || 0),
         Number.isFinite(Number(x.unitPrice)) ? Number(x.unitPrice) : 0,
         String(x.title ?? ""),
@@ -235,17 +243,63 @@ function cartSignature(items: CartItem[]) {
     .join("||");
 }
 
+function normalizeCartItemLike(item: any): CartItem | null {
+  const productId = String(item?.productId ?? "").trim();
+  if (!productId) return null;
+
+  const kind: "BASE" | "VARIANT" =
+    item?.kind === "BASE" || item?.kind === "VARIANT"
+      ? item.kind
+      : item?.variantId
+        ? "VARIANT"
+        : "BASE";
+
+  const qty = Math.max(1, Number(item?.qty) || 1);
+
+  const unit =
+    asMoney(item?.unitPrice, NaN) > 0
+      ? asMoney(item.unitPrice, 0)
+      : asMoney(item?.unitPriceCache, NaN) > 0
+        ? asMoney(item.unitPriceCache, 0)
+        : qty > 0
+          ? asMoney(item?.totalPrice, 0) / qty
+          : 0;
+
+  const safeUnit = Number.isFinite(unit) && unit >= 0 ? unit : 0;
+
+  return {
+    id: item?.id != null ? String(item.id) : undefined,
+    sourceIds: Array.isArray(item?.sourceIds)
+      ? item.sourceIds.map(String).filter(Boolean)
+      : item?.id != null
+        ? [String(item.id)]
+        : [],
+    kind,
+    productId,
+    variantId: item?.variantId == null ? null : String(item.variantId),
+    title: String(item?.title ?? item?.titleSnapshot ?? ""),
+    qty,
+    unitPrice: safeUnit,
+    totalPrice: round2(safeUnit * qty),
+    selectedOptions: normalizeSelectedOptions(item?.selectedOptions),
+    image: resolveImageUrl(item?.image ?? item?.imageSnapshot),
+  };
+}
+
 function mergeCartItemsByLine(items: CartItem[]): CartItem[] {
   const map = new Map<string, CartItem>();
 
-  for (const item of items) {
+  for (const raw of items) {
+    const item = normalizeCartItemLike(raw);
+    if (!item) continue;
+
     const key = lineKeyFor(item);
     const existing = map.get(key);
 
     if (!existing) {
       map.set(key, {
         ...item,
-        sourceIds: item.id ? [String(item.id)] : [],
+        sourceIds: Array.from(new Set((item.sourceIds ?? []).map(String).filter(Boolean))),
       });
       continue;
     }
@@ -258,18 +312,27 @@ function mergeCartItemsByLine(items: CartItem[]): CartItem[] {
         ? asMoney(existing.unitPrice, 0)
         : asMoney(item.unitPrice, 0);
 
+    const canonicalQty = Math.max(existingQty, nextQty);
+
     const merged: CartItem = {
       ...existing,
       id: existing.id || item.id,
-      sourceIds: [
-        ...(existing.sourceIds ?? []),
-        ...(item.id ? [String(item.id)] : []),
-      ].filter(Boolean),
+      sourceIds: Array.from(
+        new Set(
+          [
+            ...(existing.sourceIds ?? []),
+            ...(item.sourceIds ?? []),
+            ...(item.id ? [String(item.id)] : []),
+          ]
+            .map(String)
+            .filter(Boolean)
+        )
+      ),
       title: String(existing.title || item.title || ""),
       image: existing.image || item.image,
-      qty: existingQty + nextQty,
+      qty: canonicalQty,
       unitPrice: chosenUnit,
-      totalPrice: round2(chosenUnit * (existingQty + nextQty)),
+      totalPrice: round2(chosenUnit * canonicalQty),
       selectedOptions:
         (existing.selectedOptions?.length ? existing.selectedOptions : item.selectedOptions) ?? [],
     };
@@ -280,38 +343,150 @@ function mergeCartItemsByLine(items: CartItem[]): CartItem[] {
   return Array.from(map.values());
 }
 
-/* ---------------- Server cart helpers ---------------- */
-
-async function fetchServerCart(): Promise<CartItem[]> {
-  const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
-  const items: ServerCartItem[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
-
-  const mapped = items.map((it) => {
-    const qty = Math.max(1, Number(it.qty) || 1);
-    const unit = Number(it.unitPriceCache) || 0;
-    const title = String(it.titleSnapshot ?? "");
-    const img = it.imageSnapshot ? resolveImageUrl(it.imageSnapshot) : undefined;
-
-    return {
-      id: String(it.id),
-      sourceIds: [String(it.id)],
-      kind: (it.kind as any) || (it.variantId ? "VARIANT" : "BASE"),
+function cartItemsToStorageLines(items: CartItem[]) {
+  return mergeCartItemsByLine(items)
+    .map((it) => ({
       productId: String(it.productId),
       variantId: it.variantId == null ? null : String(it.variantId),
-      title,
-      qty,
-      unitPrice: unit,
-      totalPrice: unit * qty,
-      selectedOptions: normalizeSelectedOptions(it.selectedOptions),
-      image: img,
-    } as CartItem;
-  });
+      kind: (it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE") as "BASE" | "VARIANT",
+      optionsKey: "",
+      qty: Math.max(0, Math.floor(Number(it.qty) || 0)),
+      selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : [],
+      titleSnapshot: it.title ?? null,
+      imageSnapshot: it.image ?? null,
+      unitPriceCache: Number.isFinite(Number(it.unitPrice)) ? Number(it.unitPrice) : 0,
+    }))
+    .filter((x) => x.qty > 0);
+}
 
-  return mergeCartItemsByLine(mapped);
+function readLocalCartCanonical(): CartItem[] {
+  try {
+    const raw = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+    return mergeCartItemsByLine(raw);
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalCartCanonical(items: CartItem[]) {
+  writeCartLines(cartItemsToStorageLines(items) as any);
+}
+
+function normalizeServerCartRows(items: ServerCartItem[]): ServerCartNormalizationResult {
+  const groups = new Map<
+    string,
+    {
+      canonical: CartItem;
+      allIds: string[];
+      duplicateIdsToDelete: string[];
+    }
+  >();
+
+  for (const raw of items) {
+    const normalized = normalizeCartItemLike({
+      id: String(raw.id),
+      sourceIds: [String(raw.id)],
+      kind: raw.kind === "BASE" || raw.kind === "VARIANT" ? raw.kind : raw.variantId ? "VARIANT" : "BASE",
+      productId: raw.productId,
+      variantId: raw.variantId == null ? null : String(raw.variantId),
+      title: raw.titleSnapshot ?? "",
+      qty: Math.max(1, Number(raw.qty) || 1),
+      unitPrice: Number(raw.unitPriceCache) || 0,
+      totalPrice: (Number(raw.unitPriceCache) || 0) * Math.max(1, Number(raw.qty) || 1),
+      selectedOptions: raw.selectedOptions,
+      image: raw.imageSnapshot,
+    });
+
+    if (!normalized) continue;
+
+    const key = lineKeyFor(normalized);
+    const existing = groups.get(key);
+
+    if (!existing) {
+      groups.set(key, {
+        canonical: {
+          ...normalized,
+          sourceIds: [String(raw.id)],
+        },
+        allIds: [String(raw.id)],
+        duplicateIdsToDelete: [],
+      });
+      continue;
+    }
+
+    const existingQty = Math.max(1, Number(existing.canonical.qty) || 1);
+    const nextQty = Math.max(1, Number(normalized.qty) || 1);
+
+    existing.allIds.push(String(raw.id));
+    existing.duplicateIdsToDelete.push(String(raw.id));
+
+    existing.canonical = {
+      ...existing.canonical,
+      id: existing.canonical.id || normalized.id,
+      sourceIds: Array.from(
+        new Set([...(existing.canonical.sourceIds ?? []), String(raw.id)].filter(Boolean))
+      ),
+      title: String(existing.canonical.title || normalized.title || ""),
+      image: existing.canonical.image || normalized.image,
+      qty: Math.max(existingQty, nextQty),
+      unitPrice:
+        asMoney(existing.canonical.unitPrice, 0) > 0
+          ? asMoney(existing.canonical.unitPrice, 0)
+          : asMoney(normalized.unitPrice, 0),
+      totalPrice: round2(
+        (
+          asMoney(existing.canonical.unitPrice, 0) > 0
+            ? asMoney(existing.canonical.unitPrice, 0)
+            : asMoney(normalized.unitPrice, 0)
+        ) * Math.max(existingQty, nextQty)
+      ),
+      selectedOptions:
+        (existing.canonical.selectedOptions?.length
+          ? existing.canonical.selectedOptions
+          : normalized.selectedOptions) ?? [],
+    };
+  }
+
+  const resultItems = Array.from(groups.values()).map((g) => g.canonical);
+  const duplicateIdsToDelete = Array.from(
+    new Set(
+      Array.from(groups.values())
+        .flatMap((g) => g.duplicateIdsToDelete)
+        .filter(Boolean)
+    )
+  );
+
+  return {
+    items: mergeCartItemsByLine(resultItems),
+    duplicateIdsToDelete,
+  };
+}
+
+/* ---------------- Server cart helpers ---------------- */
+
+async function fetchServerCart(): Promise<ServerCartNormalizationResult> {
+  const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
+  const items: ServerCartItem[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
+  return normalizeServerCartRows(items);
+}
+
+async function deleteDuplicateServerCartRows(ids: string[]) {
+  const uniqueIds = Array.from(new Set(ids.map(String).filter(Boolean)));
+  if (!uniqueIds.length) return;
+
+  await Promise.all(
+    uniqueIds.map((id) => api.delete(`/api/cart/items/${id}`, AXIOS_COOKIE_CFG))
+  );
 }
 
 async function serverSetQty(item: CartItem, qty: number) {
-  const ids = Array.from(new Set((item.sourceIds?.length ? item.sourceIds : item.id ? [item.id] : []).map(String)));
+  const ids = Array.from(
+    new Set(
+      (item.sourceIds?.length ? item.sourceIds : item.id ? [item.id] : [])
+        .map(String)
+        .filter(Boolean)
+    )
+  );
   if (!ids.length) return;
 
   const next = Math.max(0, Math.floor(Number(qty) || 0));
@@ -353,7 +528,8 @@ export default function Cart() {
   const qtyNoteTimersRef = useRef<Record<string, number>>({});
 
   const safeSetCart = useCallback((next: CartItem[]) => {
-    setCart((prev) => (sameCartItems(prev, next) ? prev : next));
+    const dedupedNext = mergeCartItemsByLine(next);
+    setCart((prev) => (sameCartItems(prev, dedupedNext) ? prev : dedupedNext));
   }, []);
 
   const clearAllNotes = useCallback(() => {
@@ -393,80 +569,54 @@ export default function Cart() {
   );
 
   const mirrorAuthedCartToLocal = useCallback((items: CartItem[]) => {
-    const sig = cartSignature(items);
+    const deduped = mergeCartItemsByLine(items);
+    const sig = cartSignature(deduped);
     if (lastMirroredServerSigRef.current === sig) return;
 
-    const lines = items.map((x) => ({
-      productId: String(x.productId),
-      variantId: x.variantId == null ? null : String(x.variantId),
-      kind: (x.kind === "VARIANT" || x.variantId ? "VARIANT" : "BASE") as "BASE" | "VARIANT",
-      optionsKey: "",
-      qty: Math.max(0, Number(x.qty) || 0),
-      selectedOptions: Array.isArray(x.selectedOptions) ? x.selectedOptions : [],
-      titleSnapshot: x.title ?? null,
-      imageSnapshot: x.image ?? null,
-      unitPriceCache: Number.isFinite(Number(x.unitPrice)) ? Number(x.unitPrice) : 0,
-    }));
-
     lastMirroredServerSigRef.current = sig;
-    writeCartLines(lines as any);
+    writeLocalCartCanonical(deduped);
   }, []);
 
   const persistGuestCart = useCallback((items: CartItem[]) => {
-    const sig = cartSignature(items);
+    const deduped = mergeCartItemsByLine(items);
+    const sig = cartSignature(deduped);
     if (lastPersistedGuestSigRef.current === sig) return;
 
-    const lines = items
-      .map((it) => ({
-        productId: String(it.productId),
-        variantId: it.variantId == null ? null : String(it.variantId),
-        kind: (it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE") as "BASE" | "VARIANT",
-        optionsKey: "",
-        qty: Math.max(0, Math.floor(Number(it.qty) || 0)),
-        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : [],
-        titleSnapshot: it.title ?? null,
-        imageSnapshot: it.image ?? null,
-        unitPriceCache: Number.isFinite(Number(it.unitPrice)) ? Number(it.unitPrice) : 0,
-      }))
-      .filter((x) => x.qty > 0);
-
     lastPersistedGuestSigRef.current = sig;
-    writeCartLines(lines as any);
+    writeLocalCartCanonical(deduped);
   }, []);
-
 
   const loadCart = useCallback(async () => {
     const requestId = ++activeRequestIdRef.current;
 
-    const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+    const localItems = readLocalCartCanonical();
 
-    // Wait until auth store hydration is done before deciding guest vs authed.
     if (!authHydrated) return;
 
     if (isAuthed) {
       try {
-        const serverItems = await fetchServerCart();
+        const serverResult = await fetchServerCart();
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
 
-        safeSetCart(serverItems);
-        mirrorAuthedCartToLocal(serverItems);
-        setHydrated(true);
-        return;
-      } catch (err: any) {
-        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
-
-        const status = Number(err?.response?.status || 0);
-
-        // Important:
-        // Cart page must NEVER force logout / auth expiry.
-        // On Railway, auth/cart cookie reads can wobble; keep local mirror instead.
-        if (status === 401 || status === 403) {
-          safeSetCart(localItems);
-          setHydrated(true);
-          return;
+        if (serverResult.duplicateIdsToDelete.length) {
+          try {
+            await deleteDuplicateServerCartRows(serverResult.duplicateIdsToDelete);
+          } catch {
+            //
+          }
         }
 
+        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+
+        safeSetCart(serverResult.items);
+        mirrorAuthedCartToLocal(serverResult.items);
+        setHydrated(true);
+        return;
+      } catch {
+        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+
         safeSetCart(localItems);
+        writeLocalCartCanonical(localItems);
         setHydrated(true);
         return;
       }
@@ -474,6 +624,7 @@ export default function Cart() {
 
     if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
     safeSetCart(localItems);
+    writeLocalCartCanonical(localItems);
     setHydrated(true);
   }, [authHydrated, isAuthed, mirrorAuthedCartToLocal, safeSetCart]);
 
@@ -550,8 +701,9 @@ export default function Cart() {
         await loadCart();
       } catch {
         if (!cancelled && isMountedRef.current) {
-          const fallback = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+          const fallback = readLocalCartCanonical();
           safeSetCart(fallback);
+          writeLocalCartCanonical(fallback);
           setHydrated(true);
         }
       }
@@ -592,24 +744,26 @@ export default function Cart() {
 
   const setLocalQtyState = useCallback((target: CartItem, qty: number) => {
     setCart((prev) =>
-      prev.map((it) => {
-        if (!sameLine(it, target)) return it;
+      mergeCartItemsByLine(
+        prev.map((it) => {
+          if (!sameLine(it, target)) return it;
 
-        const nextQty = Math.max(1, Math.floor(Number(qty) || 1));
-        const unit =
-          Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
-            ? Number(it.unitPrice)
-            : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+          const nextQty = Math.max(1, Math.floor(Number(qty) || 1));
+          const unit =
+            Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
+              ? Number(it.unitPrice)
+              : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
 
-        const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
+          const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
 
-        return {
-          ...it,
-          qty: nextQty,
-          unitPrice: safeUnit,
-          totalPrice: round2(safeUnit * nextQty),
-        };
-      })
+          return {
+            ...it,
+            qty: nextQty,
+            unitPrice: safeUnit,
+            totalPrice: round2(safeUnit * nextQty),
+          };
+        })
+      )
     );
   }, []);
 
@@ -621,23 +775,25 @@ export default function Cart() {
 
       if (!isAuthed) {
         setCart((prev) => {
-          const nextCart = prev.map((it) => {
-            if (!sameLine(it, target)) return it;
+          const nextCart = mergeCartItemsByLine(
+            prev.map((it) => {
+              if (!sameLine(it, target)) return it;
 
-            const unit =
-              Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
-                ? Number(it.unitPrice)
-                : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+              const unit =
+                Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
+                  ? Number(it.unitPrice)
+                  : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
 
-            const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
+              const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
 
-            return {
-              ...it,
-              qty: nextQty,
-              unitPrice: safeUnit,
-              totalPrice: round2(safeUnit * nextQty),
-            };
-          });
+              return {
+                ...it,
+                qty: nextQty,
+                unitPrice: safeUnit,
+                totalPrice: round2(safeUnit * nextQty),
+              };
+            })
+          );
 
           persistGuestCart(nextCart);
           return nextCart;
@@ -656,23 +812,25 @@ export default function Cart() {
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
 
         setCart((prev) => {
-          const mirrored = prev.map((it) => {
-            if (!sameLine(it, target)) return it;
+          const mirrored = mergeCartItemsByLine(
+            prev.map((it) => {
+              if (!sameLine(it, target)) return it;
 
-            const unit =
-              Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
-                ? Number(it.unitPrice)
-                : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+              const unit =
+                Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
+                  ? Number(it.unitPrice)
+                  : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
 
-            const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
+              const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
 
-            return {
-              ...it,
-              qty: nextQty,
-              unitPrice: safeUnit,
-              totalPrice: round2(safeUnit * nextQty),
-            };
-          });
+              return {
+                ...it,
+                qty: nextQty,
+                unitPrice: safeUnit,
+                totalPrice: round2(safeUnit * nextQty),
+              };
+            })
+          );
 
           mirrorAuthedCartToLocal(mirrored);
           return mirrored;
@@ -684,7 +842,7 @@ export default function Cart() {
       } catch {
         if (isMountedRef.current && requestId === activeRequestIdRef.current) {
           showQtyNote(sourceKey ?? lineKeyFor(target), "Could not update quantity. Restoring cart.");
-          await loadCart().catch(() => { });
+          await loadCart().catch(() => {});
         }
       }
     },
@@ -693,7 +851,7 @@ export default function Cart() {
 
   const remove = useCallback(
     async (target: CartItem) => {
-      const next = cart.filter((it) => !sameLine(it, target));
+      const next = mergeCartItemsByLine(cart.filter((it) => !sameLine(it, target)));
       safeSetCart(next);
 
       setQtyDraft((prev) => {
@@ -720,20 +878,24 @@ export default function Cart() {
         window.dispatchEvent(new Event("cart:updated"));
       } catch {
         if (isMountedRef.current && requestId === activeRequestIdRef.current) {
-          await loadCart().catch(() => { });
+          await loadCart().catch(() => {});
         }
       }
     },
     [cart, isAuthed, loadCart, mirrorAuthedCartToLocal, persistGuestCart, safeSetCart]
   );
 
-  const visibleCart = useMemo(() => cart, [cart]);
+  const visibleCart = useMemo(() => mergeCartItemsByLine(cart), [cart]);
 
   const total = useMemo(() => {
     return visibleCart.reduce((sum, it) => {
       const qty = Math.max(1, Number(it.qty) || 1);
       const cachedUnit =
-        asMoney(it.unitPrice, 0) > 0 ? asMoney(it.unitPrice, 0) : qty > 0 ? asMoney(it.totalPrice, 0) / qty : 0;
+        asMoney(it.unitPrice, 0) > 0
+          ? asMoney(it.unitPrice, 0)
+          : qty > 0
+            ? asMoney(it.totalPrice, 0) / qty
+            : 0;
       return sum + round2(Math.max(0, cachedUnit) * qty);
     }, 0);
   }, [visibleCart]);
@@ -803,11 +965,21 @@ export default function Cart() {
                 const currentQty = Math.max(1, Number(it.qty) || 1);
 
                 const cachedUnit =
-                  asMoney(it.unitPrice, 0) > 0 ? asMoney(it.unitPrice, 0) : currentQty > 0 ? asMoney(it.totalPrice, 0) / currentQty : 0;
+                  asMoney(it.unitPrice, 0) > 0
+                    ? asMoney(it.unitPrice, 0)
+                    : currentQty > 0
+                      ? asMoney(it.totalPrice, 0) / currentQty
+                      : 0;
 
                 const displayUnit = Math.max(0, cachedUnit);
                 const displayLineTotal = round2(displayUnit * currentQty);
-                const kindLabel = isBaseLine(it) ? "Base" : it.variantId ? "Variant" : it.selectedOptions?.length ? "Configured" : "Item";
+                const kindLabel = isBaseLine(it)
+                  ? "Base"
+                  : it.variantId
+                    ? "Variant"
+                    : it.selectedOptions?.length
+                      ? "Configured"
+                      : "Item";
                 const draft = qtyDraft[key];
                 const inputValue = draft ?? String(currentQty);
                 const displayOptions = normalizeSelectedOptions(it.selectedOptions);
@@ -849,7 +1021,10 @@ export default function Cart() {
 
                 const inc = () => {
                   const raw = qtyDraft[key];
-                  const base = raw == null || raw === "" ? currentQty : Math.max(1, Math.floor(Number(raw) || currentQty));
+                  const base =
+                    raw == null || raw === ""
+                      ? currentQty
+                      : Math.max(1, Math.floor(Number(raw) || currentQty));
                   const desired = base + 1;
                   setQtyDraft((prev) => ({ ...prev, [key]: String(desired) }));
                   void commitQty(it, desired, key);
@@ -857,7 +1032,10 @@ export default function Cart() {
 
                 const dec = () => {
                   const raw = qtyDraft[key];
-                  const base = raw == null || raw === "" ? currentQty : Math.max(1, Math.floor(Number(raw) || currentQty));
+                  const base =
+                    raw == null || raw === ""
+                      ? currentQty
+                      : Math.max(1, Math.floor(Number(raw) || currentQty));
                   const desired = Math.max(1, base - 1);
                   setQtyDraft((prev) => ({ ...prev, [key]: String(desired) }));
                   void commitQty(it, desired, key);
@@ -1067,12 +1245,22 @@ export default function Cart() {
 
                   <Link
                     to="/checkout"
+                    onClick={() => {
+                      try {
+                        sessionStorage.removeItem("payment:init");
+                        sessionStorage.removeItem("paystack:return");
+                        sessionStorage.removeItem("paystack:return:v1");
+                        sessionStorage.removeItem("paystack:exit");
+                        sessionStorage.removeItem("paystack:exit:v1");
+                      } catch {
+                        //
+                      }
+                    }}
                     className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200`}
                   >
                     <span className="sm:hidden">Checkout</span>
                     <span className="hidden sm:inline">Proceed to checkout</span>
                   </Link>
-
                   <Link
                     to="/"
                     className={`${tap} mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 max-[360px]:py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition`}
