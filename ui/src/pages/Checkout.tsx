@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Navigate, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client.js";
 import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
@@ -251,6 +251,19 @@ function markVerifiedShippingPhoneLocally(shippingAddressId: string, phone: stri
   writeVerifiedShippingPhoneCache(cache);
 }
 
+function getPreferredShippingPhone(addr?: SavedShippingAddress | null) {
+  return String(addr?.whatsappPhone ?? addr?.phone ?? "").trim();
+}
+
+function isResolvedShippingAddressPhoneVerified(addr?: SavedShippingAddress | null) {
+  if (!addr) return false;
+
+  return (
+    isSavedAddressPhoneVerified(addr) ||
+    isShippingPhoneVerifiedLocally(addr.id, getPreferredShippingPhone(addr))
+  );
+}
+
 function isShippingPhoneVerifiedLocally(shippingAddressId?: string | null, phone?: string | null) {
   const sid = String(shippingAddressId ?? "").trim();
   const normalizedPhone = normalizePhoneForCompare(String(phone ?? ""));
@@ -300,6 +313,7 @@ const ngn = new Intl.NumberFormat("en-NG", {
   currency: "NGN",
   maximumFractionDigits: 2,
 });
+
 
 /* ----------------------------- Helpers ----------------------------- */
 const num = (v: any, d = 0) => {
@@ -745,11 +759,10 @@ async function syncSelectedShippingAddressEntry(address: SavedShippingAddress) {
 }
 
 async function sendPhoneOtpForCheckout(args: { shippingAddressId: string }) {
-  return api.post(
-    `/api/profile/shipping-addresses/${encodeURIComponent(args.shippingAddressId)}/request-phone-otp`,
-    {},
-    AXIOS_COOKIE_CFG
-  );
+  const url = `/api/profile/shipping-addresses/${encodeURIComponent(args.shippingAddressId)}/request-phone-otp`;
+  console.log("[sendPhoneOtpForCheckout] POST", url);
+
+  return api.post(url, {}, AXIOS_COOKIE_CFG);
 }
 
 async function verifyPhoneOtpForCheckout(args: { shippingAddressId: string; code: string }) {
@@ -1182,10 +1195,10 @@ async function fetchShippingQuotesForCart(args: {
   });
 
   const attempts: Array<{ url: string; body: any }> = [
+    { url: "/api/checkout/shipping-fee-local", body: quoteBodyWithFallbackAddress },
     { url: "/api/checkout/shipping-quotes", body: quoteBodyWithFallbackAddress },
     { url: "/api/shipping/quotes/cart", body: quoteBodyWithFallbackAddress },
     { url: "/api/shipping/quote-cart", body: quoteBodyWithFallbackAddress },
-    { url: "/api/checkout/shipping-fee-local", body: quoteBodyWithFallbackAddress },
   ];
 
   for (const attempt of attempts) {
@@ -1511,10 +1524,96 @@ function makeEmptyShippingForm(defaultCountry = NIGERIA_COUNTRY): ShippingAddres
   };
 }
 
+
+function isAxiosTimeoutError(err: any) {
+  const code = String(err?.code ?? "").toUpperCase();
+  const msg = String(err?.message ?? "").toLowerCase();
+  return code === "ECONNABORTED" || msg.includes("timeout");
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function readPaymentInitResponse(payload: any) {
+  const root = payload?.data ?? payload ?? {};
+
+  const mode = String(root?.mode ?? "").trim();
+  const authorizationUrl = String(root?.authorization_url ?? root?.authorizationUrl ?? "").trim();
+  const reference = String(root?.reference ?? "").trim();
+
+  const amount =
+    Number.isFinite(Number(root?.amount)) && Number(root?.amount) > 0
+      ? Number(root.amount)
+      : null;
+
+  return {
+    mode,
+    authorizationUrl,
+    reference,
+    amount,
+  };
+}
+
+function persistPendingPaymentInit(args: {
+  orderId: string;
+  total: number;
+  shippingFee: number;
+  homeAddr: Address;
+  selectedShippingAddress: SavedShippingAddress | null;
+}) {
+  try {
+    sessionStorage.setItem(
+      "payment:init",
+      JSON.stringify({
+        orderId: args.orderId,
+        total: args.total,
+        serviceFeeTotal: args.shippingFee,
+        homeAddress: args.homeAddr,
+        shippingAddress: args.selectedShippingAddress,
+        selectedUserShippingAddressId: args.selectedShippingAddress?.id ?? null,
+        at: Date.now(),
+      })
+    );
+  } catch {
+    //
+  }
+}
+
+function persistResolvedPaymentInit(args: {
+  orderId: string;
+  total: number;
+  shippingFee: number;
+  reference?: string | null;
+  homeAddr: Address;
+  selectedShippingAddress: SavedShippingAddress | null;
+}) {
+  try {
+    sessionStorage.setItem(
+      "payment:init",
+      JSON.stringify({
+        orderId: args.orderId,
+        total: args.total,
+        serviceFeeTotal: args.shippingFee,
+        reference: args.reference ?? null,
+        homeAddress: args.homeAddr,
+        shippingAddress: args.selectedShippingAddress,
+        selectedUserShippingAddressId: args.selectedShippingAddress?.id ?? null,
+        at: Date.now(),
+      })
+    );
+  } catch {
+    //
+  }
+}
+
+
 /* ----------------------------- Component ----------------------------- */
 export default function Checkout() {
   const nav = useNavigate();
+  const location = useLocation();
   const { openModal } = useModal();
+
 
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
@@ -1535,19 +1634,6 @@ export default function Checkout() {
   }, [meQ.data, user]);
 
   const isSessionAuthenticated = !!sessionUser?.id;
-
-  useEffect(() => {
-    if (!hydrated) return;
-    if (meQ.isLoading) return;
-
-    const status = (meQ.error as any)?.response?.status;
-
-    // Only redirect if BOTH the local auth store and cookie-session check say unauthenticated.
-    if (!user?.id && !meQ.data && (status === 401 || status === 403)) {
-      nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
-    }
-  }, [hydrated, meQ.isLoading, meQ.data, meQ.error, user?.id, nav]);
-
 
   const [checkingVerification, setCheckingVerification] = useState(true);
   const [emailOk, setEmailOk] = useState(false);
@@ -1638,18 +1724,64 @@ export default function Checkout() {
 
   const quoteSubtotalSupplier = (pricingQ.data as QuotePayload | null)?.subtotal ?? 0;
 
-  function countryCodeFromCodeOrName(value?: string | null) {
-    const raw = String(value ?? "").trim();
-    if (!raw) return "";
+  const pollForPaymentInitAfterTimeout = useCallback(
+    async (orderId: string) => {
+      const startedAt = Date.now();
+      const maxWaitMs = 45_000;
+      const stepMs = 2_500;
 
-    const byCode = COUNTRIES.find((c) => c.code.toLowerCase() === raw.toLowerCase());
-    if (byCode) return byCode.code;
+      while (Date.now() - startedAt < maxWaitMs) {
+        try {
+          const detailResp = await api.get(
+            `/api/orders/${encodeURIComponent(orderId)}`,
+            AXIOS_COOKIE_CFG
+          );
+          const detailRoot = detailResp?.data?.data ?? detailResp?.data ?? {};
 
-    const byName = COUNTRIES.find((c) => c.name.toLowerCase() === raw.toLowerCase());
-    if (byName) return byName.code;
+          const payment =
+            detailRoot?.payment ??
+            (Array.isArray(detailRoot?.payments) ? detailRoot.payments[0] : null) ??
+            null;
 
-    return "";
-  }
+          const hasReference = !!String(
+            payment?.reference ?? detailRoot?.reference ?? ""
+          ).trim();
+
+          const hasPaymentId = !!String(
+            payment?.id ?? detailRoot?.paymentId ?? ""
+          ).trim();
+
+          const maybeHostedUrl = String(
+            payment?.authorization_url ??
+            payment?.authorizationUrl ??
+            detailRoot?.authorization_url ??
+            detailRoot?.authorizationUrl ??
+            ""
+          ).trim();
+
+          if (maybeHostedUrl) {
+            clearCheckoutCartForSuccessfulHostedExit();
+            markPaystackExit();
+            window.location.assign(maybeHostedUrl);
+            return true;
+          }
+
+          if (hasReference || hasPaymentId) {
+            // keep cart intact so user can still amend if payment page loads
+            window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
+            return true;
+          }
+        } catch {
+          //
+        }
+
+        await sleep(stepMs);
+      }
+
+      return false;
+    },
+    []
+  );
 
   const cartSubtotal = useMemo(() => {
     return round2(
@@ -1705,9 +1837,14 @@ export default function Checkout() {
   }, [selectedShippingAddress]);
 
   const selectedPhoneVerified = useMemo(() => {
-    if (!selectedShippingAddress) return false;
-    return isSavedAddressPhoneVerified(selectedShippingAddress);
+    return isResolvedShippingAddressPhoneVerified(selectedShippingAddress);
   }, [selectedShippingAddress]);
+
+
+  function clearCheckoutCartForSuccessfulHostedExit() {
+    writeCart([]);
+  }
+
 
   useEffect(() => {
     if (!selectedShippingAddress) {
@@ -1717,7 +1854,7 @@ export default function Checkout() {
       return;
     }
 
-    if (isSavedAddressPhoneVerified(selectedShippingAddress)) {
+    if (isResolvedShippingAddressPhoneVerified(selectedShippingAddress)) {
       setOtpCode("");
       setOtpSentToPhone(null);
       setOtpMessage("This delivery phone is already verified.");
@@ -1858,15 +1995,24 @@ export default function Checkout() {
     return v === "nigeria" || v === "ng";
   }, [homeAddr.country]);
 
-  const didHydrateCartRef = useRef(false);
 
   useEffect(() => {
-    if (!didHydrateCartRef.current) {
-      didHydrateCartRef.current = true;
-      return;
+    if (!hydrated) return;
+    if (meQ.isLoading) return;
+
+    if (!isSessionAuthenticated && location.pathname !== "/login") {
+      nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
     }
-    writeCart(cart);
-  }, [cart]);
+  }, [hydrated, meQ.isLoading, isSessionAuthenticated, nav, location.pathname]);
+
+  useEffect(() => {
+    if (meQ.isLoading) return;
+    if (!isSessionAuthenticated) return;
+
+    if (cart.length === 0 && location.pathname !== "/cart") {
+      nav("/cart", { replace: true, state: { from: "/checkout" } });
+    }
+  }, [cart.length, isSessionAuthenticated, meQ.isLoading, nav, location.pathname]);
 
   useEffect(() => {
     if (!showShippingEditor) return;
@@ -1884,14 +2030,6 @@ export default function Checkout() {
 
     return () => window.cancelAnimationFrame(id);
   }, [showShippingEditor, editingShippingId]);
-
-  useEffect(() => {
-    const syncFromCart = () => setCart(readCart());
-    window.addEventListener("cart:updated", syncFromCart);
-    return () => window.removeEventListener("cart:updated", syncFromCart);
-  }, []);
-
-
 
   const applySameAsHomeToShippingFormOnce = () => {
     if (!sameAsHomeAvailable) return;
@@ -1920,6 +2058,14 @@ export default function Checkout() {
     setSameAsHomeUsage(next);
     writeSameAsHomeUsage(next);
   };
+
+  const checkoutCartLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (checkoutCartLoadedRef.current) return;
+    checkoutCartLoadedRef.current = true;
+    setCart(readCart());
+  }, []);
 
   const onChangeHome =
     (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -2170,27 +2316,56 @@ export default function Checkout() {
   const homeFormLgas = useMemo(() => lgasForState(homeAddr.state), [homeAddr.state]);
 
   const sendOtp = async () => {
+    console.log("[CHECKOUT sendOtp] clicked", {
+      selectedShippingAddress,
+    });
+
     if (!selectedShippingAddress) {
       openModal({ title: "Phone verification", message: "Select a delivery detail first." });
       return;
     }
 
-    const phone = selectedShippingAddress.phone?.trim() || "";
+    const targetPhone = getPreferredShippingPhone(selectedShippingAddress);
 
-    if (!phone) {
-      openModal({ title: "Phone verification", message: "Selected delivery detail has no phone number." });
+    console.log("[CHECKOUT sendOtp] target", {
+      shippingAddressId: selectedShippingAddress.id,
+      phone: selectedShippingAddress.phone,
+      whatsappPhone: selectedShippingAddress.whatsappPhone,
+      targetPhone,
+    });
+
+    if (!targetPhone) {
+      openModal({
+        title: "Phone verification",
+        message: "Selected delivery detail has no WhatsApp or phone number.",
+      });
       return;
     }
 
     try {
       setSendingOtp(true);
       setOtpMessage(null);
-      await sendPhoneOtpForCheckout({
+
+      console.log("[CHECKOUT sendOtp] before api call", {
         shippingAddressId: selectedShippingAddress.id,
       });
-      setOtpSentToPhone(phone);
+
+      const res = await sendPhoneOtpForCheckout({
+        shippingAddressId: selectedShippingAddress.id,
+      });
+
+      console.log("[CHECKOUT sendOtp] api success", res?.data);
+
+      setOtpSentToPhone(targetPhone);
+      setOtpCode("");
       setOtpMessage("OTP sent. Enter the code below to confirm this delivery phone.");
     } catch (e: any) {
+      console.error("[CHECKOUT sendOtp] api error", {
+        status: e?.response?.status,
+        data: e?.response?.data,
+        message: e?.message,
+      });
+
       openModal({
         title: "Send OTP",
         message: safeServerMessage(
@@ -2231,7 +2406,7 @@ export default function Checkout() {
         prev.map((addr) => {
           if (addr.id !== selectedShippingAddress.id) return addr;
 
-          return {
+          const merged = {
             ...addr,
             ...(updated ?? {}),
             id: addr.id,
@@ -2250,7 +2425,14 @@ export default function Checkout() {
                 verifiedAt,
             },
           };
+
+          return merged;
         })
+      );
+
+      markVerifiedShippingPhoneLocally(
+        selectedShippingAddress.id,
+        getPreferredShippingPhone(selectedShippingAddress)
       );
 
       setOtpSentToPhone(null);
@@ -2358,11 +2540,17 @@ export default function Checkout() {
               : "BASE");
 
         const variantId =
-          qLine?.variantId != null
-            ? qLine.variantId
-            : it.variantId != null
-              ? it.variantId
-              : undefined;
+          kind === "VARIANT"
+            ? qLine?.variantId != null
+              ? qLine.variantId
+              : it.variantId != null
+                ? it.variantId
+                : undefined
+            : undefined;
+
+        const normalizedOptions = Array.isArray(it.selectedOptions)
+          ? normalizeSelectedOptions(it.selectedOptions)
+          : undefined;
 
         const retailUnit = asMoney(
           it.unitPrice,
@@ -2375,12 +2563,10 @@ export default function Checkout() {
         return {
           key,
           productId: it.productId,
-          variantId: variantId || undefined,
+          variantId,
           qty: Math.max(1, num(it.qty, 1)),
           kind,
-          selectedOptions: Array.isArray(it.selectedOptions)
-            ? normalizeSelectedOptions(it.selectedOptions)
-            : undefined,
+          selectedOptions: kind === "VARIANT" ? normalizedOptions : undefined,
           supplierId: firstAlloc?.supplierId || it.supplierId || undefined,
           offerId: firstAlloc?.offerId || undefined,
           unitPrice: retailUnit,
@@ -2505,21 +2691,13 @@ export default function Checkout() {
 
       setRedirectingOrderId(orderId);
 
-      try {
-        sessionStorage.setItem(
-          "payment:init",
-          JSON.stringify({
-            orderId,
-            total: payableTotal,
-            homeAddress: homeAddr,
-            shippingAddress: selectedShippingAddress,
-            selectedUserShippingAddressId: selectedShippingAddress?.id ?? null,
-            at: Date.now(),
-          })
-        );
-      } catch {
-        //
-      }
+      persistPendingPaymentInit({
+        orderId,
+        total: payableTotal,
+        shippingFee: shippingEnabled ? shippingFee : 0,
+        homeAddr,
+        selectedShippingAddress,
+      });
 
       try {
         const initResp = await api.post(
@@ -2529,50 +2707,134 @@ export default function Checkout() {
             channel: "paystack",
             expectedTotal: payableTotal,
           },
-          AXIOS_COOKIE_CFG
+          {
+            ...AXIOS_COOKIE_CFG,
+            timeout: 20_000,
+          }
         );
 
-        const initData = initResp?.data;
+        const parsed = readPaymentInitResponse(initResp?.data);
 
-        if (
-          initData?.mode === "paystack" &&
-          initData?.authorization_url &&
-          String(initData.authorization_url).trim()
-        ) {
-          try {
-            sessionStorage.setItem(
-              "payment:init",
-              JSON.stringify({
-                orderId,
-                total: typeof initData.amount === "number" ? initData.amount : payableTotal,
-                serviceFeeTotal: shippingEnabled ? shippingFee : 0,
-                reference: initData.reference ?? null,
-                homeAddress: homeAddr,
-                shippingAddress: selectedShippingAddress,
-                selectedUserShippingAddressId: selectedShippingAddress?.id ?? null,
-                at: Date.now(),
-              })
-            );
-          } catch {
-            //
-          }
+        if (parsed.mode === "paystack" && parsed.authorizationUrl) {
+          persistResolvedPaymentInit({
+            orderId,
+            total: parsed.amount ?? payableTotal,
+            shippingFee: shippingEnabled ? shippingFee : 0,
+            reference: parsed.reference || null,
+            homeAddr,
+            selectedShippingAddress,
+          });
 
-          writeCart([]);
+          clearCheckoutCartForSuccessfulHostedExit();
           markPaystackExit();
-          window.location.assign(initData.authorization_url);
+          window.location.assign(parsed.authorizationUrl);
           return;
         }
 
-        // non-hosted fallback
-        writeCart([]);
+        // keep cart intact on internal payment page
         window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
-      } catch {
-        // payment init fallback page
-        writeCart([]);
+      } catch (e: any) {
+        if (isAxiosTimeoutError(e)) {
+          const recovered = await pollForPaymentInitAfterTimeout(orderId);
+
+          if (recovered) return;
+
+          openModal({
+            title: "Payment is taking longer than expected",
+            message:
+              "Your order may already have been created, but payment setup has not been confirmed yet. Please check My Orders before trying again to avoid duplicate orders.",
+          });
+
+          setRedirectingOrderId(null);
+          return;
+        }
+
+        // keep cart intact on internal payment page fallback
         window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
       }
     },
   });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        if (redirectingOrderId) return;
+
+        const raw = sessionStorage.getItem("payment:init");
+        if (!raw) return;
+
+        const parsed = JSON.parse(raw);
+        const orderId = String(parsed?.orderId ?? "").trim();
+        const createdAt = Number(parsed?.at ?? 0);
+
+        if (!orderId) {
+          sessionStorage.removeItem("payment:init");
+          return;
+        }
+
+        // ignore stale payment recovery sessions
+        const ageMs = Date.now() - createdAt;
+        if (!Number.isFinite(ageMs) || ageMs > 10 * 60 * 1000) {
+          sessionStorage.removeItem("payment:init");
+          return;
+        }
+
+        const detailResp = await api.get(
+          `/api/orders/${encodeURIComponent(orderId)}`,
+          AXIOS_COOKIE_CFG
+        );
+        if (cancelled) return;
+
+        const detailRoot = detailResp?.data?.data ?? detailResp?.data ?? {};
+        const payment =
+          detailRoot?.payment ??
+          (Array.isArray(detailRoot?.payments) ? detailRoot.payments[0] : null) ??
+          null;
+
+        const maybeHostedUrl = String(
+          payment?.authorization_url ??
+          payment?.authorizationUrl ??
+          detailRoot?.authorization_url ??
+          detailRoot?.authorizationUrl ??
+          ""
+        ).trim();
+
+        const hasReference = !!String(
+          payment?.reference ?? detailRoot?.reference ?? ""
+        ).trim();
+
+        const hasPaymentId = !!String(
+          payment?.id ?? detailRoot?.paymentId ?? ""
+        ).trim();
+
+        // only resume if this checkout page itself just created the order
+        if (!redirectingOrderId || orderId !== redirectingOrderId) {
+          return;
+        }
+
+        if (maybeHostedUrl) {
+          clearCheckoutCartForSuccessfulHostedExit();
+          markPaystackExit();
+          window.location.assign(maybeHostedUrl);
+          return;
+        }
+
+        if (hasReference || hasPaymentId) {
+          window.location.assign(`/payment?orderId=${encodeURIComponent(orderId)}`);
+        }
+      } catch {
+        //
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [redirectingOrderId]);
 
   if (redirectingOrderId) {
     return (
@@ -2598,13 +2860,24 @@ export default function Checkout() {
   }
 
   if (hydrated && !meQ.isLoading && !isSessionAuthenticated) {
-    return <Navigate to="/login" replace state={{ from: { pathname: "/checkout" } }} />;
+    return (
+      <SiteLayout>
+        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
+          <div className="text-sm text-ink-soft">Redirecting to login…</div>
+        </div>
+      </SiteLayout>
+    );
   }
 
   if (cart.length === 0) {
-    return <Navigate to="/cart" replace state={{ from: "/checkout" }} />;
+    return (
+      <SiteLayout>
+        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
+          <div className="text-sm text-ink-soft">Redirecting to cart…</div>
+        </div>
+      </SiteLayout>
+    );
   }
-
   const NotVerifiedModal = () => {
     const title =
       !emailOk && !phoneOk
@@ -2920,7 +3193,7 @@ export default function Checkout() {
                       {shippingAddresses.map((addr) => {
                         const isSelected = selectedShippingId === addr.id;
                         const isDefault = !!addr.isDefault;
-                        const isVerifiedNow = isSavedAddressPhoneVerified(addr);
+                        const isVerifiedNow = isResolvedShippingAddressPhoneVerified(addr);
                         return (
                           <div
                             key={addr.id}
@@ -3251,12 +3524,16 @@ export default function Checkout() {
                           </p>
                         ) : selectedPhoneVerified ? (
                           <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs sm:text-sm text-emerald-800">
-                           {"This delivery phone was already verified for this saved delivery detail."}
+                            {"This delivery phone was already verified for this saved delivery detail."}
                           </div>
                         ) : (
                           <>
                             <p className="mt-1 text-xs sm:text-sm text-ink-soft">
-                              Send an OTP to whatsapp number: <span className="font-medium text-ink">{selectedShippingAddress.whatsappPhone}</span> and verify it here.
+                              Send an OTP to WhatsApp number:{" "}
+                              <span className="font-medium text-ink">
+                                {selectedShippingAddress.whatsappPhone || selectedShippingAddress.phone || "No number set"}
+                              </span>{" "}
+                              and verify it here.
                             </p>
 
                             <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">

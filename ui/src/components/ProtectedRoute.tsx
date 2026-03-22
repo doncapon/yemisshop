@@ -32,13 +32,6 @@ export default function ProtectedRoute({
   const userRole = normRole(user?.role);
 
   const allowedSet = useMemo(() => {
-    console.log("[ProtectedRoute]", {
-      path: `${location.pathname}${location.search}`,
-      hydrated,
-      user,
-      roles,
-      riderAllowPrefixes,
-    });
     const arr = Array.isArray(roles) ? roles : [];
     return new Set(arr.map(normRole).filter(Boolean));
   }, [roles]);

@@ -17,7 +17,12 @@ import {
   ChevronRight,
   Users,
 } from "lucide-react";
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type { AxiosError } from "axios";
 
 import SiteLayout from "../../layouts/SiteLayout";
@@ -26,9 +31,17 @@ import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 import { AssignRiderControl } from "../../components/supplier/AssignRiderControl";
 
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+function Card({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <div className={`rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden ${className}`}>
+    <div
+      className={`rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden ${className}`}
+    >
       {children}
     </div>
   );
@@ -49,10 +62,10 @@ type AddressLike = {
 
 type OrderItem = {
   id: string;
-  title: string;
-  quantity: number;
-  unitPrice: number;
-  lineTotal: number;
+  title?: string | null;
+  quantity?: number | null;
+  unitPrice?: number | null;
+  lineTotal?: number | null;
   chosenSupplierProductOfferId?: string | null;
   chosenSupplierVariantOfferId?: string | null;
   chosenSupplierUnitPrice?: number | null;
@@ -61,7 +74,7 @@ type OrderItem = {
 
 type SupplierOrder = {
   id: string;
-  status: string;
+  status?: string | null;
   createdAt?: string | null;
   customerEmail?: string | null;
   shippingAddress?: AddressLike | null;
@@ -69,7 +82,7 @@ type SupplierOrder = {
   purchaseOrderId?: string | null;
   supplierStatus?: string | null;
 
-  items: OrderItem[];
+  items?: OrderItem[] | null;
 
   supplierAmount?: number | null;
   poSubtotal?: number | null;
@@ -91,6 +104,25 @@ type SupplierOrdersEnvelope = {
 };
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
+
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
+function safeGetStoredAdminSupplierId() {
+  if (typeof window === "undefined") return undefined;
+  const v = String(window.localStorage.getItem(ADMIN_SUPPLIER_KEY) ?? "").trim();
+  return v || undefined;
+}
+
+function safeSetStoredAdminSupplierId(value: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(ADMIN_SUPPLIER_KEY, value);
+}
 
 function formatDate(d?: string | null) {
   if (!d) return "—";
@@ -121,7 +153,11 @@ function badgeClass(status: string) {
   if (["SHIPPED", "OUT_FOR_DELIVERY", "DELIVERED"].includes(s)) {
     return "bg-emerald-50 text-emerald-700 border-emerald-200";
   }
-  if (["CONFIRMED", "PACKED", "FUNDED", "CREATED", "PENDING", "PROCESSING"].includes(s)) {
+  if (
+    ["CONFIRMED", "PACKED", "FUNDED", "CREATED", "PENDING", "PROCESSING"].includes(
+      s
+    )
+  ) {
     return "bg-amber-50 text-amber-700 border-amber-200";
   }
   if (["CANCELED", "CANCELLED", "FAILED", "REFUND_REQUESTED"].includes(s)) {
@@ -132,15 +168,21 @@ function badgeClass(status: string) {
 
 function payoutBadgeClass(status?: string | null) {
   const s = String(status || "").toUpperCase();
-  if (["RELEASED", "PAID"].includes(s)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
-  if (["HELD", "PENDING"].includes(s)) return "bg-amber-50 text-amber-700 border-amber-200";
-  if (["FAILED", "REFUNDED"].includes(s)) return "bg-rose-50 text-rose-700 border-rose-200";
+  if (["RELEASED", "PAID"].includes(s))
+    return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (["HELD", "PENDING"].includes(s))
+    return "bg-amber-50 text-amber-700 border-amber-200";
+  if (["FAILED", "REFUNDED"].includes(s))
+    return "bg-rose-50 text-rose-700 border-rose-200";
   return "bg-zinc-50 text-zinc-700 border-zinc-200";
 }
 
 function formatAddress(a?: AddressLike | null) {
   if (!a) return "—";
-  const line1 = [a.houseNumber || "", a.streetName || ""].filter(Boolean).join(" ").trim();
+  const line1 = [a.houseNumber || "", a.streetName || ""]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
   const parts = [
     line1,
     a.landmark || "",
@@ -162,6 +204,10 @@ function supplierOptionsLabel(selectedOptions: any) {
       return `${a}: ${v}`;
     })
     .join(", ");
+}
+
+function orderItems(items?: OrderItem[] | null) {
+  return Array.isArray(items) ? items : [];
 }
 
 const FLOW = ["PENDING", "CONFIRMED", "PACKED", "SHIPPED", "DELIVERED"] as const;
@@ -209,11 +255,9 @@ export default function SupplierOrders() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
-  const role = useAuthStore((s: any) => s.user?.role);
+  const rawRole = useAuthStore((s: any) => s.user?.role);
+  const role = normRole(rawRole);
 
-  useEffect(() => {
-    useAuthStore.getState().bootstrap?.().catch?.(() => null);
-  }, []);
 
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
   const isRider = role === "SUPPLIER_RIDER";
@@ -224,21 +268,17 @@ export default function SupplierOrders() {
     return v || undefined;
   }, [searchParams]);
 
-  const storedSupplierId = useMemo(() => {
-    const v = normStr(localStorage.getItem(ADMIN_SUPPLIER_KEY));
-    return v || undefined;
-  }, []);
-
-  const adminSupplierId = isAdmin ? (urlSupplierId ?? storedSupplierId) : undefined;
+  const storedSupplierId = useMemo(() => safeGetStoredAdminSupplierId(), []);
+  const adminSupplierId = isAdmin ? urlSupplierId ?? storedSupplierId : undefined;
 
   useEffect(() => {
     if (!isAdmin) return;
 
     const fromUrl = normStr(searchParams.get("supplierId"));
-    const fromStore = normStr(localStorage.getItem(ADMIN_SUPPLIER_KEY));
+    const fromStore = safeGetStoredAdminSupplierId();
 
     if (fromUrl) {
-      if (fromUrl !== fromStore) localStorage.setItem(ADMIN_SUPPLIER_KEY, fromUrl);
+      if (fromUrl !== fromStore) safeSetStoredAdminSupplierId(fromUrl);
       return;
     }
 
@@ -246,13 +286,14 @@ export default function SupplierOrders() {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
+          if (next.get("supplierId") === fromStore) return next;
           next.set("supplierId", fromStore);
           return next;
         },
         { replace: true }
       );
     }
-  }, [isAdmin, searchParams, setSearchParams]);
+  }, [isAdmin, setSearchParams, searchParams]);
 
   const withSupplierCtx = (to: string) => {
     if (!isAdmin || !adminSupplierId) return to;
@@ -338,11 +379,13 @@ export default function SupplierOrders() {
     "REFUND_REQUESTED",
   ] as const;
 
-  const [payoutMsg, setPayoutMsg] = useState<Record<string, { type: "info" | "error"; text?: React.ReactNode }>>(
-    {}
-  );
+  const [payoutMsg, setPayoutMsg] = useState<
+    Record<string, { type: "info" | "error"; text?: React.ReactNode }>
+  >({});
   const [payoutPendingByPo, setPayoutPendingByPo] = useState<Record<string, boolean>>({});
-  const payoutBankDetailsLink = withSupplierCtx("/supplier/settings?focus=payout-bank-details#payout-bank-details");
+  const payoutBankDetailsLink = withSupplierCtx(
+    "/supplier/settings?focus=payout-bank-details#payout-bank-details"
+  );
 
   const PAGE_SIZES = [10, 20, 50, 100] as const;
   const [pageSize, setPageSize] = useState<number>(20);
@@ -366,7 +409,10 @@ export default function SupplierOrders() {
 
       if (Number.isFinite(ms) && ms <= 0) {
         setCancelOtpToken((s) => ({ ...s, [oid]: "" }));
-        setCancelOtpMsg((s) => ({ ...s, [oid]: { type: "warn", text: "OTP expired. Please request a new one." } }));
+        setCancelOtpMsg((s) => ({
+          ...s,
+          [oid]: { type: "warn", text: "OTP expired. Please request a new one." },
+        }));
         continue;
       }
 
@@ -375,7 +421,10 @@ export default function SupplierOrders() {
       const id = window.setTimeout(() => {
         setCancelOtpToken((s) => ({ ...s, [oid]: "" }));
         setCancelOtpCode((s) => ({ ...s, [oid]: "" }));
-        setCancelOtpMsg((s) => ({ ...s, [oid]: { type: "warn", text: "OTP expired. Please request a new one." } }));
+        setCancelOtpMsg((s) => ({
+          ...s,
+          [oid]: { type: "warn", text: "OTP expired. Please request a new one." },
+        }));
       }, ms);
 
       timers.push(id);
@@ -384,20 +433,29 @@ export default function SupplierOrders() {
     return () => timers.forEach((id) => window.clearTimeout(id));
   }, [cancelOtpToken, cancelOtpMeta]);
 
+  const queryEnabled = hydrated && (!isAdmin || !!adminSupplierId);
+
   const ordersQ = useQuery({
-    queryKey: ["supplier", "orders", { supplierId: adminSupplierId, riderView, page, pageSize }],
-    enabled: hydrated && (!isAdmin || !!adminSupplierId),
+    queryKey: [
+      "supplier",
+      "orders",
+      { role, supplierId: adminSupplierId ?? null, riderView, page, pageSize },
+    ],
+    enabled: queryEnabled,
     placeholderData: keepPreviousData,
     queryFn: async (): Promise<SupplierOrdersEnvelope> => {
       try {
+        const params: Record<string, any> = {
+          page,
+          pageSize,
+        };
+
+        if (isAdmin && adminSupplierId) params.supplierId = adminSupplierId;
+        if (isRider) params.view = riderView;
+
         const { data } = await api.get<SupplierOrdersEnvelope>("/api/supplier/orders", {
           withCredentials: true,
-          params: {
-            supplierId: adminSupplierId,
-            ...(isRider ? { view: riderView } : {}),
-            page,
-            pageSize,
-          },
+          params,
         });
 
         return {
@@ -428,13 +486,7 @@ export default function SupplierOrders() {
     retry: 1,
   });
 
-  useEffect(() => {
-    if (!hydrated) return;
-    ordersQ.refetch().catch(() => null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, adminSupplierId, riderView, page, pageSize]);
-
-  const serverRows = ordersQ.data?.data || [];
+  const serverRows = Array.isArray(ordersQ.data?.data) ? ordersQ.data!.data : [];
   const serverTotal = Number(ordersQ.data?.total ?? 0);
   const serverPage = Number(ordersQ.data?.page ?? page);
   const serverPageSize = Number(ordersQ.data?.pageSize ?? pageSize);
@@ -447,15 +499,20 @@ export default function SupplierOrders() {
     const needle = q.trim().toLowerCase();
 
     return serverRows.filter((o) => {
+      const items = orderItems(o.items);
       const supplierStatusRaw = normStatus(o.supplierStatus || "PENDING");
       const supplierStatusBase = toFlowBaseStatus(supplierStatusRaw);
 
-      if (status !== "ANY" && supplierStatusRaw !== status && supplierStatusBase !== status) return false;
+      if (status !== "ANY" && supplierStatusRaw !== status && supplierStatusBase !== status) {
+        return false;
+      }
       if (!needle) return true;
 
-      const hitOrderId = String(o.id).toLowerCase().includes(needle);
+      const hitOrderId = String(o.id || "").toLowerCase().includes(needle);
       const hitEmail = String(o.customerEmail || "").toLowerCase().includes(needle);
-      const hitItem = (o.items || []).some((it) => String(it.title || "").toLowerCase().includes(needle));
+      const hitItem = items.some((it) =>
+        String(it.title || "").toLowerCase().includes(needle)
+      );
       const hitRefundId = String(o.refundId || "").toLowerCase().includes(needle);
 
       return hitOrderId || hitRefundId || hitEmail || hitItem;
@@ -477,7 +534,7 @@ export default function SupplierOrders() {
         {},
         {
           withCredentials: true,
-          params: isAdmin ? { supplierId: adminSupplierId } : undefined,
+          params: isAdmin && adminSupplierId ? { supplierId: adminSupplierId } : undefined,
         }
       );
       return data as any;
@@ -509,7 +566,12 @@ export default function SupplierOrders() {
   });
 
   const updateStatusM = useMutation({
-    mutationFn: async (vars: { orderId: string; status: string; otpToken?: string; reason?: string }) => {
+    mutationFn: async (vars: {
+      orderId: string;
+      status: string;
+      otpToken?: string;
+      reason?: string;
+    }) => {
       const otpToken = String(vars.otpToken ?? "").trim();
       const { data } = await api.patch(
         `/api/supplier/orders/${vars.orderId}/status`,
@@ -517,13 +579,14 @@ export default function SupplierOrders() {
         {
           withCredentials: true,
           headers: otpToken ? { "x-otp-token": otpToken } : undefined,
+          params: isAdmin && adminSupplierId ? { supplierId: adminSupplierId } : undefined,
         }
       );
       return (data as any)?.data ?? data;
     },
     onSuccess: () => {
       setEditingId(null);
-      ordersQ.refetch();
+      ordersQ.refetch().catch(() => null);
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "summary"] });
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "insights"] });
     },
@@ -539,17 +602,20 @@ export default function SupplierOrders() {
         {
           withCredentials: true,
           headers: otpToken ? { "x-otp-token": otpToken } : undefined,
-          params: isAdmin ? { supplierId: adminSupplierId } : undefined,
+          params: isAdmin && adminSupplierId ? { supplierId: adminSupplierId } : undefined,
         }
       );
 
       return data as any;
     },
     onSuccess: (_data, vars) => {
-      setDeliveryOtpMsg((s) => ({ ...s, [vars.poId]: { type: "info", text: "Delivery confirmed." } }));
+      setDeliveryOtpMsg((s) => ({
+        ...s,
+        [vars.poId]: { type: "info", text: "Delivery confirmed." },
+      }));
       setDeliveryOtpCode((s) => ({ ...s, [vars.poId]: "" }));
       setDeliveryOtpToken((s) => ({ ...s, [vars.poId]: "" }));
-      ordersQ.refetch();
+      ordersQ.refetch().catch(() => null);
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "summary"] });
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "insights"] });
     },
@@ -595,7 +661,10 @@ export default function SupplierOrders() {
       const { data } = await api.post(
         `/api/supplier/payouts/purchase-orders/${vars.poId}/release`,
         {},
-        { withCredentials: true }
+        {
+          withCredentials: true,
+          params: isAdmin && adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+        }
       );
       return data as any;
     },
@@ -613,7 +682,7 @@ export default function SupplierOrders() {
         }));
         setPayoutPendingByPo((s) => ({ ...s, [poId]: false }));
       }
-      ordersQ.refetch();
+      ordersQ.refetch().catch(() => null);
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "summary"] });
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "insights"] });
     },
@@ -668,7 +737,14 @@ export default function SupplierOrders() {
 
   const requestCancelOtpM = useMutation({
     mutationFn: async (vars: { orderId: string }) => {
-      const { data } = await api.post(`/api/orders/${vars.orderId}/cancel-otp/request`, {}, { withCredentials: true });
+      const { data } = await api.post(
+        `/api/orders/${vars.orderId}/cancel-otp/request`,
+        {},
+        {
+          withCredentials: true,
+          params: isAdmin && adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+        }
+      );
       return data as any;
     },
     onSuccess: (data, vars) => {
@@ -693,7 +769,12 @@ export default function SupplierOrders() {
       setCancelOtpErr((s) => ({ ...s, [vars.orderId]: msg }));
 
       const retryAt = (e as any)?.response?.data?.retryAt;
-      if (retryAt) setCancelOtpMeta((s) => ({ ...s, [vars.orderId]: { ...(s[vars.orderId] || {}), retryAt } }));
+      if (retryAt) {
+        setCancelOtpMeta((s) => ({
+          ...s,
+          [vars.orderId]: { ...(s[vars.orderId] || {}), retryAt },
+        }));
+      }
     },
   });
 
@@ -703,7 +784,10 @@ export default function SupplierOrders() {
       const { data } = await api.post(
         `/api/orders/${vars.orderId}/cancel-otp/verify`,
         { code: vars.code, requestId },
-        { withCredentials: true }
+        {
+          withCredentials: true,
+          params: isAdmin && adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+        }
       );
       return data as any;
     },
@@ -711,11 +795,17 @@ export default function SupplierOrders() {
       if (!data?.ok) {
         const code = String(data?.code || "");
         const msg = String(data?.message || "OTP failed");
-        const expiresAt = data?.expiresAt ?? data?.data?.expiresAt ?? cancelOtpMeta[vars.orderId]?.expiresAt;
+        const expiresAt =
+          data?.expiresAt ??
+          data?.data?.expiresAt ??
+          cancelOtpMeta[vars.orderId]?.expiresAt;
 
         setCancelOtpMeta((s) => ({
           ...s,
-          [vars.orderId]: { ...(s[vars.orderId] || {}), expiresAt: expiresAt ?? s[vars.orderId]?.expiresAt },
+          [vars.orderId]: {
+            ...(s[vars.orderId] || {}),
+            expiresAt: expiresAt ?? s[vars.orderId]?.expiresAt,
+          },
         }));
 
         setCancelOtpMsg((s) => ({
@@ -730,7 +820,10 @@ export default function SupplierOrders() {
 
       const token = String(data?.otpToken ?? "");
       setCancelOtpToken((s) => ({ ...s, [vars.orderId]: token }));
-      setCancelOtpMsg((s) => ({ ...s, [vars.orderId]: { type: "info", text: "OTP verified. You can now Save." } }));
+      setCancelOtpMsg((s) => ({
+        ...s,
+        [vars.orderId]: { type: "info", text: "OTP verified. You can now Save." },
+      }));
     },
     onError: (err: any, vars) => {
       const data = (err as any)?.response?.data;
@@ -758,7 +851,6 @@ export default function SupplierOrders() {
   }
 
   function shouldShowReleasePayout(o: SupplierOrder) {
-    if (isAdmin) return false;
     if (isRider) return false;
 
     const poId = String(o.purchaseOrderId || "").trim();
@@ -778,13 +870,10 @@ export default function SupplierOrders() {
   }
 
   function toggleExpand(orderId: string) {
-    setExpanded((prev) => {
-      const next: Record<string, boolean> = {};
-      const willOpen = !prev[orderId];
-      if (willOpen) next[orderId] = true;
-      else next[orderId] = false;
-      return { ...prev, ...next };
-    });
+    setExpanded((prev) => ({
+      ...prev,
+      [orderId]: !prev[orderId],
+    }));
   }
 
   return (
@@ -812,7 +901,8 @@ export default function SupplierOrders() {
             </motion.h1>
 
             <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
-              Orders allocated to you (based on <code className="px-1 rounded bg-white/10">chosenSupplierId</code>).
+              Orders allocated to you (based on{" "}
+              <code className="px-1 rounded bg-white/10">chosenSupplierId</code>).
             </p>
 
             <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
@@ -836,6 +926,10 @@ export default function SupplierOrders() {
 
             {!hydrated ? (
               <div className="mt-3 text-[12px] text-white/80">Loading session…</div>
+            ) : !queryEnabled ? (
+              <div className="mt-3 text-[12px] text-white/80">
+                Waiting for supplier context…
+              </div>
             ) : ordersQ.isFetching ? (
               <div className="mt-3 text-[12px] text-white/80">Loading orders…</div>
             ) : ordersQ.isError ? (
@@ -859,7 +953,10 @@ export default function SupplierOrders() {
           <Card className="lg:col-span-2">
             <div className="p-3 sm:p-5 flex flex-col gap-3">
               <div className="relative w-full">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
+                <Search
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+                  size={16}
+                />
                 <input
                   placeholder="Search order ID, email, product…"
                   value={q}
@@ -903,7 +1000,9 @@ export default function SupplierOrders() {
               </div>
               <div className="min-w-0">
                 <div className="text-[11px] sm:text-xs text-zinc-500">Fulfillment</div>
-                <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Confirm → Pack → Ship → Deliver</div>
+                <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                  Confirm → Pack → Ship → Deliver
+                </div>
                 <div className="text-[11px] text-zinc-500">No skipping steps.</div>
               </div>
             </div>
@@ -915,15 +1014,19 @@ export default function SupplierOrders() {
             <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
-                  <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Order queue</div>
+                  <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                    Order queue
+                  </div>
                   <div className="text-[11px] sm:text-xs text-zinc-500">
-                    {ordersQ.isLoading
-                      ? "Loading…"
-                      : ordersQ.isError
-                        ? "Temporarily unavailable"
-                        : q.trim() || status !== "ANY"
-                          ? `${visibleCount} shown on this page • ${serverTotal} total`
-                          : `${serverTotal} order(s)`}
+                    {!queryEnabled
+                      ? "Select supplier to load orders"
+                      : ordersQ.isLoading
+                        ? "Loading…"
+                        : ordersQ.isError
+                          ? "Temporarily unavailable"
+                          : q.trim() || status !== "ANY"
+                            ? `${visibleCount} shown on this page • ${serverTotal} total`
+                            : `${serverTotal} order(s)`}
                   </div>
                 </div>
 
@@ -963,7 +1066,8 @@ export default function SupplierOrders() {
                     </button>
 
                     <div className="text-[12px] text-zinc-600">
-                      <span className="font-semibold text-zinc-900">{serverPage}</span>/{serverPageCount}
+                      <span className="font-semibold text-zinc-900">{serverPage}</span>/
+                      {serverPageCount}
                     </div>
 
                     <button
@@ -980,30 +1084,44 @@ export default function SupplierOrders() {
             </div>
 
             <div className="p-3 sm:p-5 space-y-3">
-              {ordersQ.isError && (
+              {!queryEnabled && isAdmin && !adminSupplierId && (
+                <div className="rounded-2xl border bg-white p-6 text-sm text-zinc-600">
+                  Admin view requires a selected supplier before orders can load.
+                </div>
+              )}
+
+              {ordersQ.isError && queryEnabled && (
                 <div className="rounded-2xl border bg-white p-6 text-sm text-zinc-600">
                   We couldn’t load your orders right now. Please refresh and try again.
                 </div>
               )}
 
-              {!ordersQ.isLoading && !ordersQ.isError && serverTotal === 0 && (
-                <div className="rounded-2xl border bg-white p-6 text-sm text-zinc-600">You have no orders yet.</div>
-              )}
-
-              {!ordersQ.isLoading && !ordersQ.isError && serverTotal > 0 && visibleCount === 0 && (
+              {!ordersQ.isLoading && !ordersQ.isError && queryEnabled && serverTotal === 0 && (
                 <div className="rounded-2xl border bg-white p-6 text-sm text-zinc-600">
-                  No orders on this page match your current search/filter.
+                  You have no orders yet.
                 </div>
               )}
 
+              {!ordersQ.isLoading &&
+                !ordersQ.isError &&
+                queryEnabled &&
+                serverTotal > 0 &&
+                visibleCount === 0 && (
+                  <div className="rounded-2xl border bg-white p-6 text-sm text-zinc-600">
+                    No orders on this page match your current search/filter.
+                  </div>
+                )}
+
               {visibleRows.map((o) => {
+                const items = orderItems(o.items);
+                const itemCount = items.length;
                 const isOpen = !!expanded[o.id];
                 const cancelOtpVerified = !!String(cancelOtpToken[o.id] ?? "").trim();
 
                 const supplierStatusRaw = normStatus(o.supplierStatus || "PENDING");
                 const supplierFlowBase = toFlowBaseStatus(supplierStatusRaw);
 
-                const supplierTotal = (o.items || []).reduce((sum, it) => {
+                const supplierTotal = items.reduce((sum, it) => {
                   const unit = Number(it.chosenSupplierUnitPrice ?? 0);
                   const qty = Number(it.quantity ?? 0);
                   return sum + unit * qty;
@@ -1018,7 +1136,8 @@ export default function SupplierOrders() {
                 const canSave =
                   allowed.has(nextStatus) &&
                   (!cancelNeedsOtp ||
-                    (String(cancelReason[o.id] ?? "").trim() && String(cancelOtpToken[o.id] ?? "").trim()));
+                    (String(cancelReason[o.id] ?? "").trim() &&
+                      String(cancelOtpToken[o.id] ?? "").trim()));
 
                 const cmeta = cancelOtpMeta[o.id] || {};
                 const retryUntilMs = cmeta.retryAt ? new Date(cmeta.retryAt).getTime() : null;
@@ -1047,10 +1166,12 @@ export default function SupplierOrders() {
                     <div className="flex flex-col gap-2">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm truncate">{o.id}</div>
+                          <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm truncate">
+                            {o.id}
+                          </div>
                           <div className="text-[11px] sm:text-xs text-zinc-600">
                             {o.customerEmail ? `${o.customerEmail} • ` : ""}
-                            {o.items.length} item{o.items.length === 1 ? "" : "s"} • {formatDate(o.createdAt)}
+                            {itemCount} item{itemCount === 1 ? "" : "s"} • {formatDate(o.createdAt)}
                           </div>
                         </div>
 
@@ -1072,19 +1193,32 @@ export default function SupplierOrders() {
                       </div>
 
                       <div className="text-[11px] text-zinc-500">
-                        Ship to: <span className="text-zinc-700">{formatAddress(o.shippingAddress)}</span>
+                        Ship to:{" "}
+                        <span className="text-zinc-700">{formatAddress(o.shippingAddress)}</span>
                       </div>
 
                       <div className="flex flex-wrap gap-2">
-                        <span className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${badgeClass(o.status)}`}>
+                        <span
+                          className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${badgeClass(
+                            normStatus(o.status)
+                          )}`}
+                        >
                           ORDER: {normStatus(o.status)}
                         </span>
-                        <span className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${badgeClass(supplierStatusRaw)}`}>
+                        <span
+                          className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${badgeClass(
+                            supplierStatusRaw
+                          )}`}
+                        >
                           YOU: {supplierStatusRaw}
                         </span>
 
                         {poId && (isSupplierUser || isAdmin) && (
-                          <span className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${payoutBadgeClass(o.payoutStatus)}`}>
+                          <span
+                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${payoutBadgeClass(
+                              o.payoutStatus
+                            )}`}
+                          >
                             PAYOUT: {payoutStatus || "PENDING"}
                           </span>
                         )}
@@ -1104,7 +1238,8 @@ export default function SupplierOrders() {
 
                       {(isSupplierUser || isAdmin) && (
                         <div className="text-[12px] font-semibold text-zinc-900">
-                          Supplier total: <span className="text-zinc-900">{moneyNgn(supplierTotal)}</span>
+                          Supplier total:{" "}
+                          <span className="text-zinc-900">{moneyNgn(supplierTotal)}</span>
                         </div>
                       )}
 
@@ -1119,7 +1254,11 @@ export default function SupplierOrders() {
                               setExpanded((s) => ({ ...s, [o.id]: true }));
                             }}
                             className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
-                            title={isTerminal ? "This order is already completed/canceled." : "Update fulfillment status"}
+                            title={
+                              isTerminal
+                                ? "This order is already completed/canceled."
+                                : "Update fulfillment status"
+                            }
                           >
                             <Truck size={14} /> Update
                           </button>
@@ -1150,9 +1289,14 @@ export default function SupplierOrders() {
                               releasePayoutM.mutate({ poId: id, orderId: o.id });
                             }}
                             className="inline-flex col-span-2 sm:col-span-1 items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
-                            title={!canAttemptPayout ? "Available when DELIVERED + OTP verified" : "Release payout"}
+                            title={
+                              !canAttemptPayout
+                                ? "Available when DELIVERED + OTP verified"
+                                : "Release payout"
+                            }
                           >
-                            <Banknote size={14} /> {isPayoutPending ? "Releasing…" : "Release payout"}
+                            <Banknote size={14} />{" "}
+                            {isPayoutPending ? "Releasing…" : "Release payout"}
                           </button>
                         )}
 
@@ -1168,7 +1312,9 @@ export default function SupplierOrders() {
                       {poId && payoutMsg[String(o.purchaseOrderId)]?.text ? (
                         <div
                           className={`text-[12px] ${
-                            payoutMsg[String(o.purchaseOrderId)]?.type === "error" ? "text-rose-700" : "text-emerald-700"
+                            payoutMsg[String(o.purchaseOrderId)]?.type === "error"
+                              ? "text-rose-700"
+                              : "text-emerald-700"
                           }`}
                         >
                           {payoutMsg[String(o.purchaseOrderId)]?.text}
@@ -1181,15 +1327,21 @@ export default function SupplierOrders() {
                         {poId && (isSupplierUser || isAdmin) ? (
                           <div className="mb-3 text-[11px] text-zinc-500 flex flex-wrap gap-x-3 gap-y-1 items-center">
                             <span>
-                              PO: <span className="text-zinc-700 font-semibold">{o.purchaseOrderId}</span>
+                              PO:{" "}
+                              <span className="text-zinc-700 font-semibold">
+                                {o.purchaseOrderId}
+                              </span>
                             </span>
                             <span>
                               Supplier amount:{" "}
-                              <span className="text-zinc-700 font-semibold">{moneyNgn(o.supplierAmount ?? o.poSubtotal ?? null)}</span>
+                              <span className="text-zinc-700 font-semibold">
+                                {moneyNgn(o.supplierAmount ?? o.poSubtotal ?? null)}
+                              </span>
                             </span>
                             {o.paidOutAt ? (
                               <span>
-                                Paid out: <span className="text-zinc-700">{formatDate(o.paidOutAt)}</span>
+                                Paid out:{" "}
+                                <span className="text-zinc-700">{formatDate(o.paidOutAt)}</span>
                               </span>
                             ) : null}
                           </div>
@@ -1212,7 +1364,9 @@ export default function SupplierOrders() {
 
                         {editingId === o.id && (
                           <div className="rounded-xl border bg-zinc-50 p-3 flex flex-col gap-2">
-                            <div className="text-[12px] font-semibold text-zinc-700">Set supplier status</div>
+                            <div className="text-[12px] font-semibold text-zinc-700">
+                              Set supplier status
+                            </div>
 
                             <select
                               value={nextStatus}
@@ -1236,17 +1390,26 @@ export default function SupplierOrders() {
                                 disabled={!canSave || updateStatusM.isPending}
                                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
                                 onClick={() => {
-                                  if (normStatus(nextStatus) === "CANCELED" && cancelNeedsOtp) {
+                                  if (
+                                    normStatus(nextStatus) === "CANCELED" &&
+                                    cancelNeedsOtp
+                                  ) {
                                     const reason = String(cancelReason[o.id] ?? "").trim();
                                     const otpToken = String(cancelOtpToken[o.id] ?? "").trim();
                                     if (!reason || !otpToken) return;
-                                    updateStatusM.mutate({ orderId: o.id, status: "CANCELED", otpToken, reason });
+                                    updateStatusM.mutate({
+                                      orderId: o.id,
+                                      status: "CANCELED",
+                                      otpToken,
+                                      reason,
+                                    });
                                     return;
                                   }
                                   updateStatusM.mutate({ orderId: o.id, status: nextStatus });
                                 }}
                               >
-                                <Save size={14} /> {updateStatusM.isPending ? "Saving…" : "Save"}
+                                <Save size={14} />{" "}
+                                {updateStatusM.isPending ? "Saving…" : "Save"}
                               </button>
 
                               <button
@@ -1259,7 +1422,9 @@ export default function SupplierOrders() {
                             </div>
 
                             {updateStatusM.isError && (
-                              <div className="text-[12px] text-rose-700">Failed to update. Please try again.</div>
+                              <div className="text-[12px] text-rose-700">
+                                Failed to update. Please try again.
+                              </div>
                             )}
                           </div>
                         )}
@@ -1268,11 +1433,15 @@ export default function SupplierOrders() {
                           normStatus(nextStatus) === "CANCELED" &&
                           ["CONFIRMED", "PACKED"].includes(supplierFlowBase) && (
                             <div className="mt-2 rounded-xl border bg-white p-3">
-                              <div className="text-[12px] font-semibold text-zinc-800">Cancel requires customer OTP + reason</div>
+                              <div className="text-[12px] font-semibold text-zinc-800">
+                                Cancel requires customer OTP + reason
+                              </div>
 
                               <textarea
                                 value={cancelReason[o.id] ?? ""}
-                                onChange={(e) => setCancelReason((s) => ({ ...s, [o.id]: e.target.value }))}
+                                onChange={(e) =>
+                                  setCancelReason((s) => ({ ...s, [o.id]: e.target.value }))
+                                }
                                 placeholder="Reason for cancellation…"
                                 className="mt-2 w-full rounded-xl border p-2 text-sm"
                                 rows={2}
@@ -1286,14 +1455,20 @@ export default function SupplierOrders() {
                                     onClick={() => requestCancelOtpM.mutate({ orderId: o.id })}
                                     className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
                                   >
-                                    {retryLocked ? "Please wait…" : requestCancelOtpM.isPending ? "Requesting…" : "Request OTP"}
+                                    {retryLocked
+                                      ? "Please wait…"
+                                      : requestCancelOtpM.isPending
+                                        ? "Requesting…"
+                                        : "Request OTP"}
                                   </button>
 
                                   <div className="flex gap-2">
                                     <input
                                       value={cancelOtpCode[o.id] ?? ""}
                                       onChange={(e) => {
-                                        const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
+                                        const v = String(e.target.value || "")
+                                          .replace(/\D/g, "")
+                                          .slice(0, 6);
                                         setCancelOtpCode((s) => ({ ...s, [o.id]: v }));
                                       }}
                                       placeholder="123456"
@@ -1303,8 +1478,16 @@ export default function SupplierOrders() {
 
                                     <button
                                       type="button"
-                                      disabled={verifyCancelOtpM.isPending || !/^\d{6}$/.test(cancelOtpCode[o.id] ?? "")}
-                                      onClick={() => verifyCancelOtpM.mutate({ orderId: o.id, code: cancelOtpCode[o.id] ?? "" })}
+                                      disabled={
+                                        verifyCancelOtpM.isPending ||
+                                        !/^\d{6}$/.test(cancelOtpCode[o.id] ?? "")
+                                      }
+                                      onClick={() =>
+                                        verifyCancelOtpM.mutate({
+                                          orderId: o.id,
+                                          code: cancelOtpCode[o.id] ?? "",
+                                        })
+                                      }
                                       className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
                                     >
                                       Verify
@@ -1312,18 +1495,27 @@ export default function SupplierOrders() {
                                   </div>
 
                                   {cancelOtpErr[o.id] ? (
-                                    <div className="text-[12px] text-rose-700 sm:col-span-2">{cancelOtpErr[o.id]}</div>
+                                    <div className="text-[12px] text-rose-700 sm:col-span-2">
+                                      {cancelOtpErr[o.id]}
+                                    </div>
                                   ) : cmeta.channelHint ? (
                                     <div className="text-[11px] text-zinc-600 sm:col-span-2">
-                                      Sent via: <span className="font-semibold text-zinc-800">{cmeta.channelHint}</span>
+                                      Sent via:{" "}
+                                      <span className="font-semibold text-zinc-800">
+                                        {cmeta.channelHint}
+                                      </span>
                                     </div>
                                   ) : null}
                                 </div>
                               ) : (
-                                <div className="mt-2 text-[12px] text-emerald-700">OTP verified. You can now Save.</div>
+                                <div className="mt-2 text-[12px] text-emerald-700">
+                                  OTP verified. You can now Save.
+                                </div>
                               )}
 
-                              <div className="mt-2 text-[11px] text-zinc-500">After OTP is verified, Save will work.</div>
+                              <div className="mt-2 text-[11px] text-zinc-500">
+                                After OTP is verified, Save will work.
+                              </div>
                             </div>
                           )}
 
@@ -1355,14 +1547,18 @@ export default function SupplierOrders() {
                           !otpVerified &&
                           (isSupplierUser || isRider) && (
                             <div className="mt-3 rounded-xl border bg-white p-3">
-                              <div className="text-[12px] font-semibold text-zinc-800">Confirm delivery (customer OTP)</div>
+                              <div className="text-[12px] font-semibold text-zinc-800">
+                                Confirm delivery (customer OTP)
+                              </div>
 
                               <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
                                 <div className="flex gap-2">
                                   <input
                                     value={deliveryOtpCode[poId] ?? ""}
                                     onChange={(e) => {
-                                      const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
+                                      const v = String(e.target.value || "")
+                                        .replace(/\D/g, "")
+                                        .slice(0, 6);
                                       setDeliveryOtpCode((s) => ({ ...s, [poId]: v }));
                                     }}
                                     placeholder="123456"
@@ -1372,8 +1568,16 @@ export default function SupplierOrders() {
 
                                   <button
                                     type="button"
-                                    disabled={verifyDeliveryOtpM.isPending || !/^\d{6}$/.test(deliveryOtpCode[poId] ?? "")}
-                                    onClick={() => verifyDeliveryOtpM.mutate({ poId, code: deliveryOtpCode[poId] ?? "" })}
+                                    disabled={
+                                      verifyDeliveryOtpM.isPending ||
+                                      !/^\d{6}$/.test(deliveryOtpCode[poId] ?? "")
+                                    }
+                                    onClick={() =>
+                                      verifyDeliveryOtpM.mutate({
+                                        poId,
+                                        code: deliveryOtpCode[poId] ?? "",
+                                      })
+                                    }
                                     className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
                                   >
                                     {verifyDeliveryOtpM.isPending ? "Verifying…" : "Verify"}
@@ -1405,30 +1609,39 @@ export default function SupplierOrders() {
                               ) : null}
 
                               <div className="mt-2 text-[11px] text-zinc-500">
-                                This confirms delivery and unlocks payout release when status is DELIVERED.
+                                This confirms delivery and unlocks payout release when status is
+                                DELIVERED.
                               </div>
                             </div>
                           )}
 
                         <div className="mt-3 space-y-2">
-                          <div className="text-[12px] font-semibold text-zinc-700">Items allocated to you</div>
+                          <div className="text-[12px] font-semibold text-zinc-700">
+                            Items allocated to you
+                          </div>
 
-                          {(o.items || []).map((it) => {
+                          {items.map((it) => {
+                            const qty = Number(it.quantity ?? 0);
                             const optLabel = supplierOptionsLabel(it.selectedOptions);
                             const supplierCost =
-                              it.chosenSupplierUnitPrice != null ? it.chosenSupplierUnitPrice * it.quantity : null;
+                              it.chosenSupplierUnitPrice != null
+                                ? Number(it.chosenSupplierUnitPrice) * qty
+                                : null;
 
                             return (
                               <div key={it.id} className="rounded-xl border bg-zinc-50 p-3">
-                                <div className="text-[13px] font-semibold text-zinc-900">{it.title}</div>
+                                <div className="text-[13px] font-semibold text-zinc-900">
+                                  {it.title || "Untitled item"}
+                                </div>
                                 <div className="text-[12px] text-zinc-600 mt-1">
-                                  Qty: <b>{it.quantity}</b>
+                                  Qty: <b>{qty}</b>
                                   {optLabel ? <span> • {optLabel}</span> : null}
                                 </div>
 
                                 {!isRider && (
                                   <div className="text-[11px] text-zinc-500 mt-2">
-                                    Retail: <b>{moneyNgn(it.unitPrice)}</b> • Line: <b>{moneyNgn(it.lineTotal)}</b>
+                                    Retail: <b>{moneyNgn(Number(it.unitPrice ?? 0))}</b> • Line:{" "}
+                                    <b>{moneyNgn(Number(it.lineTotal ?? 0))}</b>
                                     {supplierCost != null ? (
                                       <>
                                         {" "}
@@ -1447,32 +1660,35 @@ export default function SupplierOrders() {
                 );
               })}
 
-              {!ordersQ.isLoading && !ordersQ.isError && serverTotal > 0 && serverPageCount > 1 && (
-                <div className="pt-2 flex items-center justify-end gap-2 flex-wrap">
-                  <button
-                    type="button"
-                    disabled={serverPage <= 1}
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
-                  >
-                    <ChevronLeft size={14} /> Prev
-                  </button>
+              {!ordersQ.isLoading &&
+                !ordersQ.isError &&
+                serverTotal > 0 &&
+                serverPageCount > 1 && (
+                  <div className="pt-2 flex items-center justify-end gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={serverPage <= 1}
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                    >
+                      <ChevronLeft size={14} /> Prev
+                    </button>
 
-                  <div className="text-[12px] text-zinc-600">
-                    Page <span className="font-semibold text-zinc-900">{serverPage}</span> /{" "}
-                    <span className="font-semibold text-zinc-900">{serverPageCount}</span>
+                    <div className="text-[12px] text-zinc-600">
+                      Page <span className="font-semibold text-zinc-900">{serverPage}</span> /{" "}
+                      <span className="font-semibold text-zinc-900">{serverPageCount}</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={serverPage >= serverPageCount}
+                      onClick={() => setPage((p) => Math.min(serverPageCount, p + 1))}
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                    >
+                      Next <ChevronRight size={14} />
+                    </button>
                   </div>
-
-                  <button
-                    type="button"
-                    disabled={serverPage >= serverPageCount}
-                    onClick={() => setPage((p) => Math.min(serverPageCount, p + 1))}
-                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
-                  >
-                    Next <ChevronRight size={14} />
-                  </button>
-                </div>
-              )}
+                )}
             </div>
           </Card>
         </div>

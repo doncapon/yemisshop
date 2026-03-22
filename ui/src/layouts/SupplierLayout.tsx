@@ -25,8 +25,12 @@ type SupplierDocumentLite = {
 
 type SupplierMeLite = {
   legalName?: string | null;
+  name?: string | null;
+  businessName?: string | null;
   registrationType?: string | null;
   registrationCountryCode?: string | null;
+  status?: string | null;
+  kycStatus?: string | null;
   registeredAddress?: {
     houseNumber?: string | null;
     streetName?: string | null;
@@ -82,8 +86,24 @@ function docSatisfied(docs: SupplierDocumentLite[], kind: string) {
   });
 }
 
+function isSupplierEffectivelyApproved(supplier?: SupplierMeLite | null) {
+  const status = String(supplier?.status ?? "").trim().toUpperCase();
+  const kycStatus = String(supplier?.kycStatus ?? "").trim().toUpperCase();
+
+  const approvedStates = new Set([
+    "APPROVED",
+    "ACTIVE",
+    "VERIFIED",
+    "COMPLETED",
+    "ENABLED",
+  ]);
+
+  return approvedStates.has(status) || approvedStates.has(kycStatus);
+}
+
 export default function SupplierLayout({ children }: { children: React.ReactNode }) {
   const hydrated = useAuthStore((s: any) => s.hydrated);
+  const userId = useAuthStore((s: any) => s.user?.id) as string | undefined;
   const roleRaw = useAuthStore((s: any) => s.user?.role);
 
   const role = normRole(roleRaw);
@@ -120,6 +140,7 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
+          if (next.get("supplierId") === fromStore) return next;
           next.set("supplierId", fromStore);
           return next;
         },
@@ -135,8 +156,8 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
   };
 
   const onboardingQ = useQuery({
-    queryKey: ["supplier", "layout", "onboarding-state"],
-    enabled: hydrated && isSupplier && !isAdmin && !isRider,
+    queryKey: ["supplier", "layout", "onboarding-state", userId ?? null],
+    enabled: hydrated && !!userId && isSupplier && !isAdmin && !isRider,
     queryFn: async () => {
       const [authRes, supplierRes, docsRes] = await Promise.all([
         api.get("/api/auth/me", { withCredentials: true }),
@@ -158,16 +179,28 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
       const rawDocs = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
       const docs = Array.isArray(rawDocs) ? (rawDocs as SupplierDocumentLite[]) : [];
 
-      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
+      const supplierApproved = isSupplierEffectivelyApproved(supplierMe);
 
-      const businessDone = Boolean(
-        String(supplierMe?.legalName ?? "").trim() &&
-          String(supplierMe?.registrationType ?? "").trim() &&
-          String(supplierMe?.registrationCountryCode ?? "").trim()
-      );
+      const contactDone =
+        supplierApproved || (!!authMe?.emailVerified && !!authMe?.phoneVerified);
+
+      const businessDone =
+        supplierApproved ||
+        Boolean(
+          String(
+            supplierMe?.legalName ??
+              supplierMe?.businessName ??
+              supplierMe?.name ??
+              ""
+          ).trim() &&
+            String(supplierMe?.registrationType ?? "").trim() &&
+            String(supplierMe?.registrationCountryCode ?? "").trim()
+        );
 
       const addressDone =
-        hasAddress(supplierMe?.registeredAddress) || hasAddress(supplierMe?.pickupAddress);
+        supplierApproved ||
+        hasAddress(supplierMe?.registeredAddress) ||
+        hasAddress(supplierMe?.pickupAddress);
 
       const requiredKinds = [
         ...(isRegisteredBusiness(supplierMe?.registrationType)
@@ -177,18 +210,20 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
         "PROOF_OF_ADDRESS",
       ];
 
-      const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
-      const onboardingDone = contactDone && businessDone && addressDone && docsDone;
+      const docsDone =
+        supplierApproved || requiredKinds.every((kind) => docSatisfied(docs, kind));
+
+      const onboardingDone = supplierApproved || (contactDone && businessDone && addressDone && docsDone);
 
       const nextPath = !contactDone
         ? "/supplier/verify-contact"
         : !businessDone
-        ? "/supplier/onboarding"
-        : !addressDone
-        ? "/supplier/onboarding/address"
-        : !docsDone
-        ? "/supplier/onboarding/documents"
-        : "/supplier";
+          ? "/supplier/onboarding"
+          : !addressDone
+            ? "/supplier/onboarding/address"
+            : !docsDone
+              ? "/supplier/onboarding/documents"
+              : "/supplier";
 
       return {
         contactDone,
@@ -205,7 +240,12 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
   });
 
   const onboarding = onboardingQ.data;
-  const showOnboardingNav = isSupplier && !isAdmin && !isRider && !!onboarding && !onboarding.onboardingDone;
+  const showOnboardingNav =
+    isSupplier &&
+    !isAdmin &&
+    !isRider &&
+    !!onboarding &&
+    !onboarding.onboardingDone;
 
   const linkBase =
     "inline-flex items-center gap-1.5 rounded-full border transition whitespace-nowrap " +

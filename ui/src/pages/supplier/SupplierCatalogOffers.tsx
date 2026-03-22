@@ -168,7 +168,9 @@ function normalizeVariant(v: any): VariantWire {
           unitPrice: toNum(v.supplierVariantOffer.unitPrice, 0),
           availableQty: toNum(v.supplierVariantOffer.availableQty, 0),
           leadDays:
-            v.supplierVariantOffer.leadDays == null ? null : toNum(v.supplierVariantOffer.leadDays, 0),
+            v.supplierVariantOffer.leadDays == null
+              ? null
+              : toNum(v.supplierVariantOffer.leadDays, 0),
           isActive: v.supplierVariantOffer.isActive !== false,
           inStock: v.supplierVariantOffer.inStock !== false,
           currency: v.supplierVariantOffer.currency ?? "NGN",
@@ -397,10 +399,6 @@ export default function SupplierCatalogOffers() {
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const userId = useAuthStore((s: any) => s.user?.id) as string | undefined;
 
-  React.useEffect(() => {
-    useAuthStore.getState().bootstrap().catch(() => null);
-  }, []);
-
   const [q, setQ] = React.useState("");
   const qDebounced = useDebounced(q, 300);
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
@@ -411,9 +409,11 @@ export default function SupplierCatalogOffers() {
     setPage(1);
   }, [qDebounced, pageSize]);
 
+  const queryEnabled = hydrated && !!userId;
+
   const catalogQ = useQuery({
-    queryKey: ["supplier-catalog-template-products", qDebounced, page, pageSize],
-    enabled: hydrated,
+    queryKey: ["supplier-catalog-template-products", userId ?? null, qDebounced, page, pageSize],
+    enabled: queryEnabled,
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     refetchOnMount: "always",
@@ -427,27 +427,34 @@ export default function SupplierCatalogOffers() {
 
       const payload = (data as any)?.data ?? data;
       const items: any[] = Array.isArray(payload?.items) ? payload.items : [];
+      const resolvedPage = toNum(payload?.page, page);
+      const resolvedPageSize = toNum(payload?.pageSize, pageSize);
+      const resolvedTotal = toNum(payload?.total, 0);
+      const resolvedTotalPages = Math.max(
+        1,
+        toNum(payload?.totalPages, Math.ceil(resolvedTotal / Math.max(1, resolvedPageSize)) || 1)
+      );
 
       return {
         supplierId: String(payload?.supplierId ?? ""),
         items: items.map(normalizeProduct),
-        total: toNum(payload?.total, 0),
-        page: toNum(payload?.page, page),
-        pageSize: toNum(payload?.pageSize, pageSize),
-        totalPages: Math.max(1, toNum(payload?.totalPages, 1)),
-        hasNextPage: Boolean(payload?.hasNextPage),
-        hasPrevPage: Boolean(payload?.hasPrevPage),
+        total: resolvedTotal,
+        page: resolvedPage,
+        pageSize: resolvedPageSize,
+        totalPages: resolvedTotalPages,
+        hasNextPage:
+          typeof payload?.hasNextPage === "boolean"
+            ? payload.hasNextPage
+            : resolvedPage < resolvedTotalPages,
+        hasPrevPage:
+          typeof payload?.hasPrevPage === "boolean"
+            ? payload.hasPrevPage
+            : resolvedPage > 1,
         skip: toNum(payload?.skip, 0),
-        take: toNum(payload?.take, pageSize),
+        take: toNum(payload?.take, resolvedPageSize),
       };
     },
   });
-
-  React.useEffect(() => {
-    if (!hydrated) return;
-    catalogQ.refetch().catch(() => null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, userId]);
 
   const items = catalogQ.data?.items ?? [];
   const total = catalogQ.data?.total ?? 0;
@@ -507,11 +514,13 @@ export default function SupplierCatalogOffers() {
 
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="text-[11px] text-zinc-500">
-                  {catalogQ.isLoading
-                    ? "Loading catalogue…"
-                    : catalogQ.isError
-                    ? "Catalogue unavailable"
-                    : `${start}–${end} of ${total} product${total === 1 ? "" : "s"}`}
+                  {!queryEnabled
+                    ? "Loading session…"
+                    : catalogQ.isLoading
+                      ? "Loading catalogue…"
+                      : catalogQ.isError
+                        ? "Catalogue unavailable"
+                        : `${start}–${end} of ${total} product${total === 1 ? "" : "s"}`}
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
@@ -556,7 +565,7 @@ export default function SupplierCatalogOffers() {
               </div>
             </div>
 
-            {!hydrated ? (
+            {!queryEnabled ? (
               <div className="mt-4 text-sm text-zinc-600">Loading session…</div>
             ) : catalogQ.isLoading ? (
               <div className="mt-4 text-sm text-zinc-600">Loading catalogue…</div>
@@ -614,7 +623,9 @@ export default function SupplierCatalogOffers() {
                             </button>
 
                             <div className="mt-1 text-[11px] text-zinc-500">
-                              {p.brand?.name ? <span className="font-medium">{p.brand.name}</span> : null}
+                              {p.brand?.name ? (
+                                <span className="font-medium">{p.brand.name}</span>
+                              ) : null}
                               {p.brand?.name ? <span className="opacity-60"> • </span> : null}
                               SKU: <span className="font-medium">{p.sku || "—"}</span>
                               {p.status ? (
@@ -672,10 +683,16 @@ export default function SupplierCatalogOffers() {
 
                               <button
                                 type="button"
-                                onClick={() => setExpanded((s) => ({ ...s, [p.id]: !s[p.id] }))}
+                                onClick={() =>
+                                  setExpanded((s) => ({ ...s, [p.id]: !s[p.id] }))
+                                }
                                 className="inline-flex items-center justify-center gap-2 rounded-full border bg-white hover:bg-zinc-50 px-3 py-2 text-[12px] whitespace-nowrap"
                               >
-                                {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                {isOpen ? (
+                                  <ChevronUp className="h-4 w-4" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4" />
+                                )}
                                 <span>{isOpen ? "Hide Details" : "Preview Details"}</span>
                               </button>
                             </div>

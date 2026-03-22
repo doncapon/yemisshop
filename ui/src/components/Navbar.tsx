@@ -32,6 +32,19 @@ import { performLogout } from "../utils/logout";
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+const CART_MERGE_SESSION_KEY = "cart:mergedForUser:v1";
+
+type GuestCartLine = {
+  productId?: string;
+  variantId?: string | null;
+  kind?: "BASE" | "VARIANT";
+  qty?: number;
+  selectedOptions?: any;
+  optionsKey?: string;
+  titleSnapshot?: string | null;
+  imageSnapshot?: string | null;
+  unitPriceCache?: number | null;
+};
 
 function isAuthError(e: any) {
   const s = e?.response?.status;
@@ -46,11 +59,16 @@ function normRole(role: unknown) {
   return r;
 }
 
+function safeInt(v: any, d = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : d;
+}
+
 function getCartQtyFromStorage(): number {
   try {
     const lines = readCartLines();
     return (Array.isArray(lines) ? lines : []).reduce((sum, line) => {
-      const qty = Math.max(0, Number(line?.qty) || 0);
+      const qty = Math.max(0, Number((line as any)?.qty) || 0);
       return sum + qty;
     }, 0);
   } catch {
@@ -67,6 +85,92 @@ function clearCartStorageAndBroadcast() {
 
   try {
     window.dispatchEvent(new Event("cart:updated"));
+  } catch {
+    //
+  }
+}
+
+function readGuestCartLines(): GuestCartLine[] {
+  try {
+    const raw = readCartLines();
+    return Array.isArray(raw) ? (raw as GuestCartLine[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeGuestCartForMerge(lines: GuestCartLine[]) {
+  return lines
+    .map((line) => {
+      const productId = String(line?.productId ?? "").trim();
+      if (!productId) return null;
+
+      const variantId =
+        line?.variantId == null || String(line.variantId).trim() === ""
+          ? null
+          : String(line.variantId).trim();
+
+      const kind: "BASE" | "VARIANT" =
+        line?.kind === "BASE" || line?.kind === "VARIANT"
+          ? line.kind
+          : variantId
+            ? "VARIANT"
+            : "BASE";
+
+      return {
+        productId,
+        variantId,
+        kind,
+        qty: Math.max(1, safeInt(line?.qty, 1)),
+        selectedOptions: Array.isArray(line?.selectedOptions)
+          ? line.selectedOptions
+          : line?.selectedOptions
+            ? [line.selectedOptions]
+            : [],
+        optionsKey: String(line?.optionsKey ?? ""),
+        titleSnapshot:
+          line?.titleSnapshot == null ? null : String(line.titleSnapshot),
+        imageSnapshot:
+          line?.imageSnapshot == null ? null : String(line.imageSnapshot),
+        unitPriceCache:
+          line?.unitPriceCache == null || !Number.isFinite(Number(line.unitPriceCache))
+            ? null
+            : Number(line.unitPriceCache),
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildMergeFingerprint(lines: GuestCartLine[]) {
+  const normalized = normalizeGuestCartForMerge(lines).sort((a: any, b: any) => {
+    const ak = `${a.productId}|${a.variantId ?? ""}|${a.kind}|${a.optionsKey}|${a.qty}`;
+    const bk = `${b.productId}|${b.variantId ?? ""}|${b.kind}|${b.optionsKey}|${b.qty}`;
+    return ak.localeCompare(bk);
+  });
+
+  return JSON.stringify(normalized);
+}
+
+function getMergedSessionValue(userId: string) {
+  try {
+    return sessionStorage.getItem(`${CART_MERGE_SESSION_KEY}:${userId}`) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setMergedSessionValue(userId: string, fingerprint: string) {
+  try {
+    sessionStorage.setItem(`${CART_MERGE_SESSION_KEY}:${userId}`, fingerprint);
+  } catch {
+    //
+  }
+}
+
+function clearMergedSessionValue(userId?: string | null) {
+  if (!userId) return;
+  try {
+    sessionStorage.removeItem(`${CART_MERGE_SESSION_KEY}:${userId}`);
   } catch {
     //
   }
@@ -240,20 +344,14 @@ export default function Navbar() {
 
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-
   const [cartQty, setCartQty] = useState<number>(() => getCartQtyFromStorage());
-
-  const syncCartQty = useCallback(() => {
-    const nextQty = getCartQtyFromStorage();
-    setCartQty((prev) => (prev === nextQty ? prev : nextQty));
-  }, []);
+  const [cartSyncing, setCartSyncing] = useState(false);
 
   const closeUserMenu = useCallback(() => setMenuOpen(false), []);
   const menuRef = useClickAway<HTMLDivElement>(closeUserMenu);
 
   const userRole = (user?.role ?? null) as Role | null;
   const userEmail = user?.email ?? null;
-
   const roleNorm = normRole(userRole);
 
   const isSupplier = roleNorm === "SUPPLIER";
@@ -298,17 +396,106 @@ export default function Navbar() {
     [navigate]
   );
 
+  const syncGuestCartQty = useCallback(() => {
+    const nextQty = getCartQtyFromStorage();
+    setCartQty((prev) => (prev === nextQty ? prev : nextQty));
+  }, []);
+
+  const fetchServerCartQty = useCallback(async () => {
+    if (!useAuthStore.getState().user?.id) return 0;
+
+    try {
+      const { data } = await api.get("/api/cart/summary", AXIOS_COOKIE_CFG);
+      const totalQty = Math.max(0, Number(data?.totalQty || 0));
+      setCartQty((prev) => (prev === totalQty ? prev : totalQty));
+      return totalQty;
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        setCartQty(0);
+        return 0;
+      }
+      throw e;
+    }
+  }, []);
+
+  const syncCartQty = useCallback(async () => {
+    const currentUser = useAuthStore.getState().user;
+    if (!currentUser?.id) {
+      syncGuestCartQty();
+      return;
+    }
+    await fetchServerCartQty();
+  }, [fetchServerCartQty, syncGuestCartQty]);
+
+  const mergeGuestCartIntoServerOnce = useCallback(async () => {
+    const currentUser = useAuthStore.getState().user;
+    const userId = String(currentUser?.id ?? "").trim();
+
+    if (!userId) {
+      syncGuestCartQty();
+      return;
+    }
+
+    const guestLines = readGuestCartLines();
+    const guestQty = guestLines.reduce((sum, line) => sum + Math.max(0, safeInt(line?.qty, 0)), 0);
+
+    if (!guestQty) {
+      await fetchServerCartQty();
+      setMergedSessionValue(userId, "EMPTY");
+      return;
+    }
+
+    const fingerprint = buildMergeFingerprint(guestLines);
+    const alreadyMerged = getMergedSessionValue(userId);
+
+    if (alreadyMerged && alreadyMerged === fingerprint) {
+      await fetchServerCartQty();
+      return;
+    }
+
+    const payload = normalizeGuestCartForMerge(guestLines);
+    if (!payload.length) {
+      clearCartStorageAndBroadcast();
+      await fetchServerCartQty();
+      setMergedSessionValue(userId, "EMPTY_NORMALIZED");
+      return;
+    }
+
+    setCartSyncing(true);
+
+    try {
+      await api.post(
+        "/api/cart/merge",
+        { items: payload },
+        AXIOS_COOKIE_CFG
+      );
+
+      clearCartStorageAndBroadcast();
+      setMergedSessionValue(userId, fingerprint);
+      await fetchServerCartQty();
+    } catch (e) {
+      // Keep local cart intact if merge fails.
+      syncGuestCartQty();
+      throw e;
+    } finally {
+      setCartSyncing(false);
+    }
+  }, [fetchServerCartQty, syncGuestCartQty]);
+
   const logout = useCallback(async () => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
 
+    const currentUserId = String(useAuthStore.getState().user?.id ?? "").trim() || null;
     const target = `${loc.pathname}${loc.search}`;
+
     try {
       sessionStorage.setItem("auth:returnTo", target);
     } catch {
       //
     }
 
+    clearMergedSessionValue(currentUserId);
     clearCartStorageAndBroadcast();
     setCartQty(0);
 
@@ -342,17 +529,38 @@ export default function Navbar() {
   const showCartMobile = !isSupplier && !isRider;
 
   useEffect(() => {
-    syncCartQty();
-  }, [syncCartQty]);
+    if (!hydrated) return;
+
+    if (!user?.id) {
+      syncGuestCartQty();
+      return;
+    }
+
+    void mergeGuestCartIntoServerOnce();
+  }, [hydrated, user?.id, mergeGuestCartIntoServerOnce, syncGuestCartQty]);
 
   useEffect(() => {
-    const onCartUpdated = () => syncCartQty();
-    const onStorage = (e: StorageEvent) => {
-      if (!e.key || e.key.toLowerCase().includes("cart")) syncCartQty();
+    const onCartUpdated = () => {
+      void syncCartQty();
     };
-    const onFocus = () => syncCartQty();
+
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key || e.key.toLowerCase().includes("cart")) {
+        void syncCartQty();
+      }
+      if (e.key && e.key.startsWith(CART_MERGE_SESSION_KEY)) {
+        void syncCartQty();
+      }
+    };
+
+    const onFocus = () => {
+      void syncCartQty();
+    };
+
     const onVisibility = () => {
-      if (document.visibilityState === "visible") syncCartQty();
+      if (document.visibilityState === "visible") {
+        void syncCartQty();
+      }
     };
 
     window.addEventListener("cart:updated", onCartUpdated as EventListener);
@@ -414,13 +622,11 @@ export default function Navbar() {
       }
     } catch (e: any) {
       if (!isAuthError(e)) return;
-      // Passive navbar verification must NEVER force logout or clear cart.
-      // Protected pages decide whether an actual redirect is needed.
     }
   }, [forced]);
 
   useEffect(() => {
-    const onFocus = () => verifySession();
+    const onFocus = () => void verifySession();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [verifySession]);
@@ -523,7 +729,7 @@ export default function Navbar() {
                       end
                       icon={<ShoppingCart size={18} />}
                       label="Cart"
-                      badgeCount={isLoggedIn ? cartQty : 0}
+                      badgeCount={cartQty}
                     />
                   )}
 
@@ -785,7 +991,7 @@ export default function Navbar() {
                   title="Cart"
                 >
                   <ShoppingCart size={18} className="pointer-events-none" />
-                  {isLoggedIn && cartQty > 0 && (
+                  {cartQty > 0 && (
                     <span className="pointer-events-none absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
                       {cartQty > 9 ? "9+" : cartQty}
                     </span>
@@ -972,6 +1178,7 @@ export default function Navbar() {
 
       <div className="h-14 md:h-16" />
       {!hydrated && <div className="sr-only">Loading session…</div>}
+      {cartSyncing && <div className="sr-only">Syncing cart…</div>}
     </>
   );
 }

@@ -788,6 +788,19 @@ async function initPaystackWithHardTimeout(payload: any, ms = 12000) {
   );
 }
 
+function readStoredAuthorizationUrl(providerPayload: any): string | null {
+  const url = String(
+    providerPayload?.authorization_url ??
+    providerPayload?.authorizationUrl ??
+    providerPayload?.data?.authorization_url ??
+    providerPayload?.data?.authorizationUrl ??
+    providerPayload?.paymentUrl ??
+    ""
+  ).trim();
+
+  return url || null;
+}
+
 /**
  * POST /api/payments/init  { orderId, channel?, otpToken?, expectedTotal? }
  */
@@ -967,19 +980,21 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
     }
 
     if (pay && isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) && channel === "paystack") {
-      const authUrl = (pay.providerPayload as any)?.authorization_url;
+      const authUrl = readStoredAuthorizationUrl(pay.providerPayload);
 
       if (authUrl) {
         console.log("[payments/init] resume-existing", {
           orderId,
           paymentId: pay.id,
           reference: pay.reference,
+          authorization_url: true,
           ms: Date.now() - startedAt,
         });
 
         await logOrderActivity(orderId, "PAYMENT_RESUME", "Resumed existing Paystack attempt", {
           reference: pay.reference,
           amount: payableTotal,
+          authorization_url: true,
         });
 
         return res.json({
@@ -988,8 +1003,20 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           amount: payableTotal,
           currency: "NGN",
           authorization_url: authUrl,
+          authorizationUrl: authUrl,
         });
       }
+
+      console.warn("[payments/init] resume-existing-missing-auth-url", {
+        orderId,
+        paymentId: pay.id,
+        reference: pay.reference,
+        providerPayloadKeys:
+          pay.providerPayload && typeof pay.providerPayload === "object"
+            ? Object.keys(pay.providerPayload as any)
+            : [],
+        providerPayload: pay.providerPayload ?? null,
+      });
 
       await logOrderActivity(
         orderId,
@@ -1267,12 +1294,19 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
         shippingFee,
       });
 
+      const hostedUrl = String(
+        data?.authorization_url ??
+        data?.authorizationUrl ??
+        ""
+      ).trim();
+
       return res.json({
         mode: "paystack",
         reference: pay!.reference,
         amount: payableTotal,
         currency: "NGN",
-        authorization_url: data?.authorization_url,
+        authorization_url: hostedUrl,
+        authorizationUrl: hostedUrl,
         data,
       });
     }
