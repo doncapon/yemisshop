@@ -560,6 +560,14 @@ type SupplierProductDetail = {
   autoPrice?: any;
   hasPendingChanges?: boolean;
   availableQty?: number | null;
+  freeShipping?: boolean;
+  weightGrams?: number | null;
+  lengthCm?: number | null;
+  widthCm?: number | null;
+  heightCm?: number | null;
+  isFragile?: boolean;
+  isBulky?: boolean;
+  shippingClass?: string | null;
 
   offer?: {
     id?: string;
@@ -731,6 +739,19 @@ export default function SupplierEditProduct() {
   const [description, setDescription] = useState("");
   const [availableQty, setAvailableQty] = useState<string>("0");
 
+
+
+  const [freeShipping, setFreeShipping] = useState(false);
+  const [weightGrams, setWeightGrams] = useState("");
+  const [lengthCm, setLengthCm] = useState("");
+  const [widthCm, setWidthCm] = useState("");
+  const [heightCm, setHeightCm] = useState("");
+  const [isFragile, setIsFragile] = useState(false);
+  const [isBulky, setIsBulky] = useState(false);
+  const [shippingClass, setShippingClass] = useState<
+    "" | "STANDARD" | "FRAGILE" | "BULKY"
+  >("");
+
   const [imageUrls, setImageUrls] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [uploadedUrls, setUploadedUrls] = useState<string[]>([]);
@@ -774,8 +795,16 @@ export default function SupplierEditProduct() {
     existingVariantIds: Set<string>;
     basePrice: number;
     variantPriceByVariantId: Record<string, number>;
-  } | null>(null);
 
+    freeShipping: boolean;
+    weightGrams: number | null;
+    lengthCm: number | null;
+    widthCm: number | null;
+    heightCm: number | null;
+    isFragile: boolean;
+    isBulky: boolean;
+    shippingClass: string | null;
+  } | null>(null);
   const hydratedBaseForIdRef = useRef<string | null>(null);
   const hydratedAttrsForIdRef = useRef<string | null>(null);
 
@@ -865,6 +894,21 @@ export default function SupplierEditProduct() {
       out[String(r.variantId)] = toMoneyNumber(r.unitPrice);
     }
     return out;
+  }
+
+  function toOptionalMoneyNumber(v: any): number | null {
+    const s = String(v ?? "").trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function toOptionalInt(v: any): number | null {
+    const s = String(v ?? "").trim();
+    if (!s) return null;
+    const n = Number(s);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, Math.trunc(n));
   }
 
   const activeAttrs = useMemo(
@@ -1255,6 +1299,26 @@ export default function SupplierEditProduct() {
     setErr(null);
     setOkMsg(null);
     setEditingVariantRowId(null);
+    setFreeShipping(!!p.freeShipping);
+    setWeightGrams(
+      p.weightGrams == null || Number(p.weightGrams) <= 0 ? "" : String(Number(p.weightGrams))
+    );
+    setLengthCm(
+      p.lengthCm == null || Number(p.lengthCm) <= 0 ? "" : String(Number(p.lengthCm))
+    );
+    setWidthCm(
+      p.widthCm == null || Number(p.widthCm) <= 0 ? "" : String(Number(p.widthCm))
+    );
+    setHeightCm(
+      p.heightCm == null || Number(p.heightCm) <= 0 ? "" : String(Number(p.heightCm))
+    );
+    setIsFragile(!!p.isFragile);
+    setIsBulky(!!p.isBulky);
+    setShippingClass(
+      p.shippingClass === "FRAGILE" || p.shippingClass === "BULKY" || p.shippingClass === "STANDARD"
+        ? p.shippingClass
+        : ""
+    );
 
     const productFallback = Number(p.retailPrice ?? 0) || Number(p.autoPrice ?? 0) || 0;
     const approvedBasePrice = Number(p.offer?.basePrice ?? productFallback ?? 0) || 0;
@@ -1378,6 +1442,26 @@ export default function SupplierEditProduct() {
       description: p.description ?? "",
       images: urls,
       attr: {},
+      freeShipping: !!p.freeShipping,
+      weightGrams:
+        p.weightGrams == null || !Number.isFinite(Number(p.weightGrams))
+          ? null
+          : Number(p.weightGrams),
+      lengthCm:
+        p.lengthCm == null || !Number.isFinite(Number(p.lengthCm))
+          ? null
+          : Number(p.lengthCm),
+      widthCm:
+        p.widthCm == null || !Number.isFinite(Number(p.widthCm))
+          ? null
+          : Number(p.widthCm),
+      heightCm:
+        p.heightCm == null || !Number.isFinite(Number(p.heightCm))
+          ? null
+          : Number(p.heightCm),
+      isFragile: !!p.isFragile,
+      isBulky: !!p.isBulky,
+      shippingClass: p.shippingClass ? String(p.shippingClass) : null,
       existingVariantIds: new Set(
         vr.filter((x) => x.variantId).map((x) => String(x.variantId))
       ),
@@ -1468,20 +1552,20 @@ export default function SupplierEditProduct() {
     return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
   }, [urlPreviews, uploadedUrls]);
 
-const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
-  const map = filePreviewMapRef.current;
-  const out: Array<{ file: File; url: string }> = [];
+  const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
+    const map = filePreviewMapRef.current;
+    const out: Array<{ file: File; url: string }> = [];
 
-  for (const f of files) {
-    const k = fileKey(f);
-    const url = map[k];
-    if (typeof url === "string" && url) {
-      out.push({ file: f, url });
+    for (const f of files) {
+      const k = fileKey(f);
+      const url = map[k];
+      if (typeof url === "string" && url) {
+        out.push({ file: f, url });
+      }
     }
-  }
 
-  return out;
-}, [files]);
+    return out;
+  }, [files]);
 
   const imagesCount = allUrlPreviews.length;
   const fileCount = files.length;
@@ -2001,6 +2085,21 @@ const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
       return false;
     })();
 
+    const currentWeightGrams = toOptionalInt(weightGrams);
+    const currentLengthCm = toOptionalMoneyNumber(lengthCm);
+    const currentWidthCm = toOptionalMoneyNumber(widthCm);
+    const currentHeightCm = toOptionalMoneyNumber(heightCm);
+
+    const shippingChanged =
+      Boolean(freeShipping) !== Boolean(snap.freeShipping) ||
+      currentWeightGrams !== snap.weightGrams ||
+      currentLengthCm !== snap.lengthCm ||
+      currentWidthCm !== snap.widthCm ||
+      currentHeightCm !== snap.heightCm ||
+      Boolean(isFragile) !== Boolean(snap.isFragile) ||
+      Boolean(isBulky) !== Boolean(snap.isBulky) ||
+      String(shippingClass || "") !== String(snap.shippingClass || "");
+
     const variantPriceChanged = variantRows.some((r) => {
       if (!r.variantId) return false;
       const prev = Number(snap.variantPriceByVariantId?.[String(r.variantId)] ?? 0);
@@ -2020,7 +2119,8 @@ const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
       attrChanged ||
       basePriceChanged ||
       variantPriceChanged ||
-      newCombosAdded
+      newCombosAdded ||
+      shippingChanged
     );
   }, [
     offersOnly,
@@ -2036,6 +2136,14 @@ const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
     uploadedUrls,
     selectedAttrs,
     variantRows,
+    freeShipping,
+    weightGrams,
+    lengthCm,
+    widthCm,
+    heightCm,
+    isFragile,
+    isBulky,
+    shippingClass,
   ]);
 
   function buildAttributeSelectionsPayload() {
@@ -2128,9 +2236,21 @@ const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
   function buildOwnedPayload(imagesJson: string[]) {
     const price = toMoneyNumber(retailPrice);
     const baseQty = baseQtyPreview;
+    const weightGramsNum = toOptionalInt(weightGrams);
+    const lengthCmNum = toOptionalMoneyNumber(lengthCm);
+    const widthCmNum = toOptionalMoneyNumber(widthCm);
+    const heightCmNum = toOptionalMoneyNumber(heightCm);
 
     const core: any = {
       description: (description ?? "").trim(),
+      freeShipping,
+      weightGrams: freeShipping ? null : weightGramsNum,
+      lengthCm: freeShipping ? null : lengthCmNum,
+      widthCm: freeShipping ? null : widthCmNum,
+      heightCm: freeShipping ? null : heightCmNum,
+      isFragile: freeShipping ? false : isFragile,
+      isBulky: freeShipping ? false : isBulky,
+      shippingClass: freeShipping ? null : shippingClass || null,
 
       basePrice: price,
       offer: {
@@ -2448,844 +2568,967 @@ const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
   }, [hasPendingBaseForUi, pendingBaseValue, retailPrice]);
 
 
-    return (
-      <SiteLayout>
-        <SupplierLayout>
-          <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
-            <div className="px-4 py-3 flex items-center gap-3">
+  return (
+    <SiteLayout>
+      <SupplierLayout>
+        <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
+          <div className="px-4 py-3 flex items-center gap-3">
+            <button
+              type="button"
+              disabled={submitDisabled}
+              onClick={doSave}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+            >
+              {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
+              {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSummaryOpen((v) => !v)}
+              className="shrink-0 inline-flex items-center gap-2 rounded-full border bg-white px-3 py-2 text-sm font-semibold"
+              aria-expanded={summaryOpen}
+            >
+              <Package size={16} />
+              <ChevronDown
+                size={16}
+                className={summaryOpen ? "rotate-180 transition" : "transition"}
+              />
+            </button>
+          </div>
+
+          {hasPendingNonStockBlock && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+              <b>Pending approval:</b> You already have a change request under review for this product.
+              You can still update stock/qty, but other changes must wait until admin approves or rejects the pending request.
+            </div>
+          )}
+
+          {summaryOpen && (
+            <div className="px-4 pb-4">
+              <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-700 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Mode</span>
+                  <b className="text-zinc-900">
+                    {offersOnly
+                      ? "Attach existing"
+                      : isPendingReview
+                        ? "Update pending submission"
+                        : isRejected
+                          ? "Resubmit for approval"
+                          : isReviewManaged
+                            ? "Review-managed product"
+                            : "Edit product"}
+                  </b>
+                </div>
+                {!offersOnly && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-500">Shipping</span>
+                    <b className="text-zinc-900">
+                      {freeShipping
+                        ? "Free shipping"
+                        : shippingClass || weightGrams || lengthCm || widthCm || heightCm
+                          ? "Parcel configured"
+                          : "Default / blank"}
+                    </b>
+                  </div>
+                )}
+
+                {!offersOnly ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Base price</span>
+                      <b className="text-zinc-900">
+                        {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                      </b>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Stock</span>
+                      <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                        {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
+                      </b>
+                    </div>
+                    <div className="text-[11px] text-zinc-600">
+                      Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Images</span>
+                      <b className="text-zinc-900">
+                        {imagesCount}/{MAX_IMAGES}
+                      </b>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Selected product</span>
+                      <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Base offer</span>
+                      <b className="text-zinc-900">
+                        {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                      </b>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Total qty</span>
+                      <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-6 space-y-4 pb-28 sm:pb-10">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div>
+              <motion.h1
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-2xl font-bold tracking-tight text-zinc-900"
+              >
+                {offersOnly ? "Edit offer" : "Edit product"}
+              </motion.h1>
+
+              <p className="text-sm text-zinc-600 mt-1">
+                {offersOnly
+                  ? "Update your supplier offer on an existing catalog product."
+                  : isPendingReview
+                    ? "A submission is already pending. You can keep editing eligible fields and your next save will update that pending submission."
+                    : isRejected
+                      ? "This product was previously rejected. Update the eligible fields below and save to resubmit for approval."
+                      : isLive
+                        ? "Edit your product. Stock updates are immediate; some other changes may need review."
+                        : "Edit your product details, attributes, images and variant combinations."}
+              </p>
+
+              <div className="mt-2 text-xs text-zinc-500">
+                Status: <span className="font-medium text-zinc-800">{productStatusUpper || "—"}</span>
+              </div>
+            </div>
+
+            <div className="hidden sm:flex gap-2">
+              <Link
+                to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+              >
+                <ArrowLeft size={16} /> Back
+              </Link>
+
               <button
                 type="button"
                 disabled={submitDisabled}
                 onClick={doSave}
-                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                title={onboardingBlocked ? "Complete onboarding first" : undefined}
               >
                 {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
                 {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
               </button>
-
-              <button
-                type="button"
-                onClick={() => setSummaryOpen((v) => !v)}
-                className="shrink-0 inline-flex items-center gap-2 rounded-full border bg-white px-3 py-2 text-sm font-semibold"
-                aria-expanded={summaryOpen}
-              >
-                <Package size={16} />
-                <ChevronDown
-                  size={16}
-                  className={summaryOpen ? "rotate-180 transition" : "transition"}
-                />
-              </button>
             </div>
 
-            {hasPendingNonStockBlock && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-                <b>Pending approval:</b> You already have a change request under review for this product.
-                You can still update stock/qty, but other changes must wait until admin approves or rejects the pending request.
-              </div>
-            )}
-
-            {summaryOpen && (
-              <div className="px-4 pb-4">
-                <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-700 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-500">Mode</span>
-                    <b className="text-zinc-900">
-                      {offersOnly
-                        ? "Attach existing"
-                        : isPendingReview
-                        ? "Update pending submission"
-                        : isRejected
-                        ? "Resubmit for approval"
-                        : isReviewManaged
-                        ? "Review-managed product"
-                        : "Edit product"}
-                    </b>
-                  </div>
-
-                  {!offersOnly ? (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Base price</span>
-                        <b className="text-zinc-900">
-                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
-                        </b>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Stock</span>
-                        <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
-                          {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
-                        </b>
-                      </div>
-                      <div className="text-[11px] text-zinc-600">
-                        Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Images</span>
-                        <b className="text-zinc-900">
-                          {imagesCount}/{MAX_IMAGES}
-                        </b>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Selected product</span>
-                        <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Base offer</span>
-                        <b className="text-zinc-900">
-                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
-                        </b>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-500">Total qty</span>
-                        <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
+            <div className="sm:hidden">
+              <Link
+                to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+              >
+                <ArrowLeft size={16} /> Back
+              </Link>
+            </div>
           </div>
 
-          <div className="mt-6 space-y-4 pb-28 sm:pb-10">
-            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-              <div>
-                <motion.h1
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="text-2xl font-bold tracking-tight text-zinc-900"
-                >
-                  {offersOnly ? "Edit offer" : "Edit product"}
-                </motion.h1>
+          {guardMsg && (
+            <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+              {guardMsg}
+            </div>
+          )}
 
-                <p className="text-sm text-zinc-600 mt-1">
-                  {offersOnly
-                    ? "Update your supplier offer on an existing catalog product."
-                    : isPendingReview
-                    ? "A submission is already pending. You can keep editing eligible fields and your next save will update that pending submission."
-                    : isRejected
-                    ? "This product was previously rejected. Update the eligible fields below and save to resubmit for approval."
-                    : isLive
-                    ? "Edit your product. Stock updates are immediate; some other changes may need review."
-                    : "Edit your product details, attributes, images and variant combinations."}
-                </p>
+          {isSupplier && onboardingState.loading && (
+            <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+              Checking onboarding status…
+            </div>
+          )}
 
-                <div className="mt-2 text-xs text-zinc-500">
-                  Status: <span className="font-medium text-zinc-800">{productStatusUpper || "—"}</span>
+          {isSupplier && onboardingState.failed && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Could not check onboarding status right now. The page is still available, but onboarding lock detection may be incomplete.
+            </div>
+          )}
+
+          {onboardingBlocked && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="font-semibold">Onboarding in progress</div>
+                  <div className="mt-1 text-amber-800">
+                    You need to complete supplier onboarding before editing products.
+                    Your product form is visible for context, but editing and saving are locked until onboarding is complete.
+                  </div>
+
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
+                    <div
+                      className="h-full rounded-full bg-amber-500 transition-all"
+                      style={{ width: `${onboardingPct}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-2 text-[12px] text-amber-800">
+                    Progress: <b>{onboardingPct}%</b>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {onboardingProgressItems.map((item) => (
+                      <span
+                        key={item.key}
+                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
+                          }`}
+                      >
+                        {item.label}: {item.done ? "Done" : "Pending"}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-3 text-[12px] text-amber-800">
+                    Supplier status: <b>{String(onboardingState.supplierStatus ?? "PENDING")}</b>
+                    {" • "}
+                    KYC: <b>{String(onboardingState.kycStatus ?? "PENDING")}</b>
+                  </div>
                 </div>
-              </div>
 
-              <div className="hidden sm:flex gap-2">
-                <Link
-                  to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
-                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                >
-                  <ArrowLeft size={16} /> Back
-                </Link>
-
-                <button
-                  type="button"
-                  disabled={submitDisabled}
-                  onClick={doSave}
-                  className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
-                  title={onboardingBlocked ? "Complete onboarding first" : undefined}
-                >
-                  {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                  {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
-                </button>
-              </div>
-
-              <div className="sm:hidden">
-                <Link
-                  to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
-                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                >
-                  <ArrowLeft size={16} /> Back
-                </Link>
+                <div className="shrink-0">
+                  <Link
+                    to={onboardingState.nextPath || "/supplier/verify-contact"}
+                    className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                  >
+                    {nextStepLabel}
+                    <ArrowLeft className="ml-2 h-4 w-4 rotate-180" />
+                  </Link>
+                </div>
               </div>
             </div>
+          )}
 
-            {guardMsg && (
-              <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
-                {guardMsg}
-              </div>
-            )}
-
-            {isSupplier && onboardingState.loading && (
-              <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
-                Checking onboarding status…
-              </div>
-            )}
-
-            {isSupplier && onboardingState.failed && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                Could not check onboarding status right now. The page is still available, but onboarding lock detection may be incomplete.
-              </div>
-            )}
-
-            {onboardingBlocked && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="min-w-0">
-                    <div className="font-semibold">Onboarding in progress</div>
-                    <div className="mt-1 text-amber-800">
-                      You need to complete supplier onboarding before editing products.
-                      Your product form is visible for context, but editing and saving are locked until onboarding is complete.
-                    </div>
-
-                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
-                      <div
-                        className="h-full rounded-full bg-amber-500 transition-all"
-                        style={{ width: `${onboardingPct}%` }}
-                      />
-                    </div>
-
-                    <div className="mt-2 text-[12px] text-amber-800">
-                      Progress: <b>{onboardingPct}%</b>
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {onboardingProgressItems.map((item) => (
-                        <span
-                          key={item.key}
-                          className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                            item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
-                          }`}
-                        >
-                          {item.label}: {item.done ? "Done" : "Pending"}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="mt-3 text-[12px] text-amber-800">
-                      Supplier status: <b>{String(onboardingState.supplierStatus ?? "PENDING")}</b>
-                      {" • "}
-                      KYC: <b>{String(onboardingState.kycStatus ?? "PENDING")}</b>
-                    </div>
-                  </div>
-
-                  <div className="shrink-0">
-                    <Link
-                      to={onboardingState.nextPath || "/supplier/verify-contact"}
-                      className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
-                    >
-                      {nextStepLabel}
-                      <ArrowLeft className="ml-2 h-4 w-4 rotate-180" />
-                    </Link>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {!offersOnly && pendingSubmissionNotice && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-                <b>
-                  {isPendingReview
-                    ? "Pending approval:"
-                    : isRejected
+          {!offersOnly && pendingSubmissionNotice && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+              <b>
+                {isPendingReview
+                  ? "Pending approval:"
+                  : isRejected
                     ? "Rejected previously:"
                     : "Review notice:"}
-                </b>{" "}
-                {pendingSubmissionNotice}
-              </div>
-            )}
+              </b>{" "}
+              {pendingSubmissionNotice}
+            </div>
+          )}
 
-            {!offersOnly && titleSkuLocked && (
-              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 text-zinc-800 px-4 py-3 text-sm">
-                <b>Locked fields:</b> Title and SKU can’t be changed while this product is in the review-managed flow.
-              </div>
-            )}
+          {!offersOnly && titleSkuLocked && (
+            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 text-zinc-800 px-4 py-3 text-sm">
+              <b>Locked fields:</b> Title and SKU can’t be changed while this product is in the review-managed flow.
+            </div>
+          )}
 
-            {offersOnly && hasPendingBase && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-                <b>Pending approval:</b> Active price remains <b>{ngn.format(activeBasePriceForDisplay)}</b>.
-              </div>
-            )}
+          {offersOnly && hasPendingBase && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+              <b>Pending approval:</b> Active price remains <b>{ngn.format(activeBasePriceForDisplay)}</b>.
+            </div>
+          )}
 
-            {imageOverLimit && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-                Max {MAX_IMAGES} images allowed. Remove extra images before saving.
-              </div>
-            )}
+          {imageOverLimit && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              Max {MAX_IMAGES} images allowed. Remove extra images before saving.
+            </div>
+          )}
 
-            {baseComboWarn && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-                {baseComboWarn}
-              </div>
-            )}
+          {baseComboWarn && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              {baseComboWarn}
+            </div>
+          )}
 
-            {dupWarn && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-                {dupWarn}
-              </div>
-            )}
+          {dupWarn && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              {dupWarn}
+            </div>
+          )}
 
-            {err && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-                {err}
-              </div>
-            )}
+          {err && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              {err}
+            </div>
+          )}
 
-            {okMsg && (
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
-                {okMsg}
-              </div>
-            )}
+          {okMsg && (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
+              {okMsg}
+            </div>
+          )}
 
-            {detailQ.isError && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-                Could not load product.
-              </div>
-            )}
+          {detailQ.isError && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              Could not load product.
+            </div>
+          )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="lg:col-span-2 space-y-4">
-                <Card
-                  title="Basic information"
-                  className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
-                  subtitle={
-                    offersOnly
-                      ? "Catalog product details are read-only. Update your supplier offer values below."
-                      : "What customers will see in the catalog"
-                  }
-                >
-                  <div className="space-y-3">
-                    {onboardingBlocked && (
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                        Editing is temporarily locked until supplier onboarding is complete.
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <Label>
-                          Title *{" "}
-                          {titleSkuLocked ? (
-                            <span className="text-zinc-400 font-normal">(locked during review flow)</span>
-                          ) : null}
-                        </Label>
-                        <Input
-                          value={title}
-                          onChange={(e) => {
-                            if (!canEditTitleSku) return;
-                            const nextTitle = e.target.value;
-                            setTitle(nextTitle);
-                            if (!offersOnly && !isReviewManaged && !skuTouched) {
-                              setSku(autoSkuFromTitle(nextTitle));
-                            }
-                          }}
-                          disabled={!canEditTitleSku}
-                          readOnly={!canEditTitleSku}
-                          className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
-                          placeholder="e.g. Air Fryer 4L"
-                        />
-                        {titleSkuLocked && (
-                          <div className="text-[11px] text-zinc-500 mt-1">
-                            Title is locked while this product is LIVE, PENDING, or under review.
-                          </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <Label>
-                          SKU{" "}
-                          <span className="text-zinc-400 font-normal">
-                            {titleSkuLocked ? "(locked during review flow)" : ""}
-                          </span>
-                        </Label>
-                        <Input
-                          value={sku}
-                          onChange={(e) => {
-                            if (!canEditTitleSku) return;
-                            const v = e.target.value;
-                            setSku(v);
-                            setSkuTouched(!!v.trim());
-                          }}
-                          disabled={!canEditTitleSku}
-                          readOnly={!canEditTitleSku}
-                          className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
-                          placeholder="e.g. AFRY-4L-BLK"
-                        />
-                        {titleSkuLocked && (
-                          <div className="text-[11px] text-zinc-500 mt-1">
-                            SKU is locked while this product is LIVE, PENDING, or under review.
-                          </div>
-                        )}
-                      </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 space-y-4">
+              <Card
+                title="Basic information"
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+                subtitle={
+                  offersOnly
+                    ? "Catalog product details are read-only. Update your supplier offer values below."
+                    : "What customers will see in the catalog"
+                }
+              >
+                <div className="space-y-3">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Editing is temporarily locked until supplier onboarding is complete.
                     </div>
+                  )}
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                      <div>
-                        <Label>{offersOnly ? "Base offer price (NGN) *" : "Base price (NGN) *"}</Label>
-                        <Input
-                          value={retailPrice}
-                          onChange={onChangeBasePrice}
-                          inputMode="decimal"
-                          placeholder="e.g. 25000"
-                          disabled={onboardingBlocked}
-                        />
-
-                        {!offersOnly && isReviewManaged && (
-                          <div className="text-[11px] text-zinc-600 mt-1">
-                            Approved: <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
-                          </div>
-                        )}
-
-                        {hasPendingBaseForUi && pendingBaseValue != null && (
-                          <div className="text-[11px] text-amber-700 mt-1">
-                            Pending approval price: <b>{ngn.format(pendingBaseValue)}</b>
-                            {pendingBaseMatchesForm
-                              ? " — this matches your current input."
-                              : " — change the amount if you want to replace the pending request."}
-                          </div>
-                        )}
-
-                        {pendingBaseMatchesForm && (
-                          <div className="text-[11px] text-amber-700 mt-1">
-                            This price is already pending approval. Saving again will not change the pending price unless you enter a different amount.
-                          </div>
-                        )}
-
-                        {!offersOnly &&
-                          isReviewManaged &&
-                          pendingBasePatch?.basePrice != null &&
-                          Number(pendingBasePatch.basePrice) !== Number(activeBasePriceForDisplay) && (
-                            <div className="text-[11px] text-amber-700 mt-1">
-                              Pending: <b>{ngn.format(Number(pendingBasePatch.basePrice ?? 0))}</b>
-                            </div>
-                          )}
-
-                        {!!retailPrice && (
-                          <div className="text-[11px] text-zinc-500 mt-1">
-                            Preview: <b>{ngn.format(basePriceForPreview)}</b>
-                          </div>
-                        )}
-
-                        {offersOnly && (
-                          <div className="text-[11px] text-zinc-600 mt-1">
-                            Active (approved): <b>{ngn.format(activeBasePriceForDisplay)}</b>
-                          </div>
-                        )}
-
-                        {offersOnly && hasPendingBase && (
-                          <div className="text-[11px] text-amber-700 mt-1">
-                            Pending: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
-                          </div>
-                        )}
-
-                        {offersOnly && showRequestedButNotPending && (
-                          <div className="text-[11px] text-zinc-500 mt-1">
-                            Will submit for approval: <b>{ngn.format(requestedBasePriceForDisplay)}</b>
-                          </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <Label>Base quantity</Label>
-                        <Input
-                          value={availableQty}
-                          onChange={(e) => setAvailableQty(e.target.value)}
-                          inputMode="numeric"
-                          placeholder="e.g. 20"
-                          disabled={onboardingBlocked}
-                        />
-                        <div className="text-[11px] text-zinc-500 mt-1">
-                          Total: <b>{baseQtyPreview}</b> + <b>{variantQtyTotal}</b> = <b>{totalQty}</b>
-                        </div>
-                        <div className="text-[11px] text-zinc-500 mt-1">
-                          In-stock:{" "}
-                          <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
-                            {inStockPreview ? "YES" : "NO"}
-                          </b>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <Label>Category</Label>
-                          <AddNewLink
-                            label="Add new category"
-                            onClick={() => nav(goToCatalogRequests("categories", "category"))}
-                            title="Request a new category"
-                          />
-                        </div>
-                        <Select
-                          value={categoryId}
-                          onChange={(e) => setCategoryId(e.target.value)}
-                          disabled={!canEditCore}
-                          className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
-                        >
-                          <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
-                          {(categories as any[]).map((c: any) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </Select>
-
-                        {!offersOnly && isReviewManaged && (
-                          <div className="text-[11px] text-amber-700 mt-1">
-                            Category changes will update the pending submission, not the live product immediately.
-                          </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <Label>Brand *</Label>
-                          <AddNewLink
-                            label="Add new brand"
-                            onClick={() => nav(goToCatalogRequests("brands", "brand"))}
-                            title="Request a new brand"
-                          />
-                        </div>
-                        <Select
-                          value={brandId}
-                          onChange={(e) => setBrandId(e.target.value)}
-                          disabled={!canEditCore}
-                          className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
-                        >
-                          <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
-                          {(brands as any[]).map((b: any) => (
-                            <option key={b.id} value={b.id}>
-                              {b.name}
-                            </option>
-                          ))}
-                        </Select>
-
-                        {!offersOnly && isReviewManaged && (
-                          <div className="text-[11px] text-amber-700 mt-1">
-                            Brand changes will update the pending submission, not the live product immediately.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <Label>Description *</Label>
-                      <Textarea
-                        value={description}
-                        onChange={(e) => setDescription(e.target.value)}
-                        className={`min-h-[110px] ${!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}`}
-                        disabled={!canEditCore}
-                        placeholder="Write a clear, detailed description…"
+                      <Label>
+                        Title *{" "}
+                        {titleSkuLocked ? (
+                          <span className="text-zinc-400 font-normal">(locked during review flow)</span>
+                        ) : null}
+                      </Label>
+                      <Input
+                        value={title}
+                        onChange={(e) => {
+                          if (!canEditTitleSku) return;
+                          const nextTitle = e.target.value;
+                          setTitle(nextTitle);
+                          if (!offersOnly && !isReviewManaged && !skuTouched) {
+                            setSku(autoSkuFromTitle(nextTitle));
+                          }
+                        }}
+                        disabled={!canEditTitleSku}
+                        readOnly={!canEditTitleSku}
+                        className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
+                        placeholder="e.g. Air Fryer 4L"
                       />
-                    </div>
-
-                    {!offersOnly && isReviewManaged && (
-                      <div className="text-[11px] text-amber-700 mt-1">
-                        Description edits are allowed, but they will go through approval before appearing live.
-                      </div>
-                    )}
-                  </div>
-                </Card>
-
-                <Card
-                  title="Images"
-                  className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
-                  subtitle={
-                    offersOnly
-                      ? "Catalog images are read-only here."
-                      : isReviewManaged
-                      ? `Paste URLs or upload images (max ${MAX_IMAGES}). Image changes will update the pending submission.`
-                      : `Paste URLs or upload images (max ${MAX_IMAGES}).`
-                  }
-                  right={
-                    <label
-                      className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
-                        offersOnly || onboardingBlocked ? "opacity-60 pointer-events-none" : ""
-                      }`}
-                    >
-                      <ImagePlus size={16} /> Add files
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        multiple
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => onPickFiles(Array.from(e.target.files || []))}
-                        disabled={offersOnly || onboardingBlocked}
-                      />
-                    </label>
-                  }
-                >
-                  <div className="space-y-3">
-                    {onboardingBlocked && (
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                        Image changes are locked until onboarding is complete.
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between text-xs">
-                      <div className="text-zinc-600">
-                        Images used: <b>{imagesCount}</b> / {MAX_IMAGES}
-                        {fileCount > 0 && (
-                          <>
-                            {" "}
-                            • Selected files: <b>{fileCount}</b>
-                          </>
-                        )}
-                      </div>
-
-                      {!offersOnly && (
-                        <div className="text-zinc-500">
-                          Remaining slots: <b>{remainingSlots}</b>
+                      {titleSkuLocked && (
+                        <div className="text-[11px] text-zinc-500 mt-1">
+                          Title is locked while this product is LIVE, PENDING, or under review.
                         </div>
                       )}
                     </div>
 
                     <div>
-                      <Label>Image URLs (one per line)</Label>
-                      <Textarea
-                        value={imageUrls}
+                      <Label>
+                        SKU{" "}
+                        <span className="text-zinc-400 font-normal">
+                          {titleSkuLocked ? "(locked during review flow)" : ""}
+                        </span>
+                      </Label>
+                      <Input
+                        value={sku}
                         onChange={(e) => {
-                          if (offersOnly || onboardingBlocked) return;
-                          setErr(null);
-                          const raw = parseUrlList(e.target.value);
-                          const capped = limitImages(raw, MAX_IMAGES);
-                          setImageUrls(capped.join("\n"));
+                          if (!canEditTitleSku) return;
+                          const v = e.target.value;
+                          setSku(v);
+                          setSkuTouched(!!v.trim());
                         }}
-                        className="min-h-[90px] text-xs"
-                        disabled={offersOnly || onboardingBlocked}
-                        placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
+                        disabled={!canEditTitleSku}
+                        readOnly={!canEditTitleSku}
+                        className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
+                        placeholder="e.g. AFRY-4L-BLK"
+                      />
+                      {titleSkuLocked && (
+                        <div className="text-[11px] text-zinc-500 mt-1">
+                          SKU is locked while this product is LIVE, PENDING, or under review.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                      <Label>{offersOnly ? "Base offer price (NGN) *" : "Base price (NGN) *"}</Label>
+                      <Input
+                        value={retailPrice}
+                        onChange={onChangeBasePrice}
+                        inputMode="decimal"
+                        placeholder="e.g. 25000"
+                        disabled={onboardingBlocked}
+                      />
+
+                      {!offersOnly && isReviewManaged && (
+                        <div className="text-[11px] text-zinc-600 mt-1">
+                          Approved: <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
+                        </div>
+                      )}
+
+                      {hasPendingBaseForUi && pendingBaseValue != null && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          Pending approval price: <b>{ngn.format(pendingBaseValue)}</b>
+                          {pendingBaseMatchesForm
+                            ? " — this matches your current input."
+                            : " — change the amount if you want to replace the pending request."}
+                        </div>
+                      )}
+
+                      {pendingBaseMatchesForm && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          This price is already pending approval. Saving again will not change the pending price unless you enter a different amount.
+                        </div>
+                      )}
+
+                      {!offersOnly &&
+                        isReviewManaged &&
+                        pendingBasePatch?.basePrice != null &&
+                        Number(pendingBasePatch.basePrice) !== Number(activeBasePriceForDisplay) && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            Pending: <b>{ngn.format(Number(pendingBasePatch.basePrice ?? 0))}</b>
+                          </div>
+                        )}
+
+                      {!!retailPrice && (
+                        <div className="text-[11px] text-zinc-500 mt-1">
+                          Preview: <b>{ngn.format(basePriceForPreview)}</b>
+                        </div>
+                      )}
+
+                      {offersOnly && (
+                        <div className="text-[11px] text-zinc-600 mt-1">
+                          Active (approved): <b>{ngn.format(activeBasePriceForDisplay)}</b>
+                        </div>
+                      )}
+
+                      {offersOnly && hasPendingBase && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          Pending: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
+                        </div>
+                      )}
+
+                      {offersOnly && showRequestedButNotPending && (
+                        <div className="text-[11px] text-zinc-500 mt-1">
+                          Will submit for approval: <b>{ngn.format(requestedBasePriceForDisplay)}</b>
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <Label>Base quantity</Label>
+                      <Input
+                        value={availableQty}
+                        onChange={(e) => setAvailableQty(e.target.value)}
+                        inputMode="numeric"
+                        placeholder="e.g. 20"
+                        disabled={onboardingBlocked}
+                      />
+                      <div className="text-[11px] text-zinc-500 mt-1">
+                        Total: <b>{baseQtyPreview}</b> + <b>{variantQtyTotal}</b> = <b>{totalQty}</b>
+                      </div>
+                      <div className="text-[11px] text-zinc-500 mt-1">
+                        In-stock:{" "}
+                        <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                          {inStockPreview ? "YES" : "NO"}
+                        </b>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <Label>Category</Label>
+                        <AddNewLink
+                          label="Add new category"
+                          onClick={() => nav(goToCatalogRequests("categories", "category"))}
+                          title="Request a new category"
+                        />
+                      </div>
+                      <Select
+                        value={categoryId}
+                        onChange={(e) => setCategoryId(e.target.value)}
+                        disabled={!canEditCore}
+                        className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
+                      >
+                        <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
+                        {(categories as any[]).map((c: any) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </Select>
+
+                      {!offersOnly && isReviewManaged && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          Category changes will update the pending submission, not the live product immediately.
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <Label>Brand *</Label>
+                        <AddNewLink
+                          label="Add new brand"
+                          onClick={() => nav(goToCatalogRequests("brands", "brand"))}
+                          title="Request a new brand"
+                        />
+                      </div>
+                      <Select
+                        value={brandId}
+                        onChange={(e) => setBrandId(e.target.value)}
+                        disabled={!canEditCore}
+                        className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
+                      >
+                        <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
+                        {(brands as any[]).map((b: any) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                      </Select>
+
+                      {!offersOnly && isReviewManaged && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          Brand changes will update the pending submission, not the live product immediately.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label>Description *</Label>
+                    <Textarea
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      className={`min-h-[110px] ${!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}`}
+                      disabled={!canEditCore}
+                      placeholder="Write a clear, detailed description…"
+                    />
+                  </div>
+
+                  {!offersOnly && isReviewManaged && (
+                    <div className="text-[11px] text-amber-700 mt-1">
+                      Description edits are allowed, but they will go through approval before appearing live.
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+              <Card
+                title="Shipping"
+                subtitle={
+                  offersOnly
+                    ? "Shipping settings are read-only in offer mode."
+                    : isReviewManaged
+                      ? "Parcel details used with supplier shipping profile and rate cards. Shipping changes will update the pending submission."
+                      : "Parcel details used with supplier shipping profile and rate cards."
+                }
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+              >
+                <div className="space-y-4">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Shipping changes are locked until onboarding is complete.
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border bg-zinc-50 px-3 py-2 text-[12px] text-zinc-700">
+                    This section does <b>not</b> directly set the shipping fee. It sets parcel characteristics
+                    that work with your supplier shipping profile and rate cards.
+                  </div>
+
+                  <label
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${offersOnly || onboardingBlocked ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                      }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={freeShipping}
+                      onChange={(e) => {
+                        if (offersOnly || onboardingBlocked) return;
+                        setFreeShipping(e.target.checked);
+                      }}
+                      disabled={offersOnly || onboardingBlocked}
+                    />
+                    Free shipping for this product
+                  </label>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                    <div>
+                      <Label>Weight (grams)</Label>
+                      <Input
+                        value={weightGrams}
+                        onChange={(e) => setWeightGrams(e.target.value)}
+                        inputMode="numeric"
+                        placeholder="e.g. 1200"
+                        disabled={offersOnly || onboardingBlocked || freeShipping}
                       />
                     </div>
 
-                    {(allUrlPreviews.length > 0 || filePreviews.length > 0) && (
-                      <div>
-                        <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
+                    <div>
+                      <Label>Length (cm)</Label>
+                      <Input
+                        value={lengthCm}
+                        onChange={(e) => setLengthCm(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="e.g. 25"
+                        disabled={offersOnly || onboardingBlocked || freeShipping}
+                      />
+                    </div>
 
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                          {allUrlPreviews.slice(0, MAX_IMAGES).map((u) => (
-                            <div key={u} className="rounded-xl border overflow-hidden bg-white">
-                              <div className="aspect-[4/3] bg-zinc-100 relative">
-                                <img
-                                  src={toPublicImageSrc(u) ?? ""}
-                                  alt=""
-                                  className="w-full h-full object-cover"
-                                  loading="lazy"
-                                  onError={(e) => {
-                                    const img = e.currentTarget as HTMLImageElement;
-                                    const current = img.getAttribute("data-try") ?? "";
-                                    const list = imageSrcCandidates(u);
-                                    const idx = current ? list.indexOf(current) : 0;
-                                    const next = list[idx + 1];
+                    <div>
+                      <Label>Width (cm)</Label>
+                      <Input
+                        value={widthCm}
+                        onChange={(e) => setWidthCm(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="e.g. 18"
+                        disabled={offersOnly || onboardingBlocked || freeShipping}
+                      />
+                    </div>
 
-                                    if (next) {
-                                      img.src = next;
-                                      img.setAttribute("data-try", next);
-                                      img.style.display = "block";
-                                      return;
-                                    }
+                    <div>
+                      <Label>Height (cm)</Label>
+                      <Input
+                        value={heightCm}
+                        onChange={(e) => setHeightCm(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="e.g. 12"
+                        disabled={offersOnly || onboardingBlocked || freeShipping}
+                      />
+                    </div>
 
-                                    img.style.display = "none";
+                    <div>
+                      <Label>Shipping class</Label>
+                      <Select
+                        value={shippingClass}
+                        onChange={(e) => {
+                          if (offersOnly || onboardingBlocked) return;
+                          setShippingClass(
+                            (e.target.value || "") as "" | "STANDARD" | "FRAGILE" | "BULKY"
+                          );
+                        }}
+                        disabled={offersOnly || onboardingBlocked || freeShipping}
+                      >
+                        <option value="">— Auto / standard —</option>
+                        <option value="STANDARD">STANDARD</option>
+                        <option value="FRAGILE">FRAGILE</option>
+                        <option value="BULKY">BULKY</option>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3">
+                    <label
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${offersOnly || onboardingBlocked || freeShipping
+                        ? "opacity-60 cursor-not-allowed"
+                        : "cursor-pointer"
+                        }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isFragile}
+                        onChange={(e) => {
+                          if (offersOnly || onboardingBlocked || freeShipping) return;
+                          setIsFragile(e.target.checked);
+                        }}
+                        disabled={offersOnly || onboardingBlocked || freeShipping}
+                      />
+                      Fragile
+                    </label>
+
+                    <label
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${offersOnly || onboardingBlocked || freeShipping
+                        ? "opacity-60 cursor-not-allowed"
+                        : "cursor-pointer"
+                        }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isBulky}
+                        onChange={(e) => {
+                          if (offersOnly || onboardingBlocked || freeShipping) return;
+                          setIsBulky(e.target.checked);
+                        }}
+                        disabled={offersOnly || onboardingBlocked || freeShipping}
+                      />
+                      Bulky
+                    </label>
+                  </div>
+
+                  {!offersOnly && isReviewManaged && (
+                    <div className="text-[11px] text-amber-700">
+                      Shipping detail changes are review-managed and will update the pending submission.
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+              <Card
+                title="Images"
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+                subtitle={
+                  offersOnly
+                    ? "Catalog images are read-only here."
+                    : isReviewManaged
+                      ? `Paste URLs or upload images (max ${MAX_IMAGES}). Image changes will update the pending submission.`
+                      : `Paste URLs or upload images (max ${MAX_IMAGES}).`
+                }
+                right={
+                  <label
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly || onboardingBlocked ? "opacity-60 pointer-events-none" : ""
+                      }`}
+                  >
+                    <ImagePlus size={16} /> Add files
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => onPickFiles(Array.from(e.target.files || []))}
+                      disabled={offersOnly || onboardingBlocked}
+                    />
+                  </label>
+                }
+              >
+                <div className="space-y-3">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Image changes are locked until onboarding is complete.
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="text-zinc-600">
+                      Images used: <b>{imagesCount}</b> / {MAX_IMAGES}
+                      {fileCount > 0 && (
+                        <>
+                          {" "}
+                          • Selected files: <b>{fileCount}</b>
+                        </>
+                      )}
+                    </div>
+
+                    {!offersOnly && (
+                      <div className="text-zinc-500">
+                        Remaining slots: <b>{remainingSlots}</b>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <Label>Image URLs (one per line)</Label>
+                    <Textarea
+                      value={imageUrls}
+                      onChange={(e) => {
+                        if (offersOnly || onboardingBlocked) return;
+                        setErr(null);
+                        const raw = parseUrlList(e.target.value);
+                        const capped = limitImages(raw, MAX_IMAGES);
+                        setImageUrls(capped.join("\n"));
+                      }}
+                      className="min-h-[90px] text-xs"
+                      disabled={offersOnly || onboardingBlocked}
+                      placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
+                    />
+                  </div>
+
+                  {(allUrlPreviews.length > 0 || filePreviews.length > 0) && (
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {allUrlPreviews.slice(0, MAX_IMAGES).map((u) => (
+                          <div key={u} className="rounded-xl border overflow-hidden bg-white">
+                            <div className="aspect-[4/3] bg-zinc-100 relative">
+                              <img
+                                src={toPublicImageSrc(u) ?? ""}
+                                alt=""
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                                onError={(e) => {
+                                  const img = e.currentTarget as HTMLImageElement;
+                                  const current = img.getAttribute("data-try") ?? "";
+                                  const list = imageSrcCandidates(u);
+                                  const idx = current ? list.indexOf(current) : 0;
+                                  const next = list[idx + 1];
+
+                                  if (next) {
+                                    img.src = next;
+                                    img.setAttribute("data-try", next);
+                                    img.style.display = "block";
+                                    return;
+                                  }
+
+                                  img.style.display = "none";
+                                }}
+                              />
+
+                              {!offersOnly && !onboardingBlocked && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const inText = parseUrlList(imageUrls).some(
+                                      (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
+                                    );
+                                    if (inText) removeTextUrl(u);
+                                    else removeUploadedUrl(u);
                                   }}
-                                />
+                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                  aria-label="Remove image"
+                                  title="Remove"
+                                >
+                                  <X size={18} className="text-rose-700" />
+                                </button>
+                              )}
+                            </div>
+                            <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
+                          </div>
+                        ))}
 
-                                {!offersOnly && !onboardingBlocked && (
+                        {!offersOnly &&
+                          !onboardingBlocked &&
+                          filePreviews
+                            .slice(0, Math.max(0, MAX_IMAGES - allUrlPreviews.length))
+                            .map(({ file, url }) => (
+                              <div key={url} className="rounded-xl border overflow-hidden bg-white">
+                                <div className="aspect-[4/3] bg-zinc-100 relative">
+                                  <img src={url} alt={file.name} className="w-full h-full object-cover" />
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      const inText = parseUrlList(imageUrls).some(
-                                        (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
-                                      );
-                                      if (inText) removeTextUrl(u);
-                                      else removeUploadedUrl(u);
-                                    }}
+                                    onClick={() => removeSelectedFile(file)}
                                     className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
-                                    aria-label="Remove image"
+                                    aria-label="Remove selected file"
                                     title="Remove"
                                   >
                                     <X size={18} className="text-rose-700" />
                                   </button>
-                                )}
-                              </div>
-                              <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
-                            </div>
-                          ))}
-
-                          {!offersOnly &&
-                            !onboardingBlocked &&
-                            filePreviews
-                              .slice(0, Math.max(0, MAX_IMAGES - allUrlPreviews.length))
-                              .map(({ file, url }) => (
-                                <div key={url} className="rounded-xl border overflow-hidden bg-white">
-                                  <div className="aspect-[4/3] bg-zinc-100 relative">
-                                    <img src={url} alt={file.name} className="w-full h-full object-cover" />
-                                    <button
-                                      type="button"
-                                      onClick={() => removeSelectedFile(file)}
-                                      className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
-                                      aria-label="Remove selected file"
-                                      title="Remove"
-                                    >
-                                      <X size={18} className="text-rose-700" />
-                                    </button>
-                                  </div>
-                                  <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
                                 </div>
-                              ))}
-                        </div>
+                                <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
+                              </div>
+                            ))}
                       </div>
-                    )}
+                    </div>
+                  )}
 
-                    {!offersOnly && !onboardingBlocked && files.length > 0 && (
-                      <div className="rounded-2xl border bg-white p-3">
-                        <div className="text-xs font-semibold text-zinc-800">
-                          Selected files: <span className="font-mono">{files.length}</span>
-                        </div>
-
-                        <div className="mt-3 flex flex-col sm:flex-row gap-2">
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                setErr(null);
-                                await uploadLocalFiles();
-                              } catch (e: any) {
-                                setErr(e?.message || "Upload failed");
-                              }
-                            }}
-                            disabled={uploading || !files.length}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
-                          >
-                            {uploading ? "Uploading…" : "Upload now"}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setFiles([]);
-                              if (fileInputRef.current) fileInputRef.current.value = "";
-                            }}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                          >
-                            <Trash2 size={16} /> Clear files
-                          </button>
-                        </div>
+                  {!offersOnly && !onboardingBlocked && files.length > 0 && (
+                    <div className="rounded-2xl border bg-white p-3">
+                      <div className="text-xs font-semibold text-zinc-800">
+                        Selected files: <span className="font-mono">{files.length}</span>
                       </div>
-                    )}
-                  </div>
-                </Card>
 
-                <Card
-                  title="Attributes"
-                  subtitle={
-                    offersOnly
-                      ? "Catalog product attributes are read-only."
-                      : isReviewManaged
+                      <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              setErr(null);
+                              await uploadLocalFiles();
+                            } catch (e: any) {
+                              setErr(e?.message || "Upload failed");
+                            }
+                          }}
+                          disabled={uploading || !files.length}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                        >
+                          {uploading ? "Uploading…" : "Upload now"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFiles([]);
+                            if (fileInputRef.current) fileInputRef.current.value = "";
+                          }}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                        >
+                          <Trash2 size={16} /> Clear files
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+              <Card
+                title="Attributes"
+                subtitle={
+                  offersOnly
+                    ? "Catalog product attributes are read-only."
+                    : isReviewManaged
                       ? "Optional details used for filtering and variant setup. Attribute changes will update the pending submission."
                       : "Optional details used for filtering and variant setup."
-                  }
-                  className={[
-                    hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : "",
-                    onboardingBlocked ? "border-amber-200 bg-amber-50/30" : "",
-                  ].join(" ")}
-                  right={
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <AddNewLink
-                        label="Add new attribute"
-                        onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
-                      />
+                }
+                className={[
+                  hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : "",
+                  onboardingBlocked ? "border-amber-200 bg-amber-50/30" : "",
+                ].join(" ")}
+                right={
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <AddNewLink
+                      label="Add new attribute"
+                      onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
+                    />
+                  </div>
+                }
+              >
+                <div className="space-y-3">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Attribute editing is locked until onboarding is complete.
                     </div>
-                  }
-                >
-                  <div className="space-y-3">
-                    {onboardingBlocked && (
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                        Attribute editing is locked until onboarding is complete.
-                      </div>
-                    )}
+                  )}
 
-                    {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
+                  {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
 
-                    {!attributesQ.isLoading && activeAttrs.length === 0 && (
-                      <div className="text-sm text-zinc-500">No active attributes configured.</div>
-                    )}
+                  {!attributesQ.isLoading && activeAttrs.length === 0 && (
+                    <div className="text-sm text-zinc-500">No active attributes configured.</div>
+                  )}
 
-                    {selectableAttrs.length > 0 && (
-                      <div
-                        className={[
-                          "rounded-xl border px-3 py-2 text-[12px]",
-                          hasBaseComboConflict || flashBaseCombo
-                            ? "bg-rose-50 border-rose-200 text-rose-800"
-                            : "bg-amber-50 border-amber-200 text-amber-800",
-                        ].join(" ")}
-                      >
-                        The selected <b>SELECT</b> attributes here form your <b>BaseCombo</b>. Variant combos below must be different.
-                        {(hasBaseComboConflict || flashBaseCombo) && (
-                          <>
-                            {" "}
-                            <b>Fix:</b> change either the base selection or the highlighted variant row(s).
-                          </>
-                        )}
-                      </div>
-                    )}
+                  {selectableAttrs.length > 0 && (
+                    <div
+                      className={[
+                        "rounded-xl border px-3 py-2 text-[12px]",
+                        hasBaseComboConflict || flashBaseCombo
+                          ? "bg-rose-50 border-rose-200 text-rose-800"
+                          : "bg-amber-50 border-amber-200 text-amber-800",
+                      ].join(" ")}
+                    >
+                      The selected <b>SELECT</b> attributes here form your <b>BaseCombo</b>. Variant combos below must be different.
+                      {(hasBaseComboConflict || flashBaseCombo) && (
+                        <>
+                          {" "}
+                          <b>Fix:</b> change either the base selection or the highlighted variant row(s).
+                        </>
+                      )}
+                    </div>
+                  )}
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {activeAttrs.map((a: CatalogAttribute) => {
-                        if (a.type === "TEXT") {
-                          const v = String(getAttrVal(a.id) ?? "");
-                          return (
-                            <div key={a.id}>
-                              <Label>{a.name}</Label>
-                              <Input
-                                value={v}
-                                onChange={(e) => setAttr(a.id, e.target.value)}
-                                disabled={!canEditAttributes}
-                                placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
-                              />
-                            </div>
-                          );
-                        }
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {activeAttrs.map((a: CatalogAttribute) => {
+                      if (a.type === "TEXT") {
+                        const v = String(getAttrVal(a.id) ?? "");
+                        return (
+                          <div key={a.id}>
+                            <Label>{a.name}</Label>
+                            <Input
+                              value={v}
+                              onChange={(e) => setAttr(a.id, e.target.value)}
+                              disabled={!canEditAttributes}
+                              placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
+                            />
+                          </div>
+                        );
+                      }
 
-                        if (a.type === "SELECT") {
-                          const v = String(getAttrVal(a.id) ?? "");
-                          const label = "add new " + a.name.toLowerCase();
-
-                          return (
-                            <div key={a.id}>
-                              <div className="flex items-center justify-between mb-1">
-                                <Label>{a.name}</Label>
-                                <AddNewLink
-                                  label={label}
-                                  onClick={() =>
-                                    nav(
-                                      goToCatalogRequests("attribute-values", "value", {
-                                        attributeId: String(a.id || ""),
-                                      })
-                                    )
-                                  }
-                                  title={`Request new values for ${a.name}`}
-                                />
-                              </div>
-
-                              <Select
-                                value={v}
-                                onChange={(e) => setAttr(a.id, e.target.value)}
-                                disabled={!canEditAttributes}
-                                className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
-                              >
-                                <option value="">— Select —</option>
-                                {(a.values || []).map((x) => (
-                                  <option key={x.id} value={x.id}>
-                                    {x.name}
-                                  </option>
-                                ))}
-                              </Select>
-                            </div>
-                          );
-                        }
-
-                        const arr = Array.isArray(getAttrVal(a.id)) ? (getAttrVal(a.id) as string[]) : [];
+                      if (a.type === "SELECT") {
+                        const v = String(getAttrVal(a.id) ?? "");
                         const label = "add new " + a.name.toLowerCase();
 
                         return (
-                          <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-xs font-semibold text-zinc-700">{a.name}</div>
+                          <div key={a.id}>
+                            <div className="flex items-center justify-between mb-1">
+                              <Label>{a.name}</Label>
                               <AddNewLink
                                 label={label}
                                 onClick={() =>
@@ -3299,273 +3542,265 @@ const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
                               />
                             </div>
 
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {(a.values || []).map((x) => {
-                                const checked = arr.includes(x.id);
-                                return (
-                                  <label
-                                    key={x.id}
-                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                      checked
-                                        ? "bg-zinc-900 text-white border-zinc-900"
-                                        : "bg-white hover:bg-black/5"
-                                    }`}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      className="hidden"
-                                      checked={checked}
-                                      onChange={() => {
-                                        if (!canEditAttributes) return;
-                                        setSelectedAttrs((s) => {
-                                          const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
-                                          const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
-                                          return { ...s, [a.id]: next };
-                                        });
-                                      }}
-                                    />
-                                    {x.name}
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </Card>
-
-                <Card
-                  title="Variant combinations"
-                  className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
-                  subtitle={
-                    offersOnly
-                      ? "Set supplier-specific stock and price for each existing variant."
-                      : isReviewManaged
-                      ? "Review-managed listing: existing combos stay fixed here; qty updates are immediate, and price edits update the pending submission."
-                      : "Add combinations of SELECT attributes with qty and price."
-                  }
-                  right={
-                    <div className="flex gap-2 flex-wrap">
-                      {!offersOnly && canAddNewCombos && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={generateVariantMatrix}
-                            disabled={
-                              onboardingBlocked ||
-                              !selectableAttrs.some((a: any) => String(selectedAttrs[a.id] ?? "").trim() !== "")
-                            }
-                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
-                          >
-                            Generate combo
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={addVariantRow}
-                            disabled={onboardingBlocked || !selectableAttrs.length || !canAddNewCombos}
-                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
-                          >
-                            <Plus size={16} /> Add row
-                          </button>
-                        </>
-                      )}
-
-                      {offersOnly && (
-                        <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-700">
-                          {variantRows.length} variant(s)
-                        </div>
-                      )}
-                    </div>
-                  }
-                >
-                  <div className="space-y-2">
-                    {onboardingBlocked && (
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                        Variant quantity and pricing updates are locked until onboarding is complete.
-                      </div>
-                    )}
-
-                    {!selectableAttrs.length && (
-                      <div className="text-sm text-zinc-500">
-                        No SELECT attributes available. Create SELECT attributes to enable variants.
-                      </div>
-                    )}
-
-                    {!offersOnly && isReviewManaged && (
-                      <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[12px] text-zinc-700">
-                        Existing variant rows can still have stock updated immediately. Any review-managed price changes will be submitted through the approval flow.
-                      </div>
-                    )}
-
-                    {variantRows.map((row) => {
-                      const isDup = duplicateRowIds.has(row.id);
-                      const isBaseConflict = baseComboConflictRowIds.has(row.id);
-                      const isFlashing = flashVariantRowId === row.id;
-                      const isEditing =
-                        editingVariantRowId === row.id &&
-                        !offersOnly &&
-                        !isReviewManaged &&
-                        !row.isExisting &&
-                        !onboardingBlocked;
-
-                      const variantPriceNum = toMoneyNumber(row.unitPrice);
-                      const effectiveVariantPrice = offersOnly
-                        ? Number(row.activeUnitPrice ?? activeBasePriceForDisplay)
-                        : variantPriceNum > 0
-                        ? variantPriceNum
-                        : toMoneyNumber(retailPrice);
-
-                      const label = row.comboLabel || getVariantRowLabel(row);
-                      const rowQty = toIntNonNeg(row.availableQty);
-
-                      const pendingVar = row.variantId
-                        ? pendingVariantPatchByVariantId.get(String(row.variantId))
-                        : null;
-
-                      const pendingPatch = pendingVar?.proposedPatch ?? pendingVar?.patchJson ?? null;
-                      const pendingVarUnitPrice = Number(pendingPatch?.unitPrice ?? NaN);
-
-                      const hasPendingVarPrice =
-                        offersOnly &&
-                        Number.isFinite(pendingVarUnitPrice) &&
-                        pendingVarUnitPrice > 0 &&
-                        pendingVarUnitPrice !== Number(row.activeUnitPrice ?? activeBasePriceForDisplay);
-
-                      if (!isEditing) {
-                        return (
-                          <div
-                            key={row.id}
-                            className={[
-                              "rounded-2xl border bg-zinc-50 p-3",
-                              isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
-                            ].join(" ")}
-                          >
-                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="text-sm font-semibold text-zinc-900">{label}</div>
-                                <div className="text-xs text-zinc-600 mt-1">
-                                  Qty: <b>{rowQty || 0}</b> · Price:{" "}
-                                  <b>{row.unitPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
-                                </div>
-
-                                {!offersOnly &&
-                                  isLive &&
-                                  row.variantId &&
-                                  pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice != null &&
-                                  Number(
-                                    pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice
-                                  ) !== Number(row.activeUnitPrice ?? effectiveVariantPrice) && (
-                                    <div className="text-[11px] text-amber-700 mt-1">
-                                      Pending variant:{" "}
-                                      <b>
-                                        {ngn.format(
-                                          Number(
-                                            pendingProductVariantPatchByVariantId.get(String(row.variantId))
-                                              ?.unitPrice ?? 0
-                                          )
-                                        )}
-                                      </b>
-                                    </div>
-                                  )}
-
-                                {offersOnly && hasPendingVarPrice && (
-                                  <div className="text-[11px] text-amber-700 mt-1">
-                                    Requested variant: <b>{ngn.format(pendingVarUnitPrice)}</b> (pending)
-                                  </div>
-                                )}
-
-                                {(isDup || isBaseConflict) && (
-                                  <div className="text-[12px] text-rose-700 mt-2">
-                                    {isDup ? "Duplicate variant combination." : null}
-                                    {isDup && isBaseConflict ? " " : null}
-                                    {isBaseConflict ? "This VariantCombo matches your BaseCombo." : null}
-                                  </div>
-                                )}
-                              </div>
-
-                              <div className="flex items-center gap-2 flex-wrap">
-                                {offersOnly || isReviewManaged || row.isExisting ? (
-                                  <>
-                                    <span className="text-xs text-zinc-500">Price</span>
-                                    <Input
-                                      value={row.unitPrice}
-                                      onChange={(e) => updateVariantPrice(row.id, e.target.value)}
-                                      inputMode="decimal"
-                                      className="w-28 text-xs"
-                                      placeholder="e.g. 25000"
-                                      disabled={onboardingBlocked}
-                                    />
-
-                                    <span className="text-xs text-zinc-500">Qty</span>
-                                    <Input
-                                      value={row.availableQty}
-                                      onChange={(e) => updateVariantQty(row.id, e.target.value)}
-                                      inputMode="numeric"
-                                      className="w-24 text-xs"
-                                      placeholder="e.g. 5"
-                                      disabled={onboardingBlocked}
-                                    />
-                                  </>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setErr(null);
-                                      setEditingVariantRowId(row.id);
-                                    }}
-                                    disabled={onboardingBlocked}
-                                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
-                                  >
-                                    Edit combo
-                                  </button>
-                                )}
-
-                                <button
-                                  type="button"
-                                  onClick={() => removeVariantRow(row.id)}
-                                  disabled={onboardingBlocked}
-                                  className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-60"
-                                >
-                                  <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
-                                </button>
-                              </div>
-                            </div>
+                            <Select
+                              value={v}
+                              onChange={(e) => setAttr(a.id, e.target.value)}
+                              disabled={!canEditAttributes}
+                              className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
+                            >
+                              <option value="">— Select —</option>
+                              {(a.values || []).map((x) => (
+                                <option key={x.id} value={x.id}>
+                                  {x.name}
+                                </option>
+                              ))}
+                            </Select>
                           </div>
                         );
                       }
 
+                      const arr = Array.isArray(getAttrVal(a.id)) ? (getAttrVal(a.id) as string[]) : [];
+                      const label = "add new " + a.name.toLowerCase();
+
+                      return (
+                        <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs font-semibold text-zinc-700">{a.name}</div>
+                            <AddNewLink
+                              label={label}
+                              onClick={() =>
+                                nav(
+                                  goToCatalogRequests("attribute-values", "value", {
+                                    attributeId: String(a.id || ""),
+                                  })
+                                )
+                              }
+                              title={`Request new values for ${a.name}`}
+                            />
+                          </div>
+
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {(a.values || []).map((x) => {
+                              const checked = arr.includes(x.id);
+                              return (
+                                <label
+                                  key={x.id}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked
+                                    ? "bg-zinc-900 text-white border-zinc-900"
+                                    : "bg-white hover:bg-black/5"
+                                    }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="hidden"
+                                    checked={checked}
+                                    onChange={() => {
+                                      if (!canEditAttributes) return;
+                                      setSelectedAttrs((s) => {
+                                        const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
+                                        const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
+                                        return { ...s, [a.id]: next };
+                                      });
+                                    }}
+                                  />
+                                  {x.name}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </Card>
+
+              <Card
+                title="Variant combinations"
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+                subtitle={
+                  offersOnly
+                    ? "Set supplier-specific stock and price for each existing variant."
+                    : isReviewManaged
+                      ? "Review-managed listing: existing combos stay fixed here; qty updates are immediate, and price edits update the pending submission."
+                      : "Add combinations of SELECT attributes with qty and price."
+                }
+                right={
+                  <div className="flex gap-2 flex-wrap">
+                    {!offersOnly && canAddNewCombos && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={generateVariantMatrix}
+                          disabled={
+                            onboardingBlocked ||
+                            !selectableAttrs.some((a: any) => String(selectedAttrs[a.id] ?? "").trim() !== "")
+                          }
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                        >
+                          Generate combo
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={addVariantRow}
+                          disabled={onboardingBlocked || !selectableAttrs.length || !canAddNewCombos}
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
+                        >
+                          <Plus size={16} /> Add row
+                        </button>
+                      </>
+                    )}
+
+                    {offersOnly && (
+                      <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-700">
+                        {variantRows.length} variant(s)
+                      </div>
+                    )}
+                  </div>
+                }
+              >
+                <div className="space-y-2">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Variant quantity and pricing updates are locked until onboarding is complete.
+                    </div>
+                  )}
+
+                  {!selectableAttrs.length && (
+                    <div className="text-sm text-zinc-500">
+                      No SELECT attributes available. Create SELECT attributes to enable variants.
+                    </div>
+                  )}
+
+                  {!offersOnly && isReviewManaged && (
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[12px] text-zinc-700">
+                      Existing variant rows can still have stock updated immediately. Any review-managed price changes will be submitted through the approval flow.
+                    </div>
+                  )}
+
+                  {variantRows.map((row) => {
+                    const isDup = duplicateRowIds.has(row.id);
+                    const isBaseConflict = baseComboConflictRowIds.has(row.id);
+                    const isFlashing = flashVariantRowId === row.id;
+                    const isEditing =
+                      editingVariantRowId === row.id &&
+                      !offersOnly &&
+                      !isReviewManaged &&
+                      !row.isExisting &&
+                      !onboardingBlocked;
+
+                    const variantPriceNum = toMoneyNumber(row.unitPrice);
+                    const effectiveVariantPrice = offersOnly
+                      ? Number(row.activeUnitPrice ?? activeBasePriceForDisplay)
+                      : variantPriceNum > 0
+                        ? variantPriceNum
+                        : toMoneyNumber(retailPrice);
+
+                    const label = row.comboLabel || getVariantRowLabel(row);
+                    const rowQty = toIntNonNeg(row.availableQty);
+
+                    const pendingVar = row.variantId
+                      ? pendingVariantPatchByVariantId.get(String(row.variantId))
+                      : null;
+
+                    const pendingPatch = pendingVar?.proposedPatch ?? pendingVar?.patchJson ?? null;
+                    const pendingVarUnitPrice = Number(pendingPatch?.unitPrice ?? NaN);
+
+                    const hasPendingVarPrice =
+                      offersOnly &&
+                      Number.isFinite(pendingVarUnitPrice) &&
+                      pendingVarUnitPrice > 0 &&
+                      pendingVarUnitPrice !== Number(row.activeUnitPrice ?? activeBasePriceForDisplay);
+
+                    if (!isEditing) {
                       return (
                         <div
                           key={row.id}
                           className={[
-                            "rounded-2xl border bg-white p-3 space-y-3",
+                            "rounded-2xl border bg-zinc-50 p-3",
                             isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
                           ].join(" ")}
                         >
-                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                            <div className="text-sm font-semibold text-zinc-900">Editing combo</div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-zinc-900">{label}</div>
+                              <div className="text-xs text-zinc-600 mt-1">
+                                Qty: <b>{rowQty || 0}</b> · Price:{" "}
+                                <b>{row.unitPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
+                              </div>
 
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => saveVariantRow(row.id)}
-                                disabled={onboardingBlocked}
-                                className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
-                              >
-                                Save combo
-                              </button>
+                              {!offersOnly &&
+                                isLive &&
+                                row.variantId &&
+                                pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice != null &&
+                                Number(
+                                  pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice
+                                ) !== Number(row.activeUnitPrice ?? effectiveVariantPrice) && (
+                                  <div className="text-[11px] text-amber-700 mt-1">
+                                    Pending variant:{" "}
+                                    <b>
+                                      {ngn.format(
+                                        Number(
+                                          pendingProductVariantPatchByVariantId.get(String(row.variantId))
+                                            ?.unitPrice ?? 0
+                                        )
+                                      )}
+                                    </b>
+                                  </div>
+                                )}
 
-                              <button
-                                type="button"
-                                onClick={() => setEditingVariantRowId(null)}
-                                disabled={onboardingBlocked}
-                                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
-                              >
-                                Done
-                              </button>
+                              {offersOnly && hasPendingVarPrice && (
+                                <div className="text-[11px] text-amber-700 mt-1">
+                                  Requested variant: <b>{ngn.format(pendingVarUnitPrice)}</b> (pending)
+                                </div>
+                              )}
+
+                              {(isDup || isBaseConflict) && (
+                                <div className="text-[12px] text-rose-700 mt-2">
+                                  {isDup ? "Duplicate variant combination." : null}
+                                  {isDup && isBaseConflict ? " " : null}
+                                  {isBaseConflict ? "This VariantCombo matches your BaseCombo." : null}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {offersOnly || isReviewManaged || row.isExisting ? (
+                                <>
+                                  <span className="text-xs text-zinc-500">Price</span>
+                                  <Input
+                                    value={row.unitPrice}
+                                    onChange={(e) => updateVariantPrice(row.id, e.target.value)}
+                                    inputMode="decimal"
+                                    className="w-28 text-xs"
+                                    placeholder="e.g. 25000"
+                                    disabled={onboardingBlocked}
+                                  />
+
+                                  <span className="text-xs text-zinc-500">Qty</span>
+                                  <Input
+                                    value={row.availableQty}
+                                    onChange={(e) => updateVariantQty(row.id, e.target.value)}
+                                    inputMode="numeric"
+                                    className="w-24 text-xs"
+                                    placeholder="e.g. 5"
+                                    disabled={onboardingBlocked}
+                                  />
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setErr(null);
+                                    setEditingVariantRowId(row.id);
+                                  }}
+                                  disabled={onboardingBlocked}
+                                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
+                                >
+                                  Edit combo
+                                </button>
+                              )}
 
                               <button
                                 type="button"
@@ -3573,232 +3808,144 @@ const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
                                 disabled={onboardingBlocked}
                                 className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-60"
                               >
-                                <Trash2 size={14} /> Remove
+                                <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
                               </button>
                             </div>
                           </div>
-
-                          <div className="grid grid-cols-1 gap-3 items-start">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              {selectableAttrs.map((attr: any) => {
-                                const valueId = row.selections[attr.id] || "";
-                                const label = "add new " + attr.name.toLowerCase();
-
-                                return (
-                                  <div key={attr.id}>
-                                    <div className="flex items-center justify-between mb-1">
-                                      <div className="text-[11px] font-semibold text-zinc-600">{attr.name}</div>
-                                      <AddNewLink
-                                        label={label}
-                                        onClick={() =>
-                                          nav(
-                                            goToCatalogRequests("attribute-values", "value", {
-                                              attributeId: String(attr.id || ""),
-                                            })
-                                          )
-                                        }
-                                        title={`Request new values for ${attr.name}`}
-                                      />
-                                    </div>
-
-                                    <Select
-                                      value={valueId}
-                                      onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                      disabled={onboardingBlocked}
-                                      className={isBaseConflict || isFlashing ? "border-rose-300" : ""}
-                                    >
-                                      <option value="">Select…</option>
-                                      {(attr.values || []).map((v: any) => (
-                                        <option key={v.id} value={v.id}>
-                                          {v.name}
-                                        </option>
-                                      ))}
-                                    </Select>
-                                  </div>
-                                );
-                              })}
-                            </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                              <div>
-                                <div className="text-[11px] font-semibold text-zinc-600 mb-1">Qty</div>
-                                <Input
-                                  value={row.availableQty}
-                                  onChange={(e) => updateVariantQty(row.id, e.target.value)}
-                                  inputMode="numeric"
-                                  placeholder="e.g. 5"
-                                  disabled={onboardingBlocked}
-                                />
-                              </div>
-
-                              <div>
-                                <div className="text-[11px] font-semibold text-zinc-600 mb-1">
-                                  Variant price (NGN)
-                                </div>
-                                <Input
-                                  value={row.unitPrice}
-                                  onChange={(e) => updateVariantPrice(row.id, e.target.value)}
-                                  inputMode="decimal"
-                                  placeholder={retailPrice ? `e.g. ${retailPrice}` : "e.g. 25000"}
-                                  disabled={onboardingBlocked}
-                                />
-                                <div className="text-[11px] text-zinc-500 mt-1">
-                                  Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          {(isDup || isBaseConflict) && (
-                            <div className="text-[12px] text-rose-700">
-                              {isDup ? "Duplicate variant combination." : null}
-                              {isDup && isBaseConflict ? " " : null}
-                              {isBaseConflict ? "This VariantCombo matches your BaseCombo (Attributes section)." : null}
-                            </div>
-                          )}
                         </div>
                       );
-                    })}
+                    }
 
-                    {variantRows.length === 0 && (
-                      <div className="text-sm text-zinc-500">No variant rows found for this product.</div>
-                    )}
-                  </div>
-                </Card>
+                    return (
+                      <div
+                        key={row.id}
+                        className={[
+                          "rounded-2xl border bg-white p-3 space-y-3",
+                          isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
+                        ].join(" ")}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                          <div className="text-sm font-semibold text-zinc-900">Editing combo</div>
 
-                <div className="hidden sm:block">
-                  <button
-                    type="button"
-                    disabled={submitDisabled}
-                    onClick={doSave}
-                    className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
-                  >
-                    {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                    {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
-                  </button>
-                </div>
-              </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => saveVariantRow(row.id)}
+                              disabled={onboardingBlocked}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                            >
+                              Save combo
+                            </button>
 
-              <div className="hidden lg:block space-y-4">
-                <Card title="Submission summary" subtitle="What will be sent to the backend">
-                  <div className="text-sm text-zinc-700 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-500">Flow</span>
-                      <b className="text-zinc-900">
-                        {offersOnly
-                          ? "Attach existing product"
-                          : isPendingReview
-                          ? "Update pending submission"
-                          : isRejected
-                          ? "Resubmit for approval"
-                          : isReviewManaged
-                          ? "Review-managed product"
-                          : "Edit product"}
-                      </b>
-                    </div>
+                            <button
+                              type="button"
+                              onClick={() => setEditingVariantRowId(null)}
+                              disabled={onboardingBlocked}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
+                            >
+                              Done
+                            </button>
 
-                    {!offersOnly ? (
-                      <>
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Title</span>
-                          <b className="text-zinc-900 truncate max-w-[180px]">{title.trim() ? title.trim() : "—"}</b>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Base price</span>
-                          <b className="text-zinc-900">
-                            {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
-                          </b>
-                        </div>
-
-                        {!offersOnly && isLive && (
-                          <div className="text-[11px] text-zinc-600 mt-1">
-                            Active (approved): <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
+                            <button
+                              type="button"
+                              onClick={() => removeVariantRow(row.id)}
+                              disabled={onboardingBlocked}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-60"
+                            >
+                              <Trash2 size={14} /> Remove
+                            </button>
                           </div>
-                        )}
+                        </div>
 
-                        {!offersOnly &&
-                          isLive &&
-                          pendingProductPatch?.basePrice != null &&
-                          Number(pendingProductPatch.basePrice) !== Number(activeBasePriceForDisplay) && (
-                            <div className="text-[11px] text-amber-700 mt-1">
-                              Pending: <b>{ngn.format(Number(pendingProductPatch.basePrice ?? 0))}</b>
+                        <div className="grid grid-cols-1 gap-3 items-start">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {selectableAttrs.map((attr: any) => {
+                              const valueId = row.selections[attr.id] || "";
+                              const label = "add new " + attr.name.toLowerCase();
+
+                              return (
+                                <div key={attr.id}>
+                                  <div className="flex items-center justify-between mb-1">
+                                    <div className="text-[11px] font-semibold text-zinc-600">{attr.name}</div>
+                                    <AddNewLink
+                                      label={label}
+                                      onClick={() =>
+                                        nav(
+                                          goToCatalogRequests("attribute-values", "value", {
+                                            attributeId: String(attr.id || ""),
+                                          })
+                                        )
+                                      }
+                                      title={`Request new values for ${attr.name}`}
+                                    />
+                                  </div>
+
+                                  <Select
+                                    value={valueId}
+                                    onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
+                                    disabled={onboardingBlocked}
+                                    className={isBaseConflict || isFlashing ? "border-rose-300" : ""}
+                                  >
+                                    <option value="">Select…</option>
+                                    {(attr.values || []).map((v: any) => (
+                                      <option key={v.id} value={v.id}>
+                                        {v.name}
+                                      </option>
+                                    ))}
+                                  </Select>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div>
+                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">Qty</div>
+                              <Input
+                                value={row.availableQty}
+                                onChange={(e) => updateVariantQty(row.id, e.target.value)}
+                                inputMode="numeric"
+                                placeholder="e.g. 5"
+                                disabled={onboardingBlocked}
+                              />
                             </div>
-                          )}
 
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">SKU</span>
-                          <b className="text-zinc-900 truncate max-w-[180px]">{sku.trim() ? sku.trim() : "—"}</b>
+                            <div>
+                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">
+                                Variant price (NGN)
+                              </div>
+                              <Input
+                                value={row.unitPrice}
+                                onChange={(e) => updateVariantPrice(row.id, e.target.value)}
+                                inputMode="decimal"
+                                placeholder={retailPrice ? `e.g. ${retailPrice}` : "e.g. 25000"}
+                                disabled={onboardingBlocked}
+                              />
+                              <div className="text-[11px] text-zinc-500 mt-1">
+                                Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
+                              </div>
+                            </div>
+                          </div>
                         </div>
 
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500 inline-flex items-center gap-2">
-                            <Package size={14} /> Stock
-                          </span>
-                          <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
-                            {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
-                          </b>
-                        </div>
-
-                        <div className="text-[11px] text-zinc-600">
-                          Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Images</span>
-                          <b className="text-zinc-900">
-                            {imagesCount}/{MAX_IMAGES}
-                          </b>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Variant rows</span>
-                          <b className="text-zinc-900">{variantRows.length}</b>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Selected product</span>
-                          <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Existing SKU</span>
-                          <b className="text-zinc-900 truncate max-w-[180px]">{sku || "—"}</b>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Base offer</span>
-                          <b className="text-zinc-900">
-                            {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
-                          </b>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Total qty</span>
-                          <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
-                        </div>
-
-                        <div className="text-[11px] text-zinc-600">
-                          Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-500">Variant offers</span>
-                          <b className="text-zinc-900">{variantRows.length}</b>
-                        </div>
-
-                        {offersOnly && hasPendingBase && (
-                          <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-[11px]">
-                            Pending approval: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
+                        {(isDup || isBaseConflict) && (
+                          <div className="text-[12px] text-rose-700">
+                            {isDup ? "Duplicate variant combination." : null}
+                            {isDup && isBaseConflict ? " " : null}
+                            {isBaseConflict ? "This VariantCombo matches your BaseCombo (Attributes section)." : null}
                           </div>
                         )}
-                      </>
-                    )}
-                  </div>
-                </Card>
+                      </div>
+                    );
+                  })}
 
+                  {variantRows.length === 0 && (
+                    <div className="text-sm text-zinc-500">No variant rows found for this product.</div>
+                  )}
+                </div>
+              </Card>
+
+              <div className="hidden sm:block">
                 <button
                   type="button"
                   disabled={submitDisabled}
@@ -3808,29 +3955,181 @@ const filePreviews = useMemo<Array<{ file: File; url: string }>>(() => {
                   {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
                   {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
                 </button>
-
-                {offersOnly && detailQ.data && (
-                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
-                    <div className="flex items-center gap-2 font-semibold">
-                      <CheckCircle2 size={16} />
-                      Existing product mode
-                    </div>
-                    <div className="mt-2 text-xs">
-                      Core product details stay read-only here. You are only updating supplier-specific offer and stock.
-                    </div>
-                  </div>
-                )}
-
-                {onboardingBlocked && (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                    Complete onboarding first to unlock editing on this page.
-                  </div>
-                )}
               </div>
             </div>
+
+            <div className="hidden lg:block space-y-4">
+              <Card title="Submission summary" subtitle="What will be sent to the backend">
+                <div className="text-sm text-zinc-700 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-500">Flow</span>
+                    <b className="text-zinc-900">
+                      {offersOnly
+                        ? "Attach existing product"
+                        : isPendingReview
+                          ? "Update pending submission"
+                          : isRejected
+                            ? "Resubmit for approval"
+                            : isReviewManaged
+                              ? "Review-managed product"
+                              : "Edit product"}
+                    </b>
+                  </div>
+
+                  {!offersOnly ? (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Title</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{title.trim() ? title.trim() : "—"}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Base price</span>
+                        <b className="text-zinc-900">
+                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                        </b>
+                      </div>
+
+                      {!offersOnly && isLive && (
+                        <div className="text-[11px] text-zinc-600 mt-1">
+                          Active (approved): <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
+                        </div>
+                      )}
+
+                      {!offersOnly &&
+                        isLive &&
+                        pendingProductPatch?.basePrice != null &&
+                        Number(pendingProductPatch.basePrice) !== Number(activeBasePriceForDisplay) && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            Pending: <b>{ngn.format(Number(pendingProductPatch.basePrice ?? 0))}</b>
+                          </div>
+                        )}
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">SKU</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{sku.trim() ? sku.trim() : "—"}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500 inline-flex items-center gap-2">
+                          <Package size={14} /> Stock
+                        </span>
+                        <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                          {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
+                        </b>
+                      </div>
+
+
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Shipping</span>
+                        <b className="text-zinc-900">
+                          {freeShipping
+                            ? "Free shipping"
+                            : shippingClass || weightGrams || lengthCm || widthCm || heightCm
+                              ? "Parcel configured"
+                              : "Default / blank"}
+                        </b>
+                      </div>
+
+                      {!freeShipping && !offersOnly && (
+                        <div className="text-[11px] text-zinc-600">
+                          Weight: <b>{weightGrams || "—"}</b>g • Class: <b>{shippingClass || "AUTO"}</b>
+                        </div>
+                      )}
+
+
+                      <div className="text-[11px] text-zinc-600">
+                        Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Images</span>
+                        <b className="text-zinc-900">
+                          {imagesCount}/{MAX_IMAGES}
+                        </b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Variant rows</span>
+                        <b className="text-zinc-900">{variantRows.length}</b>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Selected product</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Existing SKU</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{sku || "—"}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Base offer</span>
+                        <b className="text-zinc-900">
+                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                        </b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Total qty</span>
+                        <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
+                      </div>
+
+                      <div className="text-[11px] text-zinc-600">
+                        Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Variant offers</span>
+                        <b className="text-zinc-900">{variantRows.length}</b>
+                      </div>
+
+                      {offersOnly && hasPendingBase && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-[11px]">
+                          Pending approval: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </Card>
+
+              <button
+                type="button"
+                disabled={submitDisabled}
+                onClick={doSave}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
+              >
+                {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
+                {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
+              </button>
+
+              {offersOnly && detailQ.data && (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <CheckCircle2 size={16} />
+                    Existing product mode
+                  </div>
+                  <div className="mt-2 text-xs">
+                    Core product details stay read-only here. You are only updating supplier-specific offer and stock.
+                  </div>
+                </div>
+              )}
+
+              {onboardingBlocked && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  Complete onboarding first to unlock editing on this page.
+                </div>
+              )}
+            </div>
           </div>
-        </SupplierLayout>
-      </SiteLayout>
-    );
+        </div>
+      </SupplierLayout>
+    </SiteLayout>
+  );
 
 }

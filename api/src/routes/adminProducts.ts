@@ -859,7 +859,186 @@ async function getSupplierLinkedUserId(supplierId: string): Promise<string | nul
  * NOTE: We keep `unitPrice` only as a stored column on ProductVariantOption (your schema),
  * but we DO NOT treat it as a "bump" or use it to compute prices anywhere.
  */
+/* ------------------------ Shipping fields (SAFE) ------------------------ */
 
+const PRODUCT_SHIPPING_NUMBER_FIELDS = [
+  "shippingCost",
+  "shippingFee",
+  "shippingPrice",
+
+  "weight",
+  "weightKg",
+  "weightGrams",
+  "shippingWeight",
+  "shippingWeightKg",
+  "shippingWeightGrams",
+
+  "length",
+  "width",
+  "height",
+  "lengthCm",
+  "widthCm",
+  "heightCm",
+  "shippingLength",
+  "shippingWidth",
+  "shippingHeight",
+  "shippingLengthCm",
+  "shippingWidthCm",
+  "shippingHeightCm",
+
+  "packageWeight",
+  "packageWeightKg",
+  "packageWeightGrams",
+  "packageLengthCm",
+  "packageWidthCm",
+  "packageHeightCm",
+
+  "volumetricWeight",
+  "volumetricWeightKg",
+] as const;
+
+const PRODUCT_SHIPPING_STRING_FIELDS = [
+  "shippingClass",
+  "shippingProfileId",
+  "shippingProfile",
+  "shippingCategory",
+  "shippingType",
+  "shippingMethod",
+  "deliveryType",
+  "deliveryMethod",
+  "dispatchTimeText",
+  "shippingNote",
+  "shippingNotes",
+  "packagingType",
+  "packageUnit",
+] as const;
+
+const PRODUCT_SHIPPING_BOOLEAN_FIELDS = [
+  "requiresShipping",
+  "freeShipping",
+  "shipsAlone",
+  "pickupOnly",
+  "localPickup",
+  "allowLocalPickup",
+  "fragile",
+  "oversized",
+] as const;
+
+const PRODUCT_SHIPPING_ALL_FIELDS = [
+  ...PRODUCT_SHIPPING_NUMBER_FIELDS,
+  ...PRODUCT_SHIPPING_STRING_FIELDS,
+  ...PRODUCT_SHIPPING_BOOLEAN_FIELDS,
+] as const;
+
+function pickRawShippingInput(body: any) {
+  return body?.shipping ?? body?.data?.shipping ?? body ?? {};
+}
+
+function normalizeNumberLike(v: any): number | undefined {
+  if (v === "" || v == null) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function normalizeStringLike(v: any): string | undefined {
+  if (v == null) return undefined;
+  const s = String(v).trim();
+  return s ? s : undefined;
+}
+
+function normalizeBooleanLike(v: any): boolean | undefined {
+  if (v === "" || v == null) return undefined;
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  const s = String(v).trim().toLowerCase();
+  if (["true", "1", "yes", "y", "on"].includes(s)) return true;
+  if (["false", "0", "no", "n", "off"].includes(s)) return false;
+  return undefined;
+}
+
+/**
+ * Reads shipping fields from:
+ * - root body: { shippingCost, weightKg, ... }
+ * - nested:    { shipping: { shippingCost, weightKg, ... } }
+ * - nested:    { data: { shippingCost, ... } } / { data: { shipping: {...} } }
+ *
+ * Only returns fields that actually exist on Product.
+ */
+function extractShippingWriteDataFromBody(rawBody: any) {
+  const src = pickRawShippingInput(rawBody);
+  const out: any = {};
+
+  for (const key of PRODUCT_SHIPPING_NUMBER_FIELDS) {
+    if (!hasProductWritableField(key)) continue;
+
+    const raw =
+      src?.[key] ??
+      rawBody?.[key] ??
+      rawBody?.data?.[key];
+
+    if (raw === undefined) continue;
+
+    const n = normalizeNumberLike(raw);
+    if (n !== undefined) out[key] = toDecimal(n);
+  }
+
+  for (const key of PRODUCT_SHIPPING_STRING_FIELDS) {
+    if (!hasProductWritableField(key)) continue;
+
+    const raw =
+      src?.[key] ??
+      rawBody?.[key] ??
+      rawBody?.data?.[key];
+
+    if (raw === undefined) continue;
+
+    if (raw === null) {
+      out[key] = null;
+      continue;
+    }
+
+    const s = normalizeStringLike(raw);
+    out[key] = s ?? null;
+  }
+
+  for (const key of PRODUCT_SHIPPING_BOOLEAN_FIELDS) {
+    if (!hasProductWritableField(key)) continue;
+
+    const raw =
+      src?.[key] ??
+      rawBody?.[key] ??
+      rawBody?.data?.[key];
+
+    if (raw === undefined) continue;
+
+    const b = normalizeBooleanLike(raw);
+    if (b !== undefined) out[key] = b;
+  }
+
+  return out;
+}
+
+function buildShippingSelect() {
+  const select: any = {};
+  for (const key of PRODUCT_SHIPPING_ALL_FIELDS) {
+    if (hasProductField(key)) {
+      select[key] = true;
+    }
+  }
+  return select;
+}
+
+function normalizeShippingFieldsForResponse(row: any) {
+  if (!row || typeof row !== "object") return row;
+
+  for (const key of PRODUCT_SHIPPING_NUMBER_FIELDS) {
+    if (!(key in row)) continue;
+    const v = row[key];
+    row[key] = v != null ? Number(v) : null;
+  }
+
+  return row;
+}
 const OptionLooseSchema = z
   .object({
     attributeId: z.string().optional(),
@@ -964,9 +1143,11 @@ export const CreateProductSchema = z.object({
   shippingCost: MoneyLike.optional(),
   communicationCost: MoneyLike.nullable().optional(),
 
+  shipping: z.record(z.any()).optional(),
+
   enabledAttributeIds: z.array(z.string().trim().min(1)).optional(),
   attributeSelections: z.array(z.any()).optional(),
-});
+}).passthrough();
 
 const emptyToUndef = (v: any) => (v === "" || v == null ? undefined : v);
 
@@ -1001,8 +1182,9 @@ const UpdateProductSchema = z
 
     communicationCost: NumLikeNullable,
     variants: z.array(z.any()).optional(),
-    // ✅ NEW
+
     shippingCost: NumLikeOptional,
+    shipping: z.record(z.any()).optional(),
 
     attributeSelections: z.array(z.any()).optional(),
     enabledAttributeIds: z.array(z.string().trim().min(1)).optional(),
@@ -1287,7 +1469,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     ...(hasProductScalarField("inStock") ? { inStock: true } : {}),
     ...(hasProductScalarField("imagesJson") ? { imagesJson: true } : {}),
     ...(hasProductScalarField("retailPrice") ? { retailPrice: true } : {}),
-    ...(hasProductScalarField("shippingCost") ? { shippingCost: true } : {}),
+    ...buildShippingSelect(),
     ...(hasProductScalarField("autoPrice") ? { autoPrice: true } : {}),
     ...(hasProductScalarField("priceMode") ? { priceMode: true } : {}),
     ...(hasProductScalarField("categoryId") ? { categoryId: true } : {}),
@@ -1495,6 +1677,8 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       bestSupplierBasePrice,
       bestSupplierBaseRetail: baseRetailFromSupplier,
     };
+
+    normalizeShippingFieldsForResponse(out);
 
     if (includeSet.has("variants")) {
       normalizeVariantsForApiResponse(out, true);
@@ -1870,8 +2054,6 @@ export const createProductHandler = wrap(async (req, res) => {
 
   const body = parsed.data;
 
-
-
   const supplierId = String(body.supplierId).trim();
   if (!supplierId) return res.status(400).json({ error: "Supplier is required" });
 
@@ -1885,7 +2067,6 @@ export const createProductHandler = wrap(async (req, res) => {
     const created = await prisma.$transaction(async (tx) => {
       const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
 
-      // ✅ SKU is ALWAYS computed from Supplier + Brand + Title (ignore body.sku)
       const computedSku = makeSkuFromSupplierBrandTitle({
         supplierId,
         brandId: brandIdNorm,
@@ -1894,6 +2075,8 @@ export const createProductHandler = wrap(async (req, res) => {
 
       const finalSku = await ensureUniqueProductSku(tx, computedSku, { brandId: brandIdNorm, supplierId });
       await assertNoDuplicateSupplierBrandSkuTx(tx as any, { supplierId, brandId: brandIdNorm, sku: finalSku });
+
+      const shippingWriteData = extractShippingWriteDataFromBody(req.body);
 
       const data: any = {
         title: body.title,
@@ -1905,12 +2088,13 @@ export const createProductHandler = wrap(async (req, res) => {
 
         ...(nextRetail !== undefined ? { retailPrice: toDecimal(nextRetail) } : {}),
         ...(nextRetail !== undefined && adminMode ? { priceMode: adminMode } : {}),
-        ...(body.shippingCost !== undefined ? { shippingCost: toDecimal(body.shippingCost) } : {}),
         ...(body.communicationCost !== undefined
           ? { communicationCost: body.communicationCost == null ? null : toDecimal(body.communicationCost) }
           : {}),
         ...(body.brandId !== undefined ? { brandId: body.brandId } : {}),
         ...(body.categoryId !== undefined ? { categoryId: body.categoryId } : {}),
+
+        ...shippingWriteData,
       };
 
       if (data.status && !isValidProductStatus(String(data.status).toUpperCase())) {
@@ -1954,10 +2138,10 @@ export const createProductHandler = wrap(async (req, res) => {
           categoryId: true,
           brandId: true,
           supplierId: true,
-          shippingCost: true,
           communicationCost: true,
           createdAt: true,
           updatedAt: true,
+          ...buildShippingSelect(),
         },
       });
 
@@ -1980,9 +2164,6 @@ export const createProductHandler = wrap(async (req, res) => {
         });
       }
 
-      // ✅ IMPORTANT: compute the product retail numeric fallback ONCE
-      const productRetailNum =
-        nextRetail !== undefined ? Number(nextRetail) : product.retailPrice != null ? Number(product.retailPrice) : 0;
       const normalizedVariants = normalizeVariantsPayload(req.body);
       const variantsWithDefaultRetail: NormalizedVariant[] = normalizedVariants.map((v) => ({
         ...v,
@@ -2011,14 +2192,16 @@ export const createProductHandler = wrap(async (req, res) => {
       return product;
     });
 
-    return res.json({
-      data: {
-        ...created,
-        retailPrice: created.retailPrice != null ? Number(created.retailPrice) : null,
-        autoPrice: created.autoPrice != null ? Number(created.autoPrice) : null,
-        communicationCost: (created as any).communicationCost != null ? Number((created as any).communicationCost) : null,
-      },
-    });
+    const out = {
+      ...created,
+      retailPrice: created.retailPrice != null ? Number(created.retailPrice) : null,
+      autoPrice: created.autoPrice != null ? Number(created.autoPrice) : null,
+      communicationCost: (created as any).communicationCost != null ? Number((created as any).communicationCost) : null,
+    };
+
+    normalizeShippingFieldsForResponse(out);
+
+    return res.json({ data: out });
   } catch (e: any) {
     if (isPrismaUniqueErr(e) || e?.code === "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU") {
       return res.status(409).json({
@@ -2121,11 +2304,12 @@ export const updateProductHandler = wrap(async (req, res) => {
         throw err;
       }
 
+      const shippingWriteData = extractShippingWriteDataFromBody(req.body);
+
       const data: any = {
         ...(body.title !== undefined ? { title: body.title } : {}),
         ...(body.description !== undefined ? { description: body.description } : {}),
         ...(nextRetail !== undefined ? { retailPrice: toDecimal(nextRetail) } : {}),
-        ...(body.shippingCost !== undefined ? { shippingCost: toDecimal(body.shippingCost) } : {}),
         ...(body.status !== undefined ? { status: String(body.status).trim().toUpperCase() } : {}),
         ...(body.inStock !== undefined ? { inStock: body.inStock } : {}),
         ...(body.imagesJson !== undefined ? { imagesJson: body.imagesJson } : {}),
@@ -2134,6 +2318,8 @@ export const updateProductHandler = wrap(async (req, res) => {
           : {}),
         ...(body.categoryId !== undefined ? { categoryId: body.categoryId } : {}),
         ...(body.brandId !== undefined ? { brandId: body.brandId } : {}),
+
+        ...shippingWriteData,
       };
 
       if (nextRetail !== undefined) {
@@ -2209,10 +2395,10 @@ export const updateProductHandler = wrap(async (req, res) => {
           imagesJson: true,
           categoryId: true,
           brandId: true,
-          shippingCost: true,
           supplierId: true,
           communicationCost: true,
           updatedAt: true,
+          ...buildShippingSelect(),
         },
       });
 
@@ -2224,11 +2410,6 @@ export const updateProductHandler = wrap(async (req, res) => {
       const normalizedAttributeSelections =
         req.body?.attributeSelections !== undefined
           ? normalizeAttributeSelectionsPayload(body.attributeSelections ?? [])
-          : undefined;
-
-      const normalizedVariants =
-        req.body?.variants !== undefined
-          ? normalizeVariantsPayload(req.body)
           : undefined;
 
       if (
@@ -2286,15 +2467,16 @@ export const updateProductHandler = wrap(async (req, res) => {
       return product;
     });
 
-    return res.json({
-      data: {
-        ...updated,
-        retailPrice: updated.retailPrice != null ? Number(updated.retailPrice) : null,
-        shippingCost: updated.shippingCost != null ? Number(updated.shippingCost) : 0,
-        autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
-        communicationCost: (updated as any).communicationCost != null ? Number((updated as any).communicationCost) : null,
-      },
-    });
+    const out = {
+      ...updated,
+      retailPrice: updated.retailPrice != null ? Number(updated.retailPrice) : null,
+      autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
+      communicationCost: (updated as any).communicationCost != null ? Number((updated as any).communicationCost) : null,
+    };
+
+    normalizeShippingFieldsForResponse(out);
+
+    return res.json({ data: out });
   } catch (e: any) {
     if (isPrismaUniqueErr(e) || e?.code === "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU") {
       return res.status(409).json({
@@ -2854,7 +3036,7 @@ router.get(
       ...(hasProductScalarField("description") ? { description: true } : {}),
       ...(hasProductScalarField("status") ? { status: true } : {}),
       ...(hasProductScalarField("inStock") ? { inStock: true } : {}),
-      ...(hasProductScalarField("shippingCost") ? { shippingCost: true } : {}),
+      ...buildShippingSelect(),
       ...(hasProductScalarField("imagesJson") ? { imagesJson: true } : {}),
       ...(hasProductScalarField("retailPrice") ? { retailPrice: true } : {}),
       ...(hasProductScalarField("autoPrice") ? { autoPrice: true } : {}),
@@ -2991,6 +3173,9 @@ router.get(
       communicationCost: (product as any).communicationCost != null ? Number((product as any).communicationCost) : null,
       retailPrice: computeDisplayPrice(product),
     };
+
+
+    normalizeShippingFieldsForResponse(out);
 
     // normalize variants (your existing helper)
     if (includeSet.has("variants")) {

@@ -1,4 +1,3 @@
-// src/App.tsx
 import * as React from "react";
 import {
   createContext,
@@ -100,6 +99,9 @@ const SupplierPayoutsPage = React.lazy(
 const SupplierSettingsPage = React.lazy(
   () => import("./pages/supplier/SupplierSettings")
 );
+const SupplierShippingPage = React.lazy(
+  () => import("./pages/supplier/SupplierShipping")
+);
 const SupplierCatalogRequests = React.lazy(
   () => import("./pages/supplier/SupplierCatalogRequests")
 );
@@ -152,8 +154,7 @@ function RouteFallback({
 }) {
   return (
     <div
-      className={`${full ? "min-h-[60vh]" : "min-h-[40vh]"
-        } flex items-center justify-center px-4`}
+      className={`${full ? "min-h-[60vh]" : "min-h-[40vh]"} flex items-center justify-center px-4`}
     >
       <div className="text-sm text-zinc-500">{label}</div>
     </div>
@@ -282,11 +283,11 @@ function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
     String(addr.houseNumber ?? "").trim() ||
-    String(addr.streetName ?? "").trim() ||
-    String(addr.city ?? "").trim() ||
-    String(addr.state ?? "").trim() ||
-    String(addr.country ?? "").trim() ||
-    String(addr.postCode ?? "").trim()
+      String(addr.streetName ?? "").trim() ||
+      String(addr.city ?? "").trim() ||
+      String(addr.state ?? "").trim() ||
+      String(addr.country ?? "").trim() ||
+      String(addr.postCode ?? "").trim()
   );
 }
 
@@ -397,12 +398,12 @@ function useSupplierStageState(): SupplierStageState {
           Boolean(
             String(
               supplierMe?.legalName ??
-              supplierMe?.businessName ??
-              supplierMe?.name ??
-              ""
+                supplierMe?.businessName ??
+                supplierMe?.name ??
+                ""
             ).trim() &&
-            String(supplierMe?.registrationType ?? "").trim() &&
-            String(supplierMe?.registrationCountryCode ?? "").trim()
+              String(supplierMe?.registrationType ?? "").trim() &&
+              String(supplierMe?.registrationCountryCode ?? "").trim()
           );
 
         const addressDone =
@@ -424,11 +425,11 @@ function useSupplierStageState(): SupplierStageState {
         const nextPath = supplierApproved
           ? null
           : getSupplierNextPath({
-            contactDone,
-            businessDone,
-            addressDone,
-            docsDone,
-          });
+              contactDone,
+              businessDone,
+              addressDone,
+              docsDone,
+            });
 
         if (!alive) return;
 
@@ -907,7 +908,7 @@ export default function App() {
   useEffect(() => {
     try {
       toast.dismiss();
-    } catch { }
+    } catch {}
 
     const b = document.body;
     const h = document.documentElement;
@@ -928,7 +929,7 @@ export default function App() {
 
     try {
       (document.activeElement as any)?.blur?.();
-    } catch { }
+    } catch {}
   }, [loc.pathname, loc.search]);
 
   useEffect(() => {
@@ -963,7 +964,7 @@ export default function App() {
           "auth:timedOutReturnTo",
           previousPath.startsWith("/checkout") ? "/cart" : previousPath
         );
-      } catch { }
+      } catch {}
     }
 
     prevAuthedRef.current = false;
@@ -1007,7 +1008,7 @@ export default function App() {
 
     try {
       sessionStorage.setItem("auth:returnTo", returnTarget);
-    } catch { }
+    } catch {}
 
     const qp = encodeURIComponent(returnTarget);
 
@@ -1023,7 +1024,7 @@ export default function App() {
       if (saved && saved.startsWith("/checkout")) {
         sessionStorage.setItem("auth:returnTo", "/cart");
       }
-    } catch { }
+    } catch {}
   }, [loc.pathname]);
 
   useEffect(() => {
@@ -1040,7 +1041,7 @@ export default function App() {
       timedOutUserKey = sessionStorage.getItem("auth:timedOutUserKey") || "";
       timedOutReturnTo = sessionStorage.getItem("auth:timedOutReturnTo") || "";
       genericReturnTo = sessionStorage.getItem("auth:returnTo") || "";
-    } catch { }
+    } catch {}
 
     const hasTimedOutUser = !!timedOutUserKey;
     const sameTimedOutUser =
@@ -1062,7 +1063,7 @@ export default function App() {
       sessionStorage.removeItem("auth:returnTo");
       sessionStorage.removeItem("auth:timedOutReturnTo");
       sessionStorage.removeItem("auth:timedOutUserKey");
-    } catch { }
+    } catch {}
 
     nav(target, { replace: true });
   }, [hydrated, isAuthed, user, loc.pathname, nav]);
@@ -1463,6 +1464,7 @@ export default function App() {
                       <Route path="add" element={<SupplierAddProductsPage />} />
                       <Route path=":id/edit" element={<SupplierEditProduct />} />
                     </Route>
+
                     <Route
                       path="refunds"
                       element={
@@ -1524,6 +1526,17 @@ export default function App() {
                         <ProtectedRoute roles={["SUPPLIER"]}>
                           <SupplierRestrictedPageGuard>
                             <SupplierPayoutsPage />
+                          </SupplierRestrictedPageGuard>
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="shipping"
+                      element={
+                        <ProtectedRoute roles={["SUPPLIER"]}>
+                          <SupplierRestrictedPageGuard>
+                            <SupplierShippingPage />
                           </SupplierRestrictedPageGuard>
                         </ProtectedRoute>
                       }

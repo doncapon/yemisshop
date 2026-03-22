@@ -1,4 +1,3 @@
-// src/pages/supplier/SupplierAddProducts.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
@@ -17,6 +16,7 @@ import {
   ShieldCheck,
   MapPin,
   FileText,
+  Truck,
 } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
@@ -57,6 +57,16 @@ type ExistingProductDetail = {
   retailPrice?: number;
   currency?: string;
   availableQty?: number;
+
+  freeShipping?: boolean;
+  weightGrams?: number | null;
+  lengthCm?: number | null;
+  widthCm?: number | null;
+  heightCm?: number | null;
+  isFragile?: boolean;
+  isBulky?: boolean;
+  shippingClass?: string | null;
+
   offer?: {
     id: string;
     basePrice?: number;
@@ -179,10 +189,25 @@ function toMoneyNumber(v: any) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function toOptionalMoneyNumber(v: any): number | null {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
 function toIntNonNeg(v: any) {
   if (v === "" || v == null) return 0;
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.trunc(n));
+}
+
+function toOptionalInt(v: any): number | null {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
   return Math.max(0, Math.trunc(n));
 }
 
@@ -253,11 +278,11 @@ function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
     String(addr.houseNumber ?? "").trim() ||
-    String(addr.streetName ?? "").trim() ||
-    String(addr.city ?? "").trim() ||
-    String(addr.state ?? "").trim() ||
-    String(addr.country ?? "").trim() ||
-    String(addr.postCode ?? "").trim()
+      String(addr.streetName ?? "").trim() ||
+      String(addr.city ?? "").trim() ||
+      String(addr.state ?? "").trim() ||
+      String(addr.country ?? "").trim() ||
+      String(addr.postCode ?? "").trim()
   );
 }
 
@@ -434,6 +459,17 @@ export default function SupplierAddProduct() {
   const [description, setDescription] = useState("");
   const [baseQuantity, setBaseQuantity] = useState<string>("0");
 
+  const [freeShipping, setFreeShipping] = useState(false);
+  const [weightGrams, setWeightGrams] = useState("");
+  const [lengthCm, setLengthCm] = useState("");
+  const [widthCm, setWidthCm] = useState("");
+  const [heightCm, setHeightCm] = useState("");
+  const [isFragile, setIsFragile] = useState(false);
+  const [isBulky, setIsBulky] = useState(false);
+  const [shippingClass, setShippingClass] = useState<
+    "" | "STANDARD" | "FRAGILE" | "BULKY"
+  >("");
+
   const [imageUrls, setImageUrls] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [uploadedUrls, setUploadedUrls] = useState<string[]>([]);
@@ -526,8 +562,8 @@ export default function SupplierAddProduct() {
         supplierApproved ||
         Boolean(
           pickString(supplierMe?.legalName) &&
-          pickString(supplierMe?.registrationType) &&
-          pickString(supplierMe?.registrationCountryCode)
+            pickString(supplierMe?.registrationType) &&
+            pickString(supplierMe?.registrationCountryCode)
         );
 
       const addressDone =
@@ -835,6 +871,27 @@ export default function SupplierAddProduct() {
     setBrandId(String(p.brandId || ""));
     setBaseQuantity(String(toIntNonNeg(p.offer?.availableQty ?? p.availableQty ?? 0)));
 
+    setFreeShipping(!!p.freeShipping);
+    setWeightGrams(
+      p.weightGrams == null || Number(p.weightGrams) <= 0 ? "" : String(Number(p.weightGrams))
+    );
+    setLengthCm(
+      p.lengthCm == null || Number(p.lengthCm) <= 0 ? "" : String(Number(p.lengthCm))
+    );
+    setWidthCm(
+      p.widthCm == null || Number(p.widthCm) <= 0 ? "" : String(Number(p.widthCm))
+    );
+    setHeightCm(
+      p.heightCm == null || Number(p.heightCm) <= 0 ? "" : String(Number(p.heightCm))
+    );
+    setIsFragile(!!p.isFragile);
+    setIsBulky(!!p.isBulky);
+    setShippingClass(
+      p.shippingClass === "FRAGILE" || p.shippingClass === "BULKY" || p.shippingClass === "STANDARD"
+        ? p.shippingClass
+        : ""
+    );
+
     const sourceImages = limitImages(Array.isArray(p.imagesJson) ? p.imagesJson : [], MAX_IMAGES);
     setImageUrls(sourceImages.join("\n"));
     setUploadedUrls([]);
@@ -915,7 +972,6 @@ export default function SupplierAddProduct() {
 
   const UPLOAD_ENDPOINT = "/api/uploads";
 
-
   useEffect(() => {
     const wanted = new Set(files.map(fileKey));
     const map = filePreviewMapRef.current;
@@ -967,7 +1023,6 @@ export default function SupplierAddProduct() {
 
     return out;
   }, [files]);
-
 
   const claimedByTextAndUploaded = useMemo(() => {
     const merged = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
@@ -1140,7 +1195,6 @@ export default function SupplierAddProduct() {
       return next;
     });
   }
-
 
   const remainingSlotsPreview = useMemo(() => {
     return Math.max(0, MAX_IMAGES - (allUrlPreviews.length + files.length));
@@ -1329,6 +1383,11 @@ export default function SupplierAddProduct() {
     const baseSku = sku.trim() || slugifySku(title);
     const basePriceNum = toMoneyNumber(retailPrice);
 
+    const weightGramsNum = toOptionalInt(weightGrams);
+    const lengthCmNum = toOptionalMoneyNumber(lengthCm);
+    const widthCmNum = toOptionalMoneyNumber(widthCm);
+    const heightCmNum = toOptionalMoneyNumber(heightCm);
+
     const attributeSelections: Array<{
       attributeId: string;
       valueId?: string;
@@ -1419,6 +1478,16 @@ export default function SupplierAddProduct() {
       qty: baseQtyPreview,
       quantity: baseQtyPreview,
       inStock: totalQty > 0,
+
+      freeShipping,
+      weightGrams: freeShipping ? null : weightGramsNum,
+      lengthCm: freeShipping ? null : lengthCmNum,
+      widthCm: freeShipping ? null : widthCmNum,
+      heightCm: freeShipping ? null : heightCmNum,
+      isFragile: freeShipping ? false : isFragile,
+      isBulky: freeShipping ? false : isBulky,
+      shippingClass: freeShipping ? null : shippingClass || null,
+
       offer: {
         basePrice: basePriceNum,
         currency: "NGN",
@@ -1762,10 +1831,11 @@ export default function SupplierAddProduct() {
                     {onboardingProgressItems.map((item: any) => (
                       <span
                         key={item.key}
-                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${item.done
-                          ? "bg-emerald-100 text-emerald-700"
-                          : "bg-amber-100 text-amber-800"
-                          }`}
+                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                          item.done
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-800"
+                        }`}
                       >
                         {item.label}: {item.done ? "Done" : "Pending"}
                       </span>
@@ -1963,13 +2033,150 @@ export default function SupplierAddProduct() {
               </Card>
 
               <Card
+                title="Shipping"
+                subtitle="Parcel details used with your supplier shipping profile and rate cards."
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+              >
+                {onboardingBlocked && (
+                  <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                    Shipping settings are locked until onboarding is complete.
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <div className="rounded-xl border bg-zinc-50 px-3 py-2 text-[12px] text-zinc-700">
+                    This form does <b>not</b> set shipping price. It sets parcel characteristics.
+                    Your supplier shipping profile and rate cards determine the actual checkout shipping fee.
+                  </div>
+
+                  <div className="flex items-center gap-2 text-sm text-zinc-700">
+                    <Truck size={16} className="text-zinc-500" />
+                    Products use your supplier shipping settings automatically.
+                  </div>
+
+                  <label
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${
+                      onboardingBlocked ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={freeShipping}
+                      onChange={(e) => !onboardingBlocked && setFreeShipping(e.target.checked)}
+                      disabled={onboardingBlocked}
+                    />
+                    Free shipping for this product
+                  </label>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                    <div>
+                      <Label>Weight (grams)</Label>
+                      <Input
+                        value={weightGrams}
+                        onChange={(e) => setWeightGrams(e.target.value)}
+                        inputMode="numeric"
+                        placeholder="e.g. 1200"
+                        disabled={onboardingBlocked || freeShipping}
+                      />
+                    </div>
+
+                    <div>
+                      <Label>Length (cm)</Label>
+                      <Input
+                        value={lengthCm}
+                        onChange={(e) => setLengthCm(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="e.g. 25"
+                        disabled={onboardingBlocked || freeShipping}
+                      />
+                    </div>
+
+                    <div>
+                      <Label>Width (cm)</Label>
+                      <Input
+                        value={widthCm}
+                        onChange={(e) => setWidthCm(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="e.g. 18"
+                        disabled={onboardingBlocked || freeShipping}
+                      />
+                    </div>
+
+                    <div>
+                      <Label>Height (cm)</Label>
+                      <Input
+                        value={heightCm}
+                        onChange={(e) => setHeightCm(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="e.g. 12"
+                        disabled={onboardingBlocked || freeShipping}
+                      />
+                    </div>
+
+                    <div>
+                      <Label>Shipping class</Label>
+                      <Select
+                        value={shippingClass}
+                        onChange={(e) =>
+                          setShippingClass(
+                            (e.target.value || "") as "" | "STANDARD" | "FRAGILE" | "BULKY"
+                          )
+                        }
+                        disabled={onboardingBlocked || freeShipping}
+                      >
+                        <option value="">— Auto / standard —</option>
+                        <option value="STANDARD">STANDARD</option>
+                        <option value="FRAGILE">FRAGILE</option>
+                        <option value="BULKY">BULKY</option>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3">
+                    <label
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${
+                        onboardingBlocked || freeShipping ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isFragile}
+                        onChange={(e) => !onboardingBlocked && !freeShipping && setIsFragile(e.target.checked)}
+                        disabled={onboardingBlocked || freeShipping}
+                      />
+                      Fragile
+                    </label>
+
+                    <label
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${
+                        onboardingBlocked || freeShipping ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isBulky}
+                        onChange={(e) => !onboardingBlocked && !freeShipping && setIsBulky(e.target.checked)}
+                        disabled={onboardingBlocked || freeShipping}
+                      />
+                      Bulky
+                    </label>
+                  </div>
+
+                  <div className="text-[11px] text-zinc-500">
+                    Checkout combines this product’s parcel data with your supplier origin, zones, flat fees and rate cards.
+                  </div>
+                </div>
+              </Card>
+
+              <Card
                 title="Images"
                 subtitle={`Paste URLs or upload images (max ${MAX_IMAGES}).`}
                 className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${onboardingBlocked ? "opacity-60 pointer-events-none" : ""
-                      }`}
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
+                      onboardingBlocked ? "opacity-60 pointer-events-none" : ""
+                    }`}
                   >
                     <ImagePlus size={16} /> Add files
                     <input
@@ -2303,8 +2510,9 @@ export default function SupplierAddProduct() {
                                 return (
                                   <label
                                     key={x.id}
-                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                      } ${onboardingBlocked ? "opacity-60 cursor-not-allowed" : ""}`}
+                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
+                                      checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                    } ${onboardingBlocked ? "opacity-60 cursor-not-allowed" : ""}`}
                                   >
                                     <input
                                       type="checkbox"
@@ -2621,6 +2829,23 @@ export default function SupplierAddProduct() {
                   <div className="text-[11px] text-zinc-600">
                     Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
                   </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-500">Shipping</span>
+                    <b className="text-zinc-900">
+                      {freeShipping
+                        ? "Free shipping"
+                        : shippingClass || weightGrams || lengthCm || widthCm || heightCm
+                          ? "Parcel configured"
+                          : "Default / blank"}
+                    </b>
+                  </div>
+
+                  {!freeShipping && (
+                    <div className="text-[11px] text-zinc-600">
+                      Weight: <b>{weightGrams || "—"}</b>g • Class: <b>{shippingClass || "AUTO"}</b>
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-between">
                     <span className="text-zinc-500">Images</span>

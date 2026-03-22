@@ -56,6 +56,7 @@ import supplierPayoutsAction from "./routes/supplierPayoutsAction.js";
 import adminPayouts from "./routes/adminPayouts.js";
 import refundsRouter from "./routes/refunds.js";
 import supplierRefundsRouter from "./routes/supplierRefunds.js";
+import supplierShippingRouter from "./routes/supplierShipping.js";
 import disputesRouter from "./routes/disputes.js";
 import notificationsRouter from "./routes/notifications.js";
 import ridersRouter from "./routes/riders.js";
@@ -349,6 +350,7 @@ app.use("/api/supplier/catalog-requests", supplierCatalogRequests);
 app.use("/api/supplier/refunds", supplierRefundsRouter);
 app.use("/api/supplier/catalog", supplierCatalogOffers);
 app.use("/api/supplier/documents", supplierDocumentsRouter);
+app.use("/api/supplier/shipping", supplierShippingRouter);
 
 app.use("/api", publicProductOffers);
 app.use("/api/payments", paymentsRouter);

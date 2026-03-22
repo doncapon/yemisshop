@@ -1047,20 +1047,6 @@ const OfferSchema = z
   })
   .optional();
 
-const VariantOfferUpdateSchema = z
-  .object({
-    variantId: z.string().min(1),
-    unitPrice: z.union([z.number(), z.string()]).optional().nullable(),
-    availableQty: z.union([z.number(), z.string()]).optional().nullable(),
-    qty: z.union([z.number(), z.string()]).optional().nullable(),
-    quantity: z.union([z.number(), z.string()]).optional().nullable(),
-    inStock: z.boolean().optional(),
-    isActive: z.boolean().optional(),
-    sku: z.string().optional().nullable(),
-    options: z.any().optional(),
-  })
-  .passthrough();
-
 const VariantOptionInputSchema = z
   .object({
     attributeId: z.string().optional(),
@@ -1070,20 +1056,6 @@ const VariantOptionInputSchema = z
     attribute: z.object({ id: z.string().optional() }).optional(),
     value: z.object({ id: z.string().optional(), attributeId: z.string().optional() }).optional(),
     attributeValue: z.object({ id: z.string().optional(), attributeId: z.string().optional() }).optional(),
-  })
-  .passthrough();
-
-const VariantCreateSchema = z
-  .object({
-    variantId: z.string().optional(),
-    sku: z.string().optional().nullable(),
-    options: z.array(VariantOptionInputSchema).optional(),
-    unitPrice: z.union([z.number(), z.string()]).optional().nullable(),
-    availableQty: z.union([z.number(), z.string()]).optional().nullable(),
-    qty: z.union([z.number(), z.string()]).optional().nullable(),
-    quantity: z.union([z.number(), z.string()]).optional().nullable(),
-    inStock: z.boolean().optional(),
-    isActive: z.boolean().optional(),
   })
   .passthrough();
 
@@ -1100,6 +1072,8 @@ const CreateSchema = z.object({
   availableQty: zCoerceIntNonNegOpt(),
   qty: zCoerceIntNonNegOpt(),
   quantity: zCoerceIntNonNegOpt(),
+  currency: z.string().optional(),
+  leadDays: zCoerceIntNullableOpt(),
   offer: OfferSchema,
   attributeSelections: z.array(z.any()).optional(),
   variants: z
@@ -1120,6 +1094,50 @@ const CreateSchema = z.object({
     .optional(),
 });
 
+
+
+const VariantOfferUpdateSchema = z
+  .object({
+    variantId: z.string().min(1),
+
+    unitPrice: z.union([z.number(), z.string()]).optional().nullable(),
+    availableQty: z.union([z.number(), z.string()]).optional().nullable(),
+    qty: z.union([z.number(), z.string()]).optional().nullable(),
+    quantity: z.union([z.number(), z.string()]).optional().nullable(),
+
+    inStock: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+
+    sku: z.string().optional().nullable(),
+    currency: z.string().optional(),
+    leadDays: zCoerceIntNullableOpt(),
+    imagesJson: z.array(z.string()).optional(),
+
+    options: z.any().optional(),
+  })
+  .passthrough();
+
+const VariantCreateSchema = z
+  .object({
+    variantId: z.string().optional(),
+    sku: z.string().optional().nullable(),
+
+    options: z.array(VariantOptionInputSchema).optional(),
+
+    unitPrice: z.union([z.number(), z.string()]).optional().nullable(),
+    availableQty: z.union([z.number(), z.string()]).optional().nullable(),
+    qty: z.union([z.number(), z.string()]).optional().nullable(),
+    quantity: z.union([z.number(), z.string()]).optional().nullable(),
+
+    inStock: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+
+    currency: z.string().optional(),
+    leadDays: zCoerceIntNullableOpt(),
+    imagesJson: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
 const UpdateSchema = z
   .object({
     title: z.string().min(1).optional(),
@@ -1127,15 +1145,20 @@ const UpdateSchema = z
     basePrice: z.union([z.number(), z.string()]).optional(),
     sku: z.string().min(1).optional(), // ignored; SKU is computed
     inStock: z.boolean().optional(),
+
     categoryId: z.string().nullable().optional(),
     brandId: z.string().nullable().optional(),
     imagesJson: z.array(z.string()).optional(),
+
     communicationCost: z.union([z.number(), z.string()]).nullable().optional(),
+
     availableQty: zCoerceIntNonNegOpt(),
     qty: zCoerceIntNonNegOpt(),
     quantity: zCoerceIntNonNegOpt(),
+
     offer: OfferSchema,
     attributeSelections: z.array(z.any()).optional(),
+
     variants: z.array(z.union([VariantOfferUpdateSchema, VariantCreateSchema])).optional(),
   })
   .extend({
@@ -1147,6 +1170,8 @@ const UpdateSchema = z
       .passthrough()
       .optional(),
   });
+
+
 
 /* -------------------- Prisma DMMF helpers (safe orderBy) ----------------- */
 
@@ -1208,16 +1233,16 @@ router.get("/", requireAuth, async (req, res) => {
       ...(brandId ? { brandId } : {}),
       ...(q
         ? {
-            AND: [
-              {
-                OR: [
-                  { title: { contains: q, mode: "insensitive" } },
-                  { sku: { contains: q, mode: "insensitive" } },
-                  { description: { contains: q, mode: "insensitive" } },
-                ],
-              },
-            ],
-          }
+          AND: [
+            {
+              OR: [
+                { title: { contains: q, mode: "insensitive" } },
+                { sku: { contains: q, mode: "insensitive" } },
+                { description: { contains: q, mode: "insensitive" } },
+              ],
+            },
+          ],
+        }
         : {}),
     };
 
@@ -1667,12 +1692,12 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
         const opts = normalizeOptions(
           (raw as any)?.options ??
-            (raw as any)?.optionSelections ??
-            (raw as any)?.attributes ??
-            (raw as any)?.attributeSelections ??
-            (raw as any)?.variantOptions ??
-            (raw as any)?.VariantOptions ??
-            []
+          (raw as any)?.optionSelections ??
+          (raw as any)?.attributes ??
+          (raw as any)?.attributeSelections ??
+          (raw as any)?.variantOptions ??
+          (raw as any)?.VariantOptions ??
+          []
         );
 
         if (directId) {
@@ -2102,6 +2127,8 @@ const AttachSchema = z.object({
       quantity: z.union([z.number(), z.string()]).optional().nullable(),
       inStock: z.boolean().optional(),
       isActive: z.boolean().optional(),
+      currency: z.string().optional(),
+      leadDays: zCoerceIntNullableOpt(),
     })
   ).optional(),
 });
@@ -2360,6 +2387,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     }
     for (const v of payload.variants ?? []) {
       assertMoneyWithinDbLimit((v as any)?.unitPrice, "Variant price");
+      if ((v as any)?.imagesJson) assertMaxImages((v as any).imagesJson);
     }
 
     const stockOnlyFlag = payload.stockOnly === true || payload?.meta?.stockOnly === true;
@@ -2409,18 +2437,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     const isRejectedState = statusUpper === "REJECTED";
     const hasPendingFlag = Boolean((product as any).hasPendingChanges);
 
-    /**
-     * Review-managed products:
-     * - already live/published
-     * - already pending review
-     * - previously rejected and being re-submitted
-     */
     const requiresApprovalFlow =
       isPublishedState || isPendingState || isRejectedState || hasPendingFlag;
 
-    /**
-     * Title + SKU remain locked once product is review-managed.
-     */
     if (requiresApprovalFlow) {
       const incomingTitle =
         payload.title !== undefined ? String(payload.title ?? "").trim() : undefined;
@@ -2603,9 +2622,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         ? normalizeImagesJson(payload.imagesJson)
         : undefined;
 
-      // ------------------------------------------------
-      // 1) REVIEW-REQUIRED PRODUCT: queue reviewable core changes
-      // ------------------------------------------------
       if (requiresApprovalFlow && ownedBySupplier && !stockOnlyFlag) {
         if (
           payload.description !== undefined &&
@@ -2677,9 +2693,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
       }
 
-      // ------------------------------------------------
-      // 2) BASE OFFER
-      // ------------------------------------------------
       let baseOffer: any = existingBaseOffer;
 
       if (touchesBaseOffer) {
@@ -2689,10 +2702,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         );
 
         if (requiresApprovalFlow) {
-          /**
-           * Stock applies immediately.
-           * Reviewable pricing/status changes are stored in pending request.
-           */
           baseOffer = await upsertSupplierProductOffer(
             tx,
             s.id,
@@ -2759,9 +2768,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
       }
 
-      // ------------------------------------------------
-      // 3) VARIANTS
-      // ------------------------------------------------
       if (variantsIncoming.length) {
         const pRow = await tx.product.findUnique({
           where: { id },
@@ -2828,6 +2834,11 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
                   unitPrice: unitPriceNumMaybe ?? null,
                   inStock: v?.inStock ?? (vQtyProvided ? vQtyNonNeg > 0 : true),
                   isActive: v?.isActive ?? true,
+                  currency: v?.currency ?? nextCurrency,
+                  leadDays: v?.leadDays ?? nextLeadDays ?? null,
+                  imagesJson: Array.isArray(v?.imagesJson)
+                    ? normalizeImagesJson(v.imagesJson)
+                    : [],
                 });
               }
               continue;
@@ -2850,6 +2861,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           if (!variantId) continue;
 
           const existingVarOffer = existingVariantOfferByVariantId.get(String(variantId));
+
+          const nextVariantCurrency = v?.currency ?? existingVarOffer?.currency ?? nextCurrency;
+          const nextVariantLeadDays =
+            v?.leadDays ?? existingVarOffer?.leadDays ?? nextLeadDays ?? null;
 
           const nextUnitPriceNum = unitPriceProvided
             ? unitPriceNumMaybe ?? 0
@@ -2886,7 +2901,20 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           if (ownedBySupplier && vQtyProvided) {
             await tx.productVariant.update({
               where: { id: variantId },
-              data: { availableQty: vQtyNonNeg, inStock: nextStock } as any,
+              data: {
+                availableQty: vQtyNonNeg,
+                inStock: nextStock,
+                ...(Array.isArray(v?.imagesJson)
+                  ? { imagesJson: normalizeImagesJson(v.imagesJson) }
+                  : {}),
+              } as any,
+            });
+          } else if (ownedBySupplier && Array.isArray(v?.imagesJson) && !requiresApprovalFlow) {
+            await tx.productVariant.update({
+              where: { id: variantId },
+              data: {
+                imagesJson: normalizeImagesJson(v.imagesJson),
+              } as any,
             });
           }
 
@@ -2908,7 +2936,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
             const variantLeadChanged =
               v?.leadDays !== undefined &&
-              (v.leadDays ?? null) !== (currentLeadDays ?? null);
+              (nextVariantLeadDays ?? null) !== (currentLeadDays ?? null);
 
             const variantActiveChanged =
               v?.isActive !== undefined &&
@@ -2916,7 +2944,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
             const variantCurrencyChanged =
               v?.currency !== undefined &&
-              String(v.currency ?? nextCurrency) !== String(currentCurrency);
+              String(nextVariantCurrency) !== String(currentCurrency);
 
             if (
               !stockOnlyFlag &&
@@ -2925,9 +2953,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
               const proposedPatch: any = { variantId };
 
               if (variantPriceChanged) proposedPatch.unitPrice = nextUnitPriceNum;
-              if (variantLeadChanged) proposedPatch.leadDays = v.leadDays ?? null;
+              if (variantLeadChanged) proposedPatch.leadDays = nextVariantLeadDays ?? null;
               if (variantActiveChanged) proposedPatch.isActive = nextActive;
-              if (variantCurrencyChanged) proposedPatch.currency = v.currency ?? nextCurrency;
+              if (variantCurrencyChanged) proposedPatch.currency = nextVariantCurrency;
 
               liveVariantOfferRequests.push({
                 variantId,
@@ -2954,11 +2982,11 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
                       ? Number(existingBaseOffer.basePrice)
                       : Number(baseOffer?.basePrice ?? 0)
                   ),
-                  currency: nextCurrency,
+                  currency: nextVariantCurrency,
                   availableQty: nextQty,
                   inStock: nextStock,
                   isActive: true,
-                  leadDays: nextLeadDays ?? null,
+                  leadDays: nextVariantLeadDays ?? null,
                 } as any,
               });
             }
@@ -2977,11 +3005,11 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
                   supplierId: s.id,
                   supplierProductOfferId: baseOffer?.id ?? null,
                   ...(unitPriceProvided ? { unitPrice: toDecimal(nextUnitPriceNum) } : {}),
-                  currency: nextCurrency,
+                  currency: nextVariantCurrency,
                   ...(vQtyProvided ? { availableQty: nextQty } : {}),
                   inStock: nextStock,
                   isActive: nextActive,
-                  leadDays: v?.leadDays ?? nextLeadDays ?? null,
+                  leadDays: nextVariantLeadDays ?? null,
                 } as any,
               });
             } else {
@@ -2992,11 +3020,11 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
                   supplierId: s.id,
                   supplierProductOfferId: baseOffer?.id ?? null,
                   unitPrice: toDecimal(nextUnitPriceNum),
-                  currency: nextCurrency,
+                  currency: nextVariantCurrency,
                   availableQty: nextQty,
                   inStock: nextStock,
                   isActive: nextActive,
-                  leadDays: v?.leadDays ?? nextLeadDays ?? null,
+                  leadDays: nextVariantLeadDays ?? null,
                 } as any,
               });
             }
@@ -3004,9 +3032,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
       }
 
-      // ------------------------------------------------
-      // 4) NON-REVIEW direct product edits
-      // ------------------------------------------------
       if (!requiresApprovalFlow && ownedBySupplier && !stockOnlyFlag) {
         const nextImagesDirect = payload.imagesJson
           ? normalizeImagesJson(payload.imagesJson)
@@ -3090,13 +3115,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
       }
 
-      // ------------------------------------------------
-      // 5) UPSERT pending review rows for moderation-managed edits
-      // ------------------------------------------------
       let hasPendingChanges = false;
 
       if (requiresApprovalFlow && !stockOnlyFlag) {
-        // BASE OFFER pending row
         if (Object.keys(liveBaseOfferPatch).length > 0) {
           if (existingPendingBaseOfferChange?.id) {
             await tx.supplierOfferChangeRequest.update({
@@ -3134,7 +3155,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           });
         }
 
-        // VARIANT OFFER pending rows
         const desiredPendingVariantKeys = new Set<string>();
 
         for (const item of liveVariantOfferRequests) {
@@ -3207,7 +3227,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           }
         }
 
-        // PRODUCT pending row
         const productPatchForReview: any = {};
         const currentSnapshotForReview: any = {};
 

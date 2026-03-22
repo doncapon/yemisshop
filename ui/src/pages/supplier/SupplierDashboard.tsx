@@ -691,6 +691,13 @@ export default function SupplierDashboard() {
                   </Link>
 
                   <Link
+                    to={withSupplierCtx("/supplier/shipping")}
+                    className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
+                  >
+                    Shipping <Truck size={14} />
+                  </Link>
+
+                  <Link
                     to={withSupplierCtx("/supplier/catalog-requests")}
                     className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                   >
@@ -857,6 +864,7 @@ export default function SupplierDashboard() {
                     "Products and new listings",
                     "Order fulfilment actions",
                     "Payout access",
+                    "Shipping settings",
                     "Store settings",
                     "Refund workflow",
                   ].map((x) => (
@@ -948,6 +956,11 @@ export default function SupplierDashboard() {
                         title: "Fulfill pending orders",
                         desc: "Pack and mark orders as shipped.",
                         to: "/supplier/orders",
+                      },
+                      {
+                        title: "Manage shipping",
+                        desc: "Update shipping profile, flat fees and supplier rate cards.",
+                        to: "/supplier/shipping",
                       },
                       {
                         title: "Review payouts",
@@ -1045,6 +1058,18 @@ export default function SupplierDashboard() {
                         </div>
                       </>
                     )}
+
+                    <Link
+                      to={withSupplierCtx("/supplier/shipping")}
+                      className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
+                    >
+                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
+                        Shipping
+                      </div>
+                      <div className="text-[11px] sm:text-xs text-zinc-600">
+                        Manage your shipping profile, rate cards and quote settings
+                      </div>
+                    </Link>
 
                     <Link
                       to={withSupplierCtx("/supplier/catalog-requests")}

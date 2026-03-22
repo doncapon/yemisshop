@@ -11,8 +11,6 @@ import SuppliersOfferManager from "./SuppliersOfferManager";
    Types
 ============================ */
 
-
-
 type SupplierOfferLite = {
   id: string;
   productId: string;
@@ -67,6 +65,65 @@ type AdminProduct = {
   createdBy?: { email?: string | null };
   owner?: { email?: string | null };
   description?: string | null;
+
+  // shipping fields
+  requiresShipping?: boolean | null;
+  freeShipping?: boolean | null;
+  shipsAlone?: boolean | null;
+  pickupOnly?: boolean | null;
+  localPickup?: boolean | null;
+  allowLocalPickup?: boolean | null;
+  fragile?: boolean | null;
+  oversized?: boolean | null;
+
+  shippingCost?: number | string | null;
+  shippingFee?: number | string | null;
+  shippingPrice?: number | string | null;
+
+  weight?: number | string | null;
+  weightKg?: number | string | null;
+  weightGrams?: number | string | null;
+  shippingWeight?: number | string | null;
+  shippingWeightKg?: number | string | null;
+  shippingWeightGrams?: number | string | null;
+
+  length?: number | string | null;
+  width?: number | string | null;
+  height?: number | string | null;
+  lengthCm?: number | string | null;
+  widthCm?: number | string | null;
+  heightCm?: number | string | null;
+
+  shippingLength?: number | string | null;
+  shippingWidth?: number | string | null;
+  shippingHeight?: number | string | null;
+  shippingLengthCm?: number | string | null;
+  shippingWidthCm?: number | string | null;
+  shippingHeightCm?: number | string | null;
+
+  packageWeight?: number | string | null;
+  packageWeightKg?: number | string | null;
+  packageWeightGrams?: number | string | null;
+  packageLengthCm?: number | string | null;
+  packageWidthCm?: number | string | null;
+  packageHeightCm?: number | string | null;
+
+  volumetricWeight?: number | string | null;
+  volumetricWeightKg?: number | string | null;
+
+  shippingClass?: string | null;
+  shippingProfileId?: string | null;
+  shippingProfile?: string | null;
+  shippingCategory?: string | null;
+  shippingType?: string | null;
+  shippingMethod?: string | null;
+  deliveryType?: string | null;
+  deliveryMethod?: string | null;
+  dispatchTimeText?: string | null;
+  shippingNote?: string | null;
+  shippingNotes?: string | null;
+  packagingType?: string | null;
+  packageUnit?: string | null;
 
   // derived debug (optional)
   __baseQty?: number;
@@ -162,6 +219,65 @@ type AttrDef = { id: string; name?: string };
 
 const cookieOpts = { withCredentials: true as const };
 
+const SHIPPING_NUMBER_KEYS = [
+  "shippingCost",
+  "shippingFee",
+  "shippingPrice",
+  "weight",
+  "weightKg",
+  "weightGrams",
+  "shippingWeight",
+  "shippingWeightKg",
+  "shippingWeightGrams",
+  "length",
+  "width",
+  "height",
+  "lengthCm",
+  "widthCm",
+  "heightCm",
+  "shippingLength",
+  "shippingWidth",
+  "shippingHeight",
+  "shippingLengthCm",
+  "shippingWidthCm",
+  "shippingHeightCm",
+  "packageWeight",
+  "packageWeightKg",
+  "packageWeightGrams",
+  "packageLengthCm",
+  "packageWidthCm",
+  "packageHeightCm",
+  "volumetricWeight",
+  "volumetricWeightKg",
+] as const;
+
+const SHIPPING_STRING_KEYS = [
+  "shippingClass",
+  "shippingProfileId",
+  "shippingProfile",
+  "shippingCategory",
+  "shippingType",
+  "shippingMethod",
+  "deliveryType",
+  "deliveryMethod",
+  "dispatchTimeText",
+  "shippingNote",
+  "shippingNotes",
+  "packagingType",
+  "packageUnit",
+] as const;
+
+const SHIPPING_BOOLEAN_KEYS = [
+  "requiresShipping",
+  "freeShipping",
+  "shipsAlone",
+  "pickupOnly",
+  "localPickup",
+  "allowLocalPickup",
+  "fragile",
+  "oversized",
+] as const;
+
 /* ============================
    Helpers
 ============================ */
@@ -207,7 +323,6 @@ function availOf(o: any): number {
   return 0;
 }
 
-
 type ProductAttributeEnabledRow = {
   attributeId?: string;
   attribute?: {
@@ -218,10 +333,6 @@ type ProductAttributeEnabledRow = {
   };
 };
 
-/**
- * ✅ detect whether an offer row explicitly provides any quantity field.
- * If qty isn't provided, we still consider the price for "best/cheapest" selection.
- */
 function hasExplicitQty(o: any): boolean {
   const keys = ["availableQty", "available", "qty", "stock"];
   for (const k of keys) {
@@ -262,6 +373,66 @@ function toNumberLoose(v: any): number | null {
   return null;
 }
 
+function shippingInputNumber(v: any): string {
+  if (v == null) return "";
+  const n = toNumberLoose(v);
+  return n == null ? "" : String(n);
+}
+
+function shippingInputString(v: any): string {
+  return v == null ? "" : String(v);
+}
+
+function shippingInputBool(v: any, fallback = false): boolean {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") return /^(true|1|yes|y|on)$/i.test(v.trim());
+  if (typeof v === "number") return v !== 0;
+  return fallback;
+}
+
+function pickShippingStateFromProduct(p: any) {
+  const out: Record<string, any> = {};
+
+  for (const key of SHIPPING_NUMBER_KEYS) {
+    out[key] = shippingInputNumber(p?.[key]);
+  }
+
+  for (const key of SHIPPING_STRING_KEYS) {
+    out[key] = shippingInputString(p?.[key]);
+  }
+
+  for (const key of SHIPPING_BOOLEAN_KEYS) {
+    out[key] = shippingInputBool(p?.[key], false);
+  }
+
+  return out;
+}
+
+function buildShippingPayloadFromPending(pending: Record<string, any>) {
+  const out: Record<string, any> = {};
+
+  for (const key of SHIPPING_NUMBER_KEYS) {
+    const raw = pending?.[key];
+    if (raw === "" || raw == null) continue;
+    const n = Number(raw);
+    if (Number.isFinite(n)) out[key] = n;
+  }
+
+  for (const key of SHIPPING_STRING_KEYS) {
+    const raw = pending?.[key];
+    if (raw == null) continue;
+    const s = String(raw).trim();
+    if (s) out[key] = s;
+  }
+
+  for (const key of SHIPPING_BOOLEAN_KEYS) {
+    if (typeof pending?.[key] === "boolean") {
+      out[key] = pending[key];
+    }
+  }
+
+  return out;
+}
 
 function friendlyErrorMessage(e: any, fallback: string) {
   const status = e?.response?.status;
@@ -271,19 +442,16 @@ function friendlyErrorMessage(e: any, fallback: string) {
     e?.response?.data?.message ||
     e?.message;
 
-  // Never expose raw 5xx to end users
   if (status >= 500) {
     return "Something went wrong while saving. Please try again in a moment.";
   }
 
-  // Common nice cases
   if (status === 413) return "Upload too large. Please use smaller images.";
   if (status === 401 || status === 403) return "You’re not authorized to do that. Please log in again.";
 
   return detail || fallback;
 }
 
-/** Extracts supplier-side "cost/price" from an offer row across DTO variants. */
 function offerUnitCost(o: any): number | null {
   if (!o) return null;
 
@@ -308,7 +476,6 @@ function offerUnitCost(o: any): number | null {
 
   return null;
 }
-
 
 function computeRetailPriceFromSupplierPrice(args: {
   supplierPrice: number;
@@ -336,7 +503,6 @@ function computeRetailPriceFromSupplierPrice(args: {
   return Math.round(supplierPrice + extras);
 }
 
-
 function estimateGatewayFeeFromSettings(args: {
   amountNaira: number;
   gatewayFeePercent: number;
@@ -353,7 +519,6 @@ function estimateGatewayFeeFromSettings(args: {
   if (cap > 0) return Math.min(gross, cap);
   return gross;
 }
-
 
 async function fetchSupplierOffersForProduct(productId: string) {
   const attempts = [
@@ -418,7 +583,6 @@ function findDuplicateCombos(rows: VariantRow[], attrs: AttrDef[]): Record<strin
   return errors;
 }
 
-
 /* ============================
    Variants persistence (tries multiple endpoints)
 ============================ */
@@ -473,18 +637,14 @@ async function persistVariantsStrict(productId: string, variants: any[], opts?: 
         continue;
       }
       const msg = e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Failed to persist variants";
-      // eslint-disable-next-line no-console
       console.error("persistVariantsStrict error:", status, e?.response?.data || e);
       throw new Error(msg);
     }
   }
 
-  // eslint-disable-next-line no-console
   console.error("No variants bulk endpoint found. Last error:", lastErr?.response?.status, lastErr?.response?.data);
   throw new Error("Your API does not expose a variants bulk endpoint. Add one server-side or update the frontend to match your backend route.");
 }
-
-
 
 /* ============================
    Component
@@ -509,18 +669,16 @@ export function ManageProducts({
   const qc = useQueryClient();
   const staleTimeInMs = 300_000;
 
-  // stop spamming /has-orders when route doesn't exist (404)
   const hasOrdersSupportRef = useRef<"unknown" | "supported" | "unsupported">("unknown");
   const hasOrdersProbeDoneRef = useRef(false);
 
   const [refreshKey, setRefreshKey] = useState(0);
 
-  /**
-   * Keep search fully local; only sync to parent onBlur to avoid remount churn.
-   */
   const [qInput, setQInput] = useState(search || "");
+
   useEffect(() => {
-    setQInput(search || "");
+    const next = search || "";
+    setQInput((prev) => (prev === next ? prev : next));
   }, [search]);
 
   const debouncedQ = useDebounced(qInput, 350);
@@ -534,7 +692,6 @@ export function ManageProducts({
     gatewayFixedFeeNGN: number;
     gatewayFeeCapNGN: number;
   };
-
   const pricingSettingsQ = useQuery<PricingSettings>({
     queryKey: ["admin", "settings", "pricing-public"],
     enabled: role === "SUPER_ADMIN" || role === "ADMIN",
@@ -549,10 +706,11 @@ export function ManageProducts({
         gatewayFeeCapNGN: Number(data?.gatewayFeeCapNGN ?? 2000) || 2000,
       };
     },
-    staleTime: 0,
+    staleTime: 300_000,
+    gcTime: 300_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchOnMount: "always",
+    refetchOnMount: false,
   });
 
   const baseServiceFeeNGN = Number(pricingSettingsQ.data?.baseServiceFeeNGN ?? 0) || 0;
@@ -569,7 +727,6 @@ export function ManageProducts({
 
   useEffect(() => {
     setPreset((searchParams.get("view") as FilterPreset) || "all");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams.toString()]);
 
   function setPresetAndUrl(next: FilterPreset) {
@@ -603,11 +760,6 @@ export function ManageProducts({
     return normalizeNullableId(o?.supplierId?.id ?? o?.supplier?.id ?? o?.supplierId);
   }
 
-
-
-  /**
-   * Robust variantId extraction, supports compat IDs like "variant:<id>"
-   */
   function extractOfferVariantId(o: any): string | null {
     const direct = normalizeNullableId(o?.variantId?.id ?? o?.variant?.id ?? o?.variantId);
     if (direct) return direct;
@@ -630,11 +782,7 @@ export function ManageProducts({
   const statusParam = statusFromPreset(preset);
 
   const getSupplierName = (p: any) => {
-    const direct =
-      p?.supplierName ||
-      p?.supplier?.name ||
-      p?.supplier?.supplierName ||
-      "";
+    const direct = p?.supplierName || p?.supplier?.name || p?.supplier?.supplierName || "";
 
     if (direct) return String(direct);
 
@@ -674,16 +822,21 @@ export function ManageProducts({
   });
 
   useEffect(() => {
+    if (debouncedQ === search) return;
+    try {
+      setSearch(debouncedQ);
+    } catch { }
+  }, [debouncedQ, search, setSearch]);
+
+  useEffect(() => {
     if (listQ.isError) {
       const e: any = listQ.error;
-      // eslint-disable-next-line no-console
       console.error("Products list failed:", e?.response?.status, e?.response?.data || e?.message);
     }
   }, [listQ.isError, listQ.error]);
 
   const rows = listQ.data ?? [];
 
-  // productId -> Set(variantIds)
   const validVariantIdsByProduct = useMemo(() => {
     const by: Record<string, Set<string>> = {};
     for (const p of rows) {
@@ -698,8 +851,6 @@ export function ManageProducts({
     return by;
   }, [rows]);
 
-
-
   const variantIdsHash = useMemo(() => {
     return rows
       .map((p) => {
@@ -710,9 +861,6 @@ export function ManageProducts({
       .join("|");
   }, [rows, validVariantIdsByProduct]);
 
-  /**
-   * Bulk offers summary
-   */
   const offersSummaryQ = useQuery({
     queryKey: ["admin", "products", "offers-summary", { ids: rows.map((r) => r.id), variantIdsHash }],
     enabled: !!role && rows.length > 0,
@@ -736,14 +884,10 @@ export function ManageProducts({
           totalAvailable: number;
           baseAvailable: number;
           variantAvailable: number;
-
           offerCountTotal: number;
           activeOfferCount: number;
-
           inStock: boolean;
           perSupplier: Array<{ supplierId: string; supplierName?: string; availableQty: number }>;
-
-          // ✅ no "min" logic anymore
           baseSupplierPrice: number;
           variantSupplierPrices: Record<string, number>;
           firstVariantSupplierPrice: number;
@@ -767,13 +911,10 @@ export function ManageProducts({
             totalAvailable: 0,
             baseAvailable: 0,
             variantAvailable: 0,
-
             offerCountTotal: 0,
             activeOfferCount: 0,
-
             perSupplier: [],
             inStock: false,
-
             baseSupplierPrice: 0,
             variantSupplierPrices: {},
             firstVariantSupplierPrice: 0,
@@ -802,7 +943,6 @@ export function ManageProducts({
         if (cost == null || !Number.isFinite(cost) || cost <= 0) continue;
         if (!purchasable) continue;
 
-        // ✅ product has only one supplier, so we keep the actual valid row price
         if (!vid) {
           if (!(s.baseSupplierPrice > 0)) {
             s.baseSupplierPrice = cost;
@@ -824,9 +964,6 @@ export function ManageProducts({
       return byProduct;
     },
   });
-
-
-
 
   function PaginationBar() {
     if (totalRows === 0) return null;
@@ -905,7 +1042,6 @@ export function ManageProducts({
     );
   }
 
-  // Derive availability + computed pricing into rows
   const rowsWithDerived: AdminProduct[] = useMemo(() => {
     const summary = (offersSummaryQ.data || {}) as any;
 
@@ -934,13 +1070,9 @@ export function ManageProducts({
 
       const inStock = finalAvail > 0;
 
-      // ✅ no minPositive anymore
       const baseSupplierPrice = Number(s?.baseSupplierPrice ?? 0) || 0;
       const firstVariantSupplierPrice = Number(s?.firstVariantSupplierPrice ?? 0) || 0;
 
-      // For product list display:
-      // - use base offer price if product has one
-      // - otherwise use first variant offer price
       const sourceSupplierPrice =
         baseSupplierPrice > 0 ? baseSupplierPrice : firstVariantSupplierPrice > 0 ? firstVariantSupplierPrice : 0;
 
@@ -963,8 +1095,6 @@ export function ManageProducts({
         __baseQty: baseQty,
         __offerQty: offerQty,
         __offerCount: offerCount,
-
-        // ✅ keep fields for debugging / UI
         __bestBaseSupplierPrice: baseSupplierPrice > 0 ? baseSupplierPrice : undefined,
         __bestVariantSupplierPrice: firstVariantSupplierPrice > 0 ? firstVariantSupplierPrice : undefined,
         __computedRetailFrom: computedRetailFrom > 0 ? computedRetailFrom : undefined,
@@ -979,8 +1109,6 @@ export function ManageProducts({
     gatewayFixedFeeNGN,
     gatewayFeeCapNGN,
   ]);
-
-
 
   /* ---------------- Status helpers ---------------- */
 
@@ -1234,18 +1362,75 @@ export function ManageProducts({
 
   const defaultPending = {
     title: "",
-    supplierPrice: "",   // ✅ editable on create
-    retailPrice: "",     // ✅ readonly computed/display
+    supplierPrice: "",
+    retailPrice: "",
     status: "PENDING",
     categoryId: "",
     brandId: "",
     supplierId: "",
     supplierAvailableQty: "",
-    sku: "", // ✅ keep for edit-mode display (server-generated)
+    sku: "",
     imageUrls: "",
     description: "",
-  };
 
+    requiresShipping: false,
+    freeShipping: false,
+    shipsAlone: false,
+    pickupOnly: false,
+    localPickup: false,
+    allowLocalPickup: false,
+    fragile: false,
+    oversized: false,
+
+    shippingCost: "",
+    shippingFee: "",
+    shippingPrice: "",
+
+    weight: "",
+    weightKg: "",
+    weightGrams: "",
+    shippingWeight: "",
+    shippingWeightKg: "",
+    shippingWeightGrams: "",
+
+    length: "",
+    width: "",
+    height: "",
+    lengthCm: "",
+    widthCm: "",
+    heightCm: "",
+
+    shippingLength: "",
+    shippingWidth: "",
+    shippingHeight: "",
+    shippingLengthCm: "",
+    shippingWidthCm: "",
+    shippingHeightCm: "",
+
+    packageWeight: "",
+    packageWeightKg: "",
+    packageWeightGrams: "",
+    packageLengthCm: "",
+    packageWidthCm: "",
+    packageHeightCm: "",
+
+    volumetricWeight: "",
+    volumetricWeightKg: "",
+
+    shippingClass: "",
+    shippingProfileId: "",
+    shippingProfile: "",
+    shippingCategory: "",
+    shippingType: "",
+    shippingMethod: "",
+    deliveryType: "",
+    deliveryMethod: "",
+    dispatchTimeText: "",
+    shippingNote: "",
+    shippingNotes: "",
+    packagingType: "",
+    packageUnit: "",
+  };
 
   const [offersProductId, setOffersProductId] = useState<string | null>(null);
   const [pending, setPending] = useState(defaultPending);
@@ -1275,7 +1460,6 @@ export function ManageProducts({
     );
   }
 
-
   const enabledSelectableAttrs = useMemo(() => {
     const enabledIds = new Set(Object.keys(selectedAttrs || {}));
     return allSelectableAttrs.filter((a) => enabledIds.has(String(a.id)));
@@ -1284,15 +1468,30 @@ export function ManageProducts({
   useEffect(() => {
     const ids = enabledSelectableAttrs.map((a) => a.id);
 
-    setVariantRows((rows) =>
-      rows.map((row) => {
-        const next: Record<string, string> = {};
+    setVariantRows((rows) => {
+      let changed = false;
+
+      const nextRows = rows.map((row) => {
+        const nextSelections: Record<string, string> = {};
         ids.forEach((id) => {
-          next[id] = row.selections[id] || "";
+          nextSelections[id] = row.selections[id] || "";
         });
-        return { ...row, selections: next };
-      })
-    );
+
+        const prevKeys = Object.keys(row.selections || {}).sort().join("|");
+        const nextKeys = Object.keys(nextSelections).sort().join("|");
+
+        const sameValues =
+          prevKeys === nextKeys &&
+          ids.every((id) => String(row.selections?.[id] || "") === String(nextSelections[id] || ""));
+
+        if (sameValues) return row;
+
+        changed = true;
+        return { ...row, selections: nextSelections };
+      });
+
+      return changed ? nextRows : rows;
+    });
   }, [enabledSelectableAttrs]);
 
   const DRAFT_KEY = useMemo(() => `adminProductDraft:${editingId ?? "new"}`, [editingId]);
@@ -1306,11 +1505,10 @@ export function ManageProducts({
 
     try {
       const d = JSON.parse(raw);
-      if (d?.pending) setPending(d.pending);
+      if (d?.pending) setPending({ ...defaultPending, ...d.pending });
       if (Array.isArray(d?.variantRows)) setVariantRows(d.variantRows);
       if (d?.selectedAttrs) setSelectedAttrs(d.selectedAttrs);
     } catch { }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [DRAFT_KEY]);
 
   useEffect(() => {
@@ -1382,7 +1580,6 @@ export function ManageProducts({
 
     return offerUnitCost(o);
   }
-
 
   function skuSafePart(input: any) {
     const s = String(input ?? "")
@@ -1473,12 +1670,12 @@ export function ManageProducts({
 
   const visibleVariantRows = useMemo(() => {
     const rows = Array.isArray(variantRows) ? variantRows : [];
-    // ✅ Always show all variant combos (create + edit)
     return rows.filter((r) => {
       const id = String(r?.id ?? "").trim();
       return !!id;
     });
   }, [variantRows]);
+
   const comboErrors = useMemo(() => {
     const dup = findDuplicateCombos(visibleVariantRows ?? [], enabledSelectableAttrs ?? []);
     const baseConf = findBaseVsVariantConflicts(visibleVariantRows ?? [], enabledSelectableAttrs ?? [], baseComboKey);
@@ -1527,7 +1724,6 @@ export function ManageProducts({
     gatewayFeeCapNGN,
   ]);
 
-
   const computedRetailFromEditing = useMemo(() => {
     if (!editingId) return null;
 
@@ -1561,16 +1757,19 @@ export function ManageProducts({
   useEffect(() => {
     if (editingId) {
       if (computedRetailFromEditing == null) return;
-      setPending((p) => ({ ...p, retailPrice: String(computedRetailFromEditing) }));
+
+      const next = String(computedRetailFromEditing);
+      setPending((p) => (p.retailPrice === next ? p : { ...p, retailPrice: next }));
       return;
     }
 
     if (computedRetailFromCreateInput == null) {
-      setPending((p) => ({ ...p, retailPrice: "" }));
+      setPending((p) => (p.retailPrice === "" ? p : { ...p, retailPrice: "" }));
       return;
     }
 
-    setPending((p) => ({ ...p, retailPrice: String(computedRetailFromCreateInput) }));
+    const next = String(computedRetailFromCreateInput);
+    setPending((p) => (p.retailPrice === next ? p : { ...p, retailPrice: next }));
   }, [editingId, computedRetailFromEditing, computedRetailFromCreateInput]);
 
   const parseUrlList = (s: string) =>
@@ -1611,7 +1810,6 @@ export function ManageProducts({
   const [saveBanner, setSaveBanner] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  // snapshot to restore the form if save fails
   const lastSaveSnapshotRef = useRef<{
     pending: typeof defaultPending;
     selectedAttrs: Record<string, string | string[]>;
@@ -1634,11 +1832,11 @@ export function ManageProducts({
     setVariantRows(snap.variantRows);
   }
 
-
   function clearSaveUiErrors() {
     setSaveBanner(null);
     setFieldErrors({});
   }
+
   async function refreshEditingProduct() {
     const pid = editingId;
     if (!pid) return;
@@ -1676,6 +1874,7 @@ export function ManageProducts({
         supplierId: normalizeNullableId(refreshed.supplierId) ?? p.supplierId,
         description: refreshed.description ?? p.description,
         imageUrls: (extractImageUrls(refreshed) || []).join("\n"),
+        ...pickShippingStateFromProduct(refreshed),
       }));
     } catch (e: any) {
       openModal({ title: "Refresh product", message: friendlyErrorMessage(e, "Failed to refresh product") });
@@ -1862,8 +2061,6 @@ export function ManageProducts({
       };
     }
 
-    // ✅ create mode: variant retail is not entered here.
-    // It will come later from SupplierOfferManager variant offers.
     return {
       variantRetail: -1,
       supplierVariantCost: 0,
@@ -1879,16 +2076,11 @@ export function ManageProducts({
 
     for (const a of attrs || []) {
       const raw = selectedAttrs?.[a.id];
-
-      // Variants only support one SELECT value per attribute,
-      // so only compare against a single selected value.
       const valueId = Array.isArray(raw)
         ? String(raw[0] ?? "").trim()
         : String(raw ?? "").trim();
 
       if (!valueId) continue;
-
-      // ✅ Use EXACT same format as buildComboKey()
       parts.push(`${a.id}:${valueId}`);
     }
 
@@ -2057,7 +2249,6 @@ export function ManageProducts({
       const full = await fetchProductFull(productId);
       setOfferVariants((full as any).variants || (full as any).variantsNormalized || []);
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(e);
       alert("Could not load product variants for offers.");
     }
@@ -2095,10 +2286,6 @@ export function ManageProducts({
         `Base retail (₦${Number(args.baseRetail).toLocaleString()}) cannot be below computed retail from supplier base price (₦${computedBaseRetail.toLocaleString()}).`
       );
     }
-
-    // ✅ Variant retail is no longer entered in ManageProducts.
-    // It is derived later from SupplierOfferManager variant offers,
-    // so no variant-level manual validation is needed here.
 
     return {
       ok: errors.length === 0,
@@ -2144,6 +2331,21 @@ export function ManageProducts({
   ) {
     const lines: Array<{ attributeId: string; label: string; value: string }> = [];
 
+    const toIds = (raw: string | string[] | undefined | null) => {
+      if (Array.isArray(raw)) {
+        return raw.map((v) => String(v ?? "").trim()).filter(Boolean);
+      }
+
+      const s = String(raw ?? "").trim();
+      if (!s) return [];
+
+      // support accidental csv payloads
+      return s
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean);
+    };
+
     for (const a of attrs || []) {
       if (!(a.id in selectedAttrs)) continue;
 
@@ -2161,37 +2363,21 @@ export function ManageProducts({
         continue;
       }
 
-      if (a.type === "SELECT") {
-        const vid = String(raw ?? "").trim();
-        if (!vid) continue;
+      const ids = toIds(raw);
+      if (!ids.length) continue;
 
-        const val = a.values?.find((v) => String(v.id) === vid);
-        lines.push({
-          attributeId: a.id,
-          label: a.name,
-          value: String(val?.name ?? vid),
-        });
-        continue;
-      }
+      const names = ids.map((id) => {
+        const match = a.values?.find((v) => String(v.id) === id);
+        return String(match?.name ?? match?.code ?? id);
+      });
 
-      if (a.type === "MULTISELECT") {
-        const vids = (Array.isArray(raw) ? raw : [raw])
-          .map((v) => String(v ?? "").trim())
-          .filter(Boolean);
+      if (!names.length) continue;
 
-        if (!vids.length) continue;
-
-        const names = vids.map((vid) => {
-          const val = a.values?.find((v) => String(v.id) === vid);
-          return String(val?.name ?? vid);
-        });
-
-        lines.push({
-          attributeId: a.id,
-          label: a.name,
-          value: names.join(", "),
-        });
-      }
+      lines.push({
+        attributeId: a.id,
+        label: a.name,
+        value: a.type === "SELECT" ? names[0] : names.join(", "),
+      });
     }
 
     return lines;
@@ -2216,6 +2402,7 @@ export function ManageProducts({
       availableQty?: number;
       inStock?: boolean;
       retailPrice?: number;
+      [key: string]: any;
     };
     selectedAttrs: Record<string, string | string[]>;
     variantRows: VariantRow[];
@@ -2305,22 +2492,13 @@ export function ManageProducts({
 
       let retailPriceToSend: number | null = null;
 
-      // ✅ Base product retail is already computed from base supplier price.
-      const baseRetailFallback =
-        typeof base.retailPrice === "number" && Number.isFinite(base.retailPrice) && base.retailPrice > 0
-          ? base.retailPrice
-          : toNumberLoose((base as any).retailPrice) ?? null;
-
       if (editingId) {
-        // ✅ only saved/editing variants with actual supplier offers get computed retail
         const computed = computedVariantRetail(row);
         retailPriceToSend =
           computed.hasComputed && computed.variantRetail > 0
             ? computed.variantRetail
             : null;
       } else {
-        // ✅ create mode: do NOT invent per-variant retail here.
-        // Variant pricing will come later from SupplierOfferManager.
         retailPriceToSend = null;
       }
 
@@ -2389,7 +2567,6 @@ export function ManageProducts({
   const variantsForSave = useMemo(() => {
     return editingId ? (visibleVariantRows ?? []) : (variantRows ?? []);
   }, [editingId, visibleVariantRows, variantRows]);
-
 
   async function saveOrCreate() {
     clearSaveUiErrors();
@@ -2499,16 +2676,17 @@ export function ManageProducts({
       return;
     }
 
+    const shippingPayload = buildShippingPayloadFromPending(pending);
+
     const base: any = {
       title,
       retailPrice: retailBase,
       status: pending.status,
       description: pending.description != null ? pending.description : undefined,
       categoryId: pending.categoryId || undefined,
-
-      // required
       brandId: pending.brandId,
       supplierId: pending.supplierId,
+      ...shippingPayload,
     };
 
     if (!editingId && supplierQty > 0) {
@@ -2703,7 +2881,6 @@ export function ManageProducts({
     if (!target) return;
     startEdit(target);
     onFocusedConsumed();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId, rowsWithDerived]);
 
   /* ---------------- Filters / sorting ---------------- */
@@ -2814,7 +2991,6 @@ export function ManageProducts({
     setPage(1);
   }, [preset, debouncedQ, sort.key, sort.dir]);
 
-
   const totalRows = displayRows.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -2832,8 +3008,6 @@ export function ManageProducts({
   function goToPage(next: number) {
     setPage(Math.min(Math.max(1, next), totalPages));
   }
-
-
 
   const supplierVariants = useMemo(() => {
     const skuByVariantId = new Map<string, string>();
@@ -2869,8 +3043,6 @@ export function ManageProducts({
       return parts.filter(Boolean).join(" / ");
     };
 
-
-
     return rows
       .map((r, index) => {
         const vid = norm(r?.id);
@@ -2880,8 +3052,6 @@ export function ManageProducts({
         const labelFromSelections = toLabelFromSelections(r);
         const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
 
-        // NOTE: sku is the “suffix” piece here – SuppliersOfferManager
-        // will decide how to combine it with productSku.
         return { id: vid, sku: serverSku || label, label };
       })
       .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
@@ -2910,7 +3080,6 @@ export function ManageProducts({
 
     updateStatusM.mutate({ id: pId, ...patch });
   }
-
 
   function primaryActionForRow(p: any): any {
     const eff = getStatus(p);
@@ -2970,7 +3139,6 @@ export function ManageProducts({
     setSelectedAttrs((prev) => ({ ...prev, [attrId]: value }));
   }
 
-
   function toggleAttributeEnabled(attrId: string, enabled: boolean) {
     setSelectedAttrs((prev) => {
       const next = { ...prev };
@@ -3014,7 +3182,6 @@ export function ManageProducts({
     return fallback;
   };
 
-  // startEdit
   async function startEdit(p: any) {
     try {
       setShowEditor(true);
@@ -3028,6 +3195,7 @@ export function ManageProducts({
       const resolvedSupplierId = normalizeNullableId(full.supplierId) || "";
 
       const nextPending = {
+        ...defaultPending,
         title: full.title || "",
         supplierPrice: "",
         retailPrice: String(full.retailPrice ?? ""),
@@ -3039,12 +3207,17 @@ export function ManageProducts({
         sku: full.sku || "",
         imageUrls: (extractImageUrls(full) || []).join("\n"),
         description: full.description ?? "",
+        ...pickShippingStateFromProduct(full),
       };
 
+      const attrTypeById = new Map<string, AdminAttribute["type"]>();
+      for (const a of attrsQ.data || []) {
+        attrTypeById.set(String(a.id), a.type);
+      }
 
       const nextSel: Record<string, string | string[]> = {};
 
-      // 1) enable attributes first, even if no base value exists
+      // 1) enable attributes first
       (full.enabledAttributeRows || []).forEach((row: any) => {
         const aid = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
         if (!aid) return;
@@ -3057,21 +3230,37 @@ export function ManageProducts({
         const vid = String(av?.valueId ?? av?.value?.id ?? "").trim();
         if (!aid) return;
 
+        const attrType = attrTypeById.get(aid);
+
         if (!vid) {
           if (!(aid in nextSel)) nextSel[aid] = "";
           return;
         }
 
-        const prev = nextSel[aid];
-
-        if (Array.isArray(prev)) {
-          if (!prev.includes(vid)) nextSel[aid] = [...prev, vid];
-        } else if (typeof prev === "string" && prev && prev !== vid) {
-          // defensive fallback if duplicate rows come back for same attr
-          nextSel[aid] = [prev, vid];
-        } else {
-          nextSel[aid] = vid;
+        // SELECT must remain a single value
+        if (attrType === "SELECT") {
+          if (!(aid in nextSel) || !String(nextSel[aid] ?? "").trim()) {
+            nextSel[aid] = vid;
+          }
+          return;
         }
+
+        // MULTISELECT collects multiple ids
+        if (attrType === "MULTISELECT") {
+          const prev = nextSel[aid];
+          const list = Array.isArray(prev)
+            ? prev.map((x) => String(x).trim()).filter(Boolean)
+            : String(prev ?? "").trim()
+              ? [String(prev).trim()]
+              : [];
+
+          if (!list.includes(vid)) list.push(vid);
+          nextSel[aid] = list;
+          return;
+        }
+
+        // fallback
+        if (!(aid in nextSel)) nextSel[aid] = vid;
       });
 
       // 3) overlay text defaults
@@ -3094,9 +3283,11 @@ export function ManageProducts({
 
       await loadOfferVariants(full.id);
 
-      localStorage.setItem(`adminProductDraft:${full.id}`, JSON.stringify({ pending: nextPending, variantRows: vr, selectedAttrs: nextSel }));
+      localStorage.setItem(
+        `adminProductDraft:${full.id}`,
+        JSON.stringify({ pending: nextPending, variantRows: vr, selectedAttrs: nextSel })
+      );
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(e);
       openModal({ title: "Products", message: "Could not load product for editing." });
     } finally {
@@ -3106,12 +3297,14 @@ export function ManageProducts({
     }
   }
 
+
   /* ============================
      Render
   ============================ */
   const baseDefaultsSummary = useMemo(() => {
     return summarizeBaseProductDefaults(selectedAttrs, activeAttrs || []);
   }, [selectedAttrs, activeAttrs]);
+
   return (
     <div
       className="space-y-4"
@@ -3129,7 +3322,6 @@ export function ManageProducts({
         e.stopPropagation();
       }}
     >
-      {/* ================= Editor ================= */}
       {(showEditor || !!editingId) && (
         <div className="space-y-3">
           <button
@@ -3183,7 +3375,6 @@ export function ManageProducts({
             </div>
           )}
 
-          {/* Product Add/Edit Form */}
           <div className="rounded-2xl border bg-white shadow-sm p-4">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -3192,10 +3383,8 @@ export function ManageProducts({
                   {editingId
                     ? "Retail prices are computed as supplier price + service fees + gateway fee."
                     : "Enter the supplier price and the retail price will be auto-calculated."}
-
                 </div>
               </div>
-
 
               {editingId && (
                 <button
@@ -3222,7 +3411,6 @@ export function ManageProducts({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="sm:col-span-2">
                     <label className="text-sm font-medium text-slate-700">Title</label>
-
                     <input
                       value={pending.title}
                       onChange={(e) => setPending((p) => ({ ...p, title: e.target.value }))}
@@ -3230,7 +3418,6 @@ export function ManageProducts({
                       placeholder="Product title"
                     />
                     {fieldErrors.title && <div className="mt-1 text-[11px] text-rose-600">{fieldErrors.title}</div>}
-
                   </div>
 
                   {!editingId ? (
@@ -3284,7 +3471,6 @@ export function ManageProducts({
                       />
                     </div>
                   )}
-
 
                   <div>
                     <label className="text-sm font-medium text-slate-700">Status</label>
@@ -3341,8 +3527,7 @@ export function ManageProducts({
                     <select
                       value={pending.brandId}
                       onChange={(e) => setPending((p) => ({ ...p, brandId: e.target.value }))}
-                      className={`mt-1 w-full rounded-xl border px-3 py-2 ${(!pending.brandId || fieldErrors.brandId) ? "border-rose-300" : ""
-                        }`}
+                      className={`mt-1 w-full rounded-xl border px-3 py-2 ${(!pending.brandId || fieldErrors.brandId) ? "border-rose-300" : ""}`}
                     >
                       <option value="">Select brand…</option>
                       {(brandsQ.data ?? [])
@@ -3422,7 +3607,247 @@ export function ManageProducts({
                   </div>
                 )}
 
+                {/* Shipping */}
+                <div className="rounded-xl border p-3">
+                  <div className="text-sm font-semibold text-slate-800">Shipping</div>
+                  <div className="text-xs text-slate-500">
+                    Product-level shipping data used to calculate delivery for any supplier offering this product.
+                  </div>
 
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!pending.requiresShipping}
+                        onChange={(e) => setPending((p) => ({ ...p, requiresShipping: e.target.checked }))}
+                      />
+                      Requires shipping
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!pending.freeShipping}
+                        onChange={(e) => setPending((p) => ({ ...p, freeShipping: e.target.checked }))}
+                      />
+                      Free shipping
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!pending.shipsAlone}
+                        onChange={(e) => setPending((p) => ({ ...p, shipsAlone: e.target.checked }))}
+                      />
+                      Ships alone
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!pending.fragile}
+                        onChange={(e) => setPending((p) => ({ ...p, fragile: e.target.checked }))}
+                      />
+                      Fragile
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!pending.oversized}
+                        onChange={(e) => setPending((p) => ({ ...p, oversized: e.target.checked }))}
+                      />
+                      Oversized
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!pending.pickupOnly}
+                        onChange={(e) => setPending((p) => ({ ...p, pickupOnly: e.target.checked }))}
+                      />
+                      Pickup only
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!pending.localPickup}
+                        onChange={(e) => setPending((p) => ({ ...p, localPickup: e.target.checked }))}
+                      />
+                      Local pickup
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={!!pending.allowLocalPickup}
+                        onChange={(e) => setPending((p) => ({ ...p, allowLocalPickup: e.target.checked }))}
+                      />
+                      Allow local pickup
+                    </label>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Shipping Cost</label>
+                      <input
+                        value={pending.shippingCost}
+                        onChange={(e) => setPending((p) => ({ ...p, shippingCost: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 1500"
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Shipping Fee</label>
+                      <input
+                        value={pending.shippingFee}
+                        onChange={(e) => setPending((p) => ({ ...p, shippingFee: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 1500"
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Weight (kg)</label>
+                      <input
+                        value={pending.weightKg}
+                        onChange={(e) => setPending((p) => ({ ...p, weightKg: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 1.25"
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Weight (grams)</label>
+                      <input
+                        value={pending.weightGrams}
+                        onChange={(e) => setPending((p) => ({ ...p, weightGrams: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 1250"
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Length (cm)</label>
+                      <input
+                        value={pending.lengthCm}
+                        onChange={(e) => setPending((p) => ({ ...p, lengthCm: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 30"
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Width (cm)</label>
+                      <input
+                        value={pending.widthCm}
+                        onChange={(e) => setPending((p) => ({ ...p, widthCm: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 20"
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Height (cm)</label>
+                      <input
+                        value={pending.heightCm}
+                        onChange={(e) => setPending((p) => ({ ...p, heightCm: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 15"
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Volumetric Weight (kg)</label>
+                      <input
+                        value={pending.volumetricWeightKg}
+                        onChange={(e) => setPending((p) => ({ ...p, volumetricWeightKg: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 2.4"
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Shipping Class</label>
+                      <input
+                        value={pending.shippingClass}
+                        onChange={(e) => setPending((p) => ({ ...p, shippingClass: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. STANDARD"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Shipping Profile ID</label>
+                      <input
+                        value={pending.shippingProfileId}
+                        onChange={(e) => setPending((p) => ({ ...p, shippingProfileId: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="Profile id"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Shipping Category</label>
+                      <input
+                        value={pending.shippingCategory}
+                        onChange={(e) => setPending((p) => ({ ...p, shippingCategory: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. parcel"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Shipping Method</label>
+                      <input
+                        value={pending.shippingMethod}
+                        onChange={(e) => setPending((p) => ({ ...p, shippingMethod: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. delivery"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Delivery Type</label>
+                      <input
+                        value={pending.deliveryType}
+                        onChange={(e) => setPending((p) => ({ ...p, deliveryType: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. doorstep"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700">Dispatch Time Text</label>
+                      <input
+                        value={pending.dispatchTimeText}
+                        onChange={(e) => setPending((p) => ({ ...p, dispatchTimeText: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="e.g. 1-2 business days"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="text-xs font-medium text-slate-700">Shipping Notes</label>
+                      <textarea
+                        value={pending.shippingNotes}
+                        onChange={(e) => setPending((p) => ({ ...p, shippingNotes: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm min-h-[90px]"
+                        placeholder="Any delivery or packaging notes…"
+                      />
+                    </div>
+                  </div>
+                </div>
 
                 {/* Images */}
                 <div className="rounded-xl border p-3">
@@ -3619,14 +4044,11 @@ export function ManageProducts({
                     )}
                   </div>
                 </div>
-
-
               </div>
             </div>
 
             <div
-              className={`mt-4 rounded-xl border p-3 ${baseComboConflictMessage ? "border-rose-300 bg-rose-50" : "bg-slate-50"
-                }`}
+              className={`mt-4 rounded-xl border p-3 ${baseComboConflictMessage ? "border-rose-300 bg-rose-50" : "bg-slate-50"}`}
             >
               <div className="text-sm font-semibold text-slate-800">Base product defaults</div>
               <div className="text-xs text-slate-500">
@@ -3669,7 +4091,11 @@ export function ManageProducts({
                 </div>
 
                 <div className="flex gap-2">
-                  <button type="button" onClick={addVariantCombo} className="rounded-lg bg-slate-900 text-white px-3 py-2 text-sm hover:bg-slate-800">
+                  <button
+                    type="button"
+                    onClick={addVariantCombo}
+                    className="rounded-lg bg-slate-900 text-white px-3 py-2 text-sm hover:bg-slate-800"
+                  >
                     + Add variant
                   </button>
 
@@ -3733,28 +4159,31 @@ export function ManageProducts({
                           computed.variantRetail === -1
                             ? "—"
                             : `₦${Number(computed.variantRetail || 0).toLocaleString()}`;
+
                         return (
                           <tr key={rk} className="border-t">
                             {enabledSelectableAttrs.map((a) => {
                               const cur = String(r?.selections?.[a.id] ?? "");
                               return (
-                                <td key={a.id} className="p-2 align-top min-w-[180px] w-[180px]">                                  <select
-                                  value={cur}
-                                  onChange={(e) => setVariantRowSelection(r.id, a.id, e.target.value || "")}
-                                  className="w-full min-w-[170px] rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm"
-                                  disabled={isLocked}
-                                  title={isLocked ? "Locked (variant has supplier offers)" : ""}
-                                >
-                                  <option value="">—</option>
-                                  {(a.values || []).filter((v) => v.isActive).map((v) => (
-                                    <option key={v.id} value={v.id}>
-                                      {v.name}
-                                    </option>
-                                  ))}
-                                </select>
+                                <td key={a.id} className="p-2 align-top min-w-[180px] w-[180px]">
+                                  <select
+                                    value={cur}
+                                    onChange={(e) => setVariantRowSelection(r.id, a.id, e.target.value || "")}
+                                    className="w-full min-w-[170px] rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm"
+                                    disabled={isLocked}
+                                    title={isLocked ? "Locked (variant has supplier offers)" : ""}
+                                  >
+                                    <option value="">—</option>
+                                    {(a.values || []).filter((v) => v.isActive).map((v) => (
+                                      <option key={v.id} value={v.id}>
+                                        {v.name}
+                                      </option>
+                                    ))}
+                                  </select>
                                 </td>
                               );
                             })}
+
                             <td className="p-2 align-top min-w-[130px] w-[130px]">
                               <div className="text-sm">{retailLabel}</div>
 
@@ -3809,10 +4238,11 @@ export function ManageProducts({
               )}
 
               {editingId && clearAllVariantsIntent && (
-                <div className="mt-2 text-xs text-amber-700">“Remove all variants” is armed. Saving will replace server variants with none.</div>
+                <div className="mt-2 text-xs text-amber-700">
+                  “Remove all variants” is armed. Saving will replace server variants with none.
+                </div>
               )}
             </div>
-
 
             {/* Save buttons */}
             <div className="mt-4 flex flex-col sm:flex-row gap-2 justify-end">
@@ -3847,7 +4277,6 @@ export function ManageProducts({
       {/* ================= Toolbar ================= */}
       <div className="rounded-2xl border bg-white shadow-sm p-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          {/* ✅ Mobile neater: 2-col grid for presets */}
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:gap-2">
             {presetButtons.map((b) => (
               <button
@@ -3870,11 +4299,6 @@ export function ManageProducts({
               <input
                 value={qInput}
                 onChange={(e) => setQInput(e.target.value)}
-                onBlur={() => {
-                  try {
-                    setSearch(qInput);
-                  } catch { }
-                }}
                 placeholder="Search by title / SKU / owner…"
                 className="w-full rounded-xl border px-3 py-2 text-sm"
               />
@@ -3893,14 +4317,13 @@ export function ManageProducts({
 
       <PaginationBar />
 
-      {/* ================= Mobile Cards (neater) ================= */}
+      {/* ================= Mobile Cards ================= */}
       <div className="md:hidden space-y-3">
         {paginatedRows.map((p) => {
           const action = primaryActionForRow(p);
           const price = displayRetailForRow(p);
           const status = getStatus(p);
           const owner = getOwner(p) || "—";
-
           const supplierName = getSupplierName(p) || "—";
 
           const mobileLabel = (label: string) => {
@@ -3921,7 +4344,6 @@ export function ManageProducts({
                   ? "bg-rose-50 text-rose-700 border-rose-200"
                   : "bg-slate-50 text-slate-700 border-slate-200";
 
-          // derive a consistent primary button style for mobile (ignore px/py in action.className)
           const primaryIntent =
             action.label === "Approve PUBLISHED"
               ? "bg-emerald-600 hover:bg-emerald-700 text-white"
@@ -3935,7 +4357,6 @@ export function ManageProducts({
 
           return (
             <div key={p.id} className="rounded-2xl border bg-white shadow-sm p-4">
-              {/* Header */}
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="font-semibold truncate">{(p.title || "").trim() || "Untitled product"}</div>
@@ -3952,11 +4373,9 @@ export function ManageProducts({
                 </div>
               </div>
 
-              {/* Stats */}
               <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                 <div className="rounded-xl bg-slate-50 border px-2.5 py-2">
                   <div className="text-[11px] text-slate-500">Offers</div>
-
                   <div className="mt-0.5 font-semibold text-slate-800 tabular-nums">
                     {Number((p as any).__offerCount ?? 0).toLocaleString()}
                   </div>
@@ -3976,10 +4395,8 @@ export function ManageProducts({
               </div>
 
               <div className="mt-2 text-[12px] text-slate-500 truncate">Owner: {owner}</div>
-
               <div className="mt-1 text-[12px] text-slate-500 truncate">Supplier: {supplierName}</div>
 
-              {/* Actions (clean grid, no overflow) */}
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -3999,7 +4416,6 @@ export function ManageProducts({
                   <span className="block truncate">{mobileLabel(action.label)}</span>
                 </button>
 
-                {/* SUPER_ADMIN only: Reject when still pending (shown under row) */}
                 {isSuper && status === "PENDING" && action.label === "Approve PUBLISHED" && (
                   <button
                     type="button"
@@ -4086,7 +4502,6 @@ export function ManageProducts({
                           computed retail uses this product’s supplier price + service fee + comms fee + gateway fee
                         </div>
                       )}
-
                     </td>
 
                     <td className="p-3">₦{Number(price || 0).toLocaleString()}</td>
@@ -4106,7 +4521,11 @@ export function ManageProducts({
                     <td className="p-3">
                       <div className="flex flex-wrap gap-2">
                         <div className="flex flex-wrap gap-2">
-                          <button type="button" onClick={() => startEdit(p)} className="rounded-lg border px-3 py-2 hover:bg-slate-50">
+                          <button
+                            type="button"
+                            onClick={() => startEdit(p)}
+                            className="rounded-lg border px-3 py-2 hover:bg-slate-50"
+                          >
                             Edit
                           </button>
 
@@ -4120,7 +4539,6 @@ export function ManageProducts({
                             {action.label}
                           </button>
 
-                          {/* ✅ SUPER_ADMIN only: Reject when still pending (shown next to Approve) */}
                           {isSuper && getStatus(p) === "PENDING" && action.label === "Approve PUBLISHED" && (
                             <button
                               type="button"
@@ -4158,6 +4576,7 @@ export function ManageProducts({
           </table>
         </div>
       </div>
+
       <PaginationBar />
     </div>
   );
