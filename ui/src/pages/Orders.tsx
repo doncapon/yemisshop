@@ -150,17 +150,17 @@ type OtpPurpose = "PAY_ORDER" | "CANCEL_ORDER" | "REFUND_ORDER";
 type OtpState =
   | { open: false }
   | {
-      open: true;
-      orderId: string;
-      purpose: OtpPurpose;
-      requestId: string;
-      expiresAt: number;
-      channelHint?: string | null;
-      otp: string;
-      busy: boolean;
-      error?: string | null;
-      onSuccess: (otpToken: string) => Promise<void> | void;
-    };
+    open: true;
+    orderId: string;
+    purpose: OtpPurpose;
+    requestId: string;
+    expiresAt: number;
+    channelHint?: string | null;
+    otp: string;
+    busy: boolean;
+    error?: string | null;
+    onSuccess: (otpToken: string) => Promise<void> | void;
+  };
 
 type RefundReason =
   | "NOT_RECEIVED"
@@ -231,31 +231,31 @@ function normalizeRefund(r: any): RefundRow {
     supplier: r?.supplier ? { id: String(r.supplier.id ?? ""), name: r.supplier.name ?? null } : null,
     purchaseOrder: r?.purchaseOrder
       ? {
-          id: String(r.purchaseOrder.id ?? ""),
-          status: r.purchaseOrder.status ?? null,
-          payoutStatus: r.purchaseOrder.payoutStatus ?? null,
-        }
+        id: String(r.purchaseOrder.id ?? ""),
+        status: r.purchaseOrder.status ?? null,
+        payoutStatus: r.purchaseOrder.payoutStatus ?? null,
+      }
       : null,
     events: Array.isArray(r?.events)
       ? r.events.map((e: any) => ({
-          id: String(e?.id ?? ""),
-          type: e?.type ?? null,
-          message: e?.message ?? null,
-          createdAt: e?.createdAt ?? null,
-        }))
+        id: String(e?.id ?? ""),
+        type: e?.type ?? null,
+        message: e?.message ?? null,
+        createdAt: e?.createdAt ?? null,
+      }))
       : [],
     items: Array.isArray(r?.items)
       ? r.items.map((it: any) => ({
-          id: String(it?.id ?? ""),
-          orderItem: it?.orderItem
-            ? {
-                id: String(it.orderItem.id ?? ""),
-                title: it.orderItem.title ?? null,
-                quantity: it.orderItem.quantity ?? null,
-                unitPrice: it.orderItem.unitPrice ?? null,
-              }
-            : null,
-        }))
+        id: String(it?.id ?? ""),
+        orderItem: it?.orderItem
+          ? {
+            id: String(it.orderItem.id ?? ""),
+            title: it.orderItem.title ?? null,
+            quantity: it.orderItem.quantity ?? null,
+            unitPrice: it.orderItem.unitPrice ?? null,
+          }
+          : null,
+      }))
       : [],
   };
 }
@@ -289,12 +289,12 @@ const fmtDate = (s?: string | null) => {
   return Number.isNaN(+d)
     ? String(s)
     : d.toLocaleString(undefined, {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 };
 
 const todayYMD = () => {
@@ -431,10 +431,10 @@ function normalizeItem(it: any): OrderItem {
     selectedOptions,
     variant: variant
       ? {
-          id: String(variant?.id ?? ""),
-          sku: variant?.sku ?? null,
-          imagesJson: variant?.imagesJson ?? variant?.images ?? null,
-        }
+        id: String(variant?.id ?? ""),
+        sku: variant?.sku ?? null,
+        imagesJson: variant?.imagesJson ?? variant?.images ?? null,
+      }
       : null,
   };
 }
@@ -524,33 +524,33 @@ function normalizeOrder(raw: any): OrderRow {
     items,
     payments: payments.length
       ? payments.map((p) => ({
-          id: String(p?.id ?? ""),
-          status: String(p?.status ?? ""),
-          provider: p?.provider ?? null,
-          reference: p?.reference ?? p?.ref ?? null,
-          amount: p?.amount ?? null,
-          createdAt: p?.createdAt ?? p?.created_at ?? null,
-          allocations: Array.isArray(p?.allocations)
-            ? p.allocations.map((a: any) => ({
-                id: String(a?.id ?? ""),
-                supplierId: String(a?.supplierId ?? ""),
-                supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
-                amount: a?.amount ?? null,
-                status: a?.status ?? null,
-                purchaseOrderId: a?.purchaseOrderId ?? null,
-              }))
-            : [],
-        }))
+        id: String(p?.id ?? ""),
+        status: String(p?.status ?? ""),
+        provider: p?.provider ?? null,
+        reference: p?.reference ?? p?.ref ?? null,
+        amount: p?.amount ?? null,
+        createdAt: p?.createdAt ?? p?.created_at ?? null,
+        allocations: Array.isArray(p?.allocations)
+          ? p.allocations.map((a: any) => ({
+            id: String(a?.id ?? ""),
+            supplierId: String(a?.supplierId ?? ""),
+            supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+            amount: a?.amount ?? null,
+            status: a?.status ?? null,
+            purchaseOrderId: a?.purchaseOrderId ?? null,
+          }))
+          : [],
+      }))
       : undefined,
     payment: payment
       ? {
-          id: String(payment?.id ?? ""),
-          status: String(payment?.status ?? ""),
-          provider: payment?.provider ?? null,
-          reference: payment?.reference ?? payment?.ref ?? null,
-          amount: payment?.amount ?? null,
-          createdAt: payment?.createdAt ?? payment?.created_at ?? null,
-        }
+        id: String(payment?.id ?? ""),
+        status: String(payment?.status ?? ""),
+        provider: payment?.provider ?? null,
+        reference: payment?.reference ?? payment?.ref ?? null,
+        amount: payment?.amount ?? null,
+        createdAt: payment?.createdAt ?? payment?.created_at ?? null,
+      }
       : null,
     paidAmount: raw?.paidAmount ?? raw?.paid_amount ?? null,
     metrics: raw?.metrics ?? null,
@@ -851,7 +851,7 @@ function useDebouncedValue<T>(value: T, delay = 250) {
   return debounced;
 }
 
-function Pagination({
+const Pagination = React.memo(function Pagination({
   page,
   totalPages,
   onChange,
@@ -888,9 +888,8 @@ function Pagination({
         <>
           <button
             onClick={() => go(1)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-              page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-            }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+              }`}
           >
             1
           </button>
@@ -902,9 +901,8 @@ function Pagination({
         <button
           key={p}
           onClick={() => go(p)}
-          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-            p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-          }`}
+          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+            }`}
         >
           {p}
         </button>
@@ -915,9 +913,8 @@ function Pagination({
           {end < totalPages - 1 && <span className={`px-1 ${T_XS} text-ink-soft`}>…</span>}
           <button
             onClick={() => go(totalPages)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-              page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-            }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+              }`}
           >
             {totalPages}
           </button>
@@ -933,7 +930,7 @@ function Pagination({
       </button>
     </div>
   );
-}
+});
 
 const OrdersFilterBar = React.memo(function OrdersFilterBar({
   qInput,
@@ -1124,7 +1121,7 @@ const OrdersFilterBar = React.memo(function OrdersFilterBar({
           onClick={onRefresh}
           disabled={!queriesEnabled}
         >
-          {refreshing ? "Refreshing…" : "Refresh"}
+          Refresh
         </button>
 
         <button
@@ -1138,11 +1135,10 @@ const OrdersFilterBar = React.memo(function OrdersFilterBar({
           type="button"
           aria-pressed={isTodayActive}
           onClick={onToggleToday}
-          className={`rounded-lg px-3 py-2 ${BTN} border transition ${
-            isTodayActive
-              ? "bg-zinc-900 text-white border-zinc-900"
-              : `bg-white ${SILVER_BORDER} hover:bg-black/5`
-          }`}
+          className={`rounded-lg px-3 py-2 ${BTN} border transition ${isTodayActive
+            ? "bg-zinc-900 text-white border-zinc-900"
+            : `bg-white ${SILVER_BORDER} hover:bg-black/5`
+            }`}
         >
           Today
         </button>
@@ -1216,6 +1212,7 @@ export default function OrdersPage() {
   const storeRole = (storeUser?.role || "") as Role;
   const storeUserId = useAuthStore((s) => s.user?.id ?? null);
   const authHydrated = useAuthStore((s) => s.hydrated);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   const meQ = useQuery({
     queryKey: ["me-min"],
@@ -1251,14 +1248,14 @@ export default function OrdersPage() {
   const isSupplier = String(role || "").toUpperCase() === "SUPPLIER";
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
-const ignoreNextUrlSyncRef = useRef(false);
-const ignoreNextStateToUrlRef = useRef(false);
-const lastUrlSignatureRef = useRef("");
-const searchFocusedRef = useRef(false);
-const selectionRef = useRef<{ start: number | null; end: number | null }>({
-  start: null,
-  end: null,
-});
+  const ignoreNextUrlSyncRef = useRef(false);
+  const ignoreNextStateToUrlRef = useRef(false);
+  const lastUrlSignatureRef = useRef("");
+  const searchFocusedRef = useRef(false);
+  const selectionRef = useRef<{ start: number | null; end: number | null }>({
+    start: null,
+    end: null,
+  });
 
   const meStatus = (meQ.error as any)?.response?.status;
 
@@ -1302,68 +1299,69 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
   };
 
   /* ---------------- Search focus preservation ---------------- */
- 
+
 
   const handleSearchFocus = useCallback(() => {
     searchFocusedRef.current = true;
   }, []);
 
   const commitStateToUrl = useCallback(() => {
-  const next = new URLSearchParams(searchParams);
+    const current = new URLSearchParams(location.search);
+    const next = new URLSearchParams(location.search);
 
-  if (q.trim()) next.set("q", q.trim());
-  else next.delete("q");
+    if (q.trim()) next.set("q", q.trim());
+    else next.delete("q");
 
-  next.delete("orderId");
+    next.delete("orderId");
 
-  if (from) next.set("from", from);
-  else next.delete("from");
+    if (from) next.set("from", from);
+    else next.delete("from");
 
-  if (to) next.set("to", to);
-  else next.delete("to");
+    if (to) next.set("to", to);
+    else next.delete("to");
 
-  if (minTotal.trim()) next.set("minTotal", minTotal.trim());
-  else next.delete("minTotal");
+    if (minTotal.trim()) next.set("minTotal", minTotal.trim());
+    else next.delete("minTotal");
 
-  if (maxTotal.trim()) next.set("maxTotal", maxTotal.trim());
-  else next.delete("maxTotal");
+    if (maxTotal.trim()) next.set("maxTotal", maxTotal.trim());
+    else next.delete("maxTotal");
 
-  if (statusFilter !== "ALL") next.set("status", statusFilter);
-  else next.delete("status");
+    if (statusFilter !== "ALL") next.set("status", statusFilter);
+    else next.delete("status");
 
-  next.set("page", String(page));
+    next.set("page", String(page));
 
-  if (expandedId) next.set("open", expandedId);
-  else next.delete("open");
+    if (expandedId) next.set("open", expandedId);
+    else next.delete("open");
 
-  const currentStr = searchParams.toString();
-  const nextStr = next.toString();
+    const currentStr = current.toString();
+    const nextStr = next.toString();
 
-  if (currentStr !== nextStr) {
-    lastUrlSignatureRef.current = JSON.stringify({
-      q: q.trim(),
-      from,
-      to,
-      minTotal: minTotal.trim(),
-      maxTotal: maxTotal.trim(),
-      status: statusFilter,
-      page,
-    });
+    if (currentStr !== nextStr) {
+      lastUrlSignatureRef.current = JSON.stringify({
+        q: q.trim(),
+        from,
+        to,
+        minTotal: minTotal.trim(),
+        maxTotal: maxTotal.trim(),
+        status: statusFilter,
+        page,
+      });
 
-    setSearchParams(next, { replace: true });
-  }
-}, [
-  searchParams,
-  q,
-  from,
-  to,
-  minTotal,
-  maxTotal,
-  statusFilter,
-  page,
-  expandedId,
-  setSearchParams,
-]);
+      setSearchParams(next, { replace: true });
+    }
+  }, [
+    location.search,
+    q,
+    from,
+    to,
+    minTotal,
+    maxTotal,
+    statusFilter,
+    page,
+    expandedId,
+    setSearchParams,
+  ]);
 
 
   const handleSearchBlur = useCallback(() => {
@@ -1630,9 +1628,9 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
         marginPercent:
           Number(
             data?.marginPercent ??
-              data?.pricingMarkupPercent ??
-              data?.platformMarginPercent ??
-              0
+            data?.pricingMarkupPercent ??
+            data?.platformMarginPercent ??
+            0
           ) || 0,
       };
     },
@@ -1741,9 +1739,31 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
     commitStateToUrl();
   }, [commitStateToUrl]);
 
-  const handleRefresh = useCallback(() => {
-    ordersQ.refetch();
+  const handleRefresh = useCallback(async () => {
+    try {
+      setManualRefreshing(true);
+      await ordersQ.refetch();
+    } finally {
+      setManualRefreshing(false);
+    }
   }, [ordersQ]);
+
+
+  const handleDesktopPageChange = useCallback((p: number) => {
+    if (p === page) return;
+    ignoreNextUrlSyncRef.current = true;
+    setExpandedId(null);
+    setPage(p);
+  }, [page]);
+
+  const handleMobilePageChange = useCallback((p: number) => {
+    if (p === page) return;
+    ignoreNextUrlSyncRef.current = true;
+    setExpandedId(null);
+    setPage(p);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [page]);
+
 
   useEffect(() => {
     if (serverPagination) return;
@@ -1751,13 +1771,12 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
   }, [serverPagination, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
 
   const totalItems = serverPagination ? serverEnvelope?.total || 0 : filteredSorted.length;
+
   const totalPages = serverPagination
     ? Math.max(1, serverEnvelope?.totalPages || 1)
     : Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE));
 
-  const currentPage = serverPagination
-    ? Math.max(1, serverEnvelope?.page || page)
-    : Math.min(page, totalPages);
+  const currentPage = Math.min(Math.max(1, page), totalPages);
 
   const pageStart = totalItems === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
   const pageEnd =
@@ -1772,7 +1791,8 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
   }, [serverPagination, filteredSorted, currentPage]);
 
   const loading = !authReady || (ordersQ.isLoading && !ordersQ.data);
-  const refreshing = ordersQ.isFetching && !!ordersQ.data;
+  const refreshing = manualRefreshing;
+  const backgroundFetching = ordersQ.isFetching && !!ordersQ.data;
 
   /* ---------------- Metrics ---------------- */
   const profitRangeQ = useQuery({
@@ -2148,18 +2168,16 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
-                    draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                  }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                    }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "ALL" }))}
                 >
                   All items
                 </button>
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
-                    draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                  }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                    }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "SOME" }))}
                 >
                   Select items
@@ -2289,7 +2307,7 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
           try {
             w.focus();
             w.print();
-          } catch {}
+          } catch { }
         };
         w.addEventListener("load", onLoad, { once: true });
       }
@@ -2335,7 +2353,7 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
               className={`rounded-xl ${SILVER_BORDER} px-3 py-2 ${BTN_XS} bg-white ${SILVER_SHADOW_SM}`}
               disabled={!queriesEnabled}
             >
-              {refreshing ? "Refreshing…" : "Refresh"}
+              Refresh
             </button>
           </div>
         </div>
@@ -2470,16 +2488,15 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
               {loading
                 ? "Loading…"
                 : totalItems
-                ? `Showing ${pageStart}-${pageEnd} of ${totalItems} orders`
-                : "No orders match your filters."}
-              {refreshing && !loading ? <span className="ml-2">Updating…</span> : null}
+                  ? `Showing ${pageStart}-${pageEnd} of ${totalItems} orders`
+                  : "No orders match your filters."}
             </div>
             <button
               onClick={handleRefresh}
               className="inline-flex items-center gap-2 rounded-lg border border-zinc-200/80 bg-white hover:bg-black/5 px-3 py-2 text-sm shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
               disabled={!queriesEnabled}
             >
-              {refreshing ? "Refreshing…" : "Refresh"}
+              Refresh
             </button>
           </div>
 
@@ -2596,13 +2613,12 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
 
                           <td className="px-3 py-3">
                             <button
-                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${
-                                isPaidEffective
-                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
-                                  : isPendingOrCreated
+                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${isPaidEffective
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                                : isPendingOrCreated
                                   ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
                                   : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
-                              }`}
+                                }`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onToggle(o.id);
@@ -2907,13 +2923,7 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
             <Pagination
               page={currentPage}
               totalPages={totalPages}
-              onChange={(p) => {
-                setExpandedId(null);
-                setPage(p);
-                const sp = new URLSearchParams(searchParams);
-                sp.set("page", String(p));
-                setSearchParams(sp, { replace: true });
-              }}
+              onChange={handleDesktopPageChange}
             />
           </div>
         </div>
@@ -2969,10 +2979,10 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
                       <div className={`${T_SM} text-ink-soft truncate`}>
                         {firstItemTitle
                           ? firstItemTitle.toString().slice(0, 44) +
-                            (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
+                          (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
                           : isOpen && orderDetailQ.isFetching
-                          ? "Loading items…"
-                          : `${details.items?.length || 0} item(s)`}
+                            ? "Loading items…"
+                            : `${details.items?.length || 0} item(s)`}
                       </div>
                       <div className={`${T_XS} text-ink-soft`}>Placed {fmtDate(details.createdAt)}</div>
                     </div>
@@ -3154,14 +3164,7 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
           <Pagination
             page={currentPage}
             totalPages={totalPages}
-            onChange={(p) => {
-              setExpandedId(null);
-              setPage(p);
-              const sp = new URLSearchParams(searchParams);
-              sp.set("page", String(p));
-              setSearchParams(sp, { replace: true });
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }}
+            onChange={handleMobilePageChange}
           />
         </div>
 
@@ -3221,10 +3224,10 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
                         !s.open
                           ? s
                           : {
-                              ...s,
-                              busy: false,
-                              error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
-                            }
+                            ...s,
+                            busy: false,
+                            error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
+                          }
                       );
                     }
                   }}
@@ -3244,13 +3247,13 @@ const selectionRef = useRef<{ start: number | null; end: number | null }>({
                         !s.open
                           ? s
                           : {
-                              ...s,
-                              busy: false,
-                              requestId: r.requestId,
-                              expiresAt: r.expiresAt,
-                              channelHint: r.channelHint,
-                              otp: "",
-                            }
+                            ...s,
+                            busy: false,
+                            requestId: r.requestId,
+                            expiresAt: r.expiresAt,
+                            channelHint: r.channelHint,
+                            otp: "",
+                          }
                       );
                     } catch (e: any) {
                       setOtpModal((s) =>

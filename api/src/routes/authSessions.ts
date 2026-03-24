@@ -222,25 +222,4 @@ router.patch("/sessions/:id", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/auth/logout
-router.post(
-  "/logout",
-  wrap(async (req, res) => {
-    try {
-      const sid = (req as any)?.user?.sid as string | undefined;
-      if (sid) {
-        await prisma.userSession.updateMany({
-          where: { id: sid },
-          data: { revokedAt: new Date(), revokedReason: "Logged out" } as any,
-        });
-      }
-    } catch {
-      //
-    }
-
-    clearAccessTokenCookie(res);
-    return res.json({ ok: true });
-  })
-);
-
 export default router;
