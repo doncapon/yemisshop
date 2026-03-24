@@ -1,10 +1,8 @@
-// api/src/routes/adminPayouts.ts
 import { Router, type Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { paySupplierForPurchaseOrder } from "../services/payout.service.js";
 
-// ✅ NEW: notifications helpers (same as in orders.ts)
+// ✅ notifications helpers
 import {
   notifyAdmins,
   notifySupplierBySupplierId,
@@ -13,7 +11,15 @@ import { requiredString } from "../lib/http.js";
 import { NotificationType, SupplierPaymentStatus } from "@prisma/client";
 
 const router = Router();
-const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
+
+function normRole(role: any): string {
+  return String(role ?? "").trim().toUpperCase();
+}
+
+const isAdmin = (role?: string) => {
+  const r = normRole(role);
+  return r === "ADMIN" || r === "SUPER_ADMIN";
+};
 
 const asInt = (v: any, d: number) => {
   const n = Number(v);
@@ -24,67 +30,69 @@ function safeUpper(v: any) {
   return String(v ?? "").trim().toUpperCase();
 }
 
+function mapAllocationStatusFilter(input: string): SupplierPaymentStatus | null {
+  const s = safeUpper(input);
+  if (!s) return null;
+
+  // UI may send purchase-order payout statuses here.
+  if (s === "RELEASED") return SupplierPaymentStatus.PAID;
+  if (s === "PAID") return SupplierPaymentStatus.PAID;
+  if (s === "HELD") return SupplierPaymentStatus.HELD;
+  if (s === "PENDING") return SupplierPaymentStatus.PENDING;
+  if (s === "FAILED") return SupplierPaymentStatus.FAILED;
+
+  // Unknown status: ignore instead of crashing Prisma
+  return null;
+}
+
 async function hasOpenComplaintsForPOAdmin(tx: any, purchaseOrderId: string): Promise<boolean> {
-  const openRefundRequests = await tx.refundRequest.count({
-    where: {
-      purchaseOrderId,
-      status: {
-        notIn: [
-          "APPROVED",
-          "REJECTED",
-          "REFUNDED",
-          "CLOSED",
-        ] as any,
-      },
-    },
-  });
+  const openRefundRequests =
+    typeof tx.refundRequest?.count === "function"
+      ? await tx.refundRequest.count({
+        where: {
+          purchaseOrderId,
+          status: {
+            notIn: ["APPROVED", "REJECTED", "REFUNDED", "CLOSED"] as any,
+          },
+        },
+      })
+      : 0;
 
-  const openDisputes = await tx.disputeCase.count({
-    where: {
-      purchaseOrderId,
-      status: {
-        notIn: ["RESOLVED", "CLOSED"] as any,
-      },
-    },
-  });
+  const openDisputes =
+    typeof tx.disputeCase?.count === "function"
+      ? await tx.disputeCase.count({
+        where: {
+          purchaseOrderId,
+          status: {
+            notIn: ["RESOLVED", "CLOSED"] as any,
+          },
+        },
+      })
+      : 0;
 
-  const openRefunds = await tx.refund.count({
-    where: {
-      purchaseOrderId,
-      status: {
-        notIn: [
-          "APPROVED",
-          "REJECTED",
-          "REFUNDED",
-          "CLOSED",
-        ] as any,
-      },
-    },
-  });
+  const openRefunds =
+    typeof tx.refund?.count === "function"
+      ? await tx.refund.count({
+        where: {
+          purchaseOrderId,
+          status: {
+            notIn: ["APPROVED", "REJECTED", "REFUNDED", "CLOSED"] as any,
+          },
+        },
+      })
+      : 0;
 
   return openRefundRequests > 0 || openDisputes > 0 || openRefunds > 0;
 }
 
-
 type ReleaseHeldPayoutOptions = {
-  /**
-   * When true, allow release even if we are still within the hold window
-   * (payoutHoldUntil > now). For AUTO/cron you should keep this false.
-   */
   allowBeforeHoldWindow?: boolean;
-
-  /**
-   * When true, allow release even if there is NO delivery evidence.
-   * This is a nuclear admin override; generally avoid using it.
-   */
   allowWithoutDeliveryProof?: boolean;
 };
 
-// Helper: has we got delivery proof?
 async function hasDeliveryProofForPO(tx: any, po: { id: string; deliveredAt?: Date | null }) {
   if (po.deliveredAt) return true;
 
-  // Fallback to OTP verification record
   const row = await tx.purchaseOrderDeliveryOtp.findFirst({
     where: { purchaseOrderId: po.id, verifiedAt: { not: null } },
     orderBy: { verifiedAt: "desc" },
@@ -129,12 +137,10 @@ async function releaseHeldPayoutForPO_Tx(
 
   const payoutStatus = String(po.payoutStatus || "").toUpperCase();
 
-  // ✅ Idempotent: already fully released
   if (payoutStatus === "RELEASED" && po.paidOutAt) {
     return { ok: true, alreadyReleased: true, po };
   }
 
-  // ✅ Require delivery proof (deliveredAt or OTP verified), unless admin uses a "hard override"
   if (!allowWithoutDeliveryProof) {
     const delivered = await hasDeliveryProofForPO(tx, po);
     if (!delivered) {
@@ -144,7 +150,6 @@ async function releaseHeldPayoutForPO_Tx(
     }
   }
 
-  // ✅ Hold window (14 days) for auto flow
   if (!allowBeforeHoldWindow) {
     if (!po.payoutHoldUntil || po.payoutHoldUntil.getTime() > now.getTime()) {
       const err: any = new Error("Payout is still in hold period; cannot release yet.");
@@ -153,8 +158,6 @@ async function releaseHeldPayoutForPO_Tx(
     }
   }
 
-  // ✅ Still block if there are *open* complaints.
-  // Admin should CLOSE/RESOLVE disputes/refunds first to unblock.
   if (await hasOpenComplaintsForPOAdmin(tx, po.id)) {
     const err: any = new Error(
       "Payout is blocked due to an open customer complaint or refund."
@@ -180,7 +183,6 @@ async function releaseHeldPayoutForPO_Tx(
   });
 
   if (!alloc) {
-    // Maybe already marked PAID in a previous run; keep idempotent
     const paidAlloc = await tx.supplierPaymentAllocation.findFirst({
       where: {
         purchaseOrderId: po.id,
@@ -232,13 +234,15 @@ async function releaseHeldPayoutForPO_Tx(
  * GET /api/admin/payouts/allocations
  * Query:
  * - q: matches allocation.id/paymentId/purchaseOrderId/orderId/supplierId
- * - status: PENDING|PAID|FAILED|... (optional)
+ * - status: HELD|PENDING|PAID|FAILED|RELEASED(optional UI alias -> PAID)
  * - supplierId: filter
  * - take, skip
  */
 router.get("/allocations", requireAuth, async (req: any, res: Response) => {
   try {
-    if (!isAdmin(req.user?.role)) return res.status(403).json({ error: "Forbidden" });
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const qRaw = String(req.query.q ?? "").trim();
     const statusRaw = safeUpper(req.query.status);
@@ -248,8 +252,13 @@ router.get("/allocations", requireAuth, async (req: any, res: Response) => {
     const skip = Math.max(0, asInt(req.query.skip, 0));
 
     const where: any = {};
+
     if (supplierId) where.supplierId = supplierId;
-    if (statusRaw) where.status = statusRaw;
+
+    const mappedStatus = mapAllocationStatusFilter(statusRaw);
+    if (statusRaw && mappedStatus) {
+      where.status = mappedStatus;
+    }
 
     if (qRaw) {
       const q = qRaw;
@@ -258,7 +267,6 @@ router.get("/allocations", requireAuth, async (req: any, res: Response) => {
         { paymentId: { contains: q } },
         { purchaseOrderId: { contains: q } },
         { supplierId: { contains: q } },
-        // if purchaseOrder relation exists and has orderId
         { purchaseOrder: { is: { orderId: { contains: q } } } },
       ];
     }
@@ -281,17 +289,26 @@ router.get("/allocations", requireAuth, async (req: any, res: Response) => {
             subtotal: true,
           },
         },
-        payment: { select: { id: true, status: true, reference: true, createdAt: true } },
+        payment: {
+          select: { id: true, status: true, reference: true, createdAt: true },
+        },
       },
     });
 
-    // total count for pagination
     const total = await prisma.supplierPaymentAllocation.count({ where });
 
     return res.json({
       ok: true,
       data: rows,
-      meta: { q: qRaw || null, status: statusRaw || null, supplierId, take, skip, total },
+      meta: {
+        q: qRaw || null,
+        status: statusRaw || null,
+        mappedStatus: mappedStatus || null,
+        supplierId,
+        take,
+        skip,
+        total,
+      },
     });
   } catch (e: any) {
     console.error("GET /api/admin/payouts/allocations failed:", e);
@@ -301,13 +318,6 @@ router.get("/allocations", requireAuth, async (req: any, res: Response) => {
 
 /**
  * POST /api/admin/payouts/allocations/:id/mark-paid
- * Manual override:
- * - sets allocation.status = PAID and releasedAt = now
- * - optional body.createLedger === true will create a ledger CREDIT (guarded from duplicate by referenceId)
- *
- * Body:
- * - createLedger?: boolean
- * - note?: string
  */
 router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Response) => {
   try {
@@ -320,141 +330,111 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
     const note = String(req.body?.note ?? "").trim() || null;
     const adminId = String(req.user?.id ?? "") || null;
 
-    const out = await prisma.$transaction(
-      async (tx: {
-        supplierPaymentAllocation: {
-          findUnique: (arg0: {
-            where: { id: string };
-            include: { purchaseOrder: { select: { id: boolean; orderId: boolean } } };
-          }) => any;
-          update: (arg0: {
-            where: { id: string };
-            data: { status: any; releasedAt: Date };
-          }) => any;
-        };
-        supplierLedgerEntry: {
-          findFirst: (arg0: { where: any; select: { id: boolean } }) => any;
-          create: (arg0: {
-            data: {
-              supplierId: any;
-              type: string;
-              amount: any; // Decimal passthrough
-              currency: string;
-              referenceType: string;
-              referenceId: any;
-              meta: {
-                manual: boolean;
-                note: string | null;
-                adminId: string | null;
-                purchaseOrderId: any;
-                paymentId: any;
-                orderId: any;
-              };
-            };
-          }) => any;
-        };
-      }) => {
-        const alloc = await tx.supplierPaymentAllocation.findUnique({
-          where: { id },
-          include: {
-            purchaseOrder: { select: { id: true, orderId: true } },
+    const out = await prisma.$transaction(async (tx: any) => {
+      const alloc = await tx.supplierPaymentAllocation.findUnique({
+        where: { id },
+        include: {
+          purchaseOrder: { select: { id: true, orderId: true } },
+        },
+      });
+
+      if (!alloc) throw new Error("Allocation not found");
+
+      const cur = String(alloc.status || "").toUpperCase();
+      if (cur === "PAID") {
+        return { allocation: alloc, note: "Already PAID" };
+      }
+
+      const updated = await tx.supplierPaymentAllocation.update({
+        where: { id },
+        data: { status: SupplierPaymentStatus.PAID, releasedAt: new Date() },
+      });
+
+      if (updated.purchaseOrderId) {
+        await tx.purchaseOrder.update({
+          where: { id: String(updated.purchaseOrderId) },
+          data: {
+            payoutStatus: "RELEASED" as any,
+            paidOutAt: updated.releasedAt ?? new Date(),
           },
         });
-        if (!alloc) throw new Error("Allocation not found");
+      }
 
-        // idempotent
-        const cur = String(alloc.status || "").toUpperCase();
-        if (cur === "PAID") {
-          return { allocation: alloc, note: "Already PAID" };
-        }
-
-        const updated = await tx.supplierPaymentAllocation.update({
-          where: { id },
-          data: { status: "PAID" as any, releasedAt: new Date() },
+      if (createLedger) {
+        const existing = await tx.supplierLedgerEntry.findFirst({
+          where: {
+            supplierId: updated.supplierId,
+            referenceType: "ALLOCATION",
+            referenceId: updated.id,
+            type: "CREDIT",
+          } as any,
+          select: { id: true },
         });
 
-        if (createLedger) {
-          // Guard: ensure we don't insert duplicate manual credits for same allocation
-          const existing = await tx.supplierLedgerEntry.findFirst({
-            where: {
+        if (!existing) {
+          await tx.supplierLedgerEntry.create({
+            data: {
               supplierId: updated.supplierId,
+              type: "CREDIT",
+              amount: updated.amount as any,
+              currency: "NGN",
               referenceType: "ALLOCATION",
               referenceId: updated.id,
-              type: "CREDIT",
-            } as any,
-            select: { id: true },
-          });
-
-          if (!existing) {
-            await tx.supplierLedgerEntry.create({
-              data: {
-                supplierId: updated.supplierId,
-                type: "CREDIT",
-                amount: updated.amount as any, // Decimal passthrough
-                currency: "NGN",
-                referenceType: "ALLOCATION",
-                referenceId: updated.id,
-                meta: {
-                  manual: true,
-                  note,
-                  adminId,
-                  purchaseOrderId: updated.purchaseOrderId,
-                  paymentId: updated.paymentId,
-                  orderId: (alloc as any)?.purchaseOrder?.orderId ?? null,
-                },
-              },
-            });
-          }
-        }
-
-        // ✅ NEW: notifications – supplier + admins
-        try {
-          // Supplier notification: payout manually marked paid
-          await notifySupplierBySupplierId(
-            String(updated.supplierId),
-            {
-              type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
-              title: "Payout released",
-              body: `An allocation of ₦${String(updated.amount)} has been marked as PAID by an admin.`,
-              data: {
-                allocationId: updated.id,
-                purchaseOrderId: updated.purchaseOrderId,
-                paymentId: updated.paymentId,
-                orderId: (alloc as any)?.purchaseOrder?.orderId ?? null,
-              },
-            },
-            tx as any
-          );
-
-          // Admin broadcast (other admins)
-          await notifyAdmins(
-            {
-              type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
-              title: "Allocation marked as PAID",
-              body: `Allocation ${updated.id} was marked PAID (₦${String(
-                updated.amount
-              )}).`,
-              data: {
-                allocationId: updated.id,
-                supplierId: updated.supplierId,
-                purchaseOrderId: updated.purchaseOrderId,
-                paymentId: updated.paymentId,
-                orderId: (alloc as any)?.purchaseOrder?.orderId ?? null,
+              meta: {
+                manual: true,
+                note,
                 adminId,
+                purchaseOrderId: updated.purchaseOrderId,
+                paymentId: updated.paymentId,
+                orderId: alloc?.purchaseOrder?.orderId ?? null,
               },
             },
-            tx as any
-          );
-        } catch (notifErr) {
-          console.error(
-            "adminPayouts: failed to send notifications for mark-paid allocation:",
-            notifErr
-          );
+          });
         }
-
-        return { allocation: updated };
       }
-    );
+
+      try {
+        await notifySupplierBySupplierId(
+          String(updated.supplierId),
+          {
+            type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
+            title: "Payout released",
+            body: `An allocation of ₦${String(updated.amount)} has been marked as PAID by an admin.`,
+            data: {
+              allocationId: updated.id,
+              purchaseOrderId: updated.purchaseOrderId,
+              paymentId: updated.paymentId,
+              orderId: alloc?.purchaseOrder?.orderId ?? null,
+            },
+          },
+          tx
+        );
+
+        await notifyAdmins(
+          {
+            type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
+            title: "Allocation marked as PAID",
+            body: `Allocation ${updated.id} was marked PAID (₦${String(updated.amount)}).`,
+            data: {
+              allocationId: updated.id,
+              supplierId: updated.supplierId,
+              purchaseOrderId: updated.purchaseOrderId,
+              paymentId: updated.paymentId,
+              orderId: alloc?.purchaseOrder?.orderId ?? null,
+              adminId,
+            },
+          },
+          tx
+        );
+      } catch (notifErr) {
+        console.error(
+          "adminPayouts: failed to send notifications for mark-paid allocation:",
+          notifErr
+        );
+      }
+
+      return { allocation: updated };
+    });
 
     return res.json({ ok: true, data: out });
   } catch (e: any) {
@@ -465,7 +445,6 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
 
 /**
  * POST /api/admin/payouts/purchase-orders/:purchaseOrderId/release
- * Uses your existing paySupplierForPurchaseOrder flow
  */
 router.post(
   "/purchase-orders/:purchaseOrderId/release",
@@ -483,7 +462,6 @@ router.post(
         })
       );
 
-      // Notifications (same as before)
       try {
         const po = await prisma.purchaseOrder.findUnique({
           where: { id: String(purchaseOrderId) },
@@ -540,103 +518,136 @@ router.post(
   }
 );
 
-// at top of adminPayouts.ts
 const CRON_SECRET = process.env.PAYOUT_CRON_SECRET ?? "";
 
-// helper: is this request from our cron?
 function isCronRequest(req: any) {
   const header = String(req.headers["x-cron-secret"] ?? "");
   if (!CRON_SECRET) return false;
   return header === CRON_SECRET;
 }
 
-
 /**
  * POST /api/admin/payouts/purchase-orders/auto-release-due
- *
- * Called by cron with header: x-cron-secret: <PAYOUT_CRON_SECRET>
  */
-router.post(
-  "/purchase-orders/auto-release-due",
-  async (req: any, res: Response) => {
-    try {
-      if (!isCronRequest(req)) {
-        return res.status(401).json({ error: "Unauthorized cron" });
-      }
+router.post("/purchase-orders/auto-release-due", async (req: any, res: Response) => {
+  try {
+    if (!isCronRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized cron" });
+    }
 
-      const now = new Date();
-      const HOLD_DAYS = 14;
+    const now = new Date();
+    const HOLD_DAYS = 14;
+    const cutoff = new Date(now.getTime() - HOLD_DAYS * 24 * 60 * 60 * 1000);
 
-      const cutoff = new Date(now.getTime() - HOLD_DAYS * 24 * 60 * 60 * 1000);
-
-      const result = await prisma.$transaction(async (tx) => {
-        // 1) Find POs that:
-        // - are DELIVERED
-        // - payoutStatus is PENDING or HELD
-        // - deliveredAt is at least 14 days ago
-        // - have NO open refund/dispute
-        const pos = await tx.purchaseOrder.findMany({
-          where: {
-            status: "DELIVERED",
-            payoutStatus: { in: ["PENDING", "HELD"] },
-            deliveredAt: { lte: cutoff },
-          },
-          select: {
-            id: true,
-            orderId: true,
-            supplierId: true,
-            deliveredAt: true,
-          },
-        });
-
-        let releasedCount = 0;
-
-        for (const po of pos) {
-          // Check if there are any "open" complaints for this PO
-          const hasOpenRefund = await tx.refundRequest.findFirst({
-            where: {
-              purchaseOrderId: po.id,
-              status: {
-                in: [
-                  "REQUESTED",
-                  "SUPPLIER_REVIEW",
-                  "SUPPLIER_ACCEPTED",
-                  "ESCALATED",
-                  "APPROVED",
-                ],
-              },
-            },
-            select: { id: true },
-          });
-
-          const hasOpenDispute = await tx.disputeCase.findFirst({
-            where: {
-              purchaseOrderId: po.id,
-              status: { in: ["OPEN", "SUPPLIER_RESPONSE", "ESCALATED"] },
-            },
-            select: { id: true },
-          });
-
-          if (hasOpenRefund || hasOpenDispute) {
-            // still in complaint window → do NOT release to supplier
-            continue;
-          }
-
-          // No open complaints → safe to release payout for this PO.
-          // You can reuse your existing logic here (e.g. releasePayoutForPOTx)
-          await releaseHeldPayoutForPO_Tx(tx, po.id);
-          releasedCount++;
-        }
-
-        return { releasedCount };
+    const result = await prisma.$transaction(async (tx) => {
+      const pos = await tx.purchaseOrder.findMany({
+        where: {
+          status: "DELIVERED",
+          payoutStatus: { in: ["PENDING", "HELD"] },
+          deliveredAt: { lte: cutoff },
+        },
+        select: {
+          id: true,
+          orderId: true,
+          supplierId: true,
+          deliveredAt: true,
+        },
       });
 
-      return res.json({ ok: true, data: result });
-    } catch (e: any) {
-      console.error("auto-release-due failed:", e);
-      return res.status(500).json({ error: e?.message || "Failed to auto-release payouts" });
-    }
+      let releasedCount = 0;
+
+      for (const po of pos) {
+        const hasOpenRefund =
+          typeof tx.refundRequest?.findFirst === "function"
+            ? await tx.refundRequest.findFirst({
+              where: {
+                purchaseOrderId: po.id,
+                status: {
+                  in: [
+                    "REQUESTED",
+                    "SUPPLIER_REVIEW",
+                    "SUPPLIER_ACCEPTED",
+                    "ESCALATED",
+                    "APPROVED",
+                  ],
+                },
+              },
+              select: { id: true },
+            })
+            : null;
+
+        const hasOpenDispute =
+          typeof tx.disputeCase?.findFirst === "function"
+            ? await tx.disputeCase.findFirst({
+              where: {
+                purchaseOrderId: po.id,
+                status: { in: ["OPEN", "SUPPLIER_RESPONSE", "ESCALATED"] },
+              },
+              select: { id: true },
+            })
+            : null;
+
+        if (hasOpenRefund || hasOpenDispute) continue;
+
+        await releaseHeldPayoutForPO_Tx(tx, po.id);
+        releasedCount++;
+      }
+
+      return { releasedCount };
+    });
+
+    return res.json({ ok: true, data: result });
+  } catch (e: any) {
+    console.error("auto-release-due failed:", e);
+    return res.status(500).json({ error: e?.message || "Failed to auto-release payouts" });
   }
-);
+});
+
+router.post("/reconcile-purchase-order-payout-statuses", requireAuth, async (req: any, res: Response) => {
+  try {
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const paidAllocs = await prisma.supplierPaymentAllocation.findMany({
+      where: {
+        status: SupplierPaymentStatus.PAID,
+        purchaseOrderId: { not: null },
+      },
+      select: {
+        id: true,
+        purchaseOrderId: true,
+        releasedAt: true,
+      },
+    });
+
+    let updatedCount = 0;
+
+    for (const alloc of paidAllocs) {
+      const poId = String(alloc.purchaseOrderId || "").trim();
+      if (!poId) continue;
+
+      await prisma.purchaseOrder.update({
+        where: { id: poId },
+        data: {
+          payoutStatus: "RELEASED" as any,
+          paidOutAt: alloc.releasedAt ?? new Date(),
+        },
+      });
+
+      updatedCount++;
+    }
+
+    return res.json({
+      ok: true,
+      data: {
+        updatedCount,
+      },
+    });
+  } catch (e: any) {
+    console.error("POST /api/admin/payouts/reconcile-purchase-order-payout-statuses failed:", e);
+    return res.status(500).json({ error: e?.message || "Failed to reconcile purchase order payout statuses" });
+  }
+});
 
 export default router;

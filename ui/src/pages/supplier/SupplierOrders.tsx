@@ -1274,7 +1274,7 @@ export default function SupplierOrders() {
                             className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
                             title="Confirm delivery with customer OTP"
                           >
-                            <PackageCheck size={14} /> Confirm
+                            <PackageCheck size={14} /> Deliver
                           </button>
                         )}
 

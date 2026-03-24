@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
+import { NIGERIAN_STATES, STATE_TO_LGAS } from "../../constants/nigeriaLocations";
 
 type AddressDto = {
   id?: string;
@@ -278,6 +279,241 @@ function isVerifiedSupplier(supplier: SupplierMe | null): boolean {
   );
 }
 
+function normalizeStateKey(input: string): string {
+  return String(input ?? "").trim().toLowerCase();
+}
+
+function getCanonicalStateName(input: string): string {
+  const raw = String(input ?? "").trim();
+  if (!raw) return "";
+
+  const matched = NIGERIAN_STATES.find(
+    (s) => normalizeStateKey(s) === normalizeStateKey(raw)
+  );
+
+  return matched || raw;
+}
+
+function getLgaOptionsForState(stateValue: string): string[] {
+  const canonicalState = getCanonicalStateName(stateValue);
+  if (!canonicalState) return [];
+
+  const direct = (STATE_TO_LGAS as Record<string, string[]>)[canonicalState];
+  if (Array.isArray(direct)) return direct;
+
+  const foundKey = Object.keys(STATE_TO_LGAS).find(
+    (k) => normalizeStateKey(k) === normalizeStateKey(canonicalState)
+  );
+
+  if (!foundKey) return [];
+  const list = (STATE_TO_LGAS as Record<string, string[]>)[foundKey];
+  return Array.isArray(list) ? list : [];
+}
+
+function isNigeriaCountry(country: string): boolean {
+  const v = String(country ?? "").trim().toLowerCase();
+  return v === "nigeria" || v === "ng";
+}
+
+type AddressSectionProps = {
+  title: string;
+  subtitle: string;
+  icon: React.ReactNode;
+  value: AddressState;
+  countries: CountryOption[];
+  onFieldChange: (
+    key: keyof AddressState
+  ) => (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => void;
+};
+
+function AddressFieldsSection({
+  title,
+  subtitle,
+  icon,
+  value,
+  countries,
+  onFieldChange,
+}: AddressSectionProps): React.ReactElement {
+  const nigeria = isNigeriaCountry(value.country);
+  const stateOptions = NIGERIAN_STATES;
+  const lgaOptions = useMemo(() => getLgaOptionsForState(value.state), [value.state]);
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
+      <div className="mb-4 flex items-center gap-3">
+        <div className="rounded-xl bg-zinc-100 p-3">{icon}</div>
+        <div>
+          <h2 className="text-base font-semibold text-zinc-900">{title}</h2>
+          <p className="text-sm text-zinc-600">{subtitle}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            House number
+          </label>
+          <input
+            value={value.houseNumber}
+            onChange={onFieldChange("houseNumber")}
+            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+            placeholder="House number"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            Street name
+          </label>
+          <input
+            value={value.streetName}
+            onChange={onFieldChange("streetName")}
+            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+            placeholder="Street name"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            Town / Area
+          </label>
+          <input
+            value={value.town}
+            onChange={onFieldChange("town")}
+            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+            placeholder="Town / Area"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            City
+          </label>
+          <input
+            value={value.city}
+            onChange={onFieldChange("city")}
+            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+            placeholder="City"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            Country
+          </label>
+          <select
+            value={value.country}
+            onChange={onFieldChange("country")}
+            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+          >
+            {countries.length === 0 && <option value="Nigeria">Loading countries...</option>}
+            {countries.map((c) => (
+              <option key={c.code} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            State
+          </label>
+
+          {nigeria ? (
+            <select
+              value={getCanonicalStateName(value.state)}
+              onChange={onFieldChange("state")}
+              className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+            >
+              <option value="">Select state</option>
+              {stateOptions.map((stateName) => (
+                <option key={stateName} value={stateName}>
+                  {stateName}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={value.state}
+              onChange={onFieldChange("state")}
+              className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+              placeholder="State"
+            />
+          )}
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            Post code
+          </label>
+          <input
+            value={value.postCode}
+            onChange={onFieldChange("postCode")}
+            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+            placeholder="Post code"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            LGA
+          </label>
+
+          {nigeria ? (
+            <select
+              value={value.lga}
+              onChange={onFieldChange("lga")}
+              disabled={!value.state}
+              className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 disabled:cursor-not-allowed disabled:bg-zinc-50 disabled:text-zinc-500 md:text-sm"
+            >
+              <option value="">{value.state ? "Select LGA" : "Select state first"}</option>
+              {lgaOptions.map((lga) => (
+                <option key={lga} value={lga}>
+                  {lga}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={value.lga}
+              onChange={onFieldChange("lga")}
+              className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+              placeholder="LGA / County / Region"
+            />
+          )}
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            Landmark
+          </label>
+          <input
+            value={value.landmark}
+            onChange={onFieldChange("landmark")}
+            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+            placeholder="Nearby landmark"
+          />
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
+            Directions note
+          </label>
+          <textarea
+            value={value.directionsNote}
+            onChange={onFieldChange("directionsNote")}
+            className="min-h-[100px] w-full resize-y rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
+            placeholder="Helpful directions for finding this address"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SupplierOnboardingAddress(): React.ReactElement {
   const nav = useNavigate();
   const location = useLocation();
@@ -299,7 +535,29 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     (
       e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
     ): void => {
-      setRegistered((s) => ({ ...s, [key]: e.target.value }));
+      const nextValue = e.target.value;
+
+      setRegistered((s) => {
+        const next = { ...s, [key]: nextValue };
+
+        if (key === "country") {
+          if (!isNigeriaCountry(nextValue)) {
+            next.state = "";
+            next.lga = "";
+          } else {
+            next.country = "Nigeria";
+          }
+        }
+
+        if (key === "state") {
+          next.state = getCanonicalStateName(nextValue);
+          const nextLgas = getLgaOptionsForState(next.state);
+          if (!nextLgas.includes(next.lga)) next.lga = "";
+        }
+
+        return next;
+      });
+
       setSaveState("idle");
       setErr(null);
     };
@@ -309,7 +567,29 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     (
       e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
     ): void => {
-      setPickup((s) => ({ ...s, [key]: e.target.value }));
+      const nextValue = e.target.value;
+
+      setPickup((s) => {
+        const next = { ...s, [key]: nextValue };
+
+        if (key === "country") {
+          if (!isNigeriaCountry(nextValue)) {
+            next.state = "";
+            next.lga = "";
+          } else {
+            next.country = "Nigeria";
+          }
+        }
+
+        if (key === "state") {
+          next.state = getCanonicalStateName(nextValue);
+          const nextLgas = getLgaOptionsForState(next.state);
+          if (!nextLgas.includes(next.lga)) next.lga = "";
+        }
+
+        return next;
+      });
+
       setSaveState("idle");
       setErr(null);
     };
@@ -364,14 +644,17 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
       setRegistered((prev) =>
         replace
-          ? savedRegistered
+          ? {
+              ...savedRegistered,
+              state: getCanonicalStateName(savedRegistered.state),
+            }
           : {
               houseNumber: pickString(savedRegistered.houseNumber || prev.houseNumber),
               streetName: pickString(savedRegistered.streetName || prev.streetName),
               postCode: pickString(savedRegistered.postCode || prev.postCode),
               town: pickString(savedRegistered.town || prev.town),
               city: pickString(savedRegistered.city || prev.city),
-              state: pickString(savedRegistered.state || prev.state),
+              state: getCanonicalStateName(savedRegistered.state || prev.state),
               country: pickString(savedRegistered.country || prev.country || "Nigeria"),
               lga: pickString(savedRegistered.lga || prev.lga),
               landmark: pickString(savedRegistered.landmark || prev.landmark),
@@ -383,14 +666,17 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
       setPickup((prev) =>
         replace
-          ? savedPickup
+          ? {
+              ...savedPickup,
+              state: getCanonicalStateName(savedPickup.state),
+            }
           : {
               houseNumber: pickString(savedPickup.houseNumber || prev.houseNumber),
               streetName: pickString(savedPickup.streetName || prev.streetName),
               postCode: pickString(savedPickup.postCode || prev.postCode),
               town: pickString(savedPickup.town || prev.town),
               city: pickString(savedPickup.city || prev.city),
-              state: pickString(savedPickup.state || prev.state),
+              state: getCanonicalStateName(savedPickup.state || prev.state),
               country: pickString(savedPickup.country || prev.country || "Nigeria"),
               lga: pickString(savedPickup.lga || prev.lga),
               landmark: pickString(savedPickup.landmark || prev.landmark),
@@ -437,8 +723,16 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
       const draft = safeReadAddressDraft();
       if (draft) {
-        setRegistered(draft.registered);
-        setPickup(draft.pickup);
+        setRegistered({
+          ...draft.registered,
+          state: getCanonicalStateName(draft.registered.state),
+          lga: pickString(draft.registered.lga),
+        });
+        setPickup({
+          ...draft.pickup,
+          state: getCanonicalStateName(draft.pickup.state),
+          lga: pickString(draft.pickup.lga),
+        });
         setPickupMeta(draft.pickupMeta);
         setSameAsRegistered(Boolean(draft.sameAsRegistered));
         setDraftRestored(true);
@@ -498,16 +792,54 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   useEffect(() => {
     if (!countries.length) return;
 
-    setRegistered((prev) => ({
-      ...prev,
-      country: resolveCountryName(prev.country, countries),
-    }));
+    setRegistered((prev) => {
+      const nextCountry = resolveCountryName(prev.country, countries);
+      const nigeria = isNigeriaCountry(nextCountry);
+      const nextState = nigeria ? getCanonicalStateName(prev.state) : prev.state;
+      const nextLgas = nigeria ? getLgaOptionsForState(nextState) : [];
+      const nextLga = nigeria && prev.lga && !nextLgas.includes(prev.lga) ? "" : prev.lga;
 
-    setPickup((prev) => ({
-      ...prev,
-      country: resolveCountryName(prev.country, countries),
-    }));
+      return {
+        ...prev,
+        country: nextCountry,
+        state: nextState,
+        lga: nextLga,
+      };
+    });
+
+    setPickup((prev) => {
+      const nextCountry = resolveCountryName(prev.country, countries);
+      const nigeria = isNigeriaCountry(nextCountry);
+      const nextState = nigeria ? getCanonicalStateName(prev.state) : prev.state;
+      const nextLgas = nigeria ? getLgaOptionsForState(nextState) : [];
+      const nextLga = nigeria && prev.lga && !nextLgas.includes(prev.lga) ? "" : prev.lga;
+
+      return {
+        ...prev,
+        country: nextCountry,
+        state: nextState,
+        lga: nextLga,
+      };
+    });
   }, [countries]);
+
+  useEffect(() => {
+    if (!isNigeriaCountry(registered.country)) return;
+
+    const lgas = getLgaOptionsForState(registered.state);
+    if (registered.lga && !lgas.includes(registered.lga)) {
+      setRegistered((prev) => ({ ...prev, lga: "" }));
+    }
+  }, [registered.country, registered.state, registered.lga]);
+
+  useEffect(() => {
+    if (!isNigeriaCountry(pickup.country)) return;
+
+    const lgas = getLgaOptionsForState(pickup.state);
+    if (pickup.lga && !lgas.includes(pickup.lga)) {
+      setPickup((prev) => ({ ...prev, lga: "" }));
+    }
+  }, [pickup.country, pickup.state, pickup.lga]);
 
   const effectivePickup = useMemo<AddressState>(
     () => (sameAsRegistered ? registered : pickup),
@@ -858,151 +1190,14 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
             <div className="rounded-[28px] border border-white/70 bg-white/95 p-4 shadow-[0_16px_50px_rgba(15,23,42,0.08)] backdrop-blur sm:p-6 md:p-8">
               <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
                 <div className="space-y-4 xl:col-span-2">
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
-                    <div className="mb-4 flex items-center gap-3">
-                      <div className="rounded-xl bg-zinc-100 p-3">
-                        <Building2Fallback />
-                      </div>
-                      <div>
-                        <h2 className="text-base font-semibold text-zinc-900">
-                          Registered address
-                        </h2>
-                        <p className="text-sm text-zinc-600">
-                          This is your business or legal registered address.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                      <div>
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          House number
-                        </label>
-                        <input
-                          value={registered.houseNumber}
-                          onChange={setRegisteredField("houseNumber")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="House number"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          Street name
-                        </label>
-                        <input
-                          value={registered.streetName}
-                          onChange={setRegisteredField("streetName")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="Street name"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          Town / Area
-                        </label>
-                        <input
-                          value={registered.town}
-                          onChange={setRegisteredField("town")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="Town / Area"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          City
-                        </label>
-                        <input
-                          value={registered.city}
-                          onChange={setRegisteredField("city")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="City"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          State
-                        </label>
-                        <input
-                          value={registered.state}
-                          onChange={setRegisteredField("state")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="State"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          Country
-                        </label>
-                        <select
-                          value={registered.country}
-                          onChange={setRegisteredField("country")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                        >
-                          {countries.length === 0 && (
-                            <option value="Nigeria">Loading countries...</option>
-                          )}
-                          {countries.map((c) => (
-                            <option key={c.code} value={c.name}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          Post code
-                        </label>
-                        <input
-                          value={registered.postCode}
-                          onChange={setRegisteredField("postCode")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="Post code"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          LGA
-                        </label>
-                        <input
-                          value={registered.lga}
-                          onChange={setRegisteredField("lga")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="LGA"
-                        />
-                      </div>
-
-                      <div className="md:col-span-2">
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          Landmark
-                        </label>
-                        <input
-                          value={registered.landmark}
-                          onChange={setRegisteredField("landmark")}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="Nearby landmark"
-                        />
-                      </div>
-
-                      <div className="md:col-span-2">
-                        <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          Directions note
-                        </label>
-                        <textarea
-                          value={registered.directionsNote}
-                          onChange={setRegisteredField("directionsNote")}
-                          className="min-h-[100px] w-full resize-y rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          placeholder="Helpful directions for finding this address"
-                        />
-                      </div>
-                    </div>
-                  </div>
+                  <AddressFieldsSection
+                    title="Registered address"
+                    subtitle="This is your business or legal registered address."
+                    icon={<Building2Fallback />}
+                    value={registered}
+                    countries={countries}
+                    onFieldChange={setRegisteredField}
+                  />
 
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
                     <div className="mb-4 flex items-center gap-3">
@@ -1036,135 +1231,14 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                     </label>
 
                     {!sameAsRegistered && (
-                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            House number
-                          </label>
-                          <input
-                            value={pickup.houseNumber}
-                            onChange={setPickupField("houseNumber")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="House number"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            Street name
-                          </label>
-                          <input
-                            value={pickup.streetName}
-                            onChange={setPickupField("streetName")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="Street name"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            Town / Area
-                          </label>
-                          <input
-                            value={pickup.town}
-                            onChange={setPickupField("town")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="Town / Area"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            City
-                          </label>
-                          <input
-                            value={pickup.city}
-                            onChange={setPickupField("city")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="City"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            State
-                          </label>
-                          <input
-                            value={pickup.state}
-                            onChange={setPickupField("state")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="State"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            Country
-                          </label>
-                          <select
-                            value={pickup.country}
-                            onChange={setPickupField("country")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                          >
-                            {countries.length === 0 && (
-                              <option value="Nigeria">Loading countries...</option>
-                            )}
-                            {countries.map((c) => (
-                              <option key={c.code} value={c.name}>
-                                {c.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            Post code
-                          </label>
-                          <input
-                            value={pickup.postCode}
-                            onChange={setPickupField("postCode")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="Post code"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            LGA
-                          </label>
-                          <input
-                            value={pickup.lga}
-                            onChange={setPickupField("lga")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="LGA"
-                          />
-                        </div>
-
-                        <div className="md:col-span-2">
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            Landmark
-                          </label>
-                          <input
-                            value={pickup.landmark}
-                            onChange={setPickupField("landmark")}
-                            className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="Nearby landmark"
-                          />
-                        </div>
-
-                        <div className="md:col-span-2">
-                          <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                            Directions note
-                          </label>
-                          <textarea
-                            value={pickup.directionsNote}
-                            onChange={setPickupField("directionsNote")}
-                            className="min-h-[100px] w-full resize-y rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm"
-                            placeholder="Helpful directions for pickup agents"
-                          />
-                        </div>
-                      </div>
+                      <AddressFieldsSection
+                        title="Pickup address details"
+                        subtitle="Enter the separate pickup or dispatch location."
+                        icon={<Truck className="h-5 w-5 text-zinc-700" />}
+                        value={pickup}
+                        countries={countries}
+                        onFieldChange={setPickupField}
+                      />
                     )}
                   </div>
 

@@ -122,6 +122,20 @@ function hasRelation(modelName: string, fieldName: string) {
   return !!f && f.kind === "object";
 }
 
+function hasModelScalarField(modelName: string, fieldName: string) {
+  const f = getModelFields(modelName).get(fieldName);
+  return !!f && f.kind === "scalar";
+}
+
+function hasModelEnumField(modelName: string, fieldName: string) {
+  const f = getModelFields(modelName).get(fieldName);
+  return !!f && f.kind === "enum";
+}
+
+function hasModelField(modelName: string, fieldName: string) {
+  return hasModelScalarField(modelName, fieldName) || hasModelEnumField(modelName, fieldName) || hasRelation(modelName, fieldName);
+}
+
 function findVariantOptionsRel(variantModelName: string): string | null {
   const fields = Array.from(getModelFields(variantModelName).values());
   const rel =
@@ -539,7 +553,7 @@ async function writeAttributesAndVariants(
     });
 
     if (Array.isArray(v.options) && v.options.length) {
-      const HAS_UNIT_PRICE = hasRelation("ProductVariantOption", "unitPrice");
+      const HAS_UNIT_PRICE = hasModelScalarField("ProductVariantOption", "unitPrice");
 
       await tx.productVariantOption.createMany({
         data: v.options.map((o) => {
@@ -861,73 +875,28 @@ async function getSupplierLinkedUserId(supplierId: string): Promise<string | nul
  */
 /* ------------------------ Shipping fields (SAFE) ------------------------ */
 
-const PRODUCT_SHIPPING_NUMBER_FIELDS = [
+const PRODUCT_SHIPPING_DB_NUMBER_FIELDS = [
   "shippingCost",
-  "shippingFee",
-  "shippingPrice",
-
-  "weight",
-  "weightKg",
   "weightGrams",
-  "shippingWeight",
-  "shippingWeightKg",
-  "shippingWeightGrams",
-
-  "length",
-  "width",
-  "height",
   "lengthCm",
   "widthCm",
   "heightCm",
-  "shippingLength",
-  "shippingWidth",
-  "shippingHeight",
-  "shippingLengthCm",
-  "shippingWidthCm",
-  "shippingHeightCm",
-
-  "packageWeight",
-  "packageWeightKg",
-  "packageWeightGrams",
-  "packageLengthCm",
-  "packageWidthCm",
-  "packageHeightCm",
-
-  "volumetricWeight",
-  "volumetricWeightKg",
 ] as const;
 
-const PRODUCT_SHIPPING_STRING_FIELDS = [
+const PRODUCT_SHIPPING_DB_STRING_FIELDS = [
   "shippingClass",
-  "shippingProfileId",
-  "shippingProfile",
-  "shippingCategory",
-  "shippingType",
-  "shippingMethod",
-  "deliveryType",
-  "deliveryMethod",
-  "dispatchTimeText",
-  "shippingNote",
-  "shippingNotes",
-  "packagingType",
-  "packageUnit",
 ] as const;
 
-const PRODUCT_SHIPPING_BOOLEAN_FIELDS = [
-  "requiresShipping",
+const PRODUCT_SHIPPING_DB_BOOLEAN_FIELDS = [
   "freeShipping",
-  "shipsAlone",
-  "pickupOnly",
-  "localPickup",
-  "allowLocalPickup",
-  "fragile",
-  "oversized",
+  "isFragile",
+  "isBulky",
 ] as const;
 
 const PRODUCT_SHIPPING_ALL_FIELDS = [
-  ...PRODUCT_SHIPPING_NUMBER_FIELDS,
-  ...PRODUCT_SHIPPING_STRING_FIELDS,
-  ...PRODUCT_SHIPPING_BOOLEAN_FIELDS,
+  ...PRODUCT_SHIPPING_DB_NUMBER_FIELDS,
+  ...PRODUCT_SHIPPING_DB_STRING_FIELDS,
+  ...PRODUCT_SHIPPING_DB_BOOLEAN_FIELDS,
 ] as const;
 
 function pickRawShippingInput(body: any) {
@@ -968,51 +937,105 @@ function extractShippingWriteDataFromBody(rawBody: any) {
   const src = pickRawShippingInput(rawBody);
   const out: any = {};
 
-  for (const key of PRODUCT_SHIPPING_NUMBER_FIELDS) {
-    if (!hasProductWritableField(key)) continue;
-
-    const raw =
-      src?.[key] ??
-      rawBody?.[key] ??
-      rawBody?.data?.[key];
-
-    if (raw === undefined) continue;
-
-    const n = normalizeNumberLike(raw);
-    if (n !== undefined) out[key] = toDecimal(n);
-  }
-
-  for (const key of PRODUCT_SHIPPING_STRING_FIELDS) {
-    if (!hasProductWritableField(key)) continue;
-
-    const raw =
-      src?.[key] ??
-      rawBody?.[key] ??
-      rawBody?.data?.[key];
-
-    if (raw === undefined) continue;
-
-    if (raw === null) {
-      out[key] = null;
-      continue;
+  const pick = (...vals: any[]) => {
+    for (const v of vals) {
+      if (v !== undefined) return v;
     }
+    return undefined;
+  };
 
-    const s = normalizeStringLike(raw);
-    out[key] = s ?? null;
+  // shippingCost
+  if (hasProductWritableField("shippingCost")) {
+    const raw = pick(src?.shippingCost, rawBody?.shippingCost, rawBody?.data?.shippingCost);
+    const n = normalizeNumberLike(raw);
+    if (n !== undefined) out.shippingCost = toDecimal(n);
   }
 
-  for (const key of PRODUCT_SHIPPING_BOOLEAN_FIELDS) {
-    if (!hasProductWritableField(key)) continue;
-
-    const raw =
-      src?.[key] ??
-      rawBody?.[key] ??
-      rawBody?.data?.[key];
-
-    if (raw === undefined) continue;
-
+  // freeShipping
+  if (hasProductWritableField("freeShipping")) {
+    const raw = pick(src?.freeShipping, rawBody?.freeShipping, rawBody?.data?.freeShipping);
     const b = normalizeBooleanLike(raw);
-    if (b !== undefined) out[key] = b;
+    if (b !== undefined) out.freeShipping = b;
+  }
+
+  // fragile -> isFragile
+  if (hasProductWritableField("isFragile")) {
+    const raw = pick(
+      src?.isFragile,
+      src?.fragile,
+      rawBody?.isFragile,
+      rawBody?.fragile,
+      rawBody?.data?.isFragile,
+      rawBody?.data?.fragile
+    );
+    const b = normalizeBooleanLike(raw);
+    if (b !== undefined) out.isFragile = b;
+  }
+
+  // oversized -> isBulky
+  if (hasProductWritableField("isBulky")) {
+    const raw = pick(
+      src?.isBulky,
+      src?.oversized,
+      rawBody?.isBulky,
+      rawBody?.oversized,
+      rawBody?.data?.isBulky,
+      rawBody?.data?.oversized
+    );
+    const b = normalizeBooleanLike(raw);
+    if (b !== undefined) out.isBulky = b;
+  }
+
+  // weightGrams / weightKg
+  if (hasProductWritableField("weightGrams")) {
+    const gramsRaw = pick(
+      src?.weightGrams,
+      rawBody?.weightGrams,
+      rawBody?.data?.weightGrams
+    );
+
+    const kgRaw = pick(
+      src?.weightKg,
+      rawBody?.weightKg,
+      rawBody?.data?.weightKg
+    );
+
+    const grams = normalizeNumberLike(gramsRaw);
+    const kg = normalizeNumberLike(kgRaw);
+
+    if (grams !== undefined) out.weightGrams = Math.max(0, Math.round(grams));
+    else if (kg !== undefined) out.weightGrams = Math.max(0, Math.round(kg * 1000));
+  }
+
+  // lengthCm
+  if (hasProductWritableField("lengthCm")) {
+    const raw = pick(src?.lengthCm, rawBody?.lengthCm, rawBody?.data?.lengthCm);
+    const n = normalizeNumberLike(raw);
+    if (n !== undefined) out.lengthCm = toDecimal(n);
+  }
+
+  // widthCm
+  if (hasProductWritableField("widthCm")) {
+    const raw = pick(src?.widthCm, rawBody?.widthCm, rawBody?.data?.widthCm);
+    const n = normalizeNumberLike(raw);
+    if (n !== undefined) out.widthCm = toDecimal(n);
+  }
+
+  // heightCm
+  if (hasProductWritableField("heightCm")) {
+    const raw = pick(src?.heightCm, rawBody?.heightCm, rawBody?.data?.heightCm);
+    const n = normalizeNumberLike(raw);
+    if (n !== undefined) out.heightCm = toDecimal(n);
+  }
+
+  // shippingClass
+  if (hasProductWritableField("shippingClass")) {
+    const raw = pick(src?.shippingClass, rawBody?.shippingClass, rawBody?.data?.shippingClass);
+    if (raw === null) out.shippingClass = null;
+    else {
+      const s = normalizeStringLike(raw);
+      if (s !== undefined) out.shippingClass = s;
+    }
   }
 
   return out;
@@ -1020,25 +1043,40 @@ function extractShippingWriteDataFromBody(rawBody: any) {
 
 function buildShippingSelect() {
   const select: any = {};
+
   for (const key of PRODUCT_SHIPPING_ALL_FIELDS) {
     if (hasProductField(key)) {
       select[key] = true;
     }
   }
+
   return select;
 }
 
 function normalizeShippingFieldsForResponse(row: any) {
   if (!row || typeof row !== "object") return row;
 
-  for (const key of PRODUCT_SHIPPING_NUMBER_FIELDS) {
-    if (!(key in row)) continue;
-    const v = row[key];
-    row[key] = v != null ? Number(v) : null;
-  }
+  if ("shippingCost" in row) row.shippingCost = row.shippingCost != null ? Number(row.shippingCost) : null;
+  if ("lengthCm" in row) row.lengthCm = row.lengthCm != null ? Number(row.lengthCm) : null;
+  if ("widthCm" in row) row.widthCm = row.widthCm != null ? Number(row.widthCm) : null;
+  if ("heightCm" in row) row.heightCm = row.heightCm != null ? Number(row.heightCm) : null;
+  if ("weightGrams" in row) row.weightGrams = row.weightGrams != null ? Number(row.weightGrams) : null;
+
+  row.freeShipping = row.freeShipping != null ? !!row.freeShipping : false;
+  row.isFragile = row.isFragile != null ? !!row.isFragile : false;
+  row.isBulky = row.isBulky != null ? !!row.isBulky : false;
+
+  // frontend aliases
+  row.fragile = row.isFragile;
+  row.oversized = row.isBulky;
+  row.weightKg =
+    row.weightGrams != null && Number.isFinite(Number(row.weightGrams))
+      ? Number(row.weightGrams) / 1000
+      : null;
 
   return row;
 }
+
 const OptionLooseSchema = z
   .object({
     attributeId: z.string().optional(),
@@ -1106,8 +1144,10 @@ function normalizeVariantsPayload(body: any): NormalizedVariant[] {
 
 function variantActiveWhere(variantModelName: string) {
   const where: any = {};
-  if (variantModelName && hasRelation(variantModelName, "isActive")) where.isActive = true;
-  if (variantModelName && hasRelation(variantModelName, "isDeleted")) where.isDeleted = false;
+  if (variantModelName && hasModelScalarField(variantModelName, "isActive")) where.isActive = true;
+  if (variantModelName && hasModelScalarField(variantModelName, "isDeleted")) where.isDeleted = false;
+  if (variantModelName && hasModelScalarField(variantModelName, "isDelete")) where.isDelete = false;
+  if (variantModelName && hasModelScalarField(variantModelName, "isArchived")) where.isArchived = false;
   return Object.keys(where).length ? where : undefined;
 }
 
@@ -1384,7 +1424,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
 
   const where: any = {};
 
-  // soft-delete flags if present
   if (hasProductScalarField("isDeleted")) where.isDeleted = false;
   if (hasProductScalarField("isDelete")) where.isDelete = false;
   if (hasProductScalarField("isArchived")) where.isArchived = false;
@@ -1395,13 +1434,11 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
   if (q) {
     const or: any[] = [];
 
-    // ---------------- product scalars ----------------
     if (hasProductScalarField("title")) or.push({ title: { contains: q, mode: "insensitive" } });
     if (hasProductScalarField("sku")) or.push({ sku: { contains: q, mode: "insensitive" } });
     if (hasProductScalarField("description")) or.push({ description: { contains: q, mode: "insensitive" } });
     if (hasProductScalarField("categoryName")) or.push({ categoryName: { contains: q, mode: "insensitive" } });
 
-    // ---------------- user email relations ----------------
     const addUserEmailRel = (relName: string) => {
       if (!hasProductRelationField(relName)) return;
       const relModel = String(getProductField(relName)?.type ?? "");
@@ -1420,7 +1457,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     addUserEmailRel("createdBy");
     addUserEmailRel("updatedBy");
 
-    // ---------------- supplier relation ----------------
     const addSupplierRel = (relName: string) => {
       if (!hasProductRelationField(relName)) return;
       const relModel = String(getProductField(relName)?.type ?? "");
@@ -1442,7 +1478,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
 
     addSupplierRel("supplier");
 
-    // ---------------- brand/category name relations ----------------
     const addNameRel = (relName: string) => {
       if (!hasProductRelationField(relName)) return;
       const relModel = String(getProductField(relName)?.type ?? "");
@@ -1483,12 +1518,10 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     ...(hasProductScalarField("isDelete") ? { isDelete: true } : {}),
   };
 
-  // include owner/user
   if (includeSet.has("owner") && PRODUCT_OWNER_REL && hasProductRelationField(PRODUCT_OWNER_REL)) {
     select[PRODUCT_OWNER_REL] = { select: { id: true, email: true } };
   }
 
-  // ---- variants (+ options) - schema-safe ----
   let variantModelName = "";
   let optionsRel: string | null = null;
 
@@ -1496,31 +1529,36 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     variantModelName = String(getProductField(PRODUCT_VARIANTS_REL)?.type ?? "");
     optionsRel = variantModelName ? findVariantOptionsRel(variantModelName) : null;
 
-    // fallback: literal "options"
-    if (!optionsRel && variantModelName && hasRelation(variantModelName, "options")) optionsRel = "options";
+    if (!optionsRel && variantModelName && hasRelation(variantModelName, "options")) {
+      optionsRel = "options";
+    }
 
     const variantSelect: any = { id: true };
 
     if (variantModelName) {
-      if (hasRelation(variantModelName, "sku")) variantSelect.sku = true;
-      if (hasRelation(variantModelName, "inStock")) variantSelect.inStock = true;
-      if (hasRelation(variantModelName, "retailPrice")) variantSelect.retailPrice = true;
-      if (hasRelation(variantModelName, "imagesJson")) variantSelect.imagesJson = true;
-      if (hasRelation(variantModelName, "availableQty")) variantSelect.availableQty = true;
+      if (hasModelScalarField(variantModelName, "sku")) variantSelect.sku = true;
+      if (hasModelScalarField(variantModelName, "inStock")) variantSelect.inStock = true;
+      if (hasModelScalarField(variantModelName, "retailPrice")) variantSelect.retailPrice = true;
+      if (hasModelScalarField(variantModelName, "imagesJson")) variantSelect.imagesJson = true;
+      if (hasModelScalarField(variantModelName, "availableQty")) variantSelect.availableQty = true;
+      if (hasModelScalarField(variantModelName, "createdAt")) variantSelect.createdAt = true;
+      if (hasModelScalarField(variantModelName, "isActive")) variantSelect.isActive = true;
+      if (hasModelScalarField(variantModelName, "isDeleted")) variantSelect.isDeleted = true;
+      if (hasModelScalarField(variantModelName, "isDelete")) variantSelect.isDelete = true;
+      if (hasModelScalarField(variantModelName, "isArchived")) variantSelect.isArchived = true;
     }
 
-    // include variant options if relation exists
     if (optionsRel) {
       const optionModelName = variantModelName ? String(getModelField(variantModelName, optionsRel)?.type ?? "") : "";
       const optionSelect: any = { id: true };
 
       if (optionModelName) {
-        if (hasRelation(optionModelName, "attributeId")) optionSelect.attributeId = true;
-        if (hasRelation(optionModelName, "valueId")) optionSelect.valueId = true;
-        if (!optionSelect.valueId && hasRelation(optionModelName, "attributeValueId")) optionSelect.attributeValueId = true;
-
-        // NOTE: we can still select unitPrice if you want, but it is NOT used for pricing anymore.
-        if (hasRelation(optionModelName, "unitPrice")) optionSelect.unitPrice = true;
+        if (hasModelScalarField(optionModelName, "attributeId")) optionSelect.attributeId = true;
+        if (hasModelScalarField(optionModelName, "valueId")) optionSelect.valueId = true;
+        if (!optionSelect.valueId && hasModelScalarField(optionModelName, "attributeValueId")) {
+          optionSelect.attributeValueId = true;
+        }
+        if (hasModelScalarField(optionModelName, "unitPrice")) optionSelect.unitPrice = true;
       } else {
         optionSelect.attributeId = true;
         optionSelect.valueId = true;
@@ -1539,7 +1577,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       ...(vWhere ? { where: vWhere } : {}),
       select: variantSelect,
       orderBy:
-        variantModelName && hasRelation(variantModelName, "createdAt")
+        variantModelName && hasModelScalarField(variantModelName, "createdAt")
           ? ({ createdAt: "asc" } as any)
           : undefined,
     };
@@ -1553,12 +1591,8 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     skip,
   });
 
-  // ------------------------------
-  // ✅ compute cheapest supplier prices (base + per variant)
-  // ------------------------------
   const productIds = items.map((p: any) => p?.id).filter(Boolean) as string[];
 
-  // Collect variantIds (only if variants were included)
   const allVariantIds: string[] = [];
   if (includeSet.has("variants")) {
     for (const p of items as any[]) {
@@ -1567,20 +1601,16 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     }
   }
 
-  // These models exist in your schema, so we use them as the source of truth
   const [baseOffers, variantOffers] = await Promise.all([
     productIds.length
       ? prisma.supplierProductOffer.findMany({
         where: {
           productId: { in: productIds },
-
           ...(getModelField("SupplierProductOffer", "isActive") ? { isActive: true } : {}),
           ...(getModelField("SupplierProductOffer", "inStock") ? { inStock: true } : {}),
           ...(getModelField("SupplierProductOffer", "availableQty")
             ? { availableQty: intGtZeroFilter("SupplierProductOffer", "availableQty") }
             : {}),
-
-          // ✅ price must be > 0 (schema-safe; no invalid `not: null` for non-nullable Decimals)
           ...(getModelField("SupplierProductOffer", "basePrice")
             ? { basePrice: decimalGtZeroFilter("SupplierProductOffer", "basePrice") }
             : {}),
@@ -1596,14 +1626,11 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       ? prisma.supplierVariantOffer.findMany({
         where: {
           variantId: { in: allVariantIds },
-
           ...(getModelField("SupplierVariantOffer", "isActive") ? { isActive: true } : {}),
           ...(getModelField("SupplierVariantOffer", "inStock") ? { inStock: true } : {}),
           ...(getModelField("SupplierVariantOffer", "availableQty")
             ? { availableQty: intGtZeroFilter("SupplierVariantOffer", "availableQty") }
             : {}),
-
-          // ✅ unit price must be > 0 (schema-safe)
           ...(getModelField("SupplierVariantOffer", "unitPrice")
             ? { unitPrice: decimalGtZeroFilter("SupplierVariantOffer", "unitPrice") }
             : {}),
@@ -1620,8 +1647,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
   const bestBaseByProductId = new Map<string, number>();
   for (const o of baseOffers as any[]) {
     const pid = String(o.productId);
-
-    // pick whichever field exists
     const raw = o.basePrice ?? o.offerPrice ?? o.price;
     const price = Number(raw);
 
@@ -1633,7 +1658,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
   const bestUnitByVariantId = new Map<string, number>();
   for (const o of variantOffers as any[]) {
     const vid = String(o.variantId);
-
     const raw = o.unitPrice ?? o.offerPrice ?? o.price;
     const price = Number(raw);
 
@@ -1660,7 +1684,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     const autoPrice = p.autoPrice != null ? Number(p.autoPrice) : null;
     let price = computeDisplayPrice(p);
 
-    // 🔥 Override displayed retail/price with supplier-derived base if available
     if (baseRetailFromSupplier != null) {
       retailPrice = baseRetailFromSupplier;
       price = baseRetailFromSupplier;
@@ -1672,8 +1695,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       autoPrice,
       price,
       ownerEmail,
-
-      // cheapest base supplier price for this product
       bestSupplierBasePrice,
       bestSupplierBaseRetail: baseRetailFromSupplier,
     };
@@ -1695,16 +1716,13 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
 
           v.bestSupplierUnitPrice = effectiveUnit;
 
-          // ✅ supplier-derived override
           if (variantRetail != null) {
             v.retailPrice = variantRetail;
             v.price = variantRetail;
             continue;
           }
 
-          // ✅ fallback if supplier-derived is missing AND stored retail is missing/invalid
           const curVarRetail = v.retailPrice != null ? Number(v.retailPrice) : v.price != null ? Number(v.price) : null;
-
           const curValid = curVarRetail != null && Number.isFinite(curVarRetail) && curVarRetail > 0;
 
           if (!curValid && prodRetailFallback != null) {
@@ -2678,7 +2696,7 @@ router.post(
     if (!optionsRel && hasRelation(variantModelName, "options")) optionsRel = "options";
 
     const OPTION_MODEL = "ProductVariantOption";
-    const HAS_UNIT_PRICE = hasRelation(OPTION_MODEL, "unitPrice");
+    const HAS_UNIT_PRICE = hasModelScalarField(OPTION_MODEL, "unitPrice");
 
     const comboKey = (opts: Array<{ attributeId: string; valueId: string }>) => {
       const parts = (opts || [])
@@ -2688,9 +2706,12 @@ router.post(
       return parts.join("||");
     };
 
-    const canSoftDisable = hasRelation(variantModelName, "isActive") || hasRelation(variantModelName, "isDeleted");
-    const hasIsActive = hasRelation(variantModelName, "isActive");
-    const hasIsDeleted = hasRelation(variantModelName, "isDeleted");
+    const canSoftDisable =
+      hasModelScalarField(variantModelName, "isActive") ||
+      hasModelScalarField(variantModelName, "isDeleted");
+
+    const hasIsActive = hasModelScalarField(variantModelName, "isActive");
+    const hasIsDeleted = hasModelScalarField(variantModelName, "isDeleted");
 
     const result = await prisma.$transaction(async (tx) => {
       const include: any = {};
@@ -2908,7 +2929,10 @@ router.post(
 
       const fresh = await tx.productVariant.findMany({
         where: whereFresh,
-        orderBy: hasRelation(variantModelName, "createdAt") ? ({ createdAt: "asc" } as any) : ({ id: "asc" } as any),
+        orderBy:
+          hasModelScalarField(variantModelName, "createdAt")
+            ? ({ createdAt: "asc" } as any)
+            : ({ id: "asc" } as any),
         ...(Object.keys(include2).length ? { include: include2 } : {}),
       });
 
@@ -2974,15 +2998,18 @@ router.get(
 
     if (modelExists("OrderItem")) {
       const hasProductId = !!getModelField("OrderItem", "productId");
-      if (hasProductId) total += await safeCount("OrderItem", { productId });
-      else {
+      if (hasProductId) {
+        total += await safeCount("OrderItem", { productId });
+      } else {
         const rel = findRelationField("OrderItem", "Product");
         if (rel) total += await safeCount("OrderItem", { [rel.name]: { is: { id: productId } } });
       }
 
       const variantRel = findRelationField("OrderItem", "ProductVariant");
       const variantHasProductId = !!getModelField("ProductVariant", "productId");
-      if (variantRel && variantHasProductId) total += await safeCount("OrderItem", { [variantRel.name]: { is: { productId } } });
+      if (variantRel && variantHasProductId) {
+        total += await safeCount("OrderItem", { [variantRel.name]: { is: { productId } } });
+      }
     }
 
     for (const m of Prisma.dmmf.datamodel.models) {
@@ -3026,7 +3053,7 @@ router.get(
   "/:id",
   requireAdmin,
   wrap(async (req, res) => {
-    const id = requiredString(requiredString(req.params.id));
+    const id = requiredString(req.params.id);
     const includeSet = parseIncludeParam(req.query);
 
     const select: any = {
@@ -3057,39 +3084,39 @@ router.get(
       select[PRODUCT_SUPPLIER_REL] = { select: { id: true, name: true } };
     }
 
-    // variants + options (editor needs this)
     let variantModelName = "";
     let optionsRel: string | null = null;
 
     if (includeSet.has("variants") && PRODUCT_VARIANTS_REL && hasProductRelationField(PRODUCT_VARIANTS_REL)) {
       variantModelName = String(getProductField(PRODUCT_VARIANTS_REL)?.type ?? "");
       optionsRel = variantModelName ? findVariantOptionsRel(variantModelName) : null;
-      if (!optionsRel && variantModelName && hasRelation(variantModelName, "options")) optionsRel = "options";
+
+      if (!optionsRel && variantModelName && hasRelation(variantModelName, "options")) {
+        optionsRel = "options";
+      }
 
       const variantSelect: any = { id: true };
 
       if (variantModelName) {
-        if (hasRelation(variantModelName, "sku")) variantSelect.sku = true;
-        if (hasRelation(variantModelName, "inStock")) variantSelect.inStock = true;
-        if (hasRelation(variantModelName, "retailPrice")) variantSelect.retailPrice = true;
-        if (hasRelation(variantModelName, "imagesJson")) variantSelect.imagesJson = true;
-        if (hasRelation(variantModelName, "availableQty")) variantSelect.availableQty = true;
-
-        if (hasRelation(variantModelName, "isActive")) variantSelect.isActive = true;
-        if (hasRelation(variantModelName, "isDeleted")) variantSelect.isDeleted = true;
-        if (hasRelation(variantModelName, "isDelete")) variantSelect.isDelete = true;
-        if (hasRelation(variantModelName, "isArchived")) variantSelect.isArchived = true;
+        if (hasModelScalarField(variantModelName, "sku")) variantSelect.sku = true;
+        if (hasModelScalarField(variantModelName, "inStock")) variantSelect.inStock = true;
+        if (hasModelScalarField(variantModelName, "retailPrice")) variantSelect.retailPrice = true;
+        if (hasModelScalarField(variantModelName, "imagesJson")) variantSelect.imagesJson = true;
+        if (hasModelScalarField(variantModelName, "availableQty")) variantSelect.availableQty = true;
+        if (hasModelScalarField(variantModelName, "createdAt")) variantSelect.createdAt = true;
+        if (hasModelScalarField(variantModelName, "isActive")) variantSelect.isActive = true;
+        if (hasModelScalarField(variantModelName, "isDeleted")) variantSelect.isDeleted = true;
+        if (hasModelScalarField(variantModelName, "isDelete")) variantSelect.isDelete = true;
+        if (hasModelScalarField(variantModelName, "isArchived")) variantSelect.isArchived = true;
       }
 
       if (optionsRel) {
-        // NOTE: ProductVariantOption.unitPrice is NOT supplier offer pricing.
-        // Keeping it because your editor expects it, but it should NOT be used for supplier unit prices.
         variantSelect[optionsRel] = {
           select: {
             id: true,
             attributeId: true,
             valueId: true,
-            ...(hasRelation("ProductVariantOption", "unitPrice") ? { unitPrice: true } : {}),
+            ...(hasModelScalarField("ProductVariantOption", "unitPrice") ? { unitPrice: true } : {}),
           },
           orderBy: { attributeId: "asc" as const },
         };
@@ -3097,16 +3124,19 @@ router.get(
 
       const variantWhere: any = {};
       if (variantModelName) {
-        if (hasRelation(variantModelName, "isActive")) variantWhere.isActive = true;
-        if (hasRelation(variantModelName, "isDeleted")) variantWhere.isDeleted = false;
-        if (hasRelation(variantModelName, "isDelete")) variantWhere.isDelete = false;
-        if (hasRelation(variantModelName, "isArchived")) variantWhere.isArchived = false;
+        if (hasModelScalarField(variantModelName, "isActive")) variantWhere.isActive = true;
+        if (hasModelScalarField(variantModelName, "isDeleted")) variantWhere.isDeleted = false;
+        if (hasModelScalarField(variantModelName, "isDelete")) variantWhere.isDelete = false;
+        if (hasModelScalarField(variantModelName, "isArchived")) variantWhere.isArchived = false;
       }
 
       select[PRODUCT_VARIANTS_REL] = {
         ...(Object.keys(variantWhere).length ? { where: variantWhere } : {}),
         select: variantSelect,
-        orderBy: variantModelName && hasRelation(variantModelName, "createdAt") ? ({ createdAt: "asc" } as any) : undefined,
+        orderBy:
+          variantModelName && hasModelScalarField(variantModelName, "createdAt")
+            ? ({ createdAt: "asc" } as any)
+            : undefined,
       };
     }
 
@@ -3117,10 +3147,9 @@ router.get(
 
     if (!product) return res.status(404).json({ error: "Product not found" });
 
-    // attributes (editor needs this when include=attributes)
     let attributes: any = null;
     if (includeSet.has("attributes")) {
-      const enabled = HAS_PRODUCT_ATTRIBUTE_MODEL
+      const realEnabled = HAS_PRODUCT_ATTRIBUTE_MODEL
         ? await (prisma as any).productAttribute.findMany({
           where: { productId: id },
           include: {
@@ -3130,32 +3159,86 @@ router.get(
         })
         : [];
 
-      const enabledIds = enabled.map((r: any) => String(r.attributeId)).filter(Boolean);
-
       const [opts, texts] = await Promise.all([
         prisma.productAttributeOption.findMany({
-          where: {
-            productId: id,
-            ...(enabledIds.length ? { attributeId: { in: enabledIds } } : {}),
-          },
+          where: { productId: id },
           include: {
-            attribute: { select: { id: true, name: true, type: true } },
+            attribute: { select: { id: true, name: true, type: true, isActive: true } },
             value: { select: { id: true, name: true, code: true } },
           },
           orderBy: [{ attributeId: "asc" }, { valueId: "asc" }],
         }),
 
         prisma.productAttributeText.findMany({
-          where: {
-            productId: id,
-            ...(enabledIds.length ? { attributeId: { in: enabledIds } } : {}),
-          },
+          where: { productId: id },
           include: {
-            attribute: { select: { id: true, name: true, type: true } },
+            attribute: { select: { id: true, name: true, type: true, isActive: true } },
           },
           orderBy: [{ attributeId: "asc" }],
         }),
       ]);
+
+      const enabledMap = new Map<string, any>();
+
+      for (const row of realEnabled || []) {
+        const aid = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
+        if (!aid) continue;
+        enabledMap.set(aid, row);
+      }
+
+      for (const row of opts || []) {
+        const aid = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
+        if (!aid || enabledMap.has(aid)) continue;
+
+        enabledMap.set(aid, {
+          productId: id,
+          attributeId: aid,
+          attribute: row.attribute
+            ? {
+              id: row.attribute.id,
+              name: row.attribute.name,
+              type: row.attribute.type,
+              isActive: row.attribute.isActive ?? true,
+            }
+            : {
+              id: aid,
+              name: undefined,
+              type: undefined,
+              isActive: true,
+            },
+        });
+      }
+
+      for (const row of texts || []) {
+        const aid = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
+        if (!aid || enabledMap.has(aid)) continue;
+
+        enabledMap.set(aid, {
+          productId: id,
+          attributeId: aid,
+          attribute: row.attribute
+            ? {
+              id: row.attribute.id,
+              name: row.attribute.name,
+              type: row.attribute.type,
+              isActive: row.attribute.isActive ?? true,
+            }
+            : {
+              id: aid,
+              name: undefined,
+              type: undefined,
+              isActive: true,
+            },
+        });
+      }
+
+      const enabled = Array.from(enabledMap.values()).sort((a: any, b: any) =>
+        String(a?.attributeId ?? "").localeCompare(String(b?.attributeId ?? ""))
+      );
+
+      const enabledIds = enabled
+        .map((r: any) => String(r?.attributeId ?? r?.attribute?.id ?? "").trim())
+        .filter(Boolean);
 
       attributes = {
         enabled,
@@ -3174,29 +3257,25 @@ router.get(
       retailPrice: computeDisplayPrice(product),
     };
 
+    if (attributes) {
+      out.enabledAttributes = attributes.enabled;
+      out.productAttributes = attributes.enabled;
+      out.attributeValues = attributes.options;
+      out.attributeTexts = attributes.texts;
+    }
 
     normalizeShippingFieldsForResponse(out);
 
-    // normalize variants (your existing helper)
     if (includeSet.has("variants")) {
       const normalized = normalizeVariantsForApiResponse(out, true);
       if (normalized !== undefined) out.variants = normalized;
     }
 
-    /**
-     * ✅ Attach best supplier base/unit prices + derived retails
-     * - base retail = cheapest basePrice * 1.05
-     * - variant retail = cheapest unitPrice for that variant * 1.05 (fallback to base)
-     */
     {
-      // gather variant ids from normalized output if available, else from raw relation
       const relVariants = getRelArray(out as any, PRODUCT_VARIANTS_REL);
-
       const rawVariants: any[] = (Array.isArray(out.variants) && out.variants) || relVariants || [];
-
       const variantIds = rawVariants.map((v) => v?.id).filter(Boolean).map(String);
 
-      // cheapest base offer
       const baseOffers = await prisma.supplierProductOffer.findMany({
         where: {
           productId: id,
@@ -3211,7 +3290,6 @@ router.get(
       });
 
       let bestSupplierBasePrice: number | null = null;
-
       for (const o of baseOffers as any[]) {
         const n = Number((o as any).basePrice);
         if (!Number.isFinite(n)) continue;
@@ -3220,7 +3298,6 @@ router.get(
         }
       }
 
-      // cheapest unit per variant
       const variantOffers = variantIds.length
         ? await prisma.supplierVariantOffer.findMany({
           where: {
@@ -3237,7 +3314,6 @@ router.get(
         : [];
 
       const bestUnitByVariantId = new Map<string, number>();
-
       for (const o of variantOffers as any[]) {
         const vid = String((o as any).variantId);
         const n = Number((o as any).unitPrice);
@@ -3249,7 +3325,6 @@ router.get(
         }
       }
 
-      // cheapest variant unit across all variants
       let cheapestVariantUnitPrice: number | null = null;
       for (const unit of bestUnitByVariantId.values()) {
         if (cheapestVariantUnitPrice == null || unit < cheapestVariantUnitPrice) {
@@ -3260,19 +3335,16 @@ router.get(
       const baseRetailFromSupplier = useSupplierPriceDirect(bestSupplierBasePrice);
       const cheapestVariantRetailPrice = useSupplierPriceDirect(cheapestVariantUnitPrice);
 
-      // attach to product
       out.bestSupplierBasePrice = bestSupplierBasePrice;
       out.bestSupplierBaseRetail = baseRetailFromSupplier;
       out.cheapestVariantUnitPrice = cheapestVariantUnitPrice;
       out.cheapestVariantRetailPrice = cheapestVariantRetailPrice;
 
-      // override product-level retail & price if we have supplier base
       if (baseRetailFromSupplier != null) {
         out.retailPrice = baseRetailFromSupplier;
         out.price = baseRetailFromSupplier;
       }
 
-      // attach to variants: best unit OR base fallback + derived retail
       const attachTo = (arr: any[]) => {
         for (const v of arr) {
           const vid = v?.id ? String(v.id) : "";

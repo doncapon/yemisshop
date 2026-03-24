@@ -118,11 +118,11 @@ function hasAddress(addr: SupplierMe["registeredAddress"] | SupplierMe["pickupAd
   if (!addr) return false;
   return Boolean(
     addr.streetName ||
-    addr.houseNumber ||
-    addr.city ||
-    addr.state ||
-    addr.country ||
-    addr.postCode
+      addr.houseNumber ||
+      addr.city ||
+      addr.state ||
+      addr.country ||
+      addr.postCode
   );
 }
 
@@ -130,10 +130,10 @@ function hasDocuments(s: SupplierMe | null) {
   if (!s) return false;
   return Boolean(
     (Array.isArray(s.documents) && s.documents.length > 0) ||
-    (Array.isArray(s.verificationDocuments) && s.verificationDocuments.length > 0) ||
-    s.identityDocumentUrl ||
-    s.proofOfAddressUrl ||
-    s.cacDocumentUrl
+      (Array.isArray(s.verificationDocuments) && s.verificationDocuments.length > 0) ||
+      s.identityDocumentUrl ||
+      s.proofOfAddressUrl ||
+      s.cacDocumentUrl
   );
 }
 
@@ -167,13 +167,8 @@ function normalizeSupplierPayload(raw: any): SupplierMe {
 
   return {
     ...s,
-    legalName: pickFirst(s.legalName, s.businessName, s.name),
-    registeredBusinessName: pickFirst(
-      s.registeredBusinessName,
-      s.businessName,
-      s.legalName,
-      s.name
-    ),
+    legalName: pickFirst(s.legalName),
+    registeredBusinessName: pickFirst(s.registeredBusinessName),
     registrationNumber: pickFirst(s.registrationNumber),
     registrationType: pickFirst(s.registrationType),
     registrationDate: normalizeDateInputValue(pickFirst(s.registrationDate)),
@@ -187,6 +182,10 @@ function normalizeSupplierPayload(raw: any): SupplierMe {
     accountName: pickFirst(s.accountName),
     accountNumber: pickFirst(s.accountNumber),
   };
+}
+
+function isRegisteredBusinessType(v: string | null | undefined) {
+  return String(v ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
 }
 
 export default function SupplierBusinessDetails() {
@@ -203,23 +202,48 @@ export default function SupplierBusinessDetails() {
   const [countries, setCountries] = useState<any[]>([]);
   const [banks, setBanks] = useState<BankOption[]>(FALLBACK_BANKS);
   const [bankEditUnlocked, setBankEditUnlocked] = useState(false);
+  const [businessStepSaved, setBusinessStepSaved] = useState(false);
+
+  const cameFromVerifyContact = Boolean((location.state as any)?.fromVerifyContact);
+
+  const businessStepStorageKey = useMemo(
+    () => (supplier?.id ? `supplier:onboarding:business-step-saved:${supplier.id}` : ""),
+    [supplier?.id]
+  );
+
+  const isRegisteredBusiness = useMemo(
+    () => isRegisteredBusinessType(form.registrationType),
+    [form.registrationType]
+  );
 
   const setField =
     (key: keyof typeof form) =>
-      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-        setForm((f) => ({ ...f, [key]: e.target.value }));
-        setSaveState("idle");
-        setErr(null);
-      };
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+      const value = e.target.value;
+      setForm((f) => {
+        const next = { ...f, [key]: value };
+        if (key === "registrationType" && String(value).trim().toUpperCase() === "INDIVIDUAL") {
+          next.registeredBusinessName = "";
+        }
+        return next;
+      });
+      setSaveState("idle");
+      setErr(null);
+    };
 
   const hydrateFormFromSupplier = useCallback((s: SupplierMe, replace = false) => {
     setForm((prev) => {
+      const nextRegistrationType = pickFirst(s.registrationType, replace ? "" : prev.registrationType);
+      const nextIsRegisteredBusiness = isRegisteredBusinessType(nextRegistrationType);
+
       if (replace) {
         return {
           legalName: pickFirst(s.legalName),
-          registeredBusinessName: pickFirst(s.registeredBusinessName),
+          registeredBusinessName: nextIsRegisteredBusiness
+            ? pickFirst(s.registeredBusinessName)
+            : "",
           registrationNumber: pickFirst(s.registrationNumber),
-          registrationType: pickFirst(s.registrationType),
+          registrationType: nextRegistrationType,
           registrationDate: normalizeDateInputValue(pickFirst(s.registrationDate)),
           registrationCountryCode: pickFirst(s.registrationCountryCode, "NG"),
           registryAuthorityId: pickFirst(s.registryAuthorityId),
@@ -235,12 +259,11 @@ export default function SupplierBusinessDetails() {
 
       return {
         legalName: pickFirst(s.legalName, prev.legalName),
-        registeredBusinessName: pickFirst(
-          s.registeredBusinessName,
-          prev.registeredBusinessName
-        ),
+        registeredBusinessName: nextIsRegisteredBusiness
+          ? pickFirst(s.registeredBusinessName, prev.registeredBusinessName)
+          : "",
         registrationNumber: pickFirst(s.registrationNumber, prev.registrationNumber),
-        registrationType: pickFirst(s.registrationType, prev.registrationType),
+        registrationType: nextRegistrationType,
         registrationDate: pickFirst(
           normalizeDateInputValue(s.registrationDate),
           prev.registrationDate
@@ -263,9 +286,12 @@ export default function SupplierBusinessDetails() {
   }, []);
 
   const savedBusinessFieldsComplete = useMemo(() => {
+    const registeredBusinessRequired = isRegisteredBusinessType(supplier?.registrationType);
     return {
       legalName: hasValue(supplier?.legalName),
-      registeredBusinessName: hasValue(supplier?.registeredBusinessName),
+      registeredBusinessName: registeredBusinessRequired
+        ? hasValue(supplier?.registeredBusinessName)
+        : true,
       registrationNumber: hasValue(supplier?.registrationNumber),
       registrationType: hasValue(supplier?.registrationType),
       registrationDate: hasValue(supplier?.registrationDate),
@@ -275,8 +301,8 @@ export default function SupplierBusinessDetails() {
   }, [supplier]);
 
   const savedBusinessDone = useMemo(() => {
-    return Object.values(savedBusinessFieldsComplete).every(Boolean);
-  }, [savedBusinessFieldsComplete]);
+    return businessStepSaved && Object.values(savedBusinessFieldsComplete).every(Boolean);
+  }, [businessStepSaved, savedBusinessFieldsComplete]);
 
   const savedBankFieldsComplete = useMemo(() => {
     return {
@@ -295,14 +321,14 @@ export default function SupplierBusinessDetails() {
   const draftBusinessFieldsComplete = useMemo(() => {
     return {
       legalName: hasValue(form.legalName),
-      registeredBusinessName: hasValue(form.registeredBusinessName),
+      registeredBusinessName: isRegisteredBusiness ? hasValue(form.registeredBusinessName) : true,
       registrationNumber: hasValue(form.registrationNumber),
       registrationType: hasValue(form.registrationType),
       registrationDate: hasValue(form.registrationDate),
       registrationCountryCode: hasValue(form.registrationCountryCode),
       natureOfBusiness: hasValue(form.natureOfBusiness),
     };
-  }, [form]);
+  }, [form, isRegisteredBusiness]);
 
   const draftBusinessDone = useMemo(() => {
     return Object.values(draftBusinessFieldsComplete).every(Boolean);
@@ -325,7 +351,7 @@ export default function SupplierBusinessDetails() {
   const missingSavedBusinessFields = useMemo(() => {
     const items: string[] = [];
     if (!savedBusinessFieldsComplete.legalName) items.push("Legal entity name");
-    if (!savedBusinessFieldsComplete.registeredBusinessName) {
+    if (!savedBusinessFieldsComplete.registeredBusinessName && isRegisteredBusinessType(supplier?.registrationType)) {
       items.push("Registered business name");
     }
     if (!savedBusinessFieldsComplete.registrationNumber) items.push("Registration number");
@@ -334,7 +360,7 @@ export default function SupplierBusinessDetails() {
     if (!savedBusinessFieldsComplete.registrationCountryCode) items.push("Country");
     if (!savedBusinessFieldsComplete.natureOfBusiness) items.push("Nature of business");
     return items;
-  }, [savedBusinessFieldsComplete]);
+  }, [savedBusinessFieldsComplete, supplier]);
 
   const missingSavedBankFields = useMemo(() => {
     const items: string[] = [];
@@ -347,18 +373,24 @@ export default function SupplierBusinessDetails() {
   }, [savedBankFieldsComplete]);
 
   const businessDirty = useMemo(() => {
+    const supplierRegisteredBusinessRequired = isRegisteredBusinessType(supplier?.registrationType);
+    const currentRegisteredBusinessName = isRegisteredBusiness ? form.registeredBusinessName : "";
+    const savedRegisteredBusinessName = supplierRegisteredBusinessRequired
+      ? supplier?.registeredBusinessName
+      : "";
+
     return (
       norm(form.legalName) !== norm(supplier?.legalName) ||
-      norm(form.registeredBusinessName) !== norm(supplier?.registeredBusinessName) ||
+      norm(currentRegisteredBusinessName) !== norm(savedRegisteredBusinessName) ||
       norm(form.registrationNumber) !== norm(supplier?.registrationNumber) ||
       norm(form.registrationType) !== norm(supplier?.registrationType) ||
       norm(normalizeDateInputValue(form.registrationDate)) !==
-      norm(normalizeDateInputValue(supplier?.registrationDate)) ||
+        norm(normalizeDateInputValue(supplier?.registrationDate)) ||
       norm(form.registrationCountryCode) !== norm(supplier?.registrationCountryCode || "NG") ||
       norm(form.registryAuthorityId) !== norm(supplier?.registryAuthorityId) ||
       norm(form.natureOfBusiness) !== norm(supplier?.natureOfBusiness)
     );
-  }, [form, supplier]);
+  }, [form, supplier, isRegisteredBusiness]);
 
   const bankDirty = useMemo(() => {
     return (
@@ -401,19 +433,40 @@ export default function SupplierBusinessDetails() {
       setSupplier(s);
       hydrateFormFromSupplier(s, false);
 
+      const storageKey = s.id
+        ? `supplier:onboarding:business-step-saved:${s.id}`
+        : "";
+
+      if (storageKey) {
+        if (cameFromVerifyContact) {
+          try {
+            sessionStorage.removeItem(storageKey);
+          } catch {}
+          setBusinessStepSaved(false);
+        } else {
+          try {
+            setBusinessStepSaved(sessionStorage.getItem(storageKey) === "true");
+          } catch {
+            setBusinessStepSaved(false);
+          }
+        }
+      } else {
+        setBusinessStepSaved(false);
+      }
+
       if ((s.bankVerificationStatus ?? "UNVERIFIED") === "VERIFIED") {
         setBankEditUnlocked(false);
       }
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not load supplier onboarding."
+          e?.response?.data?.message ||
+          "Could not load supplier onboarding."
       );
     } finally {
       setLoading(false);
     }
-  }, [hydrateFormFromSupplier]);
+  }, [cameFromVerifyContact, hydrateFormFromSupplier]);
 
   useEffect(() => {
     load();
@@ -531,7 +584,9 @@ export default function SupplierBusinessDetails() {
 
       const payload: any = {
         legalName: form.legalName.trim() || null,
-        registeredBusinessName: form.registeredBusinessName.trim() || null,
+        registeredBusinessName: isRegisteredBusiness
+          ? form.registeredBusinessName.trim() || null
+          : null,
         registrationNumber: form.registrationNumber.trim() || null,
         registrationType: form.registrationType.trim() || null,
         registrationDate: form.registrationDate.trim() || null,
@@ -555,14 +610,43 @@ export default function SupplierBusinessDetails() {
       const s = normalizeSupplierPayload(data);
       setSupplier(s);
       hydrateFormFromSupplier(s, true);
+
+      const isSavedRegisteredBusinessRequired = isRegisteredBusinessType(s.registrationType);
+
+      const isBusinessComplete =
+        hasValue(s.legalName) &&
+        (!isSavedRegisteredBusinessRequired || hasValue(s.registeredBusinessName)) &&
+        hasValue(s.registrationNumber) &&
+        hasValue(s.registrationType) &&
+        hasValue(s.registrationDate) &&
+        hasValue(s.registrationCountryCode) &&
+        hasValue(s.natureOfBusiness);
+
+      setBusinessStepSaved(isBusinessComplete);
+
+      if (s.id) {
+        try {
+          if (isBusinessComplete) {
+            sessionStorage.setItem(
+              `supplier:onboarding:business-step-saved:${s.id}`,
+              "true"
+            );
+          } else {
+            sessionStorage.removeItem(
+              `supplier:onboarding:business-step-saved:${s.id}`
+            );
+          }
+        } catch {}
+      }
+
       setSaveState("saved");
       setBankEditUnlocked(false);
     } catch (e: any) {
       setSaveState("error");
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not save onboarding details."
+          e?.response?.data?.message ||
+          "Could not save onboarding details."
       );
     }
   };
@@ -743,8 +827,6 @@ export default function SupplierBusinessDetails() {
               </div>
             </div>
 
-
-
             {hasUnsavedChanges && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 You have unsaved changes. Save progress before continuing to the next step.
@@ -775,6 +857,7 @@ export default function SupplierBusinessDetails() {
                 Bank details still missing or not saved: {missingSavedBankFields.join(", ")}.
               </div>
             )}
+
             {err && (
               <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                 {err}
@@ -808,15 +891,17 @@ export default function SupplierBusinessDetails() {
                         />
                       </div>
 
-                      <div>
-                        <label className={label}>Registered business name</label>
-                        <input
-                          value={form.registeredBusinessName}
-                          onChange={setField("registeredBusinessName")}
-                          className={input}
-                          placeholder="Registered business name"
-                        />
-                      </div>
+                      {isRegisteredBusiness && (
+                        <div>
+                          <label className={label}>Registered business name</label>
+                          <input
+                            value={form.registeredBusinessName}
+                            onChange={setField("registeredBusinessName")}
+                            className={input}
+                            placeholder="Registered business name"
+                          />
+                        </div>
+                      )}
 
                       <div>
                         <label className={label}>Registration number</label>
@@ -959,10 +1044,11 @@ export default function SupplierBusinessDetails() {
                             setErr(null);
                           }}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
+                          className={`${input} ${
+                            bankFieldsDisabled
                               ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
                               : ""
-                            }`}
+                          }`}
                         >
                           {countries.length === 0 && <option>Loading countries...</option>}
                           {countries.map((c) => (
@@ -979,10 +1065,11 @@ export default function SupplierBusinessDetails() {
                           value={form.bankName}
                           onChange={(e) => setBankByName(e.target.value)}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
+                          className={`${input} ${
+                            bankFieldsDisabled
                               ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
                               : ""
-                            }`}
+                          }`}
                         >
                           <option value="">Select bank…</option>
                           {countryBanks.map((b) => (
@@ -999,10 +1086,11 @@ export default function SupplierBusinessDetails() {
                           value={normCode(form.bankCode)}
                           onChange={(e) => setBankByCode(e.target.value)}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
+                          className={`${input} ${
+                            bankFieldsDisabled
                               ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
                               : ""
-                            }`}
+                          }`}
                         >
                           <option value="">Select bank…</option>
                           {countryBanks.map((b) => (
@@ -1019,10 +1107,11 @@ export default function SupplierBusinessDetails() {
                           value={form.accountName}
                           onChange={setField("accountName")}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
+                          className={`${input} ${
+                            bankFieldsDisabled
                               ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
                               : ""
-                            }`}
+                          }`}
                           placeholder="Account name"
                         />
                       </div>
@@ -1040,10 +1129,11 @@ export default function SupplierBusinessDetails() {
                             setErr(null);
                           }}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
+                          className={`${input} ${
+                            bankFieldsDisabled
                               ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
                               : ""
-                            }`}
+                          }`}
                           placeholder="Account number"
                         />
                       </div>
@@ -1077,10 +1167,11 @@ export default function SupplierBusinessDetails() {
                         >
                           <span className="text-sm text-zinc-700">{item.label}</span>
                           <span
-                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.done
+                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              item.done
                                 ? "bg-emerald-100 text-emerald-700"
                                 : "bg-amber-100 text-amber-700"
-                              }`}
+                            }`}
                           >
                             {item.done ? "Done" : "Pending"}
                           </span>
@@ -1174,8 +1265,8 @@ export default function SupplierBusinessDetails() {
                     {saveState === "saving"
                       ? "Saving…"
                       : saveState === "saved"
-                        ? "Saved"
-                        : "Save progress"}
+                      ? "Saved"
+                      : "Save progress"}
                   </button>
 
                   <button

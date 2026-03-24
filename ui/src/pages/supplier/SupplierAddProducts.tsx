@@ -278,11 +278,11 @@ function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
     String(addr.houseNumber ?? "").trim() ||
-      String(addr.streetName ?? "").trim() ||
-      String(addr.city ?? "").trim() ||
-      String(addr.state ?? "").trim() ||
-      String(addr.country ?? "").trim() ||
-      String(addr.postCode ?? "").trim()
+    String(addr.streetName ?? "").trim() ||
+    String(addr.city ?? "").trim() ||
+    String(addr.state ?? "").trim() ||
+    String(addr.country ?? "").trim() ||
+    String(addr.postCode ?? "").trim()
   );
 }
 
@@ -494,6 +494,7 @@ export default function SupplierAddProduct() {
   const [editingVariantRowId, setEditingVariantRowId] = useState<string | null>(null);
 
   const copiedTemplateAppliedRef = useRef<string>("");
+  const errorRef = useRef<HTMLDivElement | null>(null);
 
   const ngn = useMemo(
     () =>
@@ -562,8 +563,8 @@ export default function SupplierAddProduct() {
         supplierApproved ||
         Boolean(
           pickString(supplierMe?.legalName) &&
-            pickString(supplierMe?.registrationType) &&
-            pickString(supplierMe?.registrationCountryCode)
+          pickString(supplierMe?.registrationType) &&
+          pickString(supplierMe?.registrationCountryCode)
         );
 
       const addressDone =
@@ -1568,6 +1569,17 @@ export default function SupplierAddProduct() {
   });
 
   useEffect(() => {
+    if (err && errorRef.current) {
+      errorRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, [err]);
+
+  
+
+  useEffect(() => {
     if (skuTouchedRef.current) return;
     setSku(slugifySku(title));
   }, [title]);
@@ -1831,11 +1843,10 @@ export default function SupplierAddProduct() {
                     {onboardingProgressItems.map((item: any) => (
                       <span
                         key={item.key}
-                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                          item.done
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-amber-100 text-amber-800"
-                        }`}
+                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${item.done
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-amber-100 text-amber-800"
+                          }`}
                       >
                         {item.label}: {item.done ? "Done" : "Pending"}
                       </span>
@@ -1863,7 +1874,10 @@ export default function SupplierAddProduct() {
           )}
 
           {err && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+            <div
+              ref={errorRef}
+              className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm"
+            >
               {err}
             </div>
           )}
@@ -2055,9 +2069,8 @@ export default function SupplierAddProduct() {
                   </div>
 
                   <label
-                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${
-                      onboardingBlocked ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
-                    }`}
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${onboardingBlocked ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                      }`}
                   >
                     <input
                       type="checkbox"
@@ -2134,9 +2147,8 @@ export default function SupplierAddProduct() {
 
                   <div className="flex flex-wrap gap-3">
                     <label
-                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${
-                        onboardingBlocked || freeShipping ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
-                      }`}
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${onboardingBlocked || freeShipping ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                        }`}
                     >
                       <input
                         type="checkbox"
@@ -2148,9 +2160,8 @@ export default function SupplierAddProduct() {
                     </label>
 
                     <label
-                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${
-                        onboardingBlocked || freeShipping ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
-                      }`}
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${onboardingBlocked || freeShipping ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                        }`}
                     >
                       <input
                         type="checkbox"
@@ -2174,9 +2185,8 @@ export default function SupplierAddProduct() {
                 className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
-                      onboardingBlocked ? "opacity-60 pointer-events-none" : ""
-                    }`}
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${onboardingBlocked ? "opacity-60 pointer-events-none" : ""
+                      }`}
                   >
                     <ImagePlus size={16} /> Add files
                     <input
@@ -2439,13 +2449,27 @@ export default function SupplierAddProduct() {
                       {activeAttrs.map((a: CatalogAttribute) => {
                         if (a.type === "TEXT") {
                           const v = String(selectedAttrs[a.id] ?? "");
+                          const label = "add new " + a.name.toLowerCase();
+
                           return (
                             <div key={a.id}>
-                              <Label>{a.name}</Label>
+                              <div className="flex items-center justify-between mb-1">
+                                <Label>{a.name}</Label>
+                                <AddNewLink
+                                  label={label}
+                                  onClick={() =>
+                                    nav(goToCatalogRequests("attributes", "attribute"))
+                                  }
+                                  title={`Request a new attribute like ${a.name}`}
+                                  disabled={onboardingBlocked}
+                                />
+                              </div>
+
                               <Input
                                 value={v}
                                 onChange={(e) =>
-                                  !onboardingBlocked && setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))
+                                  !onboardingBlocked &&
+                                  setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))
                                 }
                                 placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
                                 disabled={onboardingBlocked}
@@ -2510,9 +2534,8 @@ export default function SupplierAddProduct() {
                                 return (
                                   <label
                                     key={x.id}
-                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                      checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                    } ${onboardingBlocked ? "opacity-60 cursor-not-allowed" : ""}`}
+                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                      } ${onboardingBlocked ? "opacity-60 cursor-not-allowed" : ""}`}
                                   >
                                     <input
                                       type="checkbox"

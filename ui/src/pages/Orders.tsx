@@ -17,9 +17,7 @@ const SILVER_SHADOW_LG = "shadow-[0_18px_60px_rgba(148,163,184,0.30)]";
 const CARD_2XL = `rounded-2xl ${SILVER_BORDER} bg-white ${SILVER_SHADOW_MD}`;
 const CARD_XL = `rounded-xl ${SILVER_BORDER} bg-white ${SILVER_SHADOW_SM}`;
 
-/* ---------------- Mobile typography helpers ----------------
-   Goal: smaller + consistent on mobile, normal on md+.
------------------------------------------------------------- */
+/* ---------------- Mobile typography helpers ---------------- */
 const T_BASE = "text-[12px] sm:text-sm";
 const T_SM = "text-[11px] sm:text-xs";
 const T_XS = "text-[10px] sm:text-[11px]";
@@ -30,14 +28,14 @@ const BTN_XS = "text-[11px] sm:text-xs";
 
 /* ---------------- Cookie auth helpers ---------------- */
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
-const OTP_HEADER_NAME = "x-otp-token"; // change if your backend expects a different header
+const OTP_HEADER_NAME = "x-otp-token";
 
 function isAuthError(e: any) {
   const status = e?.response?.status;
   return status === 401 || status === 403;
 }
 
-/* ---------------- Types (loose to match API) ---------------- */
+/* ---------------- Types ---------------- */
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | string;
 
 type SupplierAllocationRow = {
@@ -58,6 +56,8 @@ type PurchaseOrderRow = {
   subtotal?: number | string | null;
   platformFee?: number | string | null;
   createdAt?: string | null;
+  payoutStatus?: string | null;
+  paidOutAt?: string | null;
 };
 
 type PaymentRow = {
@@ -87,7 +87,6 @@ type OrderItem = {
     imagesJson?: string[] | null;
   } | null;
 
-  // extra possible API fields
   qty?: number | string | null;
   price?: number | string | null;
   total?: number | string | null;
@@ -111,8 +110,8 @@ type OrderRow = {
   commissionTotal?: number | string | null;
   createdAt?: string;
   items?: OrderItem[];
-  payment?: PaymentRow | null; // for /mine
-  payments?: PaymentRow[]; // for / (admin)
+  payment?: PaymentRow | null;
+  payments?: PaymentRow[];
   paidAmount?: number | string | null;
   metrics?: {
     revenue?: number | string | null;
@@ -127,7 +126,6 @@ type OrderRow = {
     commission?: number | string | null;
     commissionTotal?: number | string | null;
   };
-
   user?: { email?: string | null } | null;
   purchaseOrders?: PurchaseOrderRow[];
 };
@@ -146,17 +144,17 @@ type OtpPurpose = "PAY_ORDER" | "CANCEL_ORDER" | "REFUND_ORDER";
 type OtpState =
   | { open: false }
   | {
-      open: true;
-      orderId: string;
-      purpose: OtpPurpose;
-      requestId: string;
-      expiresAt: number;
-      channelHint?: string | null;
-      otp: string;
-      busy: boolean;
-      error?: string | null;
-      onSuccess: (otpToken: string) => Promise<void> | void;
-    };
+    open: true;
+    orderId: string;
+    purpose: OtpPurpose;
+    requestId: string;
+    expiresAt: number;
+    channelHint?: string | null;
+    otp: string;
+    busy: boolean;
+    error?: string | null;
+    onSuccess: (otpToken: string) => Promise<void> | void;
+  };
 
 type RefundReason =
   | "NOT_RECEIVED"
@@ -227,31 +225,31 @@ function normalizeRefund(r: any): RefundRow {
     supplier: r?.supplier ? { id: String(r.supplier.id ?? ""), name: r.supplier.name ?? null } : null,
     purchaseOrder: r?.purchaseOrder
       ? {
-          id: String(r.purchaseOrder.id ?? ""),
-          status: r.purchaseOrder.status ?? null,
-          payoutStatus: r.purchaseOrder.payoutStatus ?? null,
-        }
+        id: String(r.purchaseOrder.id ?? ""),
+        status: r.purchaseOrder.status ?? null,
+        payoutStatus: r.purchaseOrder.payoutStatus ?? null,
+      }
       : null,
     events: Array.isArray(r?.events)
       ? r.events.map((e: any) => ({
-          id: String(e?.id ?? ""),
-          type: e?.type ?? null,
-          message: e?.message ?? null,
-          createdAt: e?.createdAt ?? null,
-        }))
+        id: String(e?.id ?? ""),
+        type: e?.type ?? null,
+        message: e?.message ?? null,
+        createdAt: e?.createdAt ?? null,
+      }))
       : [],
     items: Array.isArray(r?.items)
       ? r.items.map((it: any) => ({
-          id: String(it?.id ?? ""),
-          orderItem: it?.orderItem
-            ? {
-                id: String(it.orderItem.id ?? ""),
-                title: it.orderItem.title ?? null,
-                quantity: it.orderItem.quantity ?? null,
-                unitPrice: it.orderItem.unitPrice ?? null,
-              }
-            : null,
-        }))
+        id: String(it?.id ?? ""),
+        orderItem: it?.orderItem
+          ? {
+            id: String(it.orderItem.id ?? ""),
+            title: it.orderItem.title ?? null,
+            quantity: it.orderItem.quantity ?? null,
+            unitPrice: it.orderItem.unitPrice ?? null,
+          }
+          : null,
+      }))
       : [],
   };
 }
@@ -285,12 +283,12 @@ const fmtDate = (s?: string | null) => {
   return Number.isNaN(+d)
     ? String(s)
     : d.toLocaleString(undefined, {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 };
 
 const todayYMD = () => {
@@ -427,10 +425,10 @@ function normalizeItem(it: any): OrderItem {
     selectedOptions,
     variant: variant
       ? {
-          id: String(variant?.id ?? ""),
-          sku: variant?.sku ?? null,
-          imagesJson: variant?.imagesJson ?? variant?.images ?? null,
-        }
+        id: String(variant?.id ?? ""),
+        sku: variant?.sku ?? null,
+        imagesJson: variant?.imagesJson ?? variant?.images ?? null,
+      }
       : null,
   };
 }
@@ -465,6 +463,8 @@ function normalizeOrder(raw: any): OrderRow {
     subtotal: po?.subtotal ?? null,
     platformFee: po?.platformFee ?? null,
     createdAt: po?.createdAt ?? null,
+    payoutStatus: po?.payoutStatus ?? null,
+    paidOutAt: po?.paidOutAt ?? null,
   }));
 
   return {
@@ -518,33 +518,33 @@ function normalizeOrder(raw: any): OrderRow {
     items,
     payments: payments.length
       ? payments.map((p) => ({
-          id: String(p?.id ?? ""),
-          status: String(p?.status ?? ""),
-          provider: p?.provider ?? null,
-          reference: p?.reference ?? p?.ref ?? null,
-          amount: p?.amount ?? null,
-          createdAt: p?.createdAt ?? p?.created_at ?? null,
-          allocations: Array.isArray(p?.allocations)
-            ? p.allocations.map((a: any) => ({
-                id: String(a?.id ?? ""),
-                supplierId: String(a?.supplierId ?? ""),
-                supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
-                amount: a?.amount ?? null,
-                status: a?.status ?? null,
-                purchaseOrderId: a?.purchaseOrderId ?? null,
-              }))
-            : [],
-        }))
+        id: String(p?.id ?? ""),
+        status: String(p?.status ?? ""),
+        provider: p?.provider ?? null,
+        reference: p?.reference ?? p?.ref ?? null,
+        amount: p?.amount ?? null,
+        createdAt: p?.createdAt ?? p?.created_at ?? null,
+        allocations: Array.isArray(p?.allocations)
+          ? p.allocations.map((a: any) => ({
+            id: String(a?.id ?? ""),
+            supplierId: String(a?.supplierId ?? ""),
+            supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+            amount: a?.amount ?? null,
+            status: a?.status ?? null,
+            purchaseOrderId: a?.purchaseOrderId ?? null,
+          }))
+          : [],
+      }))
       : undefined,
     payment: payment
       ? {
-          id: String(payment?.id ?? ""),
-          status: String(payment?.status ?? ""),
-          provider: payment?.provider ?? null,
-          reference: payment?.reference ?? payment?.ref ?? null,
-          amount: payment?.amount ?? null,
-          createdAt: payment?.createdAt ?? payment?.created_at ?? null,
-        }
+        id: String(payment?.id ?? ""),
+        status: String(payment?.status ?? ""),
+        provider: payment?.provider ?? null,
+        reference: payment?.reference ?? payment?.ref ?? null,
+        amount: payment?.amount ?? null,
+        createdAt: payment?.createdAt ?? payment?.created_at ?? null,
+      }
       : null,
     paidAmount: raw?.paidAmount ?? raw?.paid_amount ?? null,
     metrics: raw?.metrics ?? null,
@@ -694,39 +694,7 @@ function orderSupplierBasePriceTotal(o: OrderRow): number {
   return fromPurchaseOrders;
 }
 
-function orderSupplierPayoutTotal(o: OrderRow, marginPercent: number): number {
-  const supplierBaseTotal = orderSupplierBasePriceTotal(o);
-  if (supplierBaseTotal <= 0) return 0;
-  return supplierBaseTotal * (1 - marginPercent / 100);
-}
-
-function orderCommissionRevenue(o: OrderRow, marginPercent: number): number {
-  const supplierBaseTotal = orderSupplierBasePriceTotal(o);
-  if (supplierBaseTotal <= 0) return 0;
-  return supplierBaseTotal * (marginPercent / 100);
-}
-
-function computeOrderPlatformProfit(o: OrderRow, marginPercent: number): number {
-  const commission = orderCommissionRevenue(o, marginPercent);
-  const serviceFee = orderServiceRevenue(o);
-  return commission + serviceFee;
-}
-
-function orderItemsSubtotal(o: OrderRow): number {
-  const subtotal = fmtN(o.subtotal);
-  if (subtotal > 0) return subtotal;
-
-  return (o.items || []).reduce((sum, it) => {
-    const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
-    const line =
-      it.lineTotal != null || it.total != null || it.subtotal != null
-        ? fmtN(it.lineTotal ?? it.total ?? it.subtotal)
-        : fmtN(it.unitPrice ?? it.price) * qty;
-    return sum + line;
-  }, 0);
-}
-
-function supplierPayoutTotal(o: OrderRow): number {
+function orderSupplierPayoutTotal(o: OrderRow): number {
   const poSupplierAmount = (o.purchaseOrders || []).reduce((sum, po) => {
     return sum + fmtN(po.supplierAmount);
   }, 0);
@@ -745,6 +713,18 @@ function supplierPayoutTotal(o: OrderRow): number {
   if (itemSupplierAmount > 0) return itemSupplierAmount;
 
   return 0;
+}
+
+function orderCommissionRevenue(o: OrderRow, marginPercent: number): number {
+  const supplierBaseTotal = orderSupplierBasePriceTotal(o);
+  if (supplierBaseTotal <= 0) return 0;
+  return supplierBaseTotal * (marginPercent / 100);
+}
+
+function computeOrderPlatformProfit(o: OrderRow, marginPercent: number): number {
+  const commission = orderCommissionRevenue(o, marginPercent);
+  const serviceFee = orderServiceRevenue(o);
+  return commission + serviceFee;
 }
 
 function orderGatewayCost(o: OrderRow): number {
@@ -829,6 +809,28 @@ function normalizeSelectedOptionsForDisplay(input: any): Array<{ attribute: stri
     .filter((x) => x.attribute || x.value);
 }
 
+function getOrderSupplierSummary(order: OrderRow) {
+  const purchaseOrders = Array.isArray(order.purchaseOrders) ? order.purchaseOrders : [];
+
+  const uniqueSuppliers = Array.from(
+    new Map(
+      purchaseOrders.map((po) => [
+        String(po.supplierId || po.supplierName || po.id || ""),
+        {
+          supplierId: String(po.supplierId || ""),
+          supplierName: po.supplierName || po.supplierId || "Supplier",
+        },
+      ])
+    ).values()
+  );
+
+  return {
+    count: uniqueSuppliers.length,
+    names: uniqueSuppliers.map((s) => s.supplierName).filter(Boolean),
+    purchaseOrders,
+  };
+}
+
 /* ---------------- Pagination UI ---------------- */
 const PAGE_SIZE = 10;
 
@@ -869,9 +871,8 @@ function Pagination({
         <>
           <button
             onClick={() => go(1)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-              page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-            }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+              }`}
           >
             1
           </button>
@@ -883,9 +884,8 @@ function Pagination({
         <button
           key={p}
           onClick={() => go(p)}
-          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-            p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-          }`}
+          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+            }`}
         >
           {p}
         </button>
@@ -896,9 +896,8 @@ function Pagination({
           {end < totalPages - 1 && <span className={`px-1 ${T_XS} text-ink-soft`}>…</span>}
           <button
             onClick={() => go(totalPages)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-              page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-            }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+              }`}
           >
             {totalPages}
           </button>
@@ -916,492 +915,69 @@ function Pagination({
   );
 }
 
-/* ---------------- Page ---------------- */
-export default function OrdersPage() {
-  const nav = useNavigate();
-  const location = useLocation();
-
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  const initialPage = Math.max(1, Number(searchParams.get("page") || 1) || 1);
-  const [page, setPage] = useState(initialPage);
-
-  const [q, setQ] = useState((searchParams.get("q") || searchParams.get("orderId") || "").trim());
-  const [statusFilter, setStatusFilter] = useState<
-    "ALL" | "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED"
-  >("ALL");
-  const [from, setFrom] = useState(searchParams.get("from") || "");
-  const [to, setTo] = useState(searchParams.get("to") || "");
-  const [minTotal, setMinTotal] = useState(searchParams.get("minTotal") || "");
-  const [maxTotal, setMaxTotal] = useState(searchParams.get("maxTotal") || "");
-
-  const [otpModal, setOtpModal] = useState<OtpState>({ open: false });
-
-  const { openModal, closeModal } = useModal();
-
-  const showErrorModal = (title: string, message: any) => {
-    openModal({
-      title,
-      message:
-        typeof message === "string" ? (
-          message
-        ) : (
-          <div className={`${T_BASE} text-zinc-700`}>{String(message)}</div>
-        ),
-      size: "sm",
-    });
-  };
-
-  const showSuccessModal = (title: string, message: any) => {
-    openModal({
-      title,
-      message:
-        typeof message === "string" ? (
-          message
-        ) : (
-          <div className={`${T_BASE} text-zinc-700`}>{String(message)}</div>
-        ),
-      size: "sm",
-    });
-  };
-
-  /* ----- Auth / Role (cookie session) ----- */
-  const storeUser = useAuthStore((s) => s.user);
-  const storeRole = (storeUser?.role || "") as Role;
-  const storeUserId = useAuthStore((s) => s.user?.id ?? null);
-  const authHydrated = useAuthStore((s) => s.hydrated);
-
-  const meQ = useQuery({
-    queryKey: ["me-min"],
-    enabled: authHydrated,
-    queryFn: async () => {
-      const res = await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
-      return (res.data?.data ?? res.data ?? null) as { role?: Role; id?: string } | null;
-    },
-    staleTime: 60_000,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-  const authReady = authHydrated && (meQ.isSuccess || meQ.isError);
-
-  const sessionUser = useMemo(() => {
-    if (meQ.data?.id) {
-      return {
-        ...(storeUser ?? {}),
-        ...meQ.data,
-      };
-    }
-    return storeUser ?? null;
-  }, [meQ.data, storeUser]);
-
-  const isSessionAuthenticated = !!sessionUser?.id || !!storeUserId;
-
-  const role: Role = (sessionUser?.role || storeRole || "SHOPPER") as Role;
-
-  const isSuperAdmin = role === "SUPER_ADMIN";
-  const isAdmin = role === "ADMIN" || isSuperAdmin;
-  const isMetricsRole = isSuperAdmin;
-  const isSupplier = String(role || "").toUpperCase() === "SUPPLIER";
-
-  const meStatus = (meQ.error as any)?.response?.status;
-
-  // Redirect only when BOTH store auth and cookie auth fail
-  const mustLogin =
-    authReady &&
-    !isSessionAuthenticated &&
-    (meStatus === 401 || meStatus === 403);
-
-  const mustGoSupplier = authReady && !mustLogin && isSupplier;
-
-  const queriesEnabled = authReady && isSessionAuthenticated && !mustGoSupplier;
-
-  /* ---------------- Sorting ---------------- */
-  type SortKey = "id" | "user" | "items" | "total" | "status" | "date";
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
-    key: "date",
-    dir: "desc",
-  });
-
-  const toggleSort = (key: SortKey) => {
-    setSort((prev) =>
-      prev.key === key
-        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
-        : { key, dir: key === "date" ? "desc" : "asc" }
-    );
-  };
-
-  /* ----- Orders ----- */
-const ordersQ = useQuery<OrdersEnvelope>({
-  queryKey: [
-    "orders",
-    isAdmin ? "admin" : "mine",
-    {
-      page,
-      pageSize: PAGE_SIZE,
-      q: q.trim(),
-      status: statusFilter,
-      from: toYMD(from),
-      to: toYMD(to),
-      minTotal: minTotal.trim(),
-      maxTotal: maxTotal.trim(),
-      sortKey: sort.key,
-      sortDir: sort.dir,
-    },
-  ],
-  enabled: queriesEnabled,
-  placeholderData: (prev) => prev,
-  queryFn: async (): Promise<OrdersEnvelope> => {
-    const params = new URLSearchParams();
-    params.set("page", String(page));
-    params.set("pageSize", String(PAGE_SIZE));
-    params.set("limit", String(PAGE_SIZE));
-    params.set("sortBy", sort.key);
-    params.set("sortDir", sort.dir);
-
-    const qv = q.trim();
-    if (qv) params.set("q", qv);
-    if (statusFilter !== "ALL") params.set("status", statusFilter);
-    if (toYMD(from)) params.set("from", toYMD(from)!);
-    if (toYMD(to)) params.set("to", toYMD(to)!);
-    if (minTotal.trim()) params.set("minTotal", minTotal.trim());
-    if (maxTotal.trim()) params.set("maxTotal", maxTotal.trim());
-
-    const url = isAdmin ? "/api/orders" : "/api/orders/mine";
-    const res = await api.get(`${url}?${params.toString()}`, AXIOS_COOKIE_CFG);
-    return normalizeOrdersEnvelope(res.data, page, PAGE_SIZE);
-  },
-  staleTime: 15_000,
-  retry: false,
-  refetchOnWindowFocus: false,
-});
-
-  // If any query comes back 401/403, also kick to login
-  const mustLoginFromData =
-    authReady &&
-    !isSessionAuthenticated &&
-    ((ordersQ.isError && isAuthError(ordersQ.error)) ||
-      (meQ.isError && isAuthError(meQ.error)));
-
-  /* ---- expanded row from ?open= ---- */
-  const openId = useMemo(() => searchParams.get("open") || "", [searchParams]);
-  useEffect(() => {
-    if (openId) setExpandedId(openId);
-  }, [openId]);
-
-  const serverEnvelope = ordersQ.data;
-  const serverRows = serverEnvelope?.rows || [];
-  const serverPagination = !!serverEnvelope?.serverPagination;
-
-  const colSpan = isAdmin ? 7 : 6;
-
-  // URL -> state: support /orders?q=... or /orders?orderId=...
-  useEffect(() => {
-    const qpQ = (searchParams.get("q") || "").trim();
-    const qpOrderId = (searchParams.get("orderId") || "").trim();
-    const qpPage = Math.max(1, Number(searchParams.get("page") || 1) || 1);
-
-    const next = qpQ || qpOrderId;
-    if (next !== q) {
-      setQ(next);
-    }
-    if (qpPage !== page) {
-      setPage(qpPage);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
-
-  // If URL has orderId, auto-open that order once orders are loaded
-  const didAutoOpenRef = useRef(false);
-  useEffect(() => {
-    if (!queriesEnabled) return;
-    if (didAutoOpenRef.current) return;
-    const oid = (searchParams.get("orderId") || "").trim();
-    if (!oid) return;
-    if (!serverRows.length) return;
-
-    const exact = serverRows.find((o) => String(o.id) === oid);
-    if (!exact) return;
-
-    const sp = new URLSearchParams(searchParams);
-    sp.set("open", oid);
-    sp.set("q", oid);
-    sp.delete("orderId");
-
-    didAutoOpenRef.current = true;
-    setSearchParams(sp, { replace: true });
-    setExpandedId(oid);
-  }, [serverRows, searchParams, setSearchParams, queriesEnabled]);
-
-  const onBuyAgain = (it: OrderItem) => {
-    const productId = String(it.productId || "").trim();
-
-    if (!productId) {
-      showErrorModal("Unavailable", "This item no longer has a product link, so it cannot be bought again.");
-      return;
-    }
-
-    try {
-      upsertCartLine(buildBuyAgainCartLine(it) as any);
-      nav("/checkout");
-    } catch (e: any) {
-      showErrorModal("Could not add item", e?.message || "Could not prepare this item for checkout.");
-    }
-  };
-
-  const orderDetailQ = useQuery({
-    queryKey: ["order-detail", expandedId, isAdmin],
-    enabled: queriesEnabled && !!expandedId,
-    queryFn: async () => {
-      if (!expandedId) return null;
-
-      const tryUrls = isAdmin
-        ? [`/api/orders/${expandedId}`, `/api/admin/orders/${expandedId}`, `/api/orders/admin/${expandedId}`]
-        : [`/api/orders/${expandedId}`, `/api/orders/mine/${expandedId}`];
-
-      let lastErr: any = null;
-      for (const url of tryUrls) {
-        try {
-          const res = await api.get(url, AXIOS_COOKIE_CFG);
-          const payload = res.data?.order ?? res.data?.data ?? res.data;
-          return normalizeOrder(payload);
-        } catch (e) {
-          lastErr = e;
-          if (isAuthError(e)) throw e;
-        }
-      }
-
-      console.warn("Order detail fetch failed for", expandedId, lastErr);
-      return null;
-    },
-    staleTime: 10_000,
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
-
-  const refundsQ = useQuery({
-    queryKey: ["refunds", "mine"],
-    enabled: queriesEnabled && !isAdmin,
-    queryFn: async () => {
-      const { data } = await api.get("/api/refunds/mine", AXIOS_COOKIE_CFG);
-      return normalizeRefunds(data);
-    },
-    staleTime: 10_000,
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
-
-  const refunds = refundsQ.data || [];
-
-  /* ---------------- Filter Bar helpers ---------------- */
-  const clearFilters = () => {
-    setQ("");
-    setStatusFilter("ALL");
-    setFrom("");
-    setTo("");
-    setMinTotal("");
-    setMaxTotal("");
-    setPage(1);
-    setExpandedId(null);
-
-    const sp = new URLSearchParams(searchParams);
-    sp.delete("q");
-    sp.delete("orderId");
-    sp.delete("open");
-    sp.delete("from");
-    sp.delete("to");
-    sp.delete("minTotal");
-    sp.delete("maxTotal");
-    sp.set("page", "1");
-    setSearchParams(sp, { replace: true });
-  };
-
-  const pricingSettingsQ = useQuery({
-    queryKey: ["admin", "settings", "pricing-public-orders"],
-    enabled: queriesEnabled && isMetricsRole,
-    queryFn: async () => {
-      const { data } = await api.get("/api/settings/public", AXIOS_COOKIE_CFG);
-      return {
-        marginPercent:
-          Number(
-            data?.marginPercent ??
-              data?.pricingMarkupPercent ??
-              data?.platformMarginPercent ??
-              0
-          ) || 0,
-      };
-    },
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
-
-  const marginPercent = Number(pricingSettingsQ.data?.marginPercent ?? 0) || 0;
-
-  const tdy = todayYMD();
-  const isTodayActive = from === tdy && to === tdy;
-  const toggleToday = () => {
-    if (isTodayActive) {
-      setFrom("");
-      setTo("");
-    } else {
-      setFrom(tdy);
-      setTo(tdy);
-    }
-    setPage(1);
-    setExpandedId(null);
-  };
-
-  /* ---------------- Derived: filtered + sorted ---------------- */
-  const filteredSorted = useMemo(() => {
-    if (serverPagination) {
-      return serverRows;
-    }
-
-    const qnorm = q.trim().toLowerCase();
-    const dateFrom = from ? new Date(from).getTime() : null;
-    const dateTo = to ? new Date(to + "T23:59:59.999Z").getTime() : null;
-    const min = minTotal ? Number(minTotal) : null;
-    const max = maxTotal ? Number(maxTotal) : null;
-
-    const list = serverRows.filter((o) => {
-      if (qnorm) {
-        const pool: string[] = [];
-        pool.push(o.id || "");
-        if (o.userEmail) pool.push(o.userEmail);
-        (o.items || []).forEach((it) => {
-          if (it.title) pool.push(String(it.title));
-          if (it.product?.title) pool.push(String(it.product.title));
-        });
-        const lp = (Array.isArray(o.payments) && o.payments[0]) || o.payment;
-        if (lp?.reference) pool.push(lp.reference);
-        const hit = pool.some((s) => s.toLowerCase().includes(qnorm));
-        if (!hit) return false;
-      }
-
-      if (statusFilter !== "ALL") {
-        if (String(o.status || "").toUpperCase() !== statusFilter) return false;
-      }
-
-      if (from || to) {
-        const ts = o.createdAt ? new Date(o.createdAt).getTime() : 0;
-        if (dateFrom != null && ts < dateFrom) return false;
-        if (dateTo != null && ts > dateTo) return false;
-      }
-
-      const totalNum = fmtN(o.total);
-      if (min != null && totalNum < min) return false;
-      if (max != null && totalNum > max) return false;
-
-      return true;
-    });
-
-    const dir = sort.dir === "asc" ? 1 : -1;
-    const ordered = [...list].sort((a, b) => {
-      const s = sort.key;
-      if (s === "date") {
-        const av = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const bv = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return (av - bv) * dir;
-      }
-      if (s === "total") return (fmtN(a.total) - fmtN(b.total)) * dir;
-      if (s === "items") return (((a.items || []).length - (b.items || []).length || 0) * dir);
-      if (s === "status") {
-        return (
-          String(a.status || "").localeCompare(String(b.status || ""), undefined, { sensitivity: "base" }) * dir
-        );
-      }
-      if (s === "user") {
-        return (
-          String(a.userEmail || "").localeCompare(String(b.userEmail || ""), undefined, { sensitivity: "base" }) * dir
-        );
-      }
-      return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: "base" }) * dir;
-    });
-
-    return ordered;
-  }, [serverPagination, serverRows, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
-
-  useEffect(() => {
-    const sp = new URLSearchParams(searchParams);
-
-    if (q.trim()) sp.set("q", q.trim());
-    else sp.delete("q");
-
-    if (from) sp.set("from", from);
-    else sp.delete("from");
-
-    if (to) sp.set("to", to);
-    else sp.delete("to");
-
-    if (minTotal.trim()) sp.set("minTotal", minTotal.trim());
-    else sp.delete("minTotal");
-
-    if (maxTotal.trim()) sp.set("maxTotal", maxTotal.trim());
-    else sp.delete("maxTotal");
-
-    sp.set("page", String(page));
-
-    setSearchParams(sp, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, from, to, minTotal, maxTotal, page]);
-
-  useEffect(() => {
-    if (serverPagination) return;
-    setPage(1);
-  }, [serverPagination, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
-
-  const totalItems = serverPagination ? serverEnvelope?.total || 0 : filteredSorted.length;
-  const totalPages = serverPagination
-    ? Math.max(1, serverEnvelope?.totalPages || 1)
-    : Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE));
-
-  const currentPage = serverPagination
-    ? Math.max(1, serverEnvelope?.page || page)
-    : Math.min(page, totalPages);
-
-  const pageStart = totalItems === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
-  const pageEnd =
-    totalItems === 0
-      ? 0
-      : Math.min(totalItems, (currentPage - 1) * PAGE_SIZE + PAGE_SIZE);
-
-  const paginated = useMemo(() => {
-    if (serverPagination) return filteredSorted;
-    const start = (currentPage - 1) * PAGE_SIZE;
-    return filteredSorted.slice(start, start + PAGE_SIZE);
-  }, [serverPagination, filteredSorted, currentPage]);
-
-  const loading = !authReady || (ordersQ.isLoading && !ordersQ.data);
-  const refreshing = ordersQ.isFetching && !!ordersQ.data;
-
-  /* ---------------- Filter content ---------------- */
-  const FilterContent = (
+const OrdersFilterBar = React.memo(function OrdersFilterBar({
+  qInput,
+  setQInput,
+  statusFilter,
+  setStatusFilter,
+  from,
+  setFrom,
+  to,
+  setTo,
+  minTotal,
+  setMinTotal,
+  maxTotal,
+  setMaxTotal,
+  setPage,
+  setExpandedId,
+  refreshing,
+  queriesEnabled,
+  onRefresh,
+  onClear,
+  isTodayActive,
+  onToggleToday,
+  totalItems,
+  pageStart,
+  pageEnd,
+  searchInputRef,
+}: {
+  qInput: string;
+  setQInput: React.Dispatch<React.SetStateAction<string>>;
+  statusFilter: "ALL" | "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED";
+  setStatusFilter: React.Dispatch<
+    React.SetStateAction<"ALL" | "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED">
+  >;
+  from: string;
+  setFrom: React.Dispatch<React.SetStateAction<string>>;
+  to: string;
+  setTo: React.Dispatch<React.SetStateAction<string>>;
+  minTotal: string;
+  setMinTotal: React.Dispatch<React.SetStateAction<string>>;
+  maxTotal: string;
+  setMaxTotal: React.Dispatch<React.SetStateAction<string>>;
+  setPage: React.Dispatch<React.SetStateAction<number>>;
+  setExpandedId: React.Dispatch<React.SetStateAction<string | null>>;
+  refreshing: boolean;
+  queriesEnabled: boolean;
+  onRefresh: () => void;
+  onClear: () => void;
+  isTodayActive: boolean;
+  onToggleToday: () => void;
+  totalItems: number;
+  pageStart: number;
+  pageEnd: number;
+  searchInputRef?: React.RefObject<HTMLInputElement | null>;
+}) {
+  return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
         <div className="md:col-span-4">
           <label className={T_LABEL}>Search</label>
           <input
-            value={q}
+            ref={searchInputRef}
+            value={qInput}
             onChange={(e) => {
-              const v = e.target.value;
-              setQ(v);
-              setPage(1);
-              setExpandedId(null);
-
-              const sp = new URLSearchParams(searchParams);
-              if (v.trim()) {
-                sp.set("q", v.trim());
-                sp.delete("orderId");
-              } else {
-                sp.delete("q");
-                sp.delete("orderId");
-              }
-              sp.set("page", "1");
-              setSearchParams(sp, { replace: true });
+              setQInput(e.target.value);
             }}
             placeholder="Order ID, user, item, payment ref…"
             className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
@@ -1490,40 +1066,589 @@ const ordersQ = useQuery<OrdersEnvelope>({
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           className={`rounded-lg ${SILVER_BORDER} bg-white px-3 py-2 ${BTN} hover:bg-black/5`}
-          onClick={() => ordersQ.refetch()}
+          onClick={onRefresh}
           disabled={!queriesEnabled}
         >
           {refreshing ? "Refreshing…" : "Refresh"}
         </button>
 
-        <button className={`rounded-lg ${SILVER_BORDER} bg-white px-3 py-2 ${BTN} hover:bg-black/5`} onClick={clearFilters}>
+        <button
+          className={`rounded-lg ${SILVER_BORDER} bg-white px-3 py-2 ${BTN} hover:bg-black/5`}
+          onClick={onClear}
+        >
           Clear
         </button>
 
         <button
           type="button"
           aria-pressed={isTodayActive}
-          onClick={toggleToday}
-          className={`rounded-lg px-3 py-2 ${BTN} border transition ${
-            isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
-          }`}
+          onClick={onToggleToday}
+          className={`rounded-lg px-3 py-2 ${BTN} border transition ${isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
+            }`}
         >
           Today
         </button>
 
         <div className={`ml-auto ${T_SM} text-ink-soft`}>
-          {totalItems > 0 ? (
-            <>
-              Showing {pageStart}-{pageEnd} of {totalItems}
-            </>
-          ) : (
-            "No matching orders"
-          )}
-          {isTodayActive && totalItems > 0 && <span className="ml-2">(today)</span>}
+          {totalItems > 0 ? <>Showing {pageStart}-{pageEnd} of {totalItems}</> : "No matching orders"}
         </div>
       </div>
     </>
   );
+});
+
+/* ---------------- Page ---------------- */
+export default function OrdersPage() {
+  const nav = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const initialPage = Math.max(1, Number(searchParams.get("page") || 1) || 1);
+  const [page, setPage] = useState(initialPage);
+
+  const initialQ = (searchParams.get("q") || searchParams.get("orderId") || "").trim();
+  const [qInput, setQInput] = useState(initialQ);
+  const [q, setQ] = useState(initialQ);
+
+  const [statusFilter, setStatusFilter] = useState<
+    "ALL" | "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED"
+  >(((searchParams.get("status") || "ALL").toUpperCase() as any) || "ALL");
+  const [from, setFrom] = useState(searchParams.get("from") || "");
+  const [to, setTo] = useState(searchParams.get("to") || "");
+  const [minTotal, setMinTotal] = useState(searchParams.get("minTotal") || "");
+  const [maxTotal, setMaxTotal] = useState(searchParams.get("maxTotal") || "");
+
+  const [otpModal, setOtpModal] = useState<OtpState>({ open: false });
+
+  const { openModal, closeModal } = useModal();
+
+  const showErrorModal = (title: string, message: any) => {
+    openModal({
+      title,
+      message:
+        typeof message === "string" ? (
+          message
+        ) : (
+          <div className={`${T_BASE} text-zinc-700`}>{String(message)}</div>
+        ),
+      size: "sm",
+    });
+  };
+
+  const showSuccessModal = (title: string, message: any) => {
+    openModal({
+      title,
+      message:
+        typeof message === "string" ? (
+          message
+        ) : (
+          <div className={`${T_BASE} text-zinc-700`}>{String(message)}</div>
+        ),
+      size: "sm",
+    });
+  };
+
+  /* ----- Auth / Role ----- */
+  const storeUser = useAuthStore((s) => s.user);
+  const storeRole = (storeUser?.role || "") as Role;
+  const storeUserId = useAuthStore((s) => s.user?.id ?? null);
+  const authHydrated = useAuthStore((s) => s.hydrated);
+
+  const meQ = useQuery({
+    queryKey: ["me-min"],
+    enabled: authHydrated,
+    queryFn: async () => {
+      const res = await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
+      return (res.data?.data ?? res.data ?? null) as { role?: Role; id?: string } | null;
+    },
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const authReady = authHydrated && (meQ.isSuccess || meQ.isError);
+
+  const sessionUser = useMemo(() => {
+    if (meQ.data?.id) {
+      return {
+        ...(storeUser ?? {}),
+        ...meQ.data,
+      };
+    }
+    return storeUser ?? null;
+  }, [meQ.data, storeUser]);
+
+  const isSessionAuthenticated = !!sessionUser?.id || !!storeUserId;
+
+  const role: Role = (sessionUser?.role || storeRole || "SHOPPER") as Role;
+
+  const isSuperAdmin = role === "SUPER_ADMIN";
+  const isAdmin = role === "ADMIN" || isSuperAdmin;
+  const isMetricsRole = isSuperAdmin;
+  const isSupplier = String(role || "").toUpperCase() === "SUPPLIER";
+
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const ignoreNextUrlSyncRef = useRef(false);
+  const lastAppliedUrlRef = useRef("");
+
+  const meStatus = (meQ.error as any)?.response?.status;
+
+  const mustLogin =
+    authReady &&
+    !isSessionAuthenticated &&
+    (meStatus === 401 || meStatus === 403);
+
+  const mustGoSupplier = authReady && !mustLogin && isSupplier;
+  const queriesEnabled = authReady && isSessionAuthenticated && !mustGoSupplier;
+
+  /* ---------------- Sorting ---------------- */
+  type SortKey = "id" | "user" | "items" | "total" | "status" | "date";
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
+    key: "date",
+    dir: "desc",
+  });
+
+  function isPaidAllocationStatus(status?: string | null): boolean {
+    return String(status || "").trim().toUpperCase() === "PAID";
+  }
+
+  function isPurchaseOrderSupplierPaid(po: PurchaseOrderRow, order: OrderRow): boolean {
+    const poPayout = String(po.payoutStatus || "").trim().toUpperCase();
+    if (poPayout === "RELEASED" || poPayout === "PAID") return true;
+
+    const allocations = (order.payments || []).flatMap((p) => p.allocations || []);
+    return allocations.some(
+      (a) =>
+        String(a.purchaseOrderId || "").trim() === String(po.id || "").trim() &&
+        isPaidAllocationStatus(a.status)
+    );
+  }
+
+  const toggleSort = (key: SortKey) => {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "date" ? "desc" : "asc" }
+    );
+  };
+
+  /* ---------------- Debounced search commit ---------------- */
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      const next = qInput.trim();
+      const prev = q.trim();
+
+      if (next !== prev) {
+        ignoreNextUrlSyncRef.current = true;
+        setQ(next);
+        setPage(1);
+        setExpandedId(null);
+      }
+    }, 350);
+
+    return () => window.clearTimeout(t);
+  }, [qInput, q]);
+
+  /* ----- Orders ----- */
+  const ordersQ = useQuery<OrdersEnvelope>({
+    queryKey: [
+      "orders",
+      isAdmin ? "admin" : "mine",
+      {
+        page,
+        pageSize: PAGE_SIZE,
+        q: q.trim(),
+        status: statusFilter,
+        from: toYMD(from),
+        to: toYMD(to),
+        minTotal: minTotal.trim(),
+        maxTotal: maxTotal.trim(),
+        sortKey: sort.key,
+        sortDir: sort.dir,
+      },
+    ],
+    enabled: queriesEnabled,
+    placeholderData: (prev) => prev,
+    queryFn: async (): Promise<OrdersEnvelope> => {
+      const params = new URLSearchParams();
+      params.set("page", String(page));
+      params.set("pageSize", String(PAGE_SIZE));
+      params.set("limit", String(PAGE_SIZE));
+      params.set("sortBy", sort.key);
+      params.set("sortDir", sort.dir);
+
+      const qv = q.trim();
+      if (qv) params.set("q", qv);
+      if (statusFilter !== "ALL") params.set("status", statusFilter);
+      if (toYMD(from)) params.set("from", toYMD(from)!);
+      if (toYMD(to)) params.set("to", toYMD(to)!);
+      if (minTotal.trim()) params.set("minTotal", minTotal.trim());
+      if (maxTotal.trim()) params.set("maxTotal", maxTotal.trim());
+
+      const url = isAdmin ? "/api/orders" : "/api/orders/mine";
+      const res = await api.get(`${url}?${params.toString()}`, AXIOS_COOKIE_CFG);
+      return normalizeOrdersEnvelope(res.data, page, PAGE_SIZE);
+    },
+    staleTime: 15_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const mustLoginFromData =
+    authReady &&
+    !isSessionAuthenticated &&
+    ((ordersQ.isError && isAuthError(ordersQ.error)) ||
+      (meQ.isError && isAuthError(meQ.error)));
+
+  /* ---- expanded row from ?open= ---- */
+  const openId = useMemo(() => searchParams.get("open") || "", [searchParams]);
+  useEffect(() => {
+    if (openId) setExpandedId(openId);
+  }, [openId]);
+
+  const serverEnvelope = ordersQ.data;
+  const serverRows = serverEnvelope?.rows || [];
+  const serverPagination = !!serverEnvelope?.serverPagination;
+
+  const colSpan = isAdmin ? 7 : 6;
+
+  /* ---------------- URL -> state sync without clobbering focus ---------------- */
+  const lastUrlSignatureRef = useRef("");
+  useEffect(() => {
+    if (ignoreNextUrlSyncRef.current) {
+      ignoreNextUrlSyncRef.current = false;
+      return;
+    }
+
+    const sp = new URLSearchParams(location.search);
+
+    const qpQ = (sp.get("q") || sp.get("orderId") || "").trim();
+    const qpFrom = sp.get("from") || "";
+    const qpTo = sp.get("to") || "";
+    const qpMinTotal = sp.get("minTotal") || "";
+    const qpMaxTotal = sp.get("maxTotal") || "";
+    const qpStatus =
+      (sp.get("status") || "ALL").toUpperCase() as
+      | "ALL"
+      | "PENDING"
+      | "PAID"
+      | "FAILED"
+      | "CANCELED"
+      | "REFUNDED";
+    const qpPage = Math.max(1, Number(sp.get("page") || 1) || 1);
+
+    const sig = JSON.stringify({
+      q: qpQ,
+      from: qpFrom,
+      to: qpTo,
+      minTotal: qpMinTotal,
+      maxTotal: qpMaxTotal,
+      status: qpStatus,
+      page: qpPage,
+    });
+
+    if (sig === lastAppliedUrlRef.current) return;
+    lastAppliedUrlRef.current = sig;
+
+    setQ((prev) => (prev === qpQ ? prev : qpQ));
+    setQInput((prev) => (prev === qpQ ? prev : qpQ));
+    setFrom((prev) => (prev === qpFrom ? prev : qpFrom));
+    setTo((prev) => (prev === qpTo ? prev : qpTo));
+    setMinTotal((prev) => (prev === qpMinTotal ? prev : qpMinTotal));
+    setMaxTotal((prev) => (prev === qpMaxTotal ? prev : qpMaxTotal));
+    setStatusFilter((prev) => (prev === qpStatus ? prev : qpStatus));
+    setPage((prev) => (prev === qpPage ? prev : qpPage));
+  }, [location.search]);
+
+  /* ---- auto-open exact orderId from URL ---- */
+  const didAutoOpenRef = useRef(false);
+  useEffect(() => {
+    if (!queriesEnabled) return;
+    if (didAutoOpenRef.current) return;
+    const oid = (searchParams.get("orderId") || "").trim();
+    if (!oid) return;
+    if (!serverRows.length) return;
+
+    const exact = serverRows.find((o) => String(o.id) === oid);
+    if (!exact) return;
+
+    const sp = new URLSearchParams(searchParams);
+    sp.set("open", oid);
+    sp.set("q", oid);
+    sp.delete("orderId");
+
+    didAutoOpenRef.current = true;
+    setSearchParams(sp, { replace: true });
+    setExpandedId(oid);
+  }, [serverRows, searchParams, setSearchParams, queriesEnabled]);
+
+  const onBuyAgain = (it: OrderItem) => {
+    const productId = String(it.productId || "").trim();
+
+    if (!productId) {
+      showErrorModal("Unavailable", "This item no longer has a product link, so it cannot be bought again.");
+      return;
+    }
+
+    try {
+      upsertCartLine(buildBuyAgainCartLine(it) as any);
+      nav("/checkout");
+    } catch (e: any) {
+      showErrorModal("Could not add item", e?.message || "Could not prepare this item for checkout.");
+    }
+  };
+
+  const orderDetailQ = useQuery({
+    queryKey: ["order-detail", expandedId, isAdmin],
+    enabled: queriesEnabled && !!expandedId,
+    queryFn: async () => {
+      if (!expandedId) return null;
+
+      const tryUrls = isAdmin
+        ? [`/api/orders/${expandedId}`, `/api/admin/orders/${expandedId}`, `/api/orders/admin/${expandedId}`]
+        : [`/api/orders/${expandedId}`, `/api/orders/mine/${expandedId}`];
+
+      let lastErr: any = null;
+      for (const url of tryUrls) {
+        try {
+          const res = await api.get(url, AXIOS_COOKIE_CFG);
+          const payload = res.data?.order ?? res.data?.data ?? res.data;
+          return normalizeOrder(payload);
+        } catch (e) {
+          lastErr = e;
+          if (isAuthError(e)) throw e;
+        }
+      }
+
+      console.warn("Order detail fetch failed for", expandedId, lastErr);
+      return null;
+    },
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
+  const refundsQ = useQuery({
+    queryKey: ["refunds", "mine"],
+    enabled: queriesEnabled && !isAdmin,
+    queryFn: async () => {
+      const { data } = await api.get("/api/refunds/mine", AXIOS_COOKIE_CFG);
+      return normalizeRefunds(data);
+    },
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
+  const refunds = refundsQ.data || [];
+
+  /* ---------------- Filter Bar helpers ---------------- */
+  const clearFilters = () => {
+    setQ("");
+    setQInput("");
+    setStatusFilter("ALL");
+    setFrom("");
+    setTo("");
+    setMinTotal("");
+    setMaxTotal("");
+    setPage(1);
+    setExpandedId(null);
+
+    const sp = new URLSearchParams(searchParams);
+    sp.delete("q");
+    sp.delete("orderId");
+    sp.delete("open");
+    sp.delete("from");
+    sp.delete("to");
+    sp.delete("minTotal");
+    sp.delete("maxTotal");
+    sp.delete("status");
+    sp.set("page", "1");
+    setSearchParams(sp, { replace: true });
+  };
+
+  const pricingSettingsQ = useQuery({
+    queryKey: ["admin", "settings", "pricing-public-orders"],
+    enabled: queriesEnabled && isMetricsRole,
+    queryFn: async () => {
+      const { data } = await api.get("/api/settings/public", AXIOS_COOKIE_CFG);
+      return {
+        marginPercent:
+          Number(
+            data?.marginPercent ??
+            data?.pricingMarkupPercent ??
+            data?.platformMarginPercent ??
+            0
+          ) || 0,
+      };
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
+  const marginPercent = Number(pricingSettingsQ.data?.marginPercent ?? 0) || 0;
+
+  const tdy = todayYMD();
+  const isTodayActive = from === tdy && to === tdy;
+  const toggleToday = () => {
+    if (isTodayActive) {
+      setFrom("");
+      setTo("");
+    } else {
+      setFrom(tdy);
+      setTo(tdy);
+    }
+    setPage(1);
+    setExpandedId(null);
+  };
+
+  /* ---------------- Derived: filtered + sorted ---------------- */
+  const filteredSorted = useMemo(() => {
+    if (serverPagination) {
+      return serverRows;
+    }
+
+    const qnorm = q.trim().toLowerCase();
+    const dateFrom = from ? new Date(from).getTime() : null;
+    const dateTo = to ? new Date(to + "T23:59:59.999").getTime() : null;
+    const min = minTotal ? Number(minTotal) : null;
+    const max = maxTotal ? Number(maxTotal) : null;
+
+    const list = serverRows.filter((o) => {
+      if (qnorm) {
+        const pool: string[] = [];
+        pool.push(o.id || "");
+        if (o.userEmail) pool.push(o.userEmail);
+        (o.items || []).forEach((it) => {
+          if (it.title) pool.push(String(it.title));
+          if (it.product?.title) pool.push(String(it.product.title));
+        });
+        const lp = (Array.isArray(o.payments) && o.payments[0]) || o.payment;
+        if (lp?.reference) pool.push(lp.reference);
+        const hit = pool.some((s) => s.toLowerCase().includes(qnorm));
+        if (!hit) return false;
+      }
+
+      if (statusFilter !== "ALL") {
+        if (String(o.status || "").toUpperCase() !== statusFilter) return false;
+      }
+
+      if (from || to) {
+        const ts = o.createdAt ? new Date(o.createdAt).getTime() : 0;
+        if (dateFrom != null && ts < dateFrom) return false;
+        if (dateTo != null && ts > dateTo) return false;
+      }
+
+      const totalNum = fmtN(o.total);
+      if (min != null && totalNum < min) return false;
+      if (max != null && totalNum > max) return false;
+
+      return true;
+    });
+
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const ordered = [...list].sort((a, b) => {
+      const s = sort.key;
+      if (s === "date") {
+        const av = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bv = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return (av - bv) * dir;
+      }
+      if (s === "total") return (fmtN(a.total) - fmtN(b.total)) * dir;
+      if (s === "items") return (((a.items || []).length - (b.items || []).length || 0) * dir);
+      if (s === "status") {
+        return (
+          String(a.status || "").localeCompare(String(b.status || ""), undefined, { sensitivity: "base" }) * dir
+        );
+      }
+      if (s === "user") {
+        return (
+          String(a.userEmail || "").localeCompare(String(b.userEmail || ""), undefined, { sensitivity: "base" }) * dir
+        );
+      }
+      return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: "base" }) * dir;
+    });
+
+    return ordered;
+  }, [serverPagination, serverRows, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
+
+  /* ---------------- state -> URL ---------------- */
+  useEffect(() => {
+    const current = new URLSearchParams(location.search);
+    const next = new URLSearchParams(location.search);
+
+    if (q.trim()) next.set("q", q.trim());
+    else next.delete("q");
+
+    next.delete("orderId");
+
+    if (from) next.set("from", from);
+    else next.delete("from");
+
+    if (to) next.set("to", to);
+    else next.delete("to");
+
+    if (minTotal.trim()) next.set("minTotal", minTotal.trim());
+    else next.delete("minTotal");
+
+    if (maxTotal.trim()) next.set("maxTotal", maxTotal.trim());
+    else next.delete("maxTotal");
+
+    if (statusFilter !== "ALL") next.set("status", statusFilter);
+    else next.delete("status");
+
+    next.set("page", String(page));
+
+    const currentStr = current.toString();
+    const nextStr = next.toString();
+
+    if (currentStr !== nextStr) {
+      lastAppliedUrlRef.current = JSON.stringify({
+        q: q.trim(),
+        from,
+        to,
+        minTotal: minTotal.trim(),
+        maxTotal: maxTotal.trim(),
+        status: statusFilter,
+        page,
+      });
+
+      setSearchParams(next, { replace: true });
+    }
+  }, [q, from, to, minTotal, maxTotal, statusFilter, page, location.search, setSearchParams]);
+
+  useEffect(() => {
+    if (serverPagination) return;
+    setPage(1);
+  }, [serverPagination, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
+
+  const totalItems = serverPagination ? serverEnvelope?.total || 0 : filteredSorted.length;
+  const totalPages = serverPagination
+    ? Math.max(1, serverEnvelope?.totalPages || 1)
+    : Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE));
+
+  const currentPage = serverPagination
+    ? Math.max(1, serverEnvelope?.page || page)
+    : Math.min(page, totalPages);
+
+  const pageStart = totalItems === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const pageEnd =
+    totalItems === 0
+      ? 0
+      : Math.min(totalItems, (currentPage - 1) * PAGE_SIZE + PAGE_SIZE);
+
+  const paginated = useMemo(() => {
+    if (serverPagination) return filteredSorted;
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return filteredSorted.slice(start, start + PAGE_SIZE);
+  }, [serverPagination, filteredSorted, currentPage]);
+
+  const loading = !authReady || (ordersQ.isLoading && !ordersQ.data);
+  const refreshing = ordersQ.isFetching && !!ordersQ.data;
 
   /* ---------------- Metrics ---------------- */
   const profitRangeQ = useQuery({
@@ -1579,7 +1704,7 @@ const ordersQ = useQuery<OrdersEnvelope>({
       else revenuePaid += fmtN(o.total);
 
       const supplierBase = orderSupplierBasePriceTotal(o);
-      const payout = orderSupplierPayoutTotal(o, marginPercent);
+      const payout = orderSupplierPayoutTotal(o);
       const commission = orderCommissionRevenue(o, marginPercent);
       const serviceFee = orderServiceRevenue(o);
 
@@ -1799,7 +1924,7 @@ const ordersQ = useQuery<OrdersEnvelope>({
     });
   };
 
-  // ---------------- Customer Refund (SHOPPER) ----------------
+  /* ---------------- Customer Refund ---------------- */
   const submitCustomerRefund = async (draft: RefundDraft) => {
     const payload: any = {
       orderId: draft.orderId,
@@ -1900,18 +2025,16 @@ const ordersQ = useQuery<OrdersEnvelope>({
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
-                    draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                  }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                    }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "ALL" }))}
                 >
                   All items
                 </button>
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
-                    draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                  }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                    }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "SOME" }))}
                 >
                   Select items
@@ -2041,7 +2164,7 @@ const ordersQ = useQuery<OrdersEnvelope>({
           try {
             w.focus();
             w.print();
-          } catch {}
+          } catch { }
         };
         w.addEventListener("load", onLoad, { once: true });
       }
@@ -2053,7 +2176,7 @@ const ordersQ = useQuery<OrdersEnvelope>({
     }
   };
 
-  /* ---------------- Redirects (AFTER hooks) ---------------- */
+  /* ---------------- Redirects ---------------- */
   if (mustLogin || mustLoginFromData) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
@@ -2092,7 +2215,34 @@ const ordersQ = useQuery<OrdersEnvelope>({
           </div>
         </div>
 
-        <div className={`mb-4 p-4 hidden min-[768px]:block ${CARD_2XL}`}>{FilterContent}</div>
+        <div className={`mb-4 p-4 hidden min-[768px]:block ${CARD_2XL}`}>
+          <OrdersFilterBar
+            qInput={qInput}
+            setQInput={setQInput}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            from={from}
+            setFrom={setFrom}
+            to={to}
+            setTo={setTo}
+            minTotal={minTotal}
+            setMinTotal={setMinTotal}
+            maxTotal={maxTotal}
+            setMaxTotal={setMaxTotal}
+            setPage={setPage}
+            setExpandedId={setExpandedId}
+            refreshing={refreshing}
+            queriesEnabled={queriesEnabled}
+            onRefresh={() => ordersQ.refetch()}
+            onClear={clearFilters}
+            isTodayActive={isTodayActive}
+            onToggleToday={toggleToday}
+            totalItems={totalItems}
+            pageStart={pageStart}
+            pageEnd={pageEnd}
+            searchInputRef={searchInputRef}
+          />
+        </div>
 
         {!isAdmin && (
           <button
@@ -2117,7 +2267,34 @@ const ordersQ = useQuery<OrdersEnvelope>({
                   Close
                 </button>
               </div>
-              <div className="space-y-3">{FilterContent}</div>
+
+              <div className="space-y-3">
+                <OrdersFilterBar
+                  qInput={qInput}
+                  setQInput={setQInput}
+                  statusFilter={statusFilter}
+                  setStatusFilter={setStatusFilter}
+                  from={from}
+                  setFrom={setFrom}
+                  to={to}
+                  setTo={setTo}
+                  minTotal={minTotal}
+                  setMinTotal={setMinTotal}
+                  maxTotal={maxTotal}
+                  setMaxTotal={setMaxTotal}
+                  setPage={setPage}
+                  setExpandedId={setExpandedId}
+                  refreshing={refreshing}
+                  queriesEnabled={queriesEnabled}
+                  onRefresh={() => ordersQ.refetch()}
+                  onClear={clearFilters}
+                  isTodayActive={isTodayActive}
+                  onToggleToday={toggleToday}
+                  totalItems={totalItems}
+                  pageStart={pageStart}
+                  pageEnd={pageEnd}
+                />
+              </div>
             </div>
           </div>
         )}
@@ -2182,42 +2359,24 @@ const ordersQ = useQuery<OrdersEnvelope>({
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-zinc-50 text-ink">
-                  <th
-                    className="text-left px-3 py-2 cursor-pointer select-none"
-                    onClick={() => toggleSort("id")}
-                  >
+                  <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("id")}>
                     Order
                   </th>
                   {isAdmin && (
-                    <th
-                      className="text-left px-3 py-2 cursor-pointer select-none"
-                      onClick={() => toggleSort("user")}
-                    >
+                    <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("user")}>
                       User
                     </th>
                   )}
-                  <th
-                    className="text-left px-3 py-2 cursor-pointer select-none"
-                    onClick={() => toggleSort("items")}
-                  >
+                  <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("items")}>
                     Items
                   </th>
-                  <th
-                    className="text-left px-3 py-2 cursor-pointer select-none"
-                    onClick={() => toggleSort("total")}
-                  >
+                  <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("total")}>
                     Total
                   </th>
-                  <th
-                    className="text-left px-3 py-2 cursor-pointer select-none"
-                    onClick={() => toggleSort("status")}
-                  >
+                  <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("status")}>
                     Status
                   </th>
-                  <th
-                    className="text-left px-3 py-2 cursor-pointer select-none"
-                    onClick={() => toggleSort("date")}
-                  >
+                  <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("date")}>
                     Date
                   </th>
                   <th className="text-left px-3 py-2">Actions</th>
@@ -2309,13 +2468,12 @@ const ordersQ = useQuery<OrdersEnvelope>({
 
                           <td className="px-3 py-3">
                             <button
-                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${
-                                isPaidEffective
-                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
-                                  : isPendingOrCreated
-                                    ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
-                                    : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
-                              }`}
+                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${isPaidEffective
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                                : isPendingOrCreated
+                                  ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+                                  : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
+                                }`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onToggle(o.id);
@@ -2353,10 +2511,10 @@ const ordersQ = useQuery<OrdersEnvelope>({
                                     )}
 
                                     {isMetricsRole && (
-                                      <div className="rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+                                      <div className="mt-2 rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
                                         <div className="font-semibold text-zinc-900 mb-1">Platform profit</div>
                                         <div>Supplier base: {ngn.format(orderSupplierBasePriceTotal(details))}</div>
-                                        <div>Supplier payout: {ngn.format(orderSupplierPayoutTotal(details, marginPercent))}</div>
+                                        <div>Supplier payout: {ngn.format(orderSupplierPayoutTotal(details))}</div>
                                         <div>Commission: {ngn.format(orderCommissionRevenue(details, marginPercent))}</div>
                                         <div>Service fee: {ngn.format(orderServiceRevenue(details))}</div>
                                         <div className="font-semibold text-zinc-900">
@@ -2454,6 +2612,51 @@ const ordersQ = useQuery<OrdersEnvelope>({
                                   </div>
                                 </div>
 
+                                {Array.isArray(details.purchaseOrders) && details.purchaseOrders.length > 0 && (
+                                  <div className={`mt-4 overflow-hidden ${CARD_XL}`}>
+                                    <div className="px-4 py-3 border-b border-zinc-200/70 flex items-center justify-between">
+                                      <div className="text-sm font-semibold text-ink">Supplier fulfillment</div>
+                                      <div className="text-xs text-ink-soft">
+                                        {getOrderSupplierSummary(details).count} supplier(s)
+                                      </div>
+                                    </div>
+
+                                    <div className="divide-y divide-zinc-200/70">
+                                      {details.purchaseOrders.map((po) => {
+                                        const supplierPaid = isPurchaseOrderSupplierPaid(po, details);
+                                        return (
+                                          <div key={po.id} className="px-4 py-3 flex flex-wrap items-center gap-2 text-xs text-zinc-700">
+                                            <span className="font-medium text-zinc-900">
+                                              {po.supplierName || po.supplierId || "Supplier"}
+                                            </span>
+                                            <span>•</span>
+                                            <span>
+                                              PO: <span className="font-mono">{po.id}</span>
+                                            </span>
+                                            {po.status ? (
+                                              <>
+                                                <span>•</span>
+                                                <span>Status: <b>{po.status}</b></span>
+                                              </>
+                                            ) : null}
+                                            {po.payoutStatus && isAdmin ? (
+                                              <>
+                                                <span>•</span>
+                                                <span>Payout: <b>{po.payoutStatus}</b></span>
+                                              </>
+                                            ) : null}
+                                            {supplierPaid ? (
+                                              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                                                Supplier paid
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+
                                 <div className={`mt-4 overflow-hidden ${CARD_XL}`}>
                                   <div className="px-4 py-3 border-b border-zinc-200/70 flex items-center justify-between">
                                     <div className="text-sm font-semibold text-ink">Order items</div>
@@ -2514,12 +2717,6 @@ const ordersQ = useQuery<OrdersEnvelope>({
                                                 <span>Qty: {qty}</span>
                                                 <span>•</span>
                                                 <span>Unit: {ngn.format(unit)}</span>
-                                                {it.status ? (
-                                                  <>
-                                                    <span>•</span>
-                                                    <span>Status: {it.status}</span>
-                                                  </>
-                                                ) : null}
                                                 {it.variant?.sku ? (
                                                   <>
                                                     <span>•</span>
@@ -2592,7 +2789,7 @@ const ordersQ = useQuery<OrdersEnvelope>({
           </div>
         </div>
 
-        {/* Mobile Orders list: tighter spacing + smaller text */}
+        {/* Mobile Orders list */}
         <div className="mt-4 space-y-2.5 md:hidden">
           {loading && (
             <>
@@ -2643,7 +2840,7 @@ const ordersQ = useQuery<OrdersEnvelope>({
                       <div className={`${T_SM} text-ink-soft truncate`}>
                         {firstItemTitle
                           ? firstItemTitle.toString().slice(0, 44) +
-                            (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
+                          (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
                           : isOpen && orderDetailQ.isFetching
                             ? "Loading items…"
                             : `${details.items?.length || 0} item(s)`}
@@ -2708,6 +2905,30 @@ const ordersQ = useQuery<OrdersEnvelope>({
 
                   {isOpen && (
                     <div className="mt-1.5 border-t border-zinc-200/70 pt-2 space-y-1.5">
+                      {Array.isArray(details.purchaseOrders) && details.purchaseOrders.length > 0 && (
+                        <div className="rounded-lg border border-zinc-200/80 bg-zinc-50 px-2.5 py-2">
+                          <div className="text-[11px] font-semibold text-zinc-900 mb-1">Supplier fulfillment</div>
+                          <div className="space-y-1">
+                            {details.purchaseOrders.map((po) => {
+                              const supplierPaid = isPurchaseOrderSupplierPaid(po, details);
+                              return (
+                                <div key={po.id} className="text-[10px] text-zinc-700 flex flex-wrap items-center gap-1.5">
+                                  <span className="font-medium text-zinc-900">{po.supplierName || po.supplierId || "Supplier"}</span>
+                                  <span>•</span>
+                                  <span>{po.status || "—"}</span>
+                                  {supplierPaid ? (
+                                    <>
+                                      <span>•</span>
+                                      <span className="font-semibold text-emerald-700">Supplier paid</span>
+                                    </>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
                       {(details.items || []).map((it) => {
                         const itemTitle = (it.title || it.product?.title || "—").toString();
                         const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
@@ -2748,6 +2969,7 @@ const ordersQ = useQuery<OrdersEnvelope>({
 
                                 <div className={`${T_XS} text-ink-soft mt-0.5`}>
                                   Qty {qty} • {ngn.format(fmtN(it.unitPrice ?? it.price))}
+                                  {it.variant?.sku ? ` • SKU ${it.variant.sku}` : ""}
                                 </div>
                               </div>
 
@@ -2814,7 +3036,7 @@ const ordersQ = useQuery<OrdersEnvelope>({
           />
         </div>
 
-        {/* OTP modal: smaller + tighter on mobile */}
+        {/* OTP modal */}
         {otpModal.open && (
           <div className="fixed inset-0 z-50 flex items-center justify-center px-3 sm:px-4">
             <div className="absolute inset-0 bg-black/40" />
@@ -2856,11 +3078,13 @@ const ordersQ = useQuery<OrdersEnvelope>({
                     if (!otpModal.open) return;
                     try {
                       setOtpModal((s) => (!s.open ? s : { ...s, busy: true, error: null }));
-                      // @ts-ignore
-                      const otpToken = await verifyOtp(otpModal.orderId, otpModal.requestId, otpModal.purpose, otpModal.otp);
-                      // @ts-ignore
+                      const otpToken = await verifyOtp(
+                        otpModal.orderId,
+                        otpModal.requestId,
+                        otpModal.purpose,
+                        otpModal.otp
+                      );
                       clearPendingOtp(otpModal.orderId, otpModal.purpose);
-                      // @ts-ignore
                       await otpModal.onSuccess(otpToken);
                       closeOtp();
                     } catch (e: any) {
@@ -2868,10 +3092,10 @@ const ordersQ = useQuery<OrdersEnvelope>({
                         !s.open
                           ? s
                           : {
-                              ...s,
-                              busy: false,
-                              error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
-                            }
+                            ...s,
+                            busy: false,
+                            error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
+                          }
                       );
                     }
                   }}
@@ -2886,19 +3110,18 @@ const ordersQ = useQuery<OrdersEnvelope>({
                     if (!otpModal.open) return;
                     try {
                       setOtpModal((s) => (!s.open ? s : { ...s, busy: true, error: null }));
-                      // @ts-ignore
                       const r = await requestOtp(otpModal.orderId, otpModal.purpose);
                       setOtpModal((s) =>
                         !s.open
                           ? s
                           : {
-                              ...s,
-                              busy: false,
-                              requestId: r.requestId,
-                              expiresAt: r.expiresAt,
-                              channelHint: r.channelHint,
-                              otp: "",
-                            }
+                            ...s,
+                            busy: false,
+                            requestId: r.requestId,
+                            expiresAt: r.expiresAt,
+                            channelHint: r.channelHint,
+                            otp: "",
+                          }
                       );
                     } catch (e: any) {
                       setOtpModal((s) =>

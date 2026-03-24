@@ -22,7 +22,7 @@ function supplierPayload(s: { id: string; name: string; status: any }) {
     supplier: { id: s.id, name: s.name, status: s.status },
     id: s.id,
     name: s.name,
-    businessName: s.name,
+    businessName: null,
   };
 }
 

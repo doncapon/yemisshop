@@ -110,6 +110,14 @@ function slugifyLocal(s: string) {
     .replace(/(^-|-$)+/g, "");
 }
 
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
 function StatusPill({ status }: { status: RequestStatus }) {
   const cls =
     status === "APPROVED"
@@ -238,10 +246,8 @@ function normalizeRequestsResponse(raw: any, fallbackPage: number, fallbackPageS
 export default function SupplierCatalogRequests() {
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role) as string | undefined;
-
-  useEffect(() => {
-    useAuthStore.getState().bootstrap?.().catch?.(() => null);
-  }, []);
+  const roleNorm = normRole(role);
+  const isSupplier = roleNorm === "SUPPLIER";
 
   const qc = useQueryClient();
 
@@ -294,16 +300,16 @@ export default function SupplierCatalogRequests() {
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  const shouldLoadCatalogMeta = hydrated && isSupplier && (tab === "NEW" || tab === "CATALOG");
+
   const { categories, brands, attributes, categoriesQ, brandsQ, attributesQ } = useCatalogMeta({
-    enabled: hydrated,
+    enabled: shouldLoadCatalogMeta,
   });
 
   const selectableAttributes = useMemo(
     () => (attributes || []).filter((a: CatalogAttribute) => a.isActive !== false),
     [attributes]
   );
-
-  const isSupplier = role === "SUPPLIER";
 
   const categoryNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -330,11 +336,10 @@ export default function SupplierCatalogRequests() {
   }, [pageSize]);
 
   const myRequestsQ = useQuery<CatalogRequestsEnvelope>({
-    queryKey: ["supplier", "catalog-requests", "mine", { page, pageSize, mineSearch, mineStatus, mineType }],
-    enabled: hydrated && isSupplier,
+    queryKey: ["supplier", "catalog-requests", "mine", page, pageSize, mineSearch, mineStatus, mineType],
+    enabled: hydrated && isSupplier && tab === "MINE",
     staleTime: 20_000,
     refetchOnWindowFocus: false,
-    refetchOnMount: "always",
     placeholderData: keepPreviousData,
     queryFn: async (): Promise<CatalogRequestsEnvelope> => {
       const { data } = await api.get("/api/supplier/catalog-requests", {
@@ -460,7 +465,7 @@ export default function SupplierCatalogRequests() {
     setValCodeTouched(false);
   }
 
-  const guardMsg = role && role !== "SUPPLIER" ? "This page is for suppliers only." : null;
+  const guardMsg = role && !isSupplier ? "This page is for suppliers only." : null;
 
   const myRequestsRows = myRequestsQ.data?.rows || [];
   const myRequestsTotal = myRequestsQ.data?.total || 0;

@@ -48,7 +48,7 @@ export default function SupplierRegister() {
   const scrollTopOnError = () => {
     try {
       window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch {}
+    } catch { }
   };
 
   useEffect(() => {
@@ -64,16 +64,16 @@ export default function SupplierRegister() {
 
   const onChange =
     (key: keyof typeof form) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-      const val = e.target.value;
+      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+        const val = e.target.value;
 
-      setForm((f) => ({
-        ...f,
-        [key]: val,
-      }));
+        setForm((f) => ({
+          ...f,
+          [key]: val,
+        }));
 
-      setErr(null);
-    };
+        setErr(null);
+      };
 
   const legalEntityLabel =
     form.registrationType === "REGISTERED_BUSINESS"
@@ -187,11 +187,20 @@ export default function SupplierRegister() {
         payload
       );
 
+      const emailSent = !!data?.emailSent;
+      const phoneOtpSent = !!data?.phoneOtpSent;
+
+      if (!emailSent && !phoneOtpSent) {
+        throw new Error(
+          data?.message || "Account was created, but verification codes were not sent."
+        );
+      }
+
       try {
         if (data?.tempToken) {
           localStorage.setItem("tempToken", data.tempToken);
         }
-      } catch {}
+      } catch { }
 
       nav(VERIFY_ROUTE, {
         replace: true,
@@ -199,16 +208,18 @@ export default function SupplierRegister() {
           supplierId: data?.supplierId ?? null,
           email,
           phone,
-          emailSent: !!data?.emailSent,
-          phoneOtpSent: !!data?.phoneOtpSent,
+          emailSent,
+          phoneOtpSent,
           nextAfterVerify: "/supplier/onboarding",
           flow: "supplier-register",
         },
       });
+
     } catch (e: any) {
       const msg =
         e?.response?.data?.error ||
         e?.response?.data?.message ||
+        e?.message ||
         "Supplier registration failed";
 
       setErr(msg);

@@ -66,64 +66,23 @@ type AdminProduct = {
   owner?: { email?: string | null };
   description?: string | null;
 
-  // shipping fields
-  requiresShipping?: boolean | null;
+  // schema-backed shipping fields from Product
   freeShipping?: boolean | null;
-  shipsAlone?: boolean | null;
-  pickupOnly?: boolean | null;
-  localPickup?: boolean | null;
-  allowLocalPickup?: boolean | null;
-  fragile?: boolean | null;
-  oversized?: boolean | null;
-
   shippingCost?: number | string | null;
-  shippingFee?: number | string | null;
-  shippingPrice?: number | string | null;
+  shippingClass?: string | null;
 
-  weight?: number | string | null;
-  weightKg?: number | string | null;
+  isFragile?: boolean | null;
+  isBulky?: boolean | null;
+
   weightGrams?: number | string | null;
-  shippingWeight?: number | string | null;
-  shippingWeightKg?: number | string | null;
-  shippingWeightGrams?: number | string | null;
-
-  length?: number | string | null;
-  width?: number | string | null;
-  height?: number | string | null;
   lengthCm?: number | string | null;
   widthCm?: number | string | null;
   heightCm?: number | string | null;
 
-  shippingLength?: number | string | null;
-  shippingWidth?: number | string | null;
-  shippingHeight?: number | string | null;
-  shippingLengthCm?: number | string | null;
-  shippingWidthCm?: number | string | null;
-  shippingHeightCm?: number | string | null;
-
-  packageWeight?: number | string | null;
-  packageWeightKg?: number | string | null;
-  packageWeightGrams?: number | string | null;
-  packageLengthCm?: number | string | null;
-  packageWidthCm?: number | string | null;
-  packageHeightCm?: number | string | null;
-
-  volumetricWeight?: number | string | null;
-  volumetricWeightKg?: number | string | null;
-
-  shippingClass?: string | null;
-  shippingProfileId?: string | null;
-  shippingProfile?: string | null;
-  shippingCategory?: string | null;
-  shippingType?: string | null;
-  shippingMethod?: string | null;
-  deliveryType?: string | null;
-  deliveryMethod?: string | null;
-  dispatchTimeText?: string | null;
-  shippingNote?: string | null;
-  shippingNotes?: string | null;
-  packagingType?: string | null;
-  packageUnit?: string | null;
+  // UI-friendly aliases used only in component state
+  fragile?: boolean | null;
+  oversized?: boolean | null;
+  weightKg?: number | string | null;
 
   // derived debug (optional)
   __baseQty?: number;
@@ -219,61 +178,22 @@ type AttrDef = { id: string; name?: string };
 
 const cookieOpts = { withCredentials: true as const };
 
-const SHIPPING_NUMBER_KEYS = [
+
+const SHIPPING_UI_NUMBER_KEYS = [
   "shippingCost",
-  "shippingFee",
-  "shippingPrice",
-  "weight",
   "weightKg",
   "weightGrams",
-  "shippingWeight",
-  "shippingWeightKg",
-  "shippingWeightGrams",
-  "length",
-  "width",
-  "height",
   "lengthCm",
   "widthCm",
   "heightCm",
-  "shippingLength",
-  "shippingWidth",
-  "shippingHeight",
-  "shippingLengthCm",
-  "shippingWidthCm",
-  "shippingHeightCm",
-  "packageWeight",
-  "packageWeightKg",
-  "packageWeightGrams",
-  "packageLengthCm",
-  "packageWidthCm",
-  "packageHeightCm",
-  "volumetricWeight",
-  "volumetricWeightKg",
 ] as const;
 
-const SHIPPING_STRING_KEYS = [
+const SHIPPING_UI_STRING_KEYS = [
   "shippingClass",
-  "shippingProfileId",
-  "shippingProfile",
-  "shippingCategory",
-  "shippingType",
-  "shippingMethod",
-  "deliveryType",
-  "deliveryMethod",
-  "dispatchTimeText",
-  "shippingNote",
-  "shippingNotes",
-  "packagingType",
-  "packageUnit",
 ] as const;
 
-const SHIPPING_BOOLEAN_KEYS = [
-  "requiresShipping",
+const SHIPPING_UI_BOOLEAN_KEYS = [
   "freeShipping",
-  "shipsAlone",
-  "pickupOnly",
-  "localPickup",
-  "allowLocalPickup",
   "fragile",
   "oversized",
 ] as const;
@@ -391,44 +311,105 @@ function shippingInputBool(v: any, fallback = false): boolean {
 }
 
 function pickShippingStateFromProduct(p: any) {
-  const out: Record<string, any> = {};
+  const toNum = (v: any): number | null => {
+    if (v == null || v === "") return null;
+    if (typeof v === "number") return Number.isFinite(v) ? v : null;
+    if (typeof v === "string") {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (typeof v === "object" && typeof v.toString === "function") {
+      const n = Number(String(v.toString()));
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
 
-  for (const key of SHIPPING_NUMBER_KEYS) {
-    out[key] = shippingInputNumber(p?.[key]);
-  }
+  const grams = toNum(p?.weightGrams);
+  const kg = grams != null ? grams / 1000 : toNum(p?.weightKg);
 
-  for (const key of SHIPPING_STRING_KEYS) {
-    out[key] = shippingInputString(p?.[key]);
-  }
+  return {
+    shippingCost: p?.shippingCost != null ? String(toNum(p.shippingCost) ?? "") : "",
+    shippingClass: p?.shippingClass != null ? String(p.shippingClass) : "",
 
-  for (const key of SHIPPING_BOOLEAN_KEYS) {
-    out[key] = shippingInputBool(p?.[key], false);
-  }
+    freeShipping:
+      typeof p?.freeShipping === "boolean"
+        ? p.freeShipping
+        : false,
 
-  return out;
+    // 🔥 IMPORTANT mappings
+    fragile:
+      typeof p?.isFragile === "boolean"
+        ? p.isFragile
+        : typeof p?.fragile === "boolean"
+          ? p.fragile
+          : false,
+
+    oversized:
+      typeof p?.isBulky === "boolean"
+        ? p.isBulky
+        : typeof p?.oversized === "boolean"
+          ? p.oversized
+          : false,
+
+    // 🔥 numbers
+    weightGrams: grams != null ? String(Math.round(grams)) : "",
+    weightKg: kg != null ? String(kg) : "",
+
+    lengthCm: toNum(p?.lengthCm) != null ? String(toNum(p?.lengthCm)) : "",
+    widthCm: toNum(p?.widthCm) != null ? String(toNum(p?.widthCm)) : "",
+    heightCm: toNum(p?.heightCm) != null ? String(toNum(p?.heightCm)) : "",
+  };
 }
 
 function buildShippingPayloadFromPending(pending: Record<string, any>) {
   const out: Record<string, any> = {};
 
-  for (const key of SHIPPING_NUMBER_KEYS) {
-    const raw = pending?.[key];
-    if (raw === "" || raw == null) continue;
-    const n = Number(raw);
-    if (Number.isFinite(n)) out[key] = n;
+  const shippingCost = Number(pending?.shippingCost);
+  if (Number.isFinite(shippingCost)) {
+    out.shippingCost = shippingCost;
   }
 
-  for (const key of SHIPPING_STRING_KEYS) {
-    const raw = pending?.[key];
-    if (raw == null) continue;
-    const s = String(raw).trim();
-    if (s) out[key] = s;
+  const lengthCm = Number(pending?.lengthCm);
+  if (Number.isFinite(lengthCm)) {
+    out.lengthCm = lengthCm;
   }
 
-  for (const key of SHIPPING_BOOLEAN_KEYS) {
-    if (typeof pending?.[key] === "boolean") {
-      out[key] = pending[key];
-    }
+  const widthCm = Number(pending?.widthCm);
+  if (Number.isFinite(widthCm)) {
+    out.widthCm = widthCm;
+  }
+
+  const heightCm = Number(pending?.heightCm);
+  if (Number.isFinite(heightCm)) {
+    out.heightCm = heightCm;
+  }
+
+  const weightGramsDirect = Number(pending?.weightGrams);
+  const weightKg = Number(pending?.weightKg);
+
+  if (Number.isFinite(weightGramsDirect)) {
+    out.weightGrams = Math.round(weightGramsDirect);
+  } else if (Number.isFinite(weightKg)) {
+    out.weightGrams = Math.round(weightKg * 1000);
+  }
+
+  const shippingClass = String(pending?.shippingClass ?? "").trim();
+  if (shippingClass) {
+    out.shippingClass = shippingClass;
+  }
+
+  if (typeof pending?.freeShipping === "boolean") {
+    out.freeShipping = pending.freeShipping;
+  }
+
+  // map UI booleans -> real schema fields
+  if (typeof pending?.fragile === "boolean") {
+    out.isFragile = pending.fragile;
+  }
+
+  if (typeof pending?.oversized === "boolean") {
+    out.isBulky = pending.oversized;
   }
 
   return out;
@@ -1373,63 +1354,19 @@ export function ManageProducts({
     imageUrls: "",
     description: "",
 
-    requiresShipping: false,
     freeShipping: false,
-    shipsAlone: false,
-    pickupOnly: false,
-    localPickup: false,
-    allowLocalPickup: false,
     fragile: false,
     oversized: false,
 
     shippingCost: "",
-    shippingFee: "",
-    shippingPrice: "",
+    shippingClass: "",
 
-    weight: "",
     weightKg: "",
     weightGrams: "",
-    shippingWeight: "",
-    shippingWeightKg: "",
-    shippingWeightGrams: "",
 
-    length: "",
-    width: "",
-    height: "",
     lengthCm: "",
     widthCm: "",
     heightCm: "",
-
-    shippingLength: "",
-    shippingWidth: "",
-    shippingHeight: "",
-    shippingLengthCm: "",
-    shippingWidthCm: "",
-    shippingHeightCm: "",
-
-    packageWeight: "",
-    packageWeightKg: "",
-    packageWeightGrams: "",
-    packageLengthCm: "",
-    packageWidthCm: "",
-    packageHeightCm: "",
-
-    volumetricWeight: "",
-    volumetricWeightKg: "",
-
-    shippingClass: "",
-    shippingProfileId: "",
-    shippingProfile: "",
-    shippingCategory: "",
-    shippingType: "",
-    shippingMethod: "",
-    deliveryType: "",
-    deliveryMethod: "",
-    dispatchTimeText: "",
-    shippingNote: "",
-    shippingNotes: "",
-    packagingType: "",
-    packageUnit: "",
   };
 
   const [offersProductId, setOffersProductId] = useState<string | null>(null);
@@ -1499,6 +1436,7 @@ export function ManageProducts({
 
   useEffect(() => {
     if (skipDraftLoadRef.current) return;
+    if (showEditor && editingId) return; // do not let draft override freshly loaded edit data
 
     const raw = localStorage.getItem(DRAFT_KEY);
     if (!raw) return;
@@ -1509,7 +1447,7 @@ export function ManageProducts({
       if (Array.isArray(d?.variantRows)) setVariantRows(d.variantRows);
       if (d?.selectedAttrs) setSelectedAttrs(d.selectedAttrs);
     } catch { }
-  }, [DRAFT_KEY]);
+  }, [DRAFT_KEY, showEditor, editingId]);
 
   useEffect(() => {
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ pending, variantRows, selectedAttrs }));
@@ -1859,10 +1797,61 @@ export function ManageProducts({
       const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, enabledSelectableAttrs);
 
       setVariantRows(nextRows);
-      initialVariantIdsRef.current = new Set(nextRows.map((r) => r.id).filter((id) => isRealVariantId(id)));
+      initialVariantIdsRef.current = new Set(
+        nextRows.map((r) => r.id).filter((id) => isRealVariantId(id))
+      );
 
       setOfferVariants(refreshed.variants || []);
       setOffersProductId(refreshed.id);
+
+      // rebuild selected attrs from refreshed payload too
+      const attrTypeById = new Map<string, AdminAttribute["type"]>();
+      for (const a of attrsQ.data || []) {
+        attrTypeById.set(String(a.id), a.type);
+      }
+
+      const rebuiltSel: Record<string, string | string[]> = {};
+
+      (refreshed.enabledAttributeRows || []).forEach((row: any) => {
+        const aid = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
+        if (!aid) return;
+
+        const attrType = row?.attribute?.type ?? attrTypeById.get(aid);
+        if (!(aid in rebuiltSel)) {
+          rebuiltSel[aid] = attrType === "MULTISELECT" ? [] : "";
+        }
+      });
+
+      (refreshed.attributeValues || []).forEach((av: any) => {
+        const aid = String(av?.attributeId ?? av?.attribute?.id ?? "").trim();
+        const vid = String(av?.valueId ?? av?.value?.id ?? "").trim();
+        if (!aid) return;
+
+        const attrType = av?.attribute?.type ?? attrTypeById.get(aid);
+
+        if (!(aid in rebuiltSel)) {
+          rebuiltSel[aid] = attrType === "MULTISELECT" ? [] : "";
+        }
+
+        if (!vid) return;
+
+        if (attrType === "MULTISELECT") {
+          const prev = Array.isArray(rebuiltSel[aid]) ? rebuiltSel[aid] : [];
+          const list = prev.map((x) => String(x).trim()).filter(Boolean);
+          if (!list.includes(vid)) list.push(vid);
+          rebuiltSel[aid] = list;
+        } else if (!String(rebuiltSel[aid] ?? "").trim()) {
+          rebuiltSel[aid] = vid;
+        }
+      });
+
+      (refreshed.attributeTexts || []).forEach((at: any) => {
+        const aid = String(at?.attributeId ?? at?.attribute?.id ?? "").trim();
+        if (!aid) return;
+        rebuiltSel[aid] = String(at?.value ?? "");
+      });
+
+      setSelectedAttrs(rebuiltSel);
 
       setPending((p) => ({
         ...p,
@@ -2126,15 +2115,23 @@ export function ManageProducts({
       (Array.isArray(prod?.productVariants) && prod.productVariants) ||
       [];
 
-    const pickFirstNonEmptyArray = (...cands: any[]): any[] => {
-      for (const c of cands) if (Array.isArray(c) && c.length > 0) return c;
+    const pickFirstArray = (...cands: any[]): any[] => {
+      for (const c of cands) {
+        if (Array.isArray(c) && c.length) return c;
+      }
+      for (const c of cands) {
+        if (Array.isArray(c)) return c;
+      }
       return [];
     };
 
     const variantsNormalized = (rawVariants || []).map((v: any) => {
-      const vid = normalizeNullableId(v?.id) || normalizeNullableId(v?.variantId) || normalizeNullableId(v?.variant?.id);
+      const vid =
+        normalizeNullableId(v?.id) ||
+        normalizeNullableId(v?.variantId) ||
+        normalizeNullableId(v?.variant?.id);
 
-      const pickedOptions = pickFirstNonEmptyArray(
+      const pickedOptions = pickFirstArray(
         v?.options,
         v?.optionSelections,
         v?.attributes,
@@ -2149,36 +2146,100 @@ export function ManageProducts({
 
       const next: any = { ...v, id: vid || v?.id };
       if (pickedOptions.length > 0) next.options = pickedOptions;
-
       return next;
     });
 
-    const enabledAttributeRows: ProductAttributeEnabledRow[] =
-      (Array.isArray(prod?.attributes?.enabled) && prod.attributes.enabled) ||
-      (Array.isArray(prod?.enabledAttributes) && prod.enabledAttributes) ||
-      (Array.isArray(prod?.productAttributes) && prod.productAttributes) ||
-      [];
-
     const attributeValues =
-      (Array.isArray(prod?.attributes?.options) && prod.attributes.options) ||
-      (Array.isArray(prod?.attributeValues) && prod.attributeValues) ||
-      (Array.isArray(prod?.attributeOptions) && prod.attributeOptions) ||
-      [];
+      pickFirstArray(
+        prod?.attributes?.options,
+        prod?.attributeValues,
+        prod?.attributeOptions,
+        prod?.ProductAttributeOption,
+        prod?.productAttributeOptions
+      ) || [];
 
     const attributeTexts =
-      (Array.isArray(prod?.attributes?.texts) && prod.attributes.texts) ||
-      (Array.isArray(prod?.attributeTexts) && prod.attributeTexts) ||
-      (Array.isArray(prod?.ProductAttributeText) && prod.ProductAttributeText) ||
-      [];
+      pickFirstArray(
+        prod?.attributes?.texts,
+        prod?.attributeTexts,
+        prod?.ProductAttributeText,
+        prod?.productAttributeTexts
+      ) || [];
 
-    const supplierId = normalizeNullableId(prod?.supplierId) || normalizeNullableId(prod?.supplier?.id) || null;
+    let enabledAttributeRows: ProductAttributeEnabledRow[] =
+      pickFirstArray(
+        prod?.attributes?.enabled,
+        prod?.enabledAttributes,
+        prod?.productAttributes,
+        prod?.ProductAttribute
+      ) || [];
+
+    // Fallback: derive enabled attributes from base option/text rows if explicit enabled rows are missing
+    if (!enabledAttributeRows.length) {
+      const byId = new Map<string, ProductAttributeEnabledRow>();
+
+      const addEnabled = (row: any) => {
+        const attributeId = String(
+          row?.attributeId ??
+          row?.attribute?.id ??
+          ""
+        ).trim();
+
+        if (!attributeId || byId.has(attributeId)) return;
+
+        const fallbackAttr = (attrsQ.data || []).find((a) => String(a.id) === attributeId);
+
+        byId.set(attributeId, {
+          attributeId,
+          attribute: {
+            id: attributeId,
+            name:
+              row?.attribute?.name ??
+              fallbackAttr?.name ??
+              undefined,
+            type:
+              row?.attribute?.type ??
+              fallbackAttr?.type ??
+              undefined,
+            isActive:
+              row?.attribute?.isActive ??
+              fallbackAttr?.isActive ??
+              true,
+          },
+        });
+      };
+
+      (attributeValues || []).forEach(addEnabled);
+      (attributeTexts || []).forEach(addEnabled);
+
+      enabledAttributeRows = Array.from(byId.values());
+    }
+
+    const supplierId =
+      normalizeNullableId(prod?.supplierId) ||
+      normalizeNullableId(prod?.supplier?.id) ||
+      null;
+
+    const imagesJson =
+      Array.isArray(prod?.imagesJson)
+        ? prod.imagesJson
+        : typeof prod?.imagesJson === "string"
+          ? (() => {
+            try {
+              const parsed = JSON.parse(prod.imagesJson);
+              return Array.isArray(parsed) ? parsed : [];
+            } catch {
+              return [];
+            }
+          })()
+          : [];
 
     return {
       ...prod,
       variants: variantsNormalized,
       variantsNormalized,
       supplierId,
-      imagesJson: Array.isArray(prod?.imagesJson) ? prod.imagesJson : [],
+      imagesJson,
       enabledAttributeRows,
       attributeValues,
       attributeTexts,
@@ -3194,20 +3255,26 @@ export function ManageProducts({
 
       const resolvedSupplierId = normalizeNullableId(full.supplierId) || "";
 
+      const shippingState = pickShippingStateFromProduct(full);
+
       const nextPending = {
         ...defaultPending,
+        ...shippingState, // 🔥 MUST COME BEFORE overrides
+
         title: full.title || "",
         supplierPrice: "",
         retailPrice: String(full.retailPrice ?? ""),
-        status: full.status === "PUBLISHED" || full.status === "LIVE" ? full.status : "PENDING",
+        status:
+          full.status === "PUBLISHED" || full.status === "LIVE"
+            ? full.status
+            : "PENDING",
         categoryId: full.categoryId || "",
         brandId: full.brandId || "",
-        supplierId: resolvedSupplierId || "",
+        supplierId: resolvedSupplierId,
         supplierAvailableQty: "",
         sku: full.sku || "",
         imageUrls: (extractImageUrls(full) || []).join("\n"),
         description: full.description ?? "",
-        ...pickShippingStateFromProduct(full),
       };
 
       const attrTypeById = new Map<string, AdminAttribute["type"]>();
@@ -3217,66 +3284,96 @@ export function ManageProducts({
 
       const nextSel: Record<string, string | string[]> = {};
 
-      // 1) enable attributes first
+      // 1) Enable attributes first
       (full.enabledAttributeRows || []).forEach((row: any) => {
-        const aid = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
+        const aid = String(
+          row?.attributeId ??
+          row?.attribute?.id ??
+          ""
+        ).trim();
+
         if (!aid) return;
-        if (!(aid in nextSel)) nextSel[aid] = "";
+
+        const attrType =
+          row?.attribute?.type ??
+          attrTypeById.get(aid);
+
+        if (!(aid in nextSel)) {
+          nextSel[aid] = attrType === "MULTISELECT" ? [] : "";
+        }
       });
 
-      // 2) overlay selected option defaults
+      // 2) Overlay option defaults
       (full.attributeValues || []).forEach((av: any) => {
-        const aid = String(av?.attributeId ?? av?.attribute?.id ?? "").trim();
-        const vid = String(av?.valueId ?? av?.value?.id ?? "").trim();
+        const aid = String(
+          av?.attributeId ??
+          av?.attribute?.id ??
+          ""
+        ).trim();
+
+        const vid = String(
+          av?.valueId ??
+          av?.value?.id ??
+          ""
+        ).trim();
+
         if (!aid) return;
 
-        const attrType = attrTypeById.get(aid);
+        const attrType =
+          av?.attribute?.type ??
+          attrTypeById.get(aid);
 
-        if (!vid) {
-          if (!(aid in nextSel)) nextSel[aid] = "";
-          return;
+        if (!(aid in nextSel)) {
+          nextSel[aid] = attrType === "MULTISELECT" ? [] : "";
         }
 
-        // SELECT must remain a single value
-        if (attrType === "SELECT") {
-          if (!(aid in nextSel) || !String(nextSel[aid] ?? "").trim()) {
-            nextSel[aid] = vid;
-          }
-          return;
-        }
+        if (!vid) return;
 
-        // MULTISELECT collects multiple ids
         if (attrType === "MULTISELECT") {
-          const prev = nextSel[aid];
-          const list = Array.isArray(prev)
-            ? prev.map((x) => String(x).trim()).filter(Boolean)
-            : String(prev ?? "").trim()
-              ? [String(prev).trim()]
-              : [];
-
+          const prev = Array.isArray(nextSel[aid]) ? nextSel[aid] : [];
+          const list = prev.map((x) => String(x).trim()).filter(Boolean);
           if (!list.includes(vid)) list.push(vid);
           nextSel[aid] = list;
           return;
         }
 
-        // fallback
-        if (!(aid in nextSel)) nextSel[aid] = vid;
+        // SELECT fallback
+        if (!String(nextSel[aid] ?? "").trim()) {
+          nextSel[aid] = vid;
+        }
       });
 
-      // 3) overlay text defaults
+      // 3) Overlay text defaults
       (full.attributeTexts || []).forEach((at: any) => {
-        const aid = String(at?.attributeId ?? at?.attribute?.id ?? "").trim();
+        const aid = String(
+          at?.attributeId ??
+          at?.attribute?.id ??
+          ""
+        ).trim();
+
         if (!aid) return;
+
+        if (!(aid in nextSel)) {
+          nextSel[aid] = "";
+        }
+
         nextSel[aid] = String(at?.value ?? "");
       });
 
-      const serverVariants = (full as any).variants || (full as any).variantsNormalized || [];
+      const serverVariants =
+        (full as any).variants ||
+        (full as any).variantsNormalized ||
+        [];
+
       const vr = buildVariantRowsFromServerVariants(serverVariants);
 
       setPending(nextPending);
       setSelectedAttrs(nextSel);
 
-      initialVariantIdsRef.current = new Set(vr.map((r) => r.id).filter((id) => isRealVariantId(id)));
+      initialVariantIdsRef.current = new Set(
+        vr.map((r) => r.id).filter((id) => isRealVariantId(id))
+      );
+
       setClearAllVariantsIntent(false);
       setVariantRows(vr);
       setVariantsDirty(false);
@@ -3285,7 +3382,11 @@ export function ManageProducts({
 
       localStorage.setItem(
         `adminProductDraft:${full.id}`,
-        JSON.stringify({ pending: nextPending, variantRows: vr, selectedAttrs: nextSel })
+        JSON.stringify({
+          pending: nextPending,
+          variantRows: vr,
+          selectedAttrs: nextSel,
+        })
       );
     } catch (e) {
       console.error(e);
@@ -3296,6 +3397,7 @@ export function ManageProducts({
       });
     }
   }
+
 
 
   /* ============================
@@ -3611,19 +3713,10 @@ export function ManageProducts({
                 <div className="rounded-xl border p-3">
                   <div className="text-sm font-semibold text-slate-800">Shipping</div>
                   <div className="text-xs text-slate-500">
-                    Product-level shipping data used to calculate delivery for any supplier offering this product.
+                    Product shipping fields that are actually backed by your current Product schema.
                   </div>
 
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={!!pending.requiresShipping}
-                        onChange={(e) => setPending((p) => ({ ...p, requiresShipping: e.target.checked }))}
-                      />
-                      Requires shipping
-                    </label>
-
                     <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                       <input
                         type="checkbox"
@@ -3631,15 +3724,6 @@ export function ManageProducts({
                         onChange={(e) => setPending((p) => ({ ...p, freeShipping: e.target.checked }))}
                       />
                       Free shipping
-                    </label>
-
-                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={!!pending.shipsAlone}
-                        onChange={(e) => setPending((p) => ({ ...p, shipsAlone: e.target.checked }))}
-                      />
-                      Ships alone
                     </label>
 
                     <label className="inline-flex items-center gap-2 text-sm text-slate-700">
@@ -3657,34 +3741,7 @@ export function ManageProducts({
                         checked={!!pending.oversized}
                         onChange={(e) => setPending((p) => ({ ...p, oversized: e.target.checked }))}
                       />
-                      Oversized
-                    </label>
-
-                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={!!pending.pickupOnly}
-                        onChange={(e) => setPending((p) => ({ ...p, pickupOnly: e.target.checked }))}
-                      />
-                      Pickup only
-                    </label>
-
-                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={!!pending.localPickup}
-                        onChange={(e) => setPending((p) => ({ ...p, localPickup: e.target.checked }))}
-                      />
-                      Local pickup
-                    </label>
-
-                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={!!pending.allowLocalPickup}
-                        onChange={(e) => setPending((p) => ({ ...p, allowLocalPickup: e.target.checked }))}
-                      />
-                      Allow local pickup
+                      Oversized / bulky
                     </label>
                   </div>
 
@@ -3701,13 +3758,12 @@ export function ManageProducts({
                     </div>
 
                     <div>
-                      <label className="text-xs font-medium text-slate-700">Shipping Fee</label>
+                      <label className="text-xs font-medium text-slate-700">Shipping Class</label>
                       <input
-                        value={pending.shippingFee}
-                        onChange={(e) => setPending((p) => ({ ...p, shippingFee: e.target.value }))}
+                        value={pending.shippingClass}
+                        onChange={(e) => setPending((p) => ({ ...p, shippingClass: e.target.value }))}
                         className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. 1500"
-                        inputMode="decimal"
+                        placeholder="e.g. STANDARD"
                       />
                     </div>
 
@@ -3715,7 +3771,19 @@ export function ManageProducts({
                       <label className="text-xs font-medium text-slate-700">Weight (kg)</label>
                       <input
                         value={pending.weightKg}
-                        onChange={(e) => setPending((p) => ({ ...p, weightKg: e.target.value }))}
+                        onChange={(e) => {
+                          const nextKg = e.target.value;
+                          const kgNum = Number(nextKg);
+
+                          setPending((p) => ({
+                            ...p,
+                            weightKg: nextKg,
+                            weightGrams:
+                              nextKg.trim() === "" || !Number.isFinite(kgNum)
+                                ? ""
+                                : String(Math.round(kgNum * 1000)),
+                          }));
+                        }}
                         className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                         placeholder="e.g. 1.25"
                         inputMode="decimal"
@@ -3726,7 +3794,19 @@ export function ManageProducts({
                       <label className="text-xs font-medium text-slate-700">Weight (grams)</label>
                       <input
                         value={pending.weightGrams}
-                        onChange={(e) => setPending((p) => ({ ...p, weightGrams: e.target.value }))}
+                        onChange={(e) => {
+                          const nextGrams = e.target.value;
+                          const gramsNum = Number(nextGrams);
+
+                          setPending((p) => ({
+                            ...p,
+                            weightGrams: nextGrams,
+                            weightKg:
+                              nextGrams.trim() === "" || !Number.isFinite(gramsNum)
+                                ? ""
+                                : String(gramsNum / 1000),
+                          }));
+                        }}
                         className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                         placeholder="e.g. 1250"
                         inputMode="decimal"
@@ -3763,87 +3843,6 @@ export function ManageProducts({
                         className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                         placeholder="e.g. 15"
                         inputMode="decimal"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-slate-700">Volumetric Weight (kg)</label>
-                      <input
-                        value={pending.volumetricWeightKg}
-                        onChange={(e) => setPending((p) => ({ ...p, volumetricWeightKg: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. 2.4"
-                        inputMode="decimal"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-slate-700">Shipping Class</label>
-                      <input
-                        value={pending.shippingClass}
-                        onChange={(e) => setPending((p) => ({ ...p, shippingClass: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. STANDARD"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-slate-700">Shipping Profile ID</label>
-                      <input
-                        value={pending.shippingProfileId}
-                        onChange={(e) => setPending((p) => ({ ...p, shippingProfileId: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="Profile id"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-slate-700">Shipping Category</label>
-                      <input
-                        value={pending.shippingCategory}
-                        onChange={(e) => setPending((p) => ({ ...p, shippingCategory: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. parcel"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-slate-700">Shipping Method</label>
-                      <input
-                        value={pending.shippingMethod}
-                        onChange={(e) => setPending((p) => ({ ...p, shippingMethod: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. delivery"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-slate-700">Delivery Type</label>
-                      <input
-                        value={pending.deliveryType}
-                        onChange={(e) => setPending((p) => ({ ...p, deliveryType: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. doorstep"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-slate-700">Dispatch Time Text</label>
-                      <input
-                        value={pending.dispatchTimeText}
-                        onChange={(e) => setPending((p) => ({ ...p, dispatchTimeText: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. 1-2 business days"
-                      />
-                    </div>
-
-                    <div className="sm:col-span-2">
-                      <label className="text-xs font-medium text-slate-700">Shipping Notes</label>
-                      <textarea
-                        value={pending.shippingNotes}
-                        onChange={(e) => setPending((p) => ({ ...p, shippingNotes: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm min-h-[90px]"
-                        placeholder="Any delivery or packaging notes…"
                       />
                     </div>
                   </div>
