@@ -258,7 +258,6 @@ export default function SupplierOrders() {
   const rawRole = useAuthStore((s: any) => s.user?.role);
   const role = normRole(rawRole);
 
-
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
   const isRider = role === "SUPPLIER_RIDER";
   const isSupplierUser = role === "SUPPLIER";
@@ -335,6 +334,7 @@ export default function SupplierOrders() {
   }, [q, searchParams, setSearchParams]);
 
   const [deliveryOtpToken, setDeliveryOtpToken] = useState<Record<string, string>>({});
+  const [deliveryOtpAutoRequested, setDeliveryOtpAutoRequested] = useState<Record<string, boolean>>({});
   const [riderView, setRiderView] = useState<"active" | "delivered">("active");
 
   const [deliveryOtpCode, setDeliveryOtpCode] = useState<Record<string, string>>({});
@@ -540,12 +540,21 @@ export default function SupplierOrders() {
       return data as any;
     },
     onSuccess: (resp, vars) => {
-      const otpToken = String(resp?.data?.otpToken ?? "").trim();
+      const payload = resp?.data ?? {};
+      const otpToken = String(payload?.otpToken ?? "").trim();
       if (otpToken) setDeliveryOtpToken((s) => ({ ...s, [vars.poId]: otpToken }));
+
+      const alreadyActive = !!payload?.alreadyActive;
       setDeliveryOtpMsg((s) => ({
         ...s,
-        [vars.poId]: { type: "info", text: "OTP sent to customer (WhatsApp + email)." },
+        [vars.poId]: {
+          type: "info",
+          text: alreadyActive
+            ? String(payload?.message || "OTP already sent and still active.")
+            : "OTP sent to customer.",
+        },
       }));
+      setDeliveryOtpAutoRequested((s) => ({ ...s, [vars.poId]: true }));
     },
     onError: (err: any, vars) => {
       const poId = String(vars.poId || "").trim();
@@ -615,6 +624,7 @@ export default function SupplierOrders() {
       }));
       setDeliveryOtpCode((s) => ({ ...s, [vars.poId]: "" }));
       setDeliveryOtpToken((s) => ({ ...s, [vars.poId]: "" }));
+      setDeliveryOtpAutoRequested((s) => ({ ...s, [vars.poId]: false }));
       ordersQ.refetch().catch(() => null);
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "summary"] });
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "insights"] });
@@ -875,6 +885,36 @@ export default function SupplierOrders() {
       [orderId]: !prev[orderId],
     }));
   }
+
+  useEffect(() => {
+    if (!queryEnabled || requestDeliveryOtpM.isPending) return;
+
+    for (const o of visibleRows) {
+      const poId = String(o.purchaseOrderId || "").trim();
+      const supplierStatusRaw = normStatus(o.supplierStatus || "");
+      const otpVerified = !!String(o.deliveryOtpVerifiedAt || "").trim();
+
+      const canConfirmDelivery =
+        !!poId &&
+        ["SHIPPED", "OUT_FOR_DELIVERY"].includes(supplierStatusRaw) &&
+        !otpVerified &&
+        (isSupplierUser || isRider);
+
+      if (!canConfirmDelivery) continue;
+      if (deliveryOtpAutoRequested[poId]) continue;
+
+      setExpanded((s) => ({ ...s, [o.id]: true }));
+      requestDeliveryOtpM.mutate({ poId });
+      break;
+    }
+  }, [
+    visibleRows,
+    queryEnabled,
+    requestDeliveryOtpM,
+    deliveryOtpAutoRequested,
+    isSupplierUser,
+    isRider,
+  ]);
 
   return (
     <SiteLayout>
@@ -1269,12 +1309,11 @@ export default function SupplierOrders() {
                             type="button"
                             onClick={() => {
                               setExpanded((s) => ({ ...s, [o.id]: true }));
-                              if (poId) requestDeliveryOtpM.mutate({ poId });
                             }}
                             className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
                             title="Confirm delivery with customer OTP"
                           >
-                            <PackageCheck size={14} /> Confirm
+                            <PackageCheck size={14} /> Deliver
                           </button>
                         )}
 
@@ -1546,72 +1585,72 @@ export default function SupplierOrders() {
                           ["SHIPPED", "OUT_FOR_DELIVERY"].includes(supplierStatusRaw) &&
                           !otpVerified &&
                           (isSupplierUser || isRider) && (
-                            <div className="mt-3 rounded-xl border bg-white p-3">
-                              <div className="text-[12px] font-semibold text-zinc-800">
+                            <div className="rounded-2xl border bg-white/90 p-4 space-y-3">
+                              <div className="text-sm font-semibold text-zinc-800">
                                 Confirm delivery (customer OTP)
                               </div>
 
-                              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                <div className="flex gap-2">
-                                  <input
-                                    value={deliveryOtpCode[poId] ?? ""}
-                                    onChange={(e) => {
-                                      const v = String(e.target.value || "")
-                                        .replace(/\D/g, "")
-                                        .slice(0, 6);
-                                      setDeliveryOtpCode((s) => ({ ...s, [poId]: v }));
-                                    }}
-                                    placeholder="123456"
-                                    className="flex-1 rounded-xl border px-3 py-2 text-sm"
-                                    inputMode="numeric"
-                                  />
-
-                                  <button
-                                    type="button"
-                                    disabled={
-                                      verifyDeliveryOtpM.isPending ||
-                                      !/^\d{6}$/.test(deliveryOtpCode[poId] ?? "")
-                                    }
-                                    onClick={() =>
-                                      verifyDeliveryOtpM.mutate({
-                                        poId,
-                                        code: deliveryOtpCode[poId] ?? "",
-                                      })
-                                    }
-                                    className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
-                                  >
-                                    {verifyDeliveryOtpM.isPending ? "Verifying…" : "Verify"}
-                                  </button>
-                                </div>
+                              <div className="flex flex-col gap-2 sm:flex-row">
+                                <input
+                                  value={deliveryOtpCode[poId] ?? ""}
+                                  onChange={(e) => {
+                                    const v = String(e.target.value || "")
+                                      .replace(/\D/g, "")
+                                      .slice(0, 6);
+                                    setDeliveryOtpCode((s) => ({ ...s, [poId]: v }));
+                                  }}
+                                  placeholder="123456"
+                                  inputMode="numeric"
+                                  className="w-full min-w-0 flex-1 rounded-xl border border-zinc-300 px-4 py-3 text-[16px] outline-none focus:ring-2 focus:ring-fuchsia-300"
+                                />
 
                                 <button
                                   type="button"
-                                  disabled={requestDeliveryOtpM.isPending}
-                                  onClick={() => requestDeliveryOtpM.mutate({ poId })}
-                                  className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                  disabled={
+                                    verifyDeliveryOtpM.isPending ||
+                                    !/^\d{6}$/.test(deliveryOtpCode[poId] ?? "")
+                                  }
+                                  onClick={() =>
+                                    verifyDeliveryOtpM.mutate({
+                                      poId,
+                                      code: deliveryOtpCode[poId] ?? "",
+                                    })
+                                  }
+                                  className="w-full sm:w-auto shrink-0 rounded-xl bg-zinc-900 px-4 py-3 text-white font-semibold disabled:opacity-60"
                                 >
-                                  {requestDeliveryOtpM.isPending ? "Sending…" : "Request OTP"}
+                                  {verifyDeliveryOtpM.isPending ? "Verifying…" : "Verify OTP"}
                                 </button>
                               </div>
 
+                              <button
+                                type="button"
+                                disabled={requestDeliveryOtpM.isPending}
+                                onClick={() => {
+                                  setDeliveryOtpAutoRequested((s) => ({ ...s, [poId]: true }));
+                                  requestDeliveryOtpM.mutate({ poId });
+                                }}
+                                className="w-full rounded-xl bg-black px-4 py-3 text-white font-semibold disabled:opacity-60"
+                              >
+                                {requestDeliveryOtpM.isPending ? "Requesting…" : "Request OTP"}
+                              </button>
+
                               {deliveryOtpMsg[poId]?.text ? (
                                 <div
-                                  className={`mt-2 text-[12px] ${
-                                    deliveryOtpMsg[poId].type === "error"
+                                  className={`text-xs ${
+                                    deliveryOtpMsg[poId]?.type === "error"
                                       ? "text-rose-700"
-                                      : deliveryOtpMsg[poId].type === "warn"
+                                      : deliveryOtpMsg[poId]?.type === "warn"
                                         ? "text-amber-700"
                                         : "text-emerald-700"
                                   }`}
                                 >
-                                  {deliveryOtpMsg[poId].text}
+                                  {deliveryOtpMsg[poId]?.text}
                                 </div>
                               ) : null}
 
-                              <div className="mt-2 text-[11px] text-zinc-500">
-                                This confirms delivery and unlocks payout release when status is
-                                DELIVERED.
-                              </div>
+                              <p className="text-xs text-zinc-500">
+                                OTP is sent automatically as soon as delivery confirmation becomes available.
+                              </p>
                             </div>
                           )}
 

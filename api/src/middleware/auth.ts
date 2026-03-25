@@ -3,10 +3,10 @@ import type { Request, Response, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma.js";
 
-// ✅ Import policy helpers (kept; used lightly to avoid unused)
 import type { Role as PolicyRole } from "../lib/sessionPolicy.js";
 import { normRole as normPolicyRole } from "../lib/sessionPolicy.js";
-import { getAccessTokenCookieName } from "../lib/authCookies.js";
+import { getAccessTokenCookieName, setAccessTokenCookie } from "../lib/authCookies.js";
+import { signAccessJwt } from "../lib/jwt.js";
 
 type JwtPayload = {
   id?: string;
@@ -33,8 +33,6 @@ declare module "express-serve-static-core" {
 const ACCESS_JWT_SECRET =
   process.env.ACCESS_JWT_SECRET || process.env.JWT_SECRET || "CHANGE_ME_DEV_SECRET";
 
-/* ----------------------------- helpers ----------------------------- */
-
 function bearerFromAuthHeader(req: Request): string | null {
   const h = String(req.headers.authorization ?? "");
   if (!h) return null;
@@ -49,7 +47,6 @@ function tokenFromCookie(req: Request): string | null {
 }
 
 function readToken(req: Request): string | null {
-  // cookie-first in practice, but keep Bearer as a fallback for tooling/admin scripts
   return tokenFromCookie(req) || bearerFromAuthHeader(req) || null;
 }
 
@@ -62,11 +59,6 @@ function verifyToken(token: string): JwtPayload | null {
   }
 }
 
-/**
- * ✅ Guard role normalizer (independent of policy)
- * - handles SUPERADMIN / SUPER ADMIN / SUPER-ADMIN
- * - handles spacing/dashes
- */
 function normRoleStr(r: unknown): string {
   let s = String(r ?? "").trim().toUpperCase();
   s = s.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
@@ -80,25 +72,35 @@ function isRevoked(row: { revokedAt: Date | null } | null) {
   return !!row?.revokedAt;
 }
 
-// throttle lastSeen updates to reduce DB writes
+function getSessionTtlDays(role: unknown) {
+  const r = normRoleStr(role);
+  return r === "ADMIN" ||
+    r === "SUPER_ADMIN" ||
+    r === "SUPPLIER" ||
+    r === "SUPPLIER_RIDER"
+    ? 7
+    : 30;
+}
+
 const LAST_SEEN_THROTTLE_MS = 60_000;
+const SESSION_REFRESH_THROTTLE_MS = 5 * 60_000;
+const TOKEN_REFRESH_WINDOW_MS = 24 * 60 * 60 * 1000; // refresh if < 24h left
 
-/**
- * ✅ IMPORTANT FIX:
- * You create sessions in prisma.userSession, so we must validate sid against that table.
- */
-async function assertSessionIfPresent(decoded: JwtPayload) {
+type SessionCheckResult = {
+  shouldRefresh: boolean;
+};
+
+async function assertSessionIfPresent(decoded: JwtPayload): Promise<SessionCheckResult> {
   const sid = decoded.sid ? String(decoded.sid) : "";
-  if (!sid) return;
+  if (!sid) return { shouldRefresh: false };
 
-  // ✅ Prefer userSession (your actual model), fall back to older names
   const sessionModel: any =
     (prisma as any).userSession || (prisma as any).session || (prisma as any).authSession;
 
-  if (!sessionModel?.findUnique) return; // if model doesn't exist, don't block login
+  if (!sessionModel?.findUnique) return { shouldRefresh: false };
 
   const userId = String(decoded.id ?? decoded.sub ?? "");
-  if (!userId) return;
+  if (!userId) return { shouldRefresh: false };
 
   const row = await sessionModel.findUnique({
     where: { id: sid },
@@ -108,24 +110,45 @@ async function assertSessionIfPresent(decoded: JwtPayload) {
   if (!row || String(row.userId) !== userId) throw new Error("session-not-found");
   if (isRevoked(row)) throw new Error("session-revoked");
 
-  if (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) {
+  const now = Date.now();
+  const expiresAtMs = row.expiresAt ? new Date(row.expiresAt).getTime() : 0;
+
+  if (expiresAtMs && expiresAtMs <= now) {
     throw new Error("session-expired");
   }
 
-  // throttle lastSeen updates
-  const last = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0;
-  if (Date.now() - last > LAST_SEEN_THROTTLE_MS) {
-    // best-effort update, do not fail request
-    sessionModel.update({ where: { id: sid }, data: { lastSeenAt: new Date() } }).catch(() => null);
+  const lastSeenMs = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0;
+  const shouldTouchLastSeen = now - lastSeenMs > LAST_SEEN_THROTTLE_MS;
+  const shouldSlideSession = now - lastSeenMs > SESSION_REFRESH_THROTTLE_MS;
+
+  if (shouldTouchLastSeen || shouldSlideSession) {
+    const role = normRoleStr(decoded.role);
+    const ttlDays = getSessionTtlDays(role);
+    const nextExpiresAt = new Date(now + ttlDays * 24 * 60 * 60 * 1000);
+
+    sessionModel
+      .update({
+        where: { id: sid },
+        data: shouldSlideSession
+          ? { lastSeenAt: new Date(now), expiresAt: nextExpiresAt }
+          : { lastSeenAt: new Date(now) },
+      })
+      .catch(() => null);
   }
+
+  const tokenExpMs = decoded.exp ? decoded.exp * 1000 : 0;
+  const shouldRefreshToken =
+    !!tokenExpMs && tokenExpMs - now <= TOKEN_REFRESH_WINDOW_MS;
+
+  return {
+    shouldRefresh: shouldRefreshToken || shouldSlideSession,
+  };
 }
 
 function attachReqUser(req: Request, decoded: JwtPayload) {
   const id = String(decoded.id ?? decoded.sub ?? "");
   const roleRaw = decoded.role ?? "";
   const role = normRoleStr(roleRaw);
-
-  // also normalize via policy helper (covers more variants), but keep our canonical output
   const policyNorm = normPolicyRole(role as any) || role;
 
   req.user = {
@@ -137,6 +160,28 @@ function attachReqUser(req: Request, decoded: JwtPayload) {
   };
 }
 
+function maybeRefreshAccessCookie(res: Response, decoded: JwtPayload) {
+  const userId = String(decoded.id ?? decoded.sub ?? "");
+  if (!userId) return;
+
+  const role = normRoleStr(decoded.role);
+  const ttlDays = getSessionTtlDays(role);
+
+  const refreshedToken = signAccessJwt(
+    {
+      id: userId,
+      sub: userId,
+      email: decoded.email ? String(decoded.email) : "",
+      role,
+      k: "access",
+      sid: decoded.sid ? String(decoded.sid) : undefined,
+    } as any,
+    `${ttlDays}d`
+  );
+
+  setAccessTokenCookie(res, refreshedToken, { maxAgeDays: ttlDays });
+}
+
 function unauthorized(res: Response, msg?: string) {
   return res.status(401).json({ error: "Unauthorized", message: msg || "Unauthenticated" });
 }
@@ -145,15 +190,11 @@ function forbidden(res: Response) {
   return res.status(403).json({ error: "Forbidden" });
 }
 
-/* ----------------------------- core guards ----------------------------- */
-
 export const requireAuth: RequestHandler = async (req, res, next) => {
-  // dev escape hatch if you use it
   if ((globalThis as any).__auth_ignore) return next();
 
   let token = readToken(req);
 
-  // Fallback to Bearer token for verification flow
   if (!token) {
     const authHeader = String(req.headers.authorization || "").trim();
     if (authHeader.toLowerCase().startsWith("bearer ")) {
@@ -167,12 +208,6 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
   const userId = String(decoded?.id ?? decoded?.sub ?? "");
   if (!decoded || !userId) return unauthorized(res, "Invalid token");
 
-  /**
-   * Allowed token kinds:
-   * - access  => normal authenticated app usage
-   * - verify  => temporary verification flow token
-   * - empty   => backward compatibility for older tokens without `k`
-   */
   const k = String(decoded?.k ?? "").trim();
   const isAccessToken = !k || k === "access";
   const isVerifyToken = k === "verify";
@@ -181,21 +216,18 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
     return unauthorized(res, "Wrong token type");
   }
 
-  /**
-   * Session checks should only run for real access tokens.
-   * Verify tokens are short-lived onboarding tokens and may not have a session row.
-   */
   if (isAccessToken) {
     try {
-      await assertSessionIfPresent(decoded);
+      const sessionCheck = await assertSessionIfPresent(decoded);
+      if (sessionCheck.shouldRefresh) {
+        maybeRefreshAccessCookie(res, decoded);
+      }
     } catch (e: any) {
       return unauthorized(res, e?.message || "Session invalid");
     }
   }
 
   attachReqUser(req, decoded);
-
-  // helpful for downstream handlers that need to know auth mode
   (req as any).auth = decoded;
   (req as any).authTokenKind = isVerifyToken ? "verify" : "access";
 
@@ -213,10 +245,6 @@ export const requireVerifySession: RequestHandler = async (req, res, next) => {
   if (!decoded || !userId) return unauthorized(res);
 
   const k = String(decoded.k ?? "");
-
-  // ✅ Option A:
-  // allow either a normal logged-in access session
-  // or a temporary verify session
   if (k !== "verify" && k !== "access" && k !== "") {
     return unauthorized(res);
   }

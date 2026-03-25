@@ -1126,7 +1126,7 @@ export default function Navbar() {
                         <>
                           <MobileMenuButton
                             icon={<Store size={18} />}
-                            label="Supply"
+                            label="Become a supplier"
                             onClick={() => hardGo("/register-supplier")}
                           />
                           <MobileMenuButton

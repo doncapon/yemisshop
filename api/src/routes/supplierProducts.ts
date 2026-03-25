@@ -52,6 +52,306 @@ function friendlyNumericOverflowError(fieldLabel = "price") {
   err.userMessage = `The ${fieldLabel.toLowerCase()} entered is too large for the current database limit. Please enter a smaller amount or increase the database decimal precision.`;
   return err;
 }
+
+
+
+/* =========================================================================================
+   supplierProducts.ts
+   - helpers
+   - schemas
+   - full POST method
+   - full PATCH method
+   Conforms to YOUR Prisma schema:
+   Product.categoryId String?
+   Product.freeShipping Boolean
+   Product.weightGrams Int?
+   Product.lengthCm Decimal?
+   Product.widthCm Decimal?
+   Product.heightCm Decimal?
+   Product.isFragile Boolean
+   Product.isBulky Boolean
+   Product.shippingClass String?
+========================================================================================= */
+
+/* --------------------------------- HELPERS -------------------------------------------- */
+
+function asTrimmedString(v: unknown): string {
+  return String(v ?? "").trim();
+}
+
+function normalizeOptionalId(input: unknown): string | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+
+  if (typeof input === "object" && input) {
+    const obj = input as Record<string, unknown>;
+    const candidates = [
+      obj.id,
+      obj.value,
+      obj.categoryId,
+      obj.brandId,
+      obj.productId,
+    ];
+
+    for (const c of candidates) {
+      const s = String(c ?? "").trim();
+      if (s) return s;
+    }
+    return null;
+  }
+
+  const s = String(input).trim();
+  if (!s || s === "null" || s === "undefined") return null;
+  return s;
+}
+
+function normalizeImagesInput(input: unknown): string[] | undefined {
+  if (input == null) return undefined;
+  if (!Array.isArray(input)) return undefined;
+  return input.map((x) => String(x ?? "").trim()).filter(Boolean);
+}
+
+function normalizeSupplierProductInput(raw: any) {
+  const src = raw ?? {};
+
+  return {
+    ...src,
+    brandId:
+      normalizeOptionalId(src.brandId) ??
+      normalizeOptionalId(src.brand) ??
+      undefined,
+
+    categoryId:
+      normalizeOptionalId(src.categoryId) ??
+      normalizeOptionalId(src.category) ??
+      null,
+
+    imagesJson: normalizeImagesInput(src.imagesJson),
+
+    variants: Array.isArray(src.variants)
+      ? src.variants.map((v: any) => ({
+          ...v,
+          variantId: normalizeOptionalId(v?.variantId ?? v?.id) ?? undefined,
+          imagesJson: normalizeImagesInput(v?.imagesJson),
+        }))
+      : src.variants,
+  };
+}
+
+function normalizeShippingInput(payload: any) {
+  const freeShipping = payload?.freeShipping === true;
+
+  return {
+    freeShipping,
+    weightGrams:
+      freeShipping
+        ? null
+        : payload?.weightGrams == null || payload?.weightGrams === ""
+          ? null
+          : Math.max(0, Math.trunc(Number(payload.weightGrams))),
+
+    lengthCm:
+      freeShipping
+        ? null
+        : payload?.lengthCm == null || payload?.lengthCm === ""
+          ? null
+          : Number(payload.lengthCm),
+
+    widthCm:
+      freeShipping
+        ? null
+        : payload?.widthCm == null || payload?.widthCm === ""
+          ? null
+          : Number(payload.widthCm),
+
+    heightCm:
+      freeShipping
+        ? null
+        : payload?.heightCm == null || payload?.heightCm === ""
+          ? null
+          : Number(payload.heightCm),
+
+    isFragile: freeShipping ? false : !!payload?.isFragile,
+    isBulky: freeShipping ? false : !!payload?.isBulky,
+    shippingClass: freeShipping ? null : payload?.shippingClass ?? null,
+  };
+}
+
+/* ---------- 2) admin DTO hydration must overlay ProductChangeRequest.proposedPatch ----- */
+
+function applyPendingProductPatchToAdminDto(product: any, pendingChange: any) {
+  const patch = (pendingChange?.proposedPatch ?? {}) as any;
+
+  return {
+    ...product,
+    description:
+      patch.description !== undefined ? patch.description : product.description,
+    brandId:
+      patch.brandId !== undefined ? patch.brandId : product.brandId,
+    categoryId:
+      patch.categoryId !== undefined ? patch.categoryId : product.categoryId,
+    imagesJson:
+      patch.imagesJson !== undefined ? patch.imagesJson : product.imagesJson,
+    communicationCost:
+      patch.communicationCost !== undefined
+        ? patch.communicationCost
+        : product.communicationCost,
+    freeShipping:
+      patch.freeShipping !== undefined ? patch.freeShipping : product.freeShipping,
+    weightGrams:
+      patch.weightGrams !== undefined ? patch.weightGrams : product.weightGrams,
+    lengthCm:
+      patch.lengthCm !== undefined ? patch.lengthCm : product.lengthCm,
+    widthCm:
+      patch.widthCm !== undefined ? patch.widthCm : product.widthCm,
+    heightCm:
+      patch.heightCm !== undefined ? patch.heightCm : product.heightCm,
+    isFragile:
+      patch.isFragile !== undefined ? patch.isFragile : product.isFragile,
+    isBulky:
+      patch.isBulky !== undefined ? patch.isBulky : product.isBulky,
+    shippingClass:
+      patch.shippingClass !== undefined ? patch.shippingClass : product.shippingClass,
+  };
+}
+
+/* ---------- 3) admin approval must apply those patch fields onto Product.update -------- */
+
+async function applyApprovedProductChangePatchTx(tx: any, change: any) {
+  const patch = (change?.proposedPatch ?? {}) as any;
+
+  const productId = String(change?.productId ?? "").trim();
+  if (!productId) {
+    const err: any = new Error("Missing productId on product change request");
+    err.statusCode = 400;
+    err.code = "PRODUCT_CHANGE_PRODUCT_ID_REQUIRED";
+    throw err;
+  }
+
+  const nextData: any = {};
+
+  if (patch.title !== undefined) {
+    nextData.title = String(patch.title ?? "").trim();
+  }
+
+  if (patch.description !== undefined) {
+    nextData.description = String(patch.description ?? "");
+  }
+
+  if (patch.brandId !== undefined) {
+    nextData.brandId = patch.brandId == null ? null : String(patch.brandId).trim();
+  }
+
+  if (patch.categoryId !== undefined) {
+    nextData.categoryId = patch.categoryId == null ? null : String(patch.categoryId).trim();
+  }
+
+  if (patch.imagesJson !== undefined) {
+    nextData.imagesJson = Array.isArray(patch.imagesJson)
+      ? normalizeImagesJson(patch.imagesJson)
+      : [];
+  }
+
+  if (patch.communicationCost !== undefined) {
+    nextData.communicationCost =
+      patch.communicationCost == null || patch.communicationCost === ""
+        ? null
+        : toDecimal(patch.communicationCost);
+  }
+
+  /* ============================================================
+     SHIPPING FIELDS — APPLY TO LIVE PRODUCT ON APPROVAL
+  ============================================================ */
+  if (patch.freeShipping !== undefined) {
+    nextData.freeShipping = !!patch.freeShipping;
+  }
+
+  if (patch.weightGrams !== undefined) {
+    nextData.weightGrams =
+      patch.weightGrams == null || patch.weightGrams === ""
+        ? null
+        : Math.max(0, Math.trunc(Number(patch.weightGrams)));
+  }
+
+  if (patch.lengthCm !== undefined) {
+    nextData.lengthCm =
+      patch.lengthCm == null || patch.lengthCm === ""
+        ? null
+        : Number(patch.lengthCm);
+  }
+
+  if (patch.widthCm !== undefined) {
+    nextData.widthCm =
+      patch.widthCm == null || patch.widthCm === ""
+        ? null
+        : Number(patch.widthCm);
+  }
+
+  if (patch.heightCm !== undefined) {
+    nextData.heightCm =
+      patch.heightCm == null || patch.heightCm === ""
+        ? null
+        : Number(patch.heightCm);
+  }
+
+  if (patch.isFragile !== undefined) {
+    nextData.isFragile = !!patch.isFragile;
+  }
+
+  if (patch.isBulky !== undefined) {
+    nextData.isBulky = !!patch.isBulky;
+  }
+
+  if (patch.shippingClass !== undefined) {
+    nextData.shippingClass =
+      patch.shippingClass == null || String(patch.shippingClass).trim() === ""
+        ? null
+        : String(patch.shippingClass).trim();
+  }
+
+  /* ============================================================
+     FREE SHIPPING NORMALIZATION
+     If approved freeShipping=true, clear parcel-specific fields
+  ============================================================ */
+  if (nextData.freeShipping === true) {
+    nextData.weightGrams = null;
+    nextData.lengthCm = null;
+    nextData.widthCm = null;
+    nextData.heightCm = null;
+    nextData.isFragile = false;
+    nextData.isBulky = false;
+    nextData.shippingClass = null;
+  }
+
+  nextData.hasPendingChanges = false;
+
+  await tx.product.update({
+    where: { id: productId },
+    data: nextData,
+  });
+
+  return tx.product.findUnique({
+    where: { id: productId },
+    select: {
+      id: true,
+      title: true,
+      sku: true,
+      status: true,
+      categoryId: true,
+      brandId: true,
+      freeShipping: true,
+      weightGrams: true,
+      lengthCm: true,
+      widthCm: true,
+      heightCm: true,
+      isFragile: true,
+      isBulky: true,
+      shippingClass: true,
+      hasPendingChanges: true,
+    } as any,
+  });
+}
+
 /* ========================================================================== */
 /* Supplier+Brand+Title SKU policy                                             */
 /* ========================================================================== */
@@ -1025,6 +1325,104 @@ async function getLatestModerationByProduct(
   return out;
 }
 
+
+/* -------------------------------- FULL PATCH METHOD ----------------------------------- */
+
+/* --------------------------------- ADD HELPERS ------------------------------------- */
+
+const SHIPPING_PATCH_KEYS = [
+  "freeShipping",
+  "weightGrams",
+  "lengthCm",
+  "widthCm",
+  "heightCm",
+  "isFragile",
+  "isBulky",
+  "shippingClass",
+] as const;
+
+function pickObject(obj: any, keys: readonly string[]) {
+  const out: Record<string, any> = {};
+  for (const key of keys) {
+    if (obj && Object.prototype.hasOwnProperty.call(obj, key)) {
+      out[key] = obj[key];
+    }
+  }
+  return out;
+}
+
+function hasAnyOwnKey(obj: any, keys: readonly string[]) {
+  if (!obj || typeof obj !== "object") return false;
+  return keys.some((k) => Object.prototype.hasOwnProperty.call(obj, k));
+}
+
+function getShippingPatchFromPatch(patch: any) {
+  return pickObject(patch ?? {}, SHIPPING_PATCH_KEYS);
+}
+
+function hasPendingShippingPatch(patch: any) {
+  return hasAnyOwnKey(patch, SHIPPING_PATCH_KEYS);
+}
+
+function payloadTouchesShipping(payload: any) {
+  return (
+    payload?.freeShipping !== undefined ||
+    payload?.weightGrams !== undefined ||
+    payload?.lengthCm !== undefined ||
+    payload?.widthCm !== undefined ||
+    payload?.heightCm !== undefined ||
+    payload?.isFragile !== undefined ||
+    payload?.isBulky !== undefined ||
+    payload?.shippingClass !== undefined
+  );
+}
+
+function normalizePatchShippingInput(payload: any, current: any) {
+  const merged = {
+    freeShipping:
+      payload?.freeShipping !== undefined
+        ? payload.freeShipping
+        : current?.freeShipping,
+
+    weightGrams:
+      payload?.weightGrams !== undefined
+        ? payload.weightGrams
+        : current?.weightGrams,
+
+    lengthCm:
+      payload?.lengthCm !== undefined
+        ? payload.lengthCm
+        : current?.lengthCm,
+
+    widthCm:
+      payload?.widthCm !== undefined
+        ? payload.widthCm
+        : current?.widthCm,
+
+    heightCm:
+      payload?.heightCm !== undefined
+        ? payload.heightCm
+        : current?.heightCm,
+
+    isFragile:
+      payload?.isFragile !== undefined
+        ? payload.isFragile
+        : current?.isFragile,
+
+    isBulky:
+      payload?.isBulky !== undefined
+        ? payload.isBulky
+        : current?.isBulky,
+
+    shippingClass:
+      payload?.shippingClass !== undefined
+        ? payload.shippingClass
+        : current?.shippingClass,
+  };
+
+  return normalizeShippingInput(merged);
+}
+
 /* ------------------------------- Schemas -------------------------------- */
 
 const zCoerceIntNonNegOpt = () =>
@@ -1047,20 +1445,6 @@ const OfferSchema = z
   })
   .optional();
 
-const VariantOfferUpdateSchema = z
-  .object({
-    variantId: z.string().min(1),
-    unitPrice: z.union([z.number(), z.string()]).optional().nullable(),
-    availableQty: z.union([z.number(), z.string()]).optional().nullable(),
-    qty: z.union([z.number(), z.string()]).optional().nullable(),
-    quantity: z.union([z.number(), z.string()]).optional().nullable(),
-    inStock: z.boolean().optional(),
-    isActive: z.boolean().optional(),
-    sku: z.string().optional().nullable(),
-    options: z.any().optional(),
-  })
-  .passthrough();
-
 const VariantOptionInputSchema = z
   .object({
     attributeId: z.string().optional(),
@@ -1073,35 +1457,84 @@ const VariantOptionInputSchema = z
   })
   .passthrough();
 
-const VariantCreateSchema = z
+const VariantOfferUpdateSchema = z
   .object({
-    variantId: z.string().optional(),
-    sku: z.string().optional().nullable(),
-    options: z.array(VariantOptionInputSchema).optional(),
+    variantId: z.string().min(1),
+
     unitPrice: z.union([z.number(), z.string()]).optional().nullable(),
     availableQty: z.union([z.number(), z.string()]).optional().nullable(),
     qty: z.union([z.number(), z.string()]).optional().nullable(),
     quantity: z.union([z.number(), z.string()]).optional().nullable(),
+
     inStock: z.boolean().optional(),
     isActive: z.boolean().optional(),
+
+    sku: z.string().optional().nullable(),
+    currency: z.string().optional(),
+    leadDays: zCoerceIntNullableOpt(),
+    imagesJson: z.array(z.string()).optional(),
+
+    options: z.any().optional(),
   })
   .passthrough();
+
+const VariantCreateSchema = z
+  .object({
+    variantId: z.string().optional(),
+    sku: z.string().optional().nullable(),
+
+    options: z.array(VariantOptionInputSchema).optional(),
+
+    unitPrice: z.union([z.number(), z.string()]).optional().nullable(),
+    availableQty: z.union([z.number(), z.string()]).optional().nullable(),
+    qty: z.union([z.number(), z.string()]).optional().nullable(),
+    quantity: z.union([z.number(), z.string()]).optional().nullable(),
+
+    inStock: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+
+    currency: z.string().optional(),
+    leadDays: zCoerceIntNullableOpt(),
+    imagesJson: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
+
+  
+/* --------------------------------- SCHEMAS -------------------------------------------- */
 
 const CreateSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
   basePrice: z.union([z.number(), z.string()]),
-  sku: z.string().trim().min(1).nullable().optional(), // ignored; SKU is computed
+  sku: z.string().trim().min(1).nullable().optional(), // ignored; computed
   inStock: z.boolean().optional(),
-  categoryId: z.string().optional(),
-  brandId: z.string().optional(),
+
+  categoryId: z.string().trim().nullable().optional(),
+  brandId: z.string().trim().nullable().optional(),
+
   imagesJson: z.array(z.string()).optional(),
   communicationCost: z.union([z.number(), z.string()]).optional(),
+
   availableQty: zCoerceIntNonNegOpt(),
   qty: zCoerceIntNonNegOpt(),
   quantity: zCoerceIntNonNegOpt(),
+
+  currency: z.string().optional(),
+  leadDays: zCoerceIntNullableOpt(),
+
+  freeShipping: z.boolean().optional(),
+  weightGrams: z.union([z.number(), z.string()]).nullable().optional(),
+  lengthCm: z.union([z.number(), z.string()]).nullable().optional(),
+  widthCm: z.union([z.number(), z.string()]).nullable().optional(),
+  heightCm: z.union([z.number(), z.string()]).nullable().optional(),
+  isFragile: z.boolean().optional(),
+  isBulky: z.boolean().optional(),
+  shippingClass: z.string().nullable().optional(),
+
   offer: OfferSchema,
   attributeSelections: z.array(z.any()).optional(),
+
   variants: z
     .array(
       z.object({
@@ -1114,6 +1547,8 @@ const CreateSchema = z.object({
         quantity: z.union([z.number(), z.string()]).optional().nullable(),
         inStock: z.boolean().optional(),
         isActive: z.boolean().optional(),
+        currency: z.string().optional(),
+        leadDays: zCoerceIntNullableOpt(),
         imagesJson: z.array(z.string()).optional(),
       })
     )
@@ -1125,17 +1560,31 @@ const UpdateSchema = z
     title: z.string().min(1).optional(),
     description: z.string().optional(),
     basePrice: z.union([z.number(), z.string()]).optional(),
-    sku: z.string().min(1).optional(), // ignored; SKU is computed
+    sku: z.string().min(1).optional(), // ignored; computed
     inStock: z.boolean().optional(),
-    categoryId: z.string().nullable().optional(),
-    brandId: z.string().nullable().optional(),
+
+    categoryId: z.string().trim().nullable().optional(),
+    brandId: z.string().trim().nullable().optional(),
     imagesJson: z.array(z.string()).optional(),
+
+    freeShipping: z.boolean().optional(),
+    weightGrams: z.union([z.number(), z.string()]).nullable().optional(),
+    lengthCm: z.union([z.number(), z.string()]).nullable().optional(),
+    widthCm: z.union([z.number(), z.string()]).nullable().optional(),
+    heightCm: z.union([z.number(), z.string()]).nullable().optional(),
+    isFragile: z.boolean().optional(),
+    isBulky: z.boolean().optional(),
+    shippingClass: z.string().nullable().optional(),
+
     communicationCost: z.union([z.number(), z.string()]).nullable().optional(),
+
     availableQty: zCoerceIntNonNegOpt(),
     qty: zCoerceIntNonNegOpt(),
     quantity: zCoerceIntNonNegOpt(),
+
     offer: OfferSchema,
     attributeSelections: z.array(z.any()).optional(),
+
     variants: z.array(z.union([VariantOfferUpdateSchema, VariantCreateSchema])).optional(),
   })
   .extend({
@@ -1147,7 +1596,7 @@ const UpdateSchema = z
       .passthrough()
       .optional(),
   });
-
+  
 /* -------------------- Prisma DMMF helpers (safe orderBy) ----------------- */
 
 function modelHasField(modelName: string, fieldName: string) {
@@ -1208,16 +1657,16 @@ router.get("/", requireAuth, async (req, res) => {
       ...(brandId ? { brandId } : {}),
       ...(q
         ? {
-            AND: [
-              {
-                OR: [
-                  { title: { contains: q, mode: "insensitive" } },
-                  { sku: { contains: q, mode: "insensitive" } },
-                  { description: { contains: q, mode: "insensitive" } },
-                ],
-              },
-            ],
-          }
+          AND: [
+            {
+              OR: [
+                { title: { contains: q, mode: "insensitive" } },
+                { sku: { contains: q, mode: "insensitive" } },
+                { description: { contains: q, mode: "insensitive" } },
+              ],
+            },
+          ],
+        }
         : {}),
     };
 
@@ -1467,7 +1916,124 @@ router.get("/", requireAuth, async (req, res) => {
   }
 });
 
-/* ------------------------------- CREATE ---------------------------------- */
+async function createVariantAndSupplierOfferTx(
+  tx: Prisma.TransactionClient,
+  args: {
+    supplierId: string;
+    productId: string;
+    productTitle: string;
+    productSkuBase: string;
+    baseOfferId: string;
+    baseCurrency: string;
+    baseLeadDays: number | null | undefined;
+    fallbackBasePrice: number;
+    rawVariant: any;
+    seenVariantSkus: Set<string>;
+    warnings: string[];
+  }
+) {
+  const {
+    supplierId,
+    productId,
+    productTitle,
+    productSkuBase,
+    baseOfferId,
+    baseCurrency,
+    baseLeadDays,
+    fallbackBasePrice,
+    rawVariant,
+    seenVariantSkus,
+    warnings,
+  } = args;
+
+  const opts = normalizeOptions(
+    rawVariant?.options ??
+    rawVariant?.optionSelections ??
+    rawVariant?.attributes ??
+    rawVariant?.attributeSelections ??
+    rawVariant?.variantOptions ??
+    rawVariant?.VariantOptions ??
+    []
+  );
+
+  if (!opts.length) return null;
+
+  const vQty =
+    pickQty(rawVariant?.availableQty, rawVariant?.qty, rawVariant?.quantity) ?? 0;
+
+  const unitPriceNum = Number(asNumber(rawVariant?.unitPrice) ?? fallbackBasePrice);
+
+  const desiredSku = prefixVariantSkuWithProductName(
+    productTitle,
+    String(rawVariant?.sku ?? "").trim() || null
+  );
+
+  const fallbackBase = `${String(productSkuBase || "PRODUCT").trim()}-VAR`;
+
+  const uniqueVariantSku = await makeUniqueVariantSku(
+    tx as any,
+    desiredSku,
+    seenVariantSkus,
+    fallbackBase
+  );
+
+  const variant = await tx.productVariant.create({
+    data: {
+      productId,
+      sku: uniqueVariantSku,
+      retailPrice:
+        Number.isFinite(unitPriceNum) && unitPriceNum > 0 ? toDecimal(unitPriceNum) : null,
+      inStock: vQty > 0,
+      imagesJson: normalizeImagesJson(rawVariant?.imagesJson ?? []),
+      availableQty: vQty,
+      isActive: true,
+    } as any,
+    select: { id: true, sku: true },
+  });
+
+  await tx.productVariantOption.createMany({
+    data: opts.map((o) => ({
+      variantId: variant.id,
+      attributeId: o.attributeId,
+      valueId: o.valueId,
+      unitPrice: null,
+    })),
+    skipDuplicates: true,
+  });
+
+  const guardedVar = await maybeDeactivateIfPayoutNotReadyTx(
+    tx as any,
+    supplierId,
+    {
+      isActive: rawVariant?.isActive ?? true,
+      inStock: rawVariant?.inStock ?? vQty > 0,
+      availableQty: vQty,
+      basePrice: unitPriceNum,
+    },
+    "Variant offer",
+    warnings
+  );
+
+  const supplierVariantOffer = await tx.supplierVariantOffer.create({
+    data: {
+      supplierId,
+      productId,
+      variantId: variant.id,
+      supplierProductOfferId: baseOfferId,
+      unitPrice: toDecimal(unitPriceNum),
+      currency: rawVariant?.currency ?? baseCurrency ?? "NGN",
+      availableQty: vQty,
+      inStock: guardedVar.inStock !== false,
+      isActive: guardedVar.isActive !== false,
+      leadDays: rawVariant?.leadDays ?? baseLeadDays ?? null,
+    } as any,
+  });
+
+  return { variant, supplierVariantOffer };
+}
+
+/* -------------------------------- FULL POST METHOD ------------------------------------ */
+
 router.post("/", requireAuth, requireSupplier, async (req, res) => {
   try {
     const s = await getSupplierForUser(req.user!.id);
@@ -1477,7 +2043,8 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
     const incoming: any = req.body ?? {};
     const base: any = incoming?.data ?? incoming?.product ?? incoming;
-    const payload = CreateSchema.parse(base ?? {});
+    const normalizedBase = normalizeSupplierProductInput(base);
+    const payload = CreateSchema.parse(normalizedBase ?? {});
 
     if (payload.imagesJson) assertMaxImages(payload.imagesJson);
 
@@ -1489,10 +2056,10 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
       assertMoneyWithinDbLimit((v as any)?.unitPrice, "Variant price");
     }
 
-    const title = String(payload.title ?? "").trim();
-    const description = String(payload.description ?? "").trim();
-    const brandId = String(payload.brandId ?? "").trim();
-    const categoryId = String(payload.categoryId ?? "").trim() || null;
+    const title = asTrimmedString(payload.title);
+    const description = asTrimmedString(payload.description);
+    const brandId = asTrimmedString(payload.brandId);
+    const categoryId = normalizeOptionalId(payload.categoryId) ?? null;
 
     if (!title) {
       return res.status(400).json({
@@ -1548,6 +2115,7 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
       }
 
       const normalizedImages = normalizeImagesJson(payload.imagesJson ?? []);
+      const shippingData = normalizeShippingInput(payload);
 
       const baseQty =
         pickQty(payload.availableQty, (payload as any).qty, (payload as any).quantity) ?? 0;
@@ -1608,12 +2176,16 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
           inStock: baseQty > 0,
           status: "PENDING",
           imagesJson: normalizedImages,
+
           brandId,
-          ...(categoryId ? { categoryId } : {}),
-          ...(categoryId ? { categoryName: undefined } : {}),
+          categoryId,
+
+          ...shippingData,
+
           ...(payload.communicationCost != null
             ? { communicationCost: toDecimal(payload.communicationCost) }
             : {}),
+
           availableQty: baseQty,
           supplierId: s.id,
           ownerId: req.user!.id,
@@ -1629,6 +2201,14 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
           status: true,
           brandId: true,
           categoryId: true,
+          freeShipping: true,
+          weightGrams: true,
+          lengthCm: true,
+          widthCm: true,
+          heightCm: true,
+          isFragile: true,
+          isBulky: true,
+          shippingClass: true,
         },
       });
 
@@ -1661,19 +2241,10 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
       const seenVariantSkus = new Set<string>();
       const rows = Array.isArray(payload.variants) ? payload.variants : [];
+      const productSkuBase = String(product.sku || slugSkuBase(title)).toUpperCase();
 
       for (const raw of rows) {
         const directId = String((raw as any)?.variantId ?? "").trim();
-
-        const opts = normalizeOptions(
-          (raw as any)?.options ??
-            (raw as any)?.optionSelections ??
-            (raw as any)?.attributes ??
-            (raw as any)?.attributeSelections ??
-            (raw as any)?.variantOptions ??
-            (raw as any)?.VariantOptions ??
-            []
-        );
 
         if (directId) {
           const err: any = new Error("variantId is not allowed when creating a new product");
@@ -1683,76 +2254,18 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
           throw err;
         }
 
-        if (!opts.length) continue;
-
-        const vQty =
-          pickQty((raw as any)?.availableQty, (raw as any)?.qty, (raw as any)?.quantity) ?? 0;
-
-        const unitPriceNum =
-          Number(asNumber((raw as any)?.unitPrice) ?? basePriceNum);
-
-        const desiredSku = prefixVariantSkuWithProductName(
-          title,
-          String((raw as any)?.sku ?? "").trim() || null
-        );
-
-        const fallbackBase = `${slugSkuBase(title).toUpperCase() || "PRODUCT"}-VAR`;
-        const uniqueVariantSku = await makeUniqueVariantSku(
-          tx as any,
-          desiredSku,
+        await createVariantAndSupplierOfferTx(tx, {
+          supplierId: s.id,
+          productId: product.id,
+          productTitle: title,
+          productSkuBase,
+          baseOfferId: baseOffer.id,
+          baseCurrency: payload.offer?.currency ?? "NGN",
+          baseLeadDays: payload.offer?.leadDays ?? null,
+          fallbackBasePrice: basePriceNum,
+          rawVariant: raw,
           seenVariantSkus,
-          fallbackBase
-        );
-
-        const variant = await tx.productVariant.create({
-          data: {
-            productId: product.id,
-            sku: uniqueVariantSku,
-            retailPrice: Number.isFinite(unitPriceNum) && unitPriceNum > 0 ? toDecimal(unitPriceNum) : null,
-            inStock: vQty > 0,
-            imagesJson: normalizeImagesJson((raw as any)?.imagesJson ?? []),
-            availableQty: vQty,
-            isActive: true,
-          } as any,
-          select: { id: true, sku: true },
-        });
-
-        await tx.productVariantOption.createMany({
-          data: opts.map((o) => ({
-            variantId: variant.id,
-            attributeId: o.attributeId,
-            valueId: o.valueId,
-            unitPrice: null,
-          })),
-          skipDuplicates: true,
-        });
-
-        const guardedVar = await maybeDeactivateIfPayoutNotReadyTx(
-          tx as any,
-          s.id,
-          {
-            isActive: (raw as any)?.isActive ?? true,
-            inStock: (raw as any)?.inStock ?? vQty > 0,
-            availableQty: vQty,
-            basePrice: unitPriceNum,
-          },
-          "Variant offer",
-          warnings
-        );
-
-        await tx.supplierVariantOffer.create({
-          data: {
-            supplierId: s.id,
-            productId: product.id,
-            variantId: variant.id,
-            supplierProductOfferId: baseOffer.id,
-            unitPrice: toDecimal(unitPriceNum),
-            currency: payload.offer?.currency ?? "NGN",
-            availableQty: vQty,
-            inStock: guardedVar.inStock !== false,
-            isActive: guardedVar.isActive !== false,
-            leadDays: (raw as any)?.leadDays ?? payload.offer?.leadDays ?? null,
-          } as any,
+          warnings,
         });
       }
 
@@ -1763,6 +2276,7 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
         where: { id: product.id },
         include: {
           brand: { select: { id: true, name: true } },
+          category: { select: { id: true, name: true } },
           supplierProductOffers: {
             where: { supplierId: s.id },
             take: 1,
@@ -2102,6 +2616,8 @@ const AttachSchema = z.object({
       quantity: z.union([z.number(), z.string()]).optional().nullable(),
       inStock: z.boolean().optional(),
       isActive: z.boolean().optional(),
+      currency: z.string().optional(),
+      leadDays: zCoerceIntNullableOpt(),
     })
   ).optional(),
 });
@@ -2332,13 +2848,43 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
   }
 });
 
-/* ------------------------------- PATCH ---------------------------------- */
-/**
- * Kept behavior, but schema-aligned:
- * - base offer unique by productId
- * - variant offer unique by variantId
- * - product is owned by supplierId (required)
- */
+function applyPendingProductPatchToSupplierDto(product: any, pendingChange: any) {
+  const patch = (pendingChange?.proposedPatch ?? {}) as any;
+
+  return {
+    ...product,
+
+    title: patch.title !== undefined ? patch.title : product.title,
+    description: patch.description !== undefined ? patch.description : product.description,
+    brandId: patch.brandId !== undefined ? patch.brandId : product.brandId,
+    categoryId: patch.categoryId !== undefined ? patch.categoryId : product.categoryId,
+    imagesJson: patch.imagesJson !== undefined ? patch.imagesJson : product.imagesJson,
+    communicationCost:
+      patch.communicationCost !== undefined
+        ? patch.communicationCost
+        : product.communicationCost,
+
+    freeShipping:
+      patch.freeShipping !== undefined ? patch.freeShipping : product.freeShipping,
+    weightGrams:
+      patch.weightGrams !== undefined ? patch.weightGrams : product.weightGrams,
+    lengthCm:
+      patch.lengthCm !== undefined ? patch.lengthCm : product.lengthCm,
+    widthCm:
+      patch.widthCm !== undefined ? patch.widthCm : product.widthCm,
+    heightCm:
+      patch.heightCm !== undefined ? patch.heightCm : product.heightCm,
+    isFragile:
+      patch.isFragile !== undefined ? patch.isFragile : product.isFragile,
+    isBulky:
+      patch.isBulky !== undefined ? patch.isBulky : product.isBulky,
+    shippingClass:
+      patch.shippingClass !== undefined ? patch.shippingClass : product.shippingClass,
+  };
+}
+
+/* ---------------- FULL PATCH METHOD REPLACEMENT / MERGE THIS INTO YOUR ROUTE -------- */
+
 router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
   try {
     const s = await getSupplierForUser(req.user!.id);
@@ -2350,7 +2896,8 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
     const incoming: any = req.body ?? {};
     const base: any = incoming?.data ?? incoming?.product ?? incoming;
-    const payload = UpdateSchema.parse(base ?? {});
+    const normalizedBase = normalizeSupplierProductInput(base);
+    const payload = UpdateSchema.parse(normalizedBase ?? {});
 
     if (payload.imagesJson) assertMaxImages(payload.imagesJson);
 
@@ -2360,9 +2907,11 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     }
     for (const v of payload.variants ?? []) {
       assertMoneyWithinDbLimit((v as any)?.unitPrice, "Variant price");
+      if ((v as any)?.imagesJson) assertMaxImages((v as any).imagesJson);
     }
 
     const stockOnlyFlag = payload.stockOnly === true || payload?.meta?.stockOnly === true;
+    const touchesShipping = payloadTouchesShipping(payload);
 
     const product = await prisma.product.findFirst({
       where: {
@@ -2388,10 +2937,58 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         ownerId: true as any,
         userId: true as any,
         hasPendingChanges: true,
+        freeShipping: true,
+        weightGrams: true,
+        lengthCm: true,
+        widthCm: true,
+        heightCm: true,
+        isFragile: true,
+        isBulky: true,
+        shippingClass: true,
       } as any,
     });
 
     if (!product) return res.status(404).json({ error: "Not found" });
+
+    const nextCategoryIdNormalized =
+      payload.categoryId !== undefined
+        ? normalizeOptionalId(payload.categoryId) ?? null
+        : undefined;
+
+    const nextBrandIdNormalized =
+      payload.brandId !== undefined
+        ? normalizeOptionalId(payload.brandId) ?? null
+        : undefined;
+
+    if (nextBrandIdNormalized !== undefined && nextBrandIdNormalized !== null) {
+      const brand = await prisma.brand.findFirst({
+        where: { id: nextBrandIdNormalized, isActive: true } as any,
+        select: { id: true, name: true },
+      });
+
+      if (!brand) {
+        return res.status(400).json({
+          error: "Invalid brand",
+          code: "INVALID_BRAND",
+          userMessage: "Selected brand was not found.",
+        });
+      }
+    }
+
+    if (nextCategoryIdNormalized !== undefined && nextCategoryIdNormalized !== null) {
+      const category = await prisma.category.findFirst({
+        where: { id: nextCategoryIdNormalized, isActive: true } as any,
+        select: { id: true, name: true },
+      });
+
+      if (!category) {
+        return res.status(400).json({
+          error: "Invalid category",
+          code: "INVALID_CATEGORY",
+          userMessage: "Selected category was not found.",
+        });
+      }
+    }
 
     const ownedBySupplier =
       String((product as any).supplierId ?? "") === String(s.id) ||
@@ -2409,18 +3006,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     const isRejectedState = statusUpper === "REJECTED";
     const hasPendingFlag = Boolean((product as any).hasPendingChanges);
 
-    /**
-     * Review-managed products:
-     * - already live/published
-     * - already pending review
-     * - previously rejected and being re-submitted
-     */
     const requiresApprovalFlow =
       isPublishedState || isPendingState || isRejectedState || hasPendingFlag;
 
-    /**
-     * Title + SKU remain locked once product is review-managed.
-     */
     if (requiresApprovalFlow) {
       const incomingTitle =
         payload.title !== undefined ? String(payload.title ?? "").trim() : undefined;
@@ -2450,7 +3038,8 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       payload.brandId !== undefined ||
       payload.imagesJson !== undefined ||
       payload.communicationCost !== undefined ||
-      payload.attributeSelections !== undefined;
+      payload.attributeSelections !== undefined ||
+      touchesShipping;
 
     if (!ownedBySupplier && triesCoreEdit) {
       return res.status(403).json({
@@ -2506,8 +3095,21 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           id: true,
           proposedPatch: true,
           currentSnapshot: true,
+          status: true,
+          requestedAt: true,
+          updatedAt: true,
         } as any,
       });
+
+      const pendingProductPatch = (existingPendingProductChange?.proposedPatch ?? {}) as any;
+      const shippingAlreadyPendingVerification =
+        !isRejectedState && hasPendingShippingPatch(pendingProductPatch);
+
+      if (!stockOnlyFlag && touchesShipping && shippingAlreadyPendingVerification) {
+        warnings.push(
+          "Shipping changes were not submitted because shipping already has a pending verification request. Other eligible changes were still saved."
+        );
+      }
 
       const existingPendingOfferChanges = await tx.supplierOfferChangeRequest.findMany({
         where: {
@@ -2556,7 +3158,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       const nextBasePriceRaw = payload.offer?.basePrice ?? payload.basePrice;
       const nextBasePriceNum = Number(
         asNumber(nextBasePriceRaw) ??
-        (existingBaseOffer?.basePrice != null ? Number(existingBaseOffer.basePrice) : 0)
+          (existingBaseOffer?.basePrice != null ? Number(existingBaseOffer.basePrice) : 0)
       );
 
       const nextCurrency = payload.offer?.currency ?? existingBaseOffer?.currency ?? "NGN";
@@ -2599,13 +3201,11 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       }> = [];
       const liveVariantStructurePatch: any[] = [];
 
-      const nextImages = payload.imagesJson
-        ? normalizeImagesJson(payload.imagesJson)
-        : undefined;
+      const nextImages =
+        payload.imagesJson !== undefined
+          ? normalizeImagesJson(payload.imagesJson)
+          : undefined;
 
-      // ------------------------------------------------
-      // 1) REVIEW-REQUIRED PRODUCT: queue reviewable core changes
-      // ------------------------------------------------
       if (requiresApprovalFlow && ownedBySupplier && !stockOnlyFlag) {
         if (
           payload.description !== undefined &&
@@ -2616,19 +3216,19 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
 
         if (
-          payload.categoryId !== undefined &&
-          String(payload.categoryId ?? "") !== String((product as any).categoryId ?? "")
+          nextCategoryIdNormalized !== undefined &&
+          String(nextCategoryIdNormalized ?? "") !== String((product as any).categoryId ?? "")
         ) {
           liveProductCurrent.categoryId = (product as any).categoryId ?? null;
-          liveProductPatch.categoryId = payload.categoryId ?? null;
+          liveProductPatch.categoryId = nextCategoryIdNormalized;
         }
 
         if (
-          payload.brandId !== undefined &&
-          String(payload.brandId ?? "") !== String((product as any).brandId ?? "")
+          nextBrandIdNormalized !== undefined &&
+          String(nextBrandIdNormalized ?? "") !== String((product as any).brandId ?? "")
         ) {
           liveProductCurrent.brandId = (product as any).brandId ?? null;
-          liveProductPatch.brandId = payload.brandId ?? null;
+          liveProductPatch.brandId = nextBrandIdNormalized;
         }
 
         if (payload.communicationCost !== undefined) {
@@ -2656,6 +3256,64 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           }
         }
 
+        if (touchesShipping && !shippingAlreadyPendingVerification) {
+          const nextShippingData = normalizePatchShippingInput(payload, product);
+
+          const currentFreeShipping = Boolean((product as any).freeShipping);
+          const currentWeightGrams =
+            (product as any).weightGrams == null ? null : Number((product as any).weightGrams);
+          const currentLengthCm =
+            (product as any).lengthCm == null ? null : Number((product as any).lengthCm);
+          const currentWidthCm =
+            (product as any).widthCm == null ? null : Number((product as any).widthCm);
+          const currentHeightCm =
+            (product as any).heightCm == null ? null : Number((product as any).heightCm);
+          const currentIsFragile = Boolean((product as any).isFragile);
+          const currentIsBulky = Boolean((product as any).isBulky);
+          const currentShippingClass =
+            (product as any).shippingClass == null ? null : String((product as any).shippingClass);
+
+          if (nextShippingData.freeShipping !== currentFreeShipping) {
+            liveProductCurrent.freeShipping = currentFreeShipping;
+            liveProductPatch.freeShipping = nextShippingData.freeShipping;
+          }
+
+          if ((nextShippingData.weightGrams ?? null) !== currentWeightGrams) {
+            liveProductCurrent.weightGrams = currentWeightGrams;
+            liveProductPatch.weightGrams = nextShippingData.weightGrams;
+          }
+
+          if ((nextShippingData.lengthCm ?? null) !== currentLengthCm) {
+            liveProductCurrent.lengthCm = currentLengthCm;
+            liveProductPatch.lengthCm = nextShippingData.lengthCm;
+          }
+
+          if ((nextShippingData.widthCm ?? null) !== currentWidthCm) {
+            liveProductCurrent.widthCm = currentWidthCm;
+            liveProductPatch.widthCm = nextShippingData.widthCm;
+          }
+
+          if ((nextShippingData.heightCm ?? null) !== currentHeightCm) {
+            liveProductCurrent.heightCm = currentHeightCm;
+            liveProductPatch.heightCm = nextShippingData.heightCm;
+          }
+
+          if (Boolean(nextShippingData.isFragile) !== currentIsFragile) {
+            liveProductCurrent.isFragile = currentIsFragile;
+            liveProductPatch.isFragile = nextShippingData.isFragile;
+          }
+
+          if (Boolean(nextShippingData.isBulky) !== currentIsBulky) {
+            liveProductCurrent.isBulky = currentIsBulky;
+            liveProductPatch.isBulky = nextShippingData.isBulky;
+          }
+
+          if ((nextShippingData.shippingClass ?? null) !== currentShippingClass) {
+            liveProductCurrent.shippingClass = currentShippingClass;
+            liveProductPatch.shippingClass = nextShippingData.shippingClass;
+          }
+        }
+
         if (payload.attributeSelections !== undefined) {
           const currentAttrOptions = await tx.productAttributeOption.findMany({
             where: { productId: id },
@@ -2677,9 +3335,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
       }
 
-      // ------------------------------------------------
-      // 2) BASE OFFER
-      // ------------------------------------------------
       let baseOffer: any = existingBaseOffer;
 
       if (touchesBaseOffer) {
@@ -2689,10 +3344,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         );
 
         if (requiresApprovalFlow) {
-          /**
-           * Stock applies immediately.
-           * Reviewable pricing/status changes are stored in pending request.
-           */
           baseOffer = await upsertSupplierProductOffer(
             tx,
             s.id,
@@ -2759,258 +3410,13 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
       }
 
-      // ------------------------------------------------
-      // 3) VARIANTS
-      // ------------------------------------------------
-      if (variantsIncoming.length) {
-        const pRow = await tx.product.findUnique({
-          where: { id },
-          select: { id: true, sku: true, title: true },
-        });
+      /* ===== keep your existing variant handling block unchanged here ===== */
 
-        const productSkuBase = String(
-          pRow?.sku || slugSkuBase(pRow?.title || "product")
-        ).toUpperCase();
-
-        for (const v of variantsIncoming as any[]) {
-          const directId = String(v?.variantId ?? v?.id ?? "").trim();
-
-          const opts = normalizeOptions(
-            v?.options ??
-            v?.optionSelections ??
-            v?.attributes ??
-            v?.attributeSelections ??
-            v?.variantOptions ??
-            v?.VariantOptions ??
-            []
-          );
-
-          if (!directId && !opts.length) continue;
-
-          const vQty = pickQty(v?.availableQty, v?.qty, v?.quantity);
-          const vQtyProvided = vQty != null;
-          const vQtyNonNeg = Math.max(0, Math.trunc(vQty ?? 0));
-
-          const unitPriceProvided =
-            v?.unitPrice !== undefined &&
-            v?.unitPrice !== null &&
-            String(v.unitPrice) !== "";
-
-          const unitPriceNumMaybe = unitPriceProvided
-            ? Number(asNumber(v?.unitPrice) ?? 0)
-            : undefined;
-
-          let variantId: string | null = null;
-          let createdNewCombo = false;
-
-          if (directId) {
-            const ok = await tx.productVariant.findFirst({
-              where: { id: directId, productId: id },
-              select: { id: true, sku: true },
-            });
-
-            if (!ok) {
-              const e: any = new Error("Invalid variantId for this product");
-              e.statusCode = 400;
-              e.code = "INVALID_VARIANT";
-              throw e;
-            }
-
-            variantId = directId;
-          } else {
-            if (requiresApprovalFlow) {
-              if (!stockOnlyFlag) {
-                liveVariantStructurePatch.push({
-                  action: "CREATE_VARIANT_COMBO",
-                  sku: v?.sku ?? null,
-                  options: opts,
-                  availableQty: vQtyNonNeg,
-                  unitPrice: unitPriceNumMaybe ?? null,
-                  inStock: v?.inStock ?? (vQtyProvided ? vQtyNonNeg > 0 : true),
-                  isActive: v?.isActive ?? true,
-                });
-              }
-              continue;
-            }
-
-            variantId = await createOrGetVariantByCombo(tx, {
-              productId: id,
-              productSkuBase,
-              desiredSku: prefixVariantSkuWithProductName(
-                pRow?.title || "PRODUCT",
-                v?.sku ?? null
-              ),
-              options: opts,
-              qty: vQtyNonNeg,
-              inStock: v?.inStock ?? (vQtyProvided ? vQtyNonNeg > 0 : true),
-            });
-            createdNewCombo = true;
-          }
-
-          if (!variantId) continue;
-
-          const existingVarOffer = existingVariantOfferByVariantId.get(String(variantId));
-
-          const nextUnitPriceNum = unitPriceProvided
-            ? unitPriceNumMaybe ?? 0
-            : existingVarOffer?.unitPrice != null
-              ? Number(existingVarOffer.unitPrice)
-              : Number(baseOffer?.basePrice ?? 0);
-
-          const nextQty = vQtyProvided
-            ? vQtyNonNeg
-            : Number(existingVarOffer?.availableQty ?? 0);
-
-          const nextActiveRaw = (v?.isActive ?? existingVarOffer?.isActive ?? true) as boolean;
-          const nextStockRaw = (
-            v?.inStock ??
-            (vQtyProvided ? vQtyNonNeg > 0 : existingVarOffer?.inStock ?? true)
-          ) as boolean;
-
-          const guardedVar = await maybeDeactivateIfPayoutNotReadyTx(
-            tx as any,
-            s.id,
-            {
-              isActive: !!nextActiveRaw,
-              inStock: !!nextStockRaw,
-              availableQty: nextQty,
-              basePrice: nextUnitPriceNum,
-            },
-            "Variant offer",
-            warnings
-          );
-
-          const nextActive = guardedVar.isActive !== false;
-          const nextStock = guardedVar.inStock !== false;
-
-          if (ownedBySupplier && vQtyProvided) {
-            await tx.productVariant.update({
-              where: { id: variantId },
-              data: { availableQty: vQtyNonNeg, inStock: nextStock } as any,
-            });
-          }
-
-          if (requiresApprovalFlow) {
-            const currentUnitPrice =
-              existingVarOffer?.unitPrice != null
-                ? Number(existingVarOffer.unitPrice)
-                : Number(baseOffer?.basePrice ?? 0);
-
-            const currentLeadDays = existingVarOffer?.leadDays ?? null;
-            const currentIsActive = existingVarOffer?.isActive ?? true;
-            const currentCurrency = existingVarOffer?.currency ?? nextCurrency;
-
-            const variantPriceChanged =
-              unitPriceProvided &&
-              Number.isFinite(nextUnitPriceNum) &&
-              nextUnitPriceNum > 0 &&
-              nextUnitPriceNum !== currentUnitPrice;
-
-            const variantLeadChanged =
-              v?.leadDays !== undefined &&
-              (v.leadDays ?? null) !== (currentLeadDays ?? null);
-
-            const variantActiveChanged =
-              v?.isActive !== undefined &&
-              Boolean(nextActive) !== Boolean(currentIsActive);
-
-            const variantCurrencyChanged =
-              v?.currency !== undefined &&
-              String(v.currency ?? nextCurrency) !== String(currentCurrency);
-
-            if (
-              !stockOnlyFlag &&
-              (variantPriceChanged || variantLeadChanged || variantActiveChanged || variantCurrencyChanged)
-            ) {
-              const proposedPatch: any = { variantId };
-
-              if (variantPriceChanged) proposedPatch.unitPrice = nextUnitPriceNum;
-              if (variantLeadChanged) proposedPatch.leadDays = v.leadDays ?? null;
-              if (variantActiveChanged) proposedPatch.isActive = nextActive;
-              if (variantCurrencyChanged) proposedPatch.currency = v.currency ?? nextCurrency;
-
-              liveVariantOfferRequests.push({
-                variantId,
-                supplierVariantOfferId: existingVarOffer?.id ?? null,
-                proposedPatch,
-                currentSnapshot: {
-                  unitPrice: currentUnitPrice,
-                  leadDays: currentLeadDays,
-                  isActive: currentIsActive,
-                  currency: currentCurrency,
-                },
-              });
-            }
-
-            if (!existingVarOffer && !createdNewCombo) {
-              await tx.supplierVariantOffer.create({
-                data: {
-                  productId: id,
-                  variantId,
-                  supplierId: s.id,
-                  supplierProductOfferId: baseOffer?.id ?? null,
-                  unitPrice: toDecimal(
-                    existingBaseOffer?.basePrice != null
-                      ? Number(existingBaseOffer.basePrice)
-                      : Number(baseOffer?.basePrice ?? 0)
-                  ),
-                  currency: nextCurrency,
-                  availableQty: nextQty,
-                  inStock: nextStock,
-                  isActive: true,
-                  leadDays: nextLeadDays ?? null,
-                } as any,
-              });
-            }
-          } else {
-            const existingSupplierVariantOffer = await tx.supplierVariantOffer.findFirst({
-              where: { supplierId: s.id, variantId },
-              select: { id: true },
-            });
-
-            if (existingSupplierVariantOffer) {
-              await tx.supplierVariantOffer.update({
-                where: { id: existingSupplierVariantOffer.id },
-                data: {
-                  productId: id,
-                  variantId,
-                  supplierId: s.id,
-                  supplierProductOfferId: baseOffer?.id ?? null,
-                  ...(unitPriceProvided ? { unitPrice: toDecimal(nextUnitPriceNum) } : {}),
-                  currency: nextCurrency,
-                  ...(vQtyProvided ? { availableQty: nextQty } : {}),
-                  inStock: nextStock,
-                  isActive: nextActive,
-                  leadDays: v?.leadDays ?? nextLeadDays ?? null,
-                } as any,
-              });
-            } else {
-              await tx.supplierVariantOffer.create({
-                data: {
-                  productId: id,
-                  variantId,
-                  supplierId: s.id,
-                  supplierProductOfferId: baseOffer?.id ?? null,
-                  unitPrice: toDecimal(nextUnitPriceNum),
-                  currency: nextCurrency,
-                  availableQty: nextQty,
-                  inStock: nextStock,
-                  isActive: nextActive,
-                  leadDays: v?.leadDays ?? nextLeadDays ?? null,
-                } as any,
-              });
-            }
-          }
-        }
-      }
-
-      // ------------------------------------------------
-      // 4) NON-REVIEW direct product edits
-      // ------------------------------------------------
       if (!requiresApprovalFlow && ownedBySupplier && !stockOnlyFlag) {
-        const nextImagesDirect = payload.imagesJson
-          ? normalizeImagesJson(payload.imagesJson)
-          : undefined;
+        const nextImagesDirect =
+          payload.imagesJson !== undefined
+            ? normalizeImagesJson(payload.imagesJson)
+            : undefined;
 
         await tx.product.update({
           where: { id },
@@ -3019,17 +3425,19 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
             ...(payload.description !== undefined
               ? { description: payload.description ?? "" }
               : {}),
-            ...(payload.categoryId !== undefined
-              ? { categoryId: payload.categoryId ?? null }
+            ...(nextCategoryIdNormalized !== undefined
+              ? { categoryId: nextCategoryIdNormalized }
               : {}),
-            ...(payload.brandId !== undefined ? { brandId: payload.brandId ?? null } : {}),
+            ...(nextBrandIdNormalized !== undefined
+              ? { brandId: nextBrandIdNormalized }
+              : {}),
             ...(payload.communicationCost !== undefined
               ? {
-                communicationCost:
-                  payload.communicationCost == null
-                    ? null
-                    : toDecimal(payload.communicationCost),
-              }
+                  communicationCost:
+                    payload.communicationCost == null
+                      ? null
+                      : toDecimal(payload.communicationCost),
+                }
               : {}),
             ...(nextImagesDirect !== undefined ? { imagesJson: nextImagesDirect } : {}),
           } as any,
@@ -3040,10 +3448,8 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
 
         const nextBrandId =
-          payload.brandId !== undefined
-            ? payload.brandId == null
-              ? null
-              : String(payload.brandId).trim()
+          nextBrandIdNormalized !== undefined
+            ? nextBrandIdNormalized
             : (product as any).brandId ?? null;
 
         if (!nextBrandId) {
@@ -3090,13 +3496,12 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
       }
 
-      // ------------------------------------------------
-      // 5) UPSERT pending review rows for moderation-managed edits
-      // ------------------------------------------------
       let hasPendingChanges = false;
 
-      if (requiresApprovalFlow && !stockOnlyFlag) {
-        // BASE OFFER pending row
+      const shouldCreateProductReviewRequest =
+        (!stockOnlyFlag && requiresApprovalFlow) || (!stockOnlyFlag && touchesShipping);
+
+      if (shouldCreateProductReviewRequest) {
         if (Object.keys(liveBaseOfferPatch).length > 0) {
           if (existingPendingBaseOfferChange?.id) {
             await tx.supplierOfferChangeRequest.update({
@@ -3134,7 +3539,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           });
         }
 
-        // VARIANT OFFER pending rows
         const desiredPendingVariantKeys = new Set<string>();
 
         for (const item of liveVariantOfferRequests) {
@@ -3207,7 +3611,6 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           }
         }
 
-        // PRODUCT pending row
         const productPatchForReview: any = {};
         const currentSnapshotForReview: any = {};
 
@@ -3247,7 +3650,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
             });
           }
           hasPendingChanges = true;
-        } else if (existingPendingProductChange?.id) {
+        } else if (
+          existingPendingProductChange?.id &&
+          !hasAnyOwnKey(existingPendingProductChange.proposedPatch, SHIPPING_PATCH_KEYS)
+        ) {
           await tx.productChangeRequest.delete({
             where: { id: existingPendingProductChange.id },
           });
@@ -3269,17 +3675,63 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       await recomputeProductStockTx(tx, id);
       await refreshProductAutoPriceIfAutoMode(tx, id);
 
-      return tx.product.findUnique({ where: { id } });
+      const freshProduct = await tx.product.findUnique({
+        where: { id },
+        include: {
+          brand: { select: { id: true, name: true } },
+          category: { select: { id: true, name: true } },
+          supplierProductOffers: {
+            where: { supplierId: s.id },
+            take: 1,
+            ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
+          },
+          ProductVariant: {
+            include: {
+              options: {
+                include: {
+                  attribute: { select: { id: true, name: true, type: true } },
+                  value: { select: { id: true, name: true, code: true } },
+                },
+              },
+              supplierVariantOffers: {
+                where: { supplierId: s.id },
+                take: 1,
+              },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+        } as any,
+      });
+
+      const pendingChangeAfterSave = await tx.productChangeRequest.findFirst({
+        where: {
+          productId: id,
+          supplierId: s.id,
+          status: "PENDING",
+        },
+        orderBy: { updatedAt: "desc" } as any,
+        select: {
+          id: true,
+          proposedPatch: true,
+          currentSnapshot: true,
+          status: true,
+          requestedAt: true,
+          updatedAt: true,
+        } as any,
+      });
+
+      return {
+        ...applyPendingProductPatchToSupplierDto(freshProduct, pendingChangeAfterSave),
+        pendingProductChange: pendingChangeAfterSave ?? null,
+      };
     });
 
     await safeNotifyAdmins({
       type: NotificationType.PRODUCT_CHANGE_SUBMITTED,
-      title: requiresApprovalFlow
+      title: requiresApprovalFlow || touchesShipping
         ? "Live supplier product change submitted"
         : "Supplier product updated",
-      body: `${s.name ?? "A supplier"} ${requiresApprovalFlow ? "submitted changes for" : "updated"
-        } a product: ${(updated as any)?.title ?? (product as any)?.title ?? "Unknown"
-        } (${(updated as any)?.sku ?? (product as any)?.sku ?? id}).`,
+      body: `${s.name ?? "A supplier"} ${(requiresApprovalFlow || touchesShipping) ? "submitted changes for" : "updated"} a product: ${(updated as any)?.title ?? (product as any)?.title ?? "Unknown"} (${(updated as any)?.sku ?? (product as any)?.sku ?? id}).`,
       data: {
         supplierId: s.id,
         supplierName: s.name ?? null,
@@ -3287,7 +3739,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         sku: (updated as any)?.sku ?? (product as any)?.sku ?? null,
         status: (updated as any)?.status ?? (product as any)?.status ?? null,
         source: "supplierProducts.patch",
-        requiresApprovalFlow,
+        requiresApprovalFlow: requiresApprovalFlow || touchesShipping,
       },
     });
 
@@ -3396,6 +3848,7 @@ router.get("/:id", requireAuth, async (req, res) => {
     };
 
     include[productBrandRel] = { select: { id: true, name: true } };
+    include["category"] = { select: { id: true, name: true } };
 
     const p = await prisma.product.findFirst({
       where: {
@@ -3419,143 +3872,6 @@ router.get("/:id", requireAuth, async (req, res) => {
       (s.userId &&
         (String((p as any).ownerId ?? "") === String(s.userId) ||
           String((p as any).userId ?? "") === String(s.userId)));
-
-    const myOffer = (p as any)[productBaseOffersRel]?.[0] ?? null;
-
-    const basePrice = myOffer?.basePrice != null ? Number(myOffer.basePrice) : 0;
-    const baseQty = myOffer?.availableQty ?? (p as any).availableQty ?? 0;
-    const currency = myOffer?.currency ?? "NGN";
-
-    let [attributeValues, attributeTexts] = await Promise.all([
-      prisma.productAttributeOption.findMany({
-        where: { productId: id },
-        select: { attributeId: true, valueId: true },
-      }),
-      prisma.productAttributeText.findMany({
-        where: { productId: id },
-        select: { attributeId: true, value: true },
-      }),
-    ]);
-
-    if (!attributeValues.length) {
-      attributeValues = await prisma.productVariantOption.findMany({
-        where: { variant: { productId: id } } as any,
-        select: { attributeId: true, valueId: true },
-        distinct: ["attributeId", "valueId"] as any,
-      });
-    }
-
-    const attrIds = Array.from(new Set(attributeValues.map((x: any) => String(x.attributeId))));
-    const valIds = Array.from(new Set(attributeValues.map((x: any) => String(x.valueId))));
-
-    const [attrs, vals] = await Promise.all([
-      attrIds.length
-        ? (prisma as any).attribute.findMany({
-          where: { id: { in: attrIds } },
-          select: { id: true, name: true, type: true, isActive: true },
-        })
-        : Promise.resolve([]),
-      valIds.length
-        ? (prisma as any).attributeValue.findMany({
-          where: { id: { in: valIds } },
-          select: {
-            id: true,
-            name: true,
-            code: true,
-            attributeId: true,
-            isActive: true,
-            position: true,
-          },
-        })
-        : Promise.resolve([]),
-    ]);
-
-    const attrById = new Map<string, any>((attrs as any[]).map((a: any) => [String(a.id), a]));
-
-    const valsByAttr = new Map<string, any[]>();
-    for (const v of vals as any[]) {
-      const aid = String(v.attributeId ?? "");
-      if (!aid) continue;
-      const list = valsByAttr.get(aid) ?? [];
-      list.push(v);
-      valsByAttr.set(aid, list);
-    }
-
-    const attributeGuide = attrIds.map((attributeId: any) => {
-      const a = attrById.get(attributeId);
-      const values = (valsByAttr.get(attributeId) ?? [])
-        .map((v: any) => ({
-          id: String(v.id),
-          name: String(v.name ?? ""),
-          code: v.code ?? null,
-        }))
-        .sort((x: any, y: any) => String(x.name).localeCompare(String(y.name)));
-
-      return {
-        attributeId,
-        attributeName: a?.name ?? attributeId,
-        attributeType: a?.type ?? null,
-        values,
-      };
-    });
-
-    const attributeTextGuide = (attributeTexts as any[]).map((t: any) => {
-      const a = attrById.get(String(t.attributeId));
-      return {
-        attributeId: String(t.attributeId),
-        attributeName: a?.name ?? String(t.attributeId),
-        attributeType: a?.type ?? null,
-        value: String(t.value ?? ""),
-      };
-    });
-
-    const variantsRelData = (p as any)[productVariantsRel] ?? [];
-    const variants = Array.isArray(variantsRelData)
-      ? variantsRelData.map((v: any) => {
-        const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
-        return {
-          id: v.id,
-          sku: v.sku,
-          unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
-          availableQty: vo?.availableQty ?? v.availableQty ?? 0,
-          inStock: vo?.inStock ?? v.inStock,
-          isActive: vo?.isActive ?? true,
-          supplierVariantOffer: vo
-            ? {
-              id: vo.id,
-              unitPrice: Number(vo.unitPrice ?? 0),
-              availableQty: vo.availableQty ?? 0,
-              inStock: vo.inStock ?? true,
-              isActive: vo.isActive ?? true,
-              leadDays: vo.leadDays ?? null,
-              currency: vo.currency ?? "NGN",
-              variantId: vo.variantId ?? v.id,
-            }
-            : null,
-          options: Array.isArray(v?.[variantOptionsRel])
-            ? v[variantOptionsRel].map((o: any) => ({
-              attributeId: o.attributeId,
-              valueId: o.valueId,
-            }))
-            : [],
-        };
-      })
-      : [];
-
-    const moderationByProduct = await getLatestModerationByProduct(String(s.id), [id]);
-    const moderation = moderationByProduct[id] ?? {
-      moderationStatus: null,
-      moderationMessage: null,
-      moderationReviewedAt: null,
-    };
-
-    const hasPendingChanges =
-      Boolean((p as any).hasPendingChanges) ||
-      moderation.moderationStatus === "PENDING" ||
-      String((p as any).status ?? "").toUpperCase() === "PENDING";
-
-    const isRejected =
-      !hasPendingChanges && moderation.moderationStatus === "REJECTED";
 
     let pendingProductChanges: any[] = [];
     let pendingOfferChanges: any[] = [];
@@ -3639,6 +3955,179 @@ router.get("/:id", requireAuth, async (req, res) => {
       });
     }
 
+    const latestPendingProductChange =
+      Array.isArray(pendingProductChanges) && pendingProductChanges.length
+        ? pendingProductChanges[0]
+        : null;
+
+    const effectiveProduct = applyPendingProductPatchToSupplierDto(
+      p,
+      latestPendingProductChange
+    );
+
+    const effectiveBrandId = effectiveProduct?.brandId ?? null;
+    const effectiveCategoryId = effectiveProduct?.categoryId ?? null;
+
+    let effectiveBrand = (p as any)[productBrandRel] ?? null;
+    let effectiveCategory = (p as any).category ?? null;
+
+    if (
+      effectiveBrandId &&
+      String(effectiveBrand?.id ?? "") !== String(effectiveBrandId)
+    ) {
+      effectiveBrand = await prisma.brand.findFirst({
+        where: { id: String(effectiveBrandId) },
+        select: { id: true, name: true },
+      });
+    }
+
+    if (
+      effectiveCategoryId &&
+      String(effectiveCategory?.id ?? "") !== String(effectiveCategoryId)
+    ) {
+      effectiveCategory = await prisma.category.findFirst({
+        where: { id: String(effectiveCategoryId) },
+        select: { id: true, name: true },
+      });
+    }
+
+    const myOffer = (p as any)[productBaseOffersRel]?.[0] ?? null;
+
+    const basePrice = myOffer?.basePrice != null ? Number(myOffer.basePrice) : 0;
+    const baseQty = myOffer?.availableQty ?? (p as any).availableQty ?? 0;
+    const currency = myOffer?.currency ?? "NGN";
+
+    let [attributeValues, attributeTexts] = await Promise.all([
+      prisma.productAttributeOption.findMany({
+        where: { productId: id },
+        select: { attributeId: true, valueId: true },
+      }),
+      prisma.productAttributeText.findMany({
+        where: { productId: id },
+        select: { attributeId: true, value: true },
+      }),
+    ]);
+
+    if (!attributeValues.length) {
+      attributeValues = await prisma.productVariantOption.findMany({
+        where: { variant: { productId: id } } as any,
+        select: { attributeId: true, valueId: true },
+        distinct: ["attributeId", "valueId"] as any,
+      });
+    }
+
+    const attrIds = Array.from(new Set(attributeValues.map((x: any) => String(x.attributeId))));
+    const valIds = Array.from(new Set(attributeValues.map((x: any) => String(x.valueId))));
+
+    const [attrs, vals] = await Promise.all([
+      attrIds.length
+        ? (prisma as any).attribute.findMany({
+            where: { id: { in: attrIds } },
+            select: { id: true, name: true, type: true, isActive: true },
+          })
+        : Promise.resolve([]),
+      valIds.length
+        ? (prisma as any).attributeValue.findMany({
+            where: { id: { in: valIds } },
+            select: {
+              id: true,
+              name: true,
+              code: true,
+              attributeId: true,
+              isActive: true,
+              position: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const attrById = new Map<string, any>((attrs as any[]).map((a: any) => [String(a.id), a]));
+
+    const valsByAttr = new Map<string, any[]>();
+    for (const v of vals as any[]) {
+      const aid = String(v.attributeId ?? "");
+      if (!aid) continue;
+      const list = valsByAttr.get(aid) ?? [];
+      list.push(v);
+      valsByAttr.set(aid, list);
+    }
+
+    const attributeGuide = attrIds.map((attributeId: any) => {
+      const a = attrById.get(attributeId);
+      const values = (valsByAttr.get(attributeId) ?? [])
+        .map((v: any) => ({
+          id: String(v.id),
+          name: String(v.name ?? ""),
+          code: v.code ?? null,
+        }))
+        .sort((x: any, y: any) => String(x.name).localeCompare(String(y.name)));
+
+      return {
+        attributeId,
+        attributeName: a?.name ?? attributeId,
+        attributeType: a?.type ?? null,
+        values,
+      };
+    });
+
+    const attributeTextGuide = (attributeTexts as any[]).map((t: any) => {
+      const a = attrById.get(String(t.attributeId));
+      return {
+        attributeId: String(t.attributeId),
+        attributeName: a?.name ?? String(t.attributeId),
+        attributeType: a?.type ?? null,
+        value: String(t.value ?? ""),
+      };
+    });
+
+    const variantsRelData = (p as any)[productVariantsRel] ?? [];
+    const variants = Array.isArray(variantsRelData)
+      ? variantsRelData.map((v: any) => {
+          const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
+          return {
+            id: v.id,
+            sku: v.sku,
+            unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
+            availableQty: vo?.availableQty ?? v.availableQty ?? 0,
+            inStock: vo?.inStock ?? v.inStock,
+            isActive: vo?.isActive ?? true,
+            supplierVariantOffer: vo
+              ? {
+                  id: vo.id,
+                  unitPrice: Number(vo.unitPrice ?? 0),
+                  availableQty: vo.availableQty ?? 0,
+                  inStock: vo.inStock ?? true,
+                  isActive: vo.isActive ?? true,
+                  leadDays: vo.leadDays ?? null,
+                  currency: vo.currency ?? "NGN",
+                  variantId: vo.variantId ?? v.id,
+                }
+              : null,
+            options: Array.isArray(v?.[variantOptionsRel])
+              ? v[variantOptionsRel].map((o: any) => ({
+                  attributeId: o.attributeId,
+                  valueId: o.valueId,
+                }))
+              : [],
+          };
+        })
+      : [];
+
+    const moderationByProduct = await getLatestModerationByProduct(String(s.id), [id]);
+    const moderation = moderationByProduct[id] ?? {
+      moderationStatus: null,
+      moderationMessage: null,
+      moderationReviewedAt: null,
+    };
+
+    const hasPendingChanges =
+      Boolean((p as any).hasPendingChanges) ||
+      moderation.moderationStatus === "PENDING" ||
+      String((p as any).status ?? "").toUpperCase() === "PENDING";
+
+    const isRejected =
+      !hasPendingChanges && moderation.moderationStatus === "REJECTED";
+
     return res.json({
       data: {
         attributeGuide,
@@ -3646,15 +4135,31 @@ router.get("/:id", requireAuth, async (req, res) => {
         attributeValues,
         attributeTexts,
 
-        id: (p as any).id,
-        title: (p as any).title,
-        description: (p as any).description,
-        sku: (p as any).sku,
-        status: (p as any).status,
-        imagesJson: Array.isArray((p as any).imagesJson) ? (p as any).imagesJson : [],
-        categoryId: (p as any).categoryId ?? null,
-        brandId: (p as any).brandId ?? null,
-        brand: (p as any)[productBrandRel] ?? null,
+        id: effectiveProduct.id,
+        title: effectiveProduct.title,
+        description: effectiveProduct.description,
+        sku: effectiveProduct.sku,
+        status: effectiveProduct.status,
+        imagesJson: Array.isArray(effectiveProduct.imagesJson)
+          ? normalizeImagesJson(effectiveProduct.imagesJson)
+          : [],
+        categoryId: effectiveProduct.categoryId ?? null,
+        category: effectiveCategory ?? null,
+        brandId: effectiveProduct.brandId ?? null,
+        brand: effectiveBrand ?? null,
+
+        freeShipping: Boolean(effectiveProduct.freeShipping),
+        weightGrams:
+          effectiveProduct.weightGrams == null ? null : Number(effectiveProduct.weightGrams),
+        lengthCm:
+          effectiveProduct.lengthCm == null ? null : Number(effectiveProduct.lengthCm),
+        widthCm:
+          effectiveProduct.widthCm == null ? null : Number(effectiveProduct.widthCm),
+        heightCm:
+          effectiveProduct.heightCm == null ? null : Number(effectiveProduct.heightCm),
+        isFragile: Boolean(effectiveProduct.isFragile),
+        isBulky: Boolean(effectiveProduct.isBulky),
+        shippingClass: effectiveProduct.shippingClass ?? null,
 
         basePrice,
         currency,
@@ -3662,20 +4167,21 @@ router.get("/:id", requireAuth, async (req, res) => {
 
         offer: myOffer
           ? {
-            id: myOffer.id,
-            basePrice,
-            currency: myOffer.currency,
-            inStock: myOffer.inStock,
-            isActive: myOffer.isActive,
-            leadDays: myOffer.leadDays ?? null,
-            availableQty: myOffer.availableQty ?? 0,
-            ...(myOffer.updatedAt != null ? { updatedAt: myOffer.updatedAt } : {}),
-            ...(myOffer.createdAt != null ? { createdAt: myOffer.createdAt } : {}),
-          }
+              id: myOffer.id,
+              basePrice,
+              currency: myOffer.currency,
+              inStock: myOffer.inStock,
+              isActive: myOffer.isActive,
+              leadDays: myOffer.leadDays ?? null,
+              availableQty: myOffer.availableQty ?? 0,
+              ...(myOffer.updatedAt != null ? { updatedAt: myOffer.updatedAt } : {}),
+              ...(myOffer.createdAt != null ? { createdAt: myOffer.createdAt } : {}),
+            }
           : null,
 
         variants,
 
+        pendingProductChange: latestPendingProductChange ?? null,
         pendingProductChanges,
         productChangeRequests: pendingProductChanges,
 

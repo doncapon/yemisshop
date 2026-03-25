@@ -1,3 +1,4 @@
+// src/pages/supplier/SupplierDashboard.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
@@ -98,8 +99,12 @@ type SupplierMeLite = {
   name?: string | null;
   businessName?: string | null;
   legalName?: string | null;
+  registeredBusinessName?: string | null;
+  registrationNumber?: string | null;
   registrationType?: string | null;
+  registrationDate?: string | null;
   registrationCountryCode?: string | null;
+  natureOfBusiness?: string | null;
   status?: string | null;
   kycStatus?: string | null;
   registeredAddress?: {
@@ -128,6 +133,7 @@ type OnboardingState = {
   businessDone: boolean;
   addressDone: boolean;
   docsDone: boolean;
+  docsVerifiedDone: boolean;
   onboardingDone: boolean;
   nextPath: string;
   progressItems: Array<{ key: string; label: string; done: boolean }>;
@@ -186,6 +192,14 @@ function docSatisfied(docs: SupplierDocumentLite[], kind: string) {
     const k = String(d.kind ?? "").trim().toUpperCase();
     const s = String(d.status ?? "").trim().toUpperCase();
     return k === kind && (s === "PENDING" || s === "APPROVED");
+  });
+}
+
+function docApproved(docs: SupplierDocumentLite[], kind: string) {
+  return docs.some((d) => {
+    const k = String(d.kind ?? "").trim().toUpperCase();
+    const s = String(d.status ?? "").trim().toUpperCase();
+    return k === kind && s === "APPROVED";
   });
 }
 
@@ -375,10 +389,18 @@ export default function SupplierDashboard() {
 
       const contactDone = isEmailVerified(authMe) && isPhoneVerified(authMe);
 
-      const businessDone = Boolean(
+      const businessFieldsPresent = Boolean(
         String(supplierMe?.legalName ?? "").trim() &&
+          String(supplierMe?.registrationNumber ?? "").trim() &&
           String(supplierMe?.registrationType ?? "").trim() &&
-          String(supplierMe?.registrationCountryCode ?? "").trim()
+          String(supplierMe?.registrationDate ?? "").trim() &&
+          String(supplierMe?.registrationCountryCode ?? "").trim() &&
+          String(supplierMe?.natureOfBusiness ?? "").trim() &&
+          (
+            isRegisteredBusiness(supplierMe?.registrationType)
+              ? String(supplierMe?.registeredBusinessName ?? "").trim()
+              : true
+          )
       );
 
       const addressDone =
@@ -393,6 +415,13 @@ export default function SupplierDashboard() {
       ];
 
       const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
+      const docsVerifiedDone = requiredKinds.every((kind) => docApproved(docs, kind));
+
+      // Important:
+      // Business should not rely on sessionStorage here.
+      // If saved business fields are present, treat business as done.
+      // Also, if the supplier has already advanced to address/docs, business cannot still be pending.
+      const businessDone = businessFieldsPresent || addressDone || docsDone || docsVerifiedDone;
 
       const nextPath = !contactDone
         ? "/supplier/verify-contact"
@@ -401,6 +430,8 @@ export default function SupplierDashboard() {
         : !addressDone
         ? "/supplier/onboarding/address"
         : !docsDone
+        ? "/supplier/onboarding/documents"
+        : !docsVerifiedDone
         ? "/supplier/onboarding/documents"
         : "/supplier";
 
@@ -412,13 +443,16 @@ export default function SupplierDashboard() {
         businessDone,
         addressDone,
         docsDone,
-        onboardingDone: contactDone && businessDone && addressDone && docsDone,
+        docsVerifiedDone,
+        onboardingDone:
+          contactDone && businessDone && addressDone && docsDone && docsVerifiedDone,
         nextPath,
         progressItems: [
           { key: "contact", label: "Contact verified", done: contactDone },
           { key: "business", label: "Business details", done: businessDone },
           { key: "address", label: "Address details", done: addressDone },
           { key: "documents", label: "Documents uploaded", done: docsDone },
+          { key: "documentsReview", label: "Document verification", done: docsVerifiedDone },
         ],
       };
     },
@@ -499,9 +533,11 @@ export default function SupplierDashboard() {
     if (p === "/supplier/verify-contact") return "Continue contact verification";
     if (p === "/supplier/onboarding") return "Continue business onboarding";
     if (p === "/supplier/onboarding/address") return "Continue address setup";
-    if (p === "/supplier/onboarding/documents") return "Continue document upload";
+    if (p === "/supplier/onboarding/documents") {
+      return onboarding?.docsDone ? "Continue document verification" : "Continue document upload";
+    }
     return "Go to supplier dashboard";
-  }, [onboarding?.nextPath]);
+  }, [onboarding?.nextPath, onboarding?.docsDone]);
 
   const showOnboardingMode =
     isSupplier && !isRider && !!onboarding && !onboarding.onboardingDone;
@@ -691,6 +727,13 @@ export default function SupplierDashboard() {
                   </Link>
 
                   <Link
+                    to={withSupplierCtx("/supplier/shipping")}
+                    className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
+                  >
+                    Shipping <Truck size={14} />
+                  </Link>
+
+                  <Link
                     to={withSupplierCtx("/supplier/catalog-requests")}
                     className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                   >
@@ -752,7 +795,7 @@ export default function SupplierDashboard() {
 
         {showOnboardingMode ? (
           <>
-            <div className="mt-4 sm:mt-6 grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
+            <div className="mt-4 sm:mt-6 grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-5">
               <Stat
                 label="Contact verification"
                 value={onboarding?.contactDone ? "Done" : "Pending"}
@@ -769,9 +812,19 @@ export default function SupplierDashboard() {
                 icon={<MapPin size={16} />}
               />
               <Stat
-                label="Documents"
+                label="Documents uploaded"
                 value={onboarding?.docsDone ? "Done" : "Pending"}
                 icon={<FileText size={16} />}
+              />
+              <Stat
+                label="Document verification"
+                value={onboarding?.docsVerifiedDone ? "Done" : "Pending"}
+                icon={<CheckCircle2 size={16} />}
+                hint={
+                  onboarding?.docsDone && !onboarding?.docsVerifiedDone
+                    ? "Awaiting admin review"
+                    : undefined
+                }
               />
             </div>
 
@@ -857,6 +910,7 @@ export default function SupplierDashboard() {
                     "Products and new listings",
                     "Order fulfilment actions",
                     "Payout access",
+                    "Shipping settings",
                     "Store settings",
                     "Refund workflow",
                   ].map((x) => (
@@ -948,6 +1002,11 @@ export default function SupplierDashboard() {
                         title: "Fulfill pending orders",
                         desc: "Pack and mark orders as shipped.",
                         to: "/supplier/orders",
+                      },
+                      {
+                        title: "Manage shipping",
+                        desc: "Update shipping profile, flat fees and supplier rate cards.",
+                        to: "/supplier/shipping",
                       },
                       {
                         title: "Review payouts",
@@ -1045,6 +1104,18 @@ export default function SupplierDashboard() {
                         </div>
                       </>
                     )}
+
+                    <Link
+                      to={withSupplierCtx("/supplier/shipping")}
+                      className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
+                    >
+                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
+                        Shipping
+                      </div>
+                      <div className="text-[11px] sm:text-xs text-zinc-600">
+                        Manage your shipping profile, rate cards and quote settings
+                      </div>
+                    </Link>
 
                     <Link
                       to={withSupplierCtx("/supplier/catalog-requests")}

@@ -332,6 +332,14 @@ async function applyProductChangePatchTx(
     proposedPatch?: any;
     product?: {
       supplierId?: string | null;
+      freeShipping?: boolean | null;
+      weightGrams?: number | null;
+      lengthCm?: Prisma.Decimal | number | null;
+      widthCm?: Prisma.Decimal | number | null;
+      heightCm?: Prisma.Decimal | number | null;
+      isFragile?: boolean | null;
+      isBulky?: boolean | null;
+      shippingClass?: string | null;
     } | null;
   }
 ) {
@@ -340,15 +348,97 @@ async function applyProductChangePatchTx(
 
   const productData: any = {};
 
-  if (patch.description !== undefined) productData.description = patch.description ?? "";
-  if (patch.categoryId !== undefined) productData.categoryId = patch.categoryId ?? null;
-  if (patch.brandId !== undefined) productData.brandId = patch.brandId ?? null;
-  if (patch.imagesJson !== undefined) {
-    productData.imagesJson = Array.isArray(patch.imagesJson) ? patch.imagesJson : [];
+  if (patch.title !== undefined) {
+    productData.title = String(patch.title ?? "").trim();
   }
+
+  if (patch.description !== undefined) {
+    productData.description = patch.description ?? "";
+  }
+
+  if (patch.categoryId !== undefined) {
+    productData.categoryId = patch.categoryId == null ? null : String(patch.categoryId);
+  }
+
+  if (patch.brandId !== undefined) {
+    productData.brandId = patch.brandId == null ? null : String(patch.brandId);
+  }
+
+  if (patch.imagesJson !== undefined) {
+    productData.imagesJson = Array.isArray(patch.imagesJson)
+      ? patch.imagesJson.map((x: any) => String(x ?? "").trim()).filter(Boolean)
+      : [];
+  }
+
   if (patch.communicationCost !== undefined) {
     productData.communicationCost =
-      patch.communicationCost == null ? null : toDecimal(patch.communicationCost);
+      patch.communicationCost == null || patch.communicationCost === ""
+        ? null
+        : toDecimal(patch.communicationCost);
+  }
+
+  /* ============================================================
+     SHIPPING FIELDS — APPLY ON APPROVAL
+  ============================================================ */
+  if (patch.freeShipping !== undefined) {
+    productData.freeShipping = !!patch.freeShipping;
+  }
+
+  if (patch.weightGrams !== undefined) {
+    productData.weightGrams =
+      patch.weightGrams == null || patch.weightGrams === ""
+        ? null
+        : Math.max(0, Math.trunc(Number(patch.weightGrams)));
+  }
+
+  if (patch.lengthCm !== undefined) {
+    productData.lengthCm =
+      patch.lengthCm == null || patch.lengthCm === ""
+        ? null
+        : Number(patch.lengthCm);
+  }
+
+  if (patch.widthCm !== undefined) {
+    productData.widthCm =
+      patch.widthCm == null || patch.widthCm === ""
+        ? null
+        : Number(patch.widthCm);
+  }
+
+  if (patch.heightCm !== undefined) {
+    productData.heightCm =
+      patch.heightCm == null || patch.heightCm === ""
+        ? null
+        : Number(patch.heightCm);
+  }
+
+  if (patch.isFragile !== undefined) {
+    productData.isFragile = !!patch.isFragile;
+  }
+
+  if (patch.isBulky !== undefined) {
+    productData.isBulky = !!patch.isBulky;
+  }
+
+  if (patch.shippingClass !== undefined) {
+    productData.shippingClass =
+      patch.shippingClass == null || String(patch.shippingClass).trim() === ""
+        ? null
+        : String(patch.shippingClass).trim();
+  }
+
+  /* ============================================================
+     FREE SHIPPING NORMALIZATION
+     If freeShipping is approved as true, clear parcel fields.
+  ============================================================ */
+  if (productData.freeShipping === true) {
+    productData.weightGrams = null;
+    productData.lengthCm = null;
+    productData.widthCm = null;
+    productData.heightCm = null;
+    productData.isFragile = false;
+    productData.isBulky = false;
+    productData.shippingClass = null;
   }
 
   if (Object.keys(productData).length) {
@@ -1763,24 +1853,42 @@ router.get(
 );
 
 router.post(
-  "/offer-change-requests/:id/approve",
+  "/product-change-requests/:id/approve",
   wrap(async (req: any, res) => {
     const id = requiredString(req.params.id);
 
     const result = await prisma.$transaction(async (tx) => {
-      const row = await tx.supplierOfferChangeRequest.findUnique({
+      const row = await tx.productChangeRequest.findUnique({
         where: { id },
         include: {
-          supplierProductOffer: true,
-          supplierVariantOffer: true,
           product: {
-            select: { id: true, supplierId: true, supplier: { select: { name: true } } },
+            select: {
+              id: true,
+              title: true,
+              sku: true,
+              supplierId: true,
+              description: true,
+              categoryId: true,
+              brandId: true,
+              imagesJson: true,
+              communicationCost: true,
+
+              /* shipping fields needed for approval context */
+              freeShipping: true,
+              weightGrams: true,
+              lengthCm: true,
+              widthCm: true,
+              heightCm: true,
+              isFragile: true,
+              isBulky: true,
+              shippingClass: true,
+            },
           },
         },
       });
 
       if (!row) {
-        return { status: 404, body: { error: "Offer change request not found" } };
+        return { status: 404, body: { error: "Product change request not found" } };
       }
 
       if (row.status !== "PENDING") {
@@ -1790,83 +1898,11 @@ router.post(
         };
       }
 
-      const patch = (row.patchJson ?? {}) as any;
       const productId = String(row.productId);
-      const supplierId = String(row.supplierId ?? row.product?.supplierId ?? "");
 
-      if (row.scope === "BASE_OFFER") {
-        const existingBase =
-          row.supplierProductOffer ??
-          (await tx.supplierProductOffer.findFirst({
-            where: { productId, supplierId },
-          }));
+      await applyProductChangePatchTx(tx, row);
 
-        if (!existingBase) {
-          return { status: 404, body: { error: "Base offer not found for approval" } };
-        }
-
-        const nextAvailableQty = Number(existingBase.availableQty ?? 0);
-        const nextIsActive =
-          patch.isActive !== undefined ? !!patch.isActive : !!existingBase.isActive;
-        const nextPrice =
-          patch.basePrice !== undefined
-            ? Number(patch.basePrice)
-            : Number(existingBase.basePrice ?? 0);
-
-        if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
-          return { status: 400, body: { error: "Approved basePrice must be greater than 0" } };
-        }
-
-        await tx.supplierProductOffer.update({
-          where: { id: existingBase.id },
-          data: {
-            basePrice: toDecimal(nextPrice),
-            currency: patch.currency ?? existingBase.currency ?? "NGN",
-            leadDays: patch.leadDays !== undefined ? patch.leadDays : existingBase.leadDays,
-            isActive: nextIsActive,
-            availableQty: nextAvailableQty,
-            inStock: nextAvailableQty > 0 && nextIsActive,
-          },
-        });
-      } else {
-        const existingVariant =
-          row.supplierVariantOffer ??
-          (await tx.supplierVariantOffer.findFirst({
-            where: { id: row.supplierVariantOfferId ?? "" },
-          }));
-
-        if (!existingVariant) {
-          return { status: 404, body: { error: "Variant offer not found for approval" } };
-        }
-
-        const nextAvailableQty = Number(existingVariant.availableQty ?? 0);
-        const nextIsActive =
-          patch.isActive !== undefined ? !!patch.isActive : !!existingVariant.isActive;
-        const nextUnitPrice =
-          patch.unitPrice !== undefined
-            ? Number(patch.unitPrice)
-            : Number(existingVariant.unitPrice ?? 0);
-
-        if (!Number.isFinite(nextUnitPrice) || nextUnitPrice <= 0) {
-          return { status: 400, body: { error: "Approved unitPrice must be greater than 0" } };
-        }
-
-        await tx.supplierVariantOffer.update({
-          where: { id: existingVariant.id },
-          data: {
-            unitPrice: toDecimal(nextUnitPrice),
-            currency: patch.currency ?? existingVariant.currency ?? "NGN",
-            leadDays: patch.leadDays !== undefined ? patch.leadDays : existingVariant.leadDays,
-            isActive: nextIsActive,
-            availableQty: nextAvailableQty,
-            inStock: nextAvailableQty > 0 && nextIsActive,
-          },
-        });
-      }
-
-      await autoApproveLinkedProductChangesTx(tx, { productId });
-
-      await tx.supplierOfferChangeRequest.update({
+      await tx.productChangeRequest.update({
         where: { id: row.id },
         data: {
           status: "APPROVED",
@@ -1874,10 +1910,13 @@ router.post(
         },
       });
 
-      await recomputeProductStockTx(tx, productId);
       await markProductApprovedOrLiveTx(tx, productId);
+      await recomputeProductStockTx(tx, productId);
 
-      return { status: 200, body: { ok: true, approved: true, id: row.id, productId } };
+      return {
+        status: 200,
+        body: { ok: true, approved: true, id: row.id, productId },
+      };
     });
 
     return res.status(result.status).json(result.body);

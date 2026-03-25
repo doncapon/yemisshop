@@ -125,12 +125,12 @@ function Badge({
     tone === "warning"
       ? "border-amber-200 bg-amber-50 text-amber-800"
       : tone === "danger"
-      ? "border-rose-200 bg-rose-50 text-rose-700"
-      : tone === "success"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-      : tone === "info"
-      ? "border-blue-200 bg-blue-50 text-blue-700"
-      : "border-zinc-200 bg-zinc-50 text-zinc-700";
+        ? "border-rose-200 bg-rose-50 text-rose-700"
+        : tone === "success"
+          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          : tone === "info"
+            ? "border-blue-200 bg-blue-50 text-blue-700"
+            : "border-zinc-200 bg-zinc-50 text-zinc-700";
 
   return (
     <span
@@ -160,11 +160,11 @@ function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
     String(addr.houseNumber ?? "").trim() ||
-      String(addr.streetName ?? "").trim() ||
-      String(addr.city ?? "").trim() ||
-      String(addr.state ?? "").trim() ||
-      String(addr.country ?? "").trim() ||
-      String(addr.postCode ?? "").trim()
+    String(addr.streetName ?? "").trim() ||
+    String(addr.city ?? "").trim() ||
+    String(addr.state ?? "").trim() ||
+    String(addr.country ?? "").trim() ||
+    String(addr.postCode ?? "").trim()
   );
 }
 
@@ -244,36 +244,48 @@ function ModerationPanel({
   item: SupplierProductListItem;
   compact?: boolean;
 }) {
-  const status = item.moderationStatus ?? null;
+  const moderationStatus = String(item.moderationStatus ?? "")
+    .trim()
+    .toUpperCase();
+  const productStatus = String(item.status ?? "").trim().toUpperCase();
   const message = String(item.moderationMessage ?? "").trim();
   const reviewedAt = fmtDateTime(item.moderationReviewedAt);
 
-  if (status === "REJECTED" && message) {
+  const isRejected =
+    moderationStatus === "REJECTED" || productStatus === "REJECTED";
+
+  const isPending =
+    !isRejected &&
+    (moderationStatus === "PENDING" || item.hasPendingChanges === true);
+
+  if (isRejected) {
     return (
       <div
-        className={`rounded-2xl border border-rose-200 bg-rose-50 ${
-          compact ? "px-2.5 py-2" : "px-3 py-2.5"
-        }`}
+        className={`rounded-2xl border border-rose-200 bg-rose-50 ${compact ? "px-2.5 py-2" : "px-3 py-2.5"
+          }`}
       >
         <div className="text-[10px] font-semibold text-rose-800">
-          Product change rejected
+          Product rejected
         </div>
+
         <div className="mt-1 text-[10px] leading-snug text-rose-700 line-clamp-3">
-          {message}
+          {message || "This product was rejected by admin."}
         </div>
+
         {reviewedAt !== "—" ? (
-          <div className="mt-1 text-[10px] text-rose-600">Reviewed {reviewedAt}</div>
+          <div className="mt-1 text-[10px] text-rose-600">
+            Reviewed {reviewedAt}
+          </div>
         ) : null}
       </div>
     );
   }
 
-  if (status === "PENDING" || item.hasPendingChanges) {
+  if (isPending) {
     return (
       <div
-        className={`rounded-2xl border border-amber-200 bg-amber-50 ${
-          compact ? "px-2.5 py-2" : "px-3 py-2.5"
-        }`}
+        className={`rounded-2xl border border-amber-200 bg-amber-50 ${compact ? "px-2.5 py-2" : "px-3 py-2.5"
+          }`}
       >
         <div className="text-[10px] font-semibold text-amber-800">
           Awaiting admin review
@@ -501,8 +513,8 @@ export default function SupplierProductsPage() {
 
       const businessDone = Boolean(
         String(supplierMe?.legalName ?? "").trim() &&
-          String(supplierMe?.registrationType ?? "").trim() &&
-          String(supplierMe?.registrationCountryCode ?? "").trim()
+        String(supplierMe?.registrationType ?? "").trim() &&
+        String(supplierMe?.registrationCountryCode ?? "").trim()
       );
 
       const addressDone =
@@ -854,11 +866,10 @@ export default function SupplierProductsPage() {
                     >
                       <div className="flex items-center gap-3">
                         <div
-                          className={`inline-flex h-9 w-9 items-center justify-center rounded-full ${
-                            item.done
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-amber-100 text-amber-700"
-                          }`}
+                          className={`inline-flex h-9 w-9 items-center justify-center rounded-full ${item.done
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-700"
+                            }`}
                         >
                           {item.done ? <CheckCircle2 size={17} /> : item.icon}
                         </div>
@@ -873,11 +884,10 @@ export default function SupplierProductsPage() {
 
                       <div className="flex items-center gap-2">
                         <span
-                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            item.done
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-amber-100 text-amber-700"
-                          }`}
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.done
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-700"
+                            }`}
                         >
                           {item.done ? "Done" : "Pending"}
                         </span>
@@ -1146,12 +1156,17 @@ export default function SupplierProductsPage() {
                                     {p.inStock ? "In stock" : "Out"}
                                   </Badge>
                                   {low && <Badge tone="warning">Low stock</Badge>}
-                                  {p.moderationStatus === "REJECTED" && (
-                                    <Badge tone="danger">Rejected</Badge>
-                                  )}
-                                  {(p.moderationStatus === "PENDING" || p.hasPendingChanges) && (
-                                    <Badge tone="warning">Pending review</Badge>
-                                  )}
+                                  {(String(p.moderationStatus ?? "").toUpperCase() === "REJECTED" ||
+                                    String(p.status ?? "").toUpperCase() === "REJECTED") ? (
+                                    <Badge tone="danger" className="w-fit">
+                                      Rejected
+                                    </Badge>
+                                  ) : (String(p.moderationStatus ?? "").toUpperCase() === "PENDING" ||
+                                    p.hasPendingChanges) ? (
+                                    <Badge tone="warning" className="w-fit">
+                                      Pending
+                                    </Badge>
+                                  ) : null}
                                 </div>
                               </div>
                             </div>
@@ -1214,11 +1229,10 @@ export default function SupplierProductsPage() {
                                 disabled={!del.canDelete || deleteM.isPending}
                                 title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
                                 onClick={() => confirmAndDelete(p)}
-                                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition ${
-                                  del.canDelete && !deleteM.isPending
-                                    ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
-                                    : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
-                                }`}
+                                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition ${del.canDelete && !deleteM.isPending
+                                  ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                  : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                  }`}
                               >
                                 <Trash2 size={14} /> Delete
                               </button>
@@ -1338,16 +1352,13 @@ export default function SupplierProductsPage() {
                             <td className="py-3 pr-3">
                               <div className="flex flex-col gap-1.5">
                                 <Badge className="w-fit">{p.status}</Badge>
-                                {p.moderationStatus === "REJECTED" && (
-                                  <Badge tone="danger" className="w-fit">
-                                    Rejected
-                                  </Badge>
-                                )}
-                                {(p.moderationStatus === "PENDING" || p.hasPendingChanges) && (
-                                  <Badge tone="warning" className="w-fit">
-                                    Pending
-                                  </Badge>
-                                )}
+                                {(String(p.moderationStatus ?? "").toUpperCase() === "REJECTED" ||
+                                  String(p.status ?? "").toUpperCase() === "REJECTED") ? (
+                                  <Badge tone="danger">Rejected</Badge>
+                                ) : (String(p.moderationStatus ?? "").toUpperCase() === "PENDING" ||
+                                  p.hasPendingChanges) ? (
+                                  <Badge tone="warning">Pending review</Badge>
+                                ) : null}
                               </div>
                             </td>
 
@@ -1394,11 +1405,10 @@ export default function SupplierProductsPage() {
                                     disabled={!del.canDelete || deleteM.isPending}
                                     title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
                                     onClick={() => confirmAndDelete(p)}
-                                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition ${
-                                      del.canDelete && !deleteM.isPending
-                                        ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
-                                        : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
-                                    }`}
+                                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition ${del.canDelete && !deleteM.isPending
+                                      ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                      : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                      }`}
                                   >
                                     <Trash2 size={12} /> Delete
                                   </button>

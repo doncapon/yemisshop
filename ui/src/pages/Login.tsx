@@ -91,10 +91,10 @@ function normRole(r: any): Role {
 
   return (
     x === "ADMIN" ||
-      x === "SUPER_ADMIN" ||
-      x === "SHOPPER" ||
-      x === "SUPPLIER" ||
-      x === "SUPPLIER_RIDER"
+    x === "SUPER_ADMIN" ||
+    x === "SHOPPER" ||
+    x === "SUPPLIER" ||
+    x === "SUPPLIER_RIDER"
       ? x
       : "SHOPPER"
   ) as Role;
@@ -205,7 +205,6 @@ export default function Login() {
     nav(target, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, user?.id, shopperNoticeOpen]);
-
 
   useEffect(() => {
     if (fullyVerified) {
@@ -323,10 +322,6 @@ export default function Login() {
 
     setLoading(true);
     try {
-      // Do NOT clear auth here.
-      // Clearing auth before the new cookie-backed session is confirmed
-      // can cause false logout/race issues on older pages.
-
       try {
         preLoginTimedOutUserKeyRef.current =
           sessionStorage.getItem("auth:timedOutUserKey") || "";
@@ -357,7 +352,6 @@ export default function Login() {
 
       setVerifyToken(vt);
 
-      // supplier flow: stay on login page and show inline email verification tools
       if (roleKey === "SUPPLIER" && !isFullyVerified) {
         suppressAutoRedirectRef.current = true;
         commitLogin(responseProfile, true, vt);
@@ -368,7 +362,6 @@ export default function Login() {
         return;
       }
 
-      // shopper flow: do NOT commit to store yet, show choice first
       if (roleKey === "SHOPPER" && !isFullyVerified) {
         suppressAutoRedirectRef.current = true;
         setPendingShopperProfile(responseProfile);
@@ -377,7 +370,6 @@ export default function Login() {
         return;
       }
 
-      // Confirm the cookie-backed session using canonical /api/auth/me
       const canonicalProfile = (await fetchCanonicalMe()) || responseProfile;
 
       commitLogin(canonicalProfile, needsVer, vt);
@@ -385,7 +377,6 @@ export default function Login() {
       const target = resolvePostLoginTarget(canonicalProfile);
       finalizeNavigate(target);
     } catch (e: any) {
-
       const status = e?.response?.status;
 
       if (status === 403 && e?.response?.data?.needsVerification) {
@@ -515,16 +506,16 @@ export default function Login() {
           <div className="absolute -bottom-32 -left-20 h-[24rem] w-[24rem] rounded-full bg-cyan-300/50 blur-3xl opacity-25 sm:h-[28rem] sm:w-[28rem]" />
         </div>
 
-        <div className="relative grid min-h-[100dvh] place-items-center px-4 py-8 sm:py-10">
+        <div className="relative grid min-h-[100dvh] items-start px-3 pt-2 pb-4 sm:place-items-center sm:px-4 sm:py-10">
           <div className="w-full max-w-md">
-            <div className="mb-4 text-center sm:mb-6">
+            <div className="mb-3 text-center sm:mb-6">
               <div className="flex justify-center">
-                <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/90 px-4 py-2 shadow-sm backdrop-blur">
+                <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/90 px-3 py-1.5 shadow-sm backdrop-blur sm:px-4 sm:py-2">
                   <DaySpringLogo size={26} showText={true} />
                 </div>
               </div>
 
-              <h1 className="mt-4 text-[22px] font-semibold leading-tight text-zinc-900 sm:text-2xl md:text-3xl">
+              <h1 className="mt-3 text-[22px] font-semibold leading-tight text-zinc-900 sm:mt-4 sm:text-2xl md:text-3xl">
                 Sign in
               </h1>
               <p className="mt-1 text-sm text-zinc-600">
@@ -535,7 +526,7 @@ export default function Login() {
             <form
               onSubmit={submit}
               noValidate
-              className="space-y-4 rounded-2xl border bg-white/95 p-4 shadow-sm backdrop-blur sm:space-y-5 sm:p-6"
+              className="space-y-3 rounded-2xl border bg-white/95 p-3 shadow-sm backdrop-blur sm:space-y-5 sm:p-6"
             >
               {err && (
                 <div className="rounded-xl border border-rose-300/60 bg-rose-50 px-3 py-2 text-sm text-rose-700">
@@ -710,7 +701,7 @@ export default function Login() {
                       : "Login"}
               </button>
 
-              <div className="pt-1 text-center text-sm text-zinc-700">
+              <div className="pt-0.5 text-center text-sm text-zinc-700">
                 Don’t have an account?{" "}
                 <Link className="text-fuchsia-700 hover:underline" to="/register">
                   Create one
@@ -718,7 +709,7 @@ export default function Login() {
               </div>
             </form>
 
-            <p className="mt-4 px-4 text-center text-xs text-zinc-500 sm:mt-5">
+            <p className="mt-3 px-2 text-center text-xs text-zinc-500 sm:mt-5 sm:px-4">
               Secured by industry-standard encryption • Need help?{" "}
               <Link className="text-fuchsia-700 hover:underline" to="/support">
                 Contact support
@@ -731,10 +722,10 @@ export default function Login() {
           <div
             role="dialog"
             aria-modal="true"
-            className="fixed inset-0 z-[100] grid place-items-center bg-black/50 px-4 py-6"
+            className="fixed inset-0 z-[100] grid place-items-center bg-black/50 px-4 py-4 sm:py-6"
           >
             <div className="w-full max-w-md overflow-hidden rounded-2xl border bg-white shadow-2xl">
-              <div className="border-b bg-amber-50 px-5 py-4">
+              <div className="border-b bg-amber-50 px-4 py-3 sm:px-5 sm:py-4">
                 <h2 className="text-base font-semibold text-zinc-900 sm:text-lg">
                   Your account email is not yet verified
                 </h2>
@@ -743,7 +734,7 @@ export default function Login() {
                 </p>
               </div>
 
-              <div className="space-y-3 px-5 py-4">
+              <div className="space-y-3 px-4 py-3 sm:px-5 sm:py-4">
                 <div className="rounded-xl border bg-zinc-50 px-3 py-3 text-sm">
                   <div className="font-medium text-zinc-900">{pendingShopperProfile.email}</div>
                   <div className="mt-2 text-zinc-700">
@@ -765,7 +756,7 @@ export default function Login() {
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 gap-2 border-t bg-zinc-50 px-5 py-4 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-2 border-t bg-zinc-50 px-4 py-3 sm:px-5 sm:py-4 sm:grid-cols-3">
                 <button
                   type="button"
                   onClick={handleShopperVerifyNow}
