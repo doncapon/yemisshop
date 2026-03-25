@@ -864,12 +864,10 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
     const ctx = await resolveSupplierContext(req);
     if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
-    const poId = String(req.params?.poId || "").trim();
-    const userId = String(req.user?.id || "").trim();
-    if (!poId) return res.status(400).json({ error: "Missing poId" });
-    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const poId = String(req.params.poId || "").trim();
+    const userId = String(req.user?.id || "");
 
-    const out = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const po = await assertCanDeliverPoTx(tx, {
         poId,
         supplierId: ctx.supplierId,
@@ -877,103 +875,58 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
         userId,
       });
 
-      const poStatus = String(po.status || "").toUpperCase();
-      const allowed = new Set(["SHIPPED", "OUT_FOR_DELIVERY"]);
-      if (!allowed.has(poStatus)) {
-        throw new Error("Delivery OTP can only be requested when PO is SHIPPED / OUT_FOR_DELIVERY");
+      const status = String(po.status || "").toUpperCase();
+      if (!["SHIPPED", "OUT_FOR_DELIVERY"].includes(status)) {
+        throw new Error("PO not deliverable");
       }
 
-      const order = await tx.order.findUnique({
-        where: { id: po.orderId },
-        select: { id: true, userId: true, shippingAddressId: true } as any,
+      // 🔥 CHECK EXISTING ACTIVE OTP
+      const existing = await tx.purchaseOrderDeliveryOtp.findFirst({
+        where: {
+          purchaseOrderId: po.id,
+          verifiedAt: null,
+          consumedAt: null,
+        },
+        orderBy: { createdAt: "desc" },
       });
 
-      if (!order) throw new Error("Order not found");
-
-      const userRow = await (tx as any).user?.findUnique?.({
-        where: { id: order.userId },
-        select: {
-          email: true,
-          ...(hasScalarField("User", "phone") ? { phone: true } : {}),
-        } as any,
-      });
-
-      let addressPhone: string | null = null;
-
-      if (hasScalarField("ShippingAddress", "phone") && order.shippingAddressId) {
-        const addr = await (tx as any).shippingAddress?.findUnique?.({
-          where: { id: order.shippingAddressId },
-          select: { phone: true } as any,
-        });
-        addressPhone = (addr as any)?.phone ?? null;
+      if (existing) {
+        return {
+          reused: true,
+          message: "OTP already active",
+        };
       }
 
-      const email = (userRow as any)?.email ?? null;
-      const phone = addressPhone ?? (userRow as any)?.phone ?? null;
-
+      // 🔥 CREATE NEW OTP
       const otp = sixDigitOtp();
       const salt = newSalt();
-      const codeHash = makeCodeHash(otp, salt);
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-      const existing = await tx.purchaseOrderDeliveryOtp.findFirst({
-        where: { purchaseOrderId: po.id },
-        orderBy: { createdAt: "desc" },
-        select: { id: true },
+      await tx.purchaseOrderDeliveryOtp.create({
+        data: {
+          purchaseOrderId: po.id,
+          orderId: po.orderId,
+          codeHash: makeCodeHash(otp, salt),
+          salt,
+          attempts: 0,
+        },
       });
 
-      if (existing?.id) {
-        await tx.purchaseOrderDeliveryOtp.update({
-          where: { id: existing.id },
-          data: {
-            codeHash,
-            salt,
-            expiresAt,
-            verifiedAt: null,
-            consumedAt: null,
-            attempts: 0,
-            lockedUntil: null,
-            deliveredAt: null,
-            deliveredByUserId: null,
-          },
-        });
-      } else {
-        await tx.purchaseOrderDeliveryOtp.create({
-          data: {
-            purchaseOrderId: po.id,
-            orderId: po.orderId,
-            customerId: String(order.userId),
-            codeHash,
-            salt,
-            expiresAt,
-            attempts: 0,
-          },
-        });
-      }
-
-      const sendReport = await bestEffortSendDeliveryOtp({
+      // 🔥 SEND OTP
+      await bestEffortSendDeliveryOtp({
         orderId: po.orderId,
         purchaseOrderId: po.id,
         otp,
-        email,
-        phone,
       });
 
-      if (!sendReport.hasEmail && !sendReport.hasPhone) {
-        throw new Error("Customer has no email/phone to send delivery OTP.");
-      }
-
       return {
-        expiresAt: expiresAt.toISOString(),
-        sendReport,
+        created: true,
         ...(process.env.NODE_ENV !== "production" ? { devOtp: otp } : {}),
       };
     });
 
-    return res.json({ ok: true, data: out });
+    return res.json({ ok: true, data: result });
   } catch (e: any) {
-    console.error("POST /purchase-orders/:poId/delivery-otp/request failed:", e);
-    return res.status(400).json({ error: e?.message || "Failed to request delivery OTP" });
+    return res.status(400).json({ error: e.message });
   }
 });
 
@@ -988,14 +941,12 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
     const ctx = await resolveSupplierContext(req);
     if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
-    const poId = String(req.params?.poId || "").trim();
-    const userId = String(req.user?.id || "").trim();
-    if (!poId) return res.status(400).json({ error: "Missing poId" });
-    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const poId = String(req.params.poId || "");
+    const userId = String(req.user?.id || "");
+    const code = String(req.body?.code ?? "").replace(/\D/g, "").slice(0, 6);
 
-    const rawOtp = String(req.body?.otp ?? req.body?.code ?? "").trim();
-    if (!/^\d{6}$/.test(rawOtp)) {
-      return res.status(400).json({ error: "OTP must be 6 digits" });
+    if (!code) {
+      return res.status(400).json({ error: "OTP required" });
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -1006,201 +957,82 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         userId,
       });
 
-      const poStatus = String(po.status || "").toUpperCase();
-      if (poStatus === "CANCELED") {
-        throw new Error("Cannot verify delivery OTP for a CANCELED PO");
-      }
-
-      if (poStatus === "DELIVERED") {
-        return {
-          poAlreadyDelivered: true,
-          payout: null,
-          payoutReleaseError: null,
-        };
-      }
-
-      const row = await tx.purchaseOrderDeliveryOtp.findFirst({
+      // 🔥 GET ACTIVE OTP (NO EXPIRY CHECK)
+      const otpRow = await tx.purchaseOrderDeliveryOtp.findFirst({
         where: {
           purchaseOrderId: po.id,
           verifiedAt: null,
           consumedAt: null,
-          expiresAt: { gt: new Date() },
-          OR: [{ lockedUntil: null }, { lockedUntil: { lt: new Date() } }],
         },
         orderBy: { createdAt: "desc" },
-        select: { id: true, codeHash: true, salt: true, attempts: true, lockedUntil: true },
       });
 
-      if (!row) {
-        throw new Error("This OTP has expired. Please request a new one.");
-      }
-
-      const attempt = Number(row.attempts ?? 0);
-      const expected = String(row.codeHash || "");
-      const salt = String(row.salt || "");
-      const actual = makeCodeHash(rawOtp, salt);
-
-      if (!safeEqual(expected, actual)) {
-        const nextAttempts = attempt + 1;
-        const lockAfter = 5;
-        const lockMinutes = 10;
-
-        await tx.purchaseOrderDeliveryOtp.update({
-          where: { id: row.id },
-          data: {
-            attempts: nextAttempts,
-            lockedUntil:
-              nextAttempts >= lockAfter
-                ? new Date(Date.now() + lockMinutes * 60 * 1000)
-                : row.lockedUntil,
-          },
-        });
-
-        throw new Error(
-          nextAttempts >= lockAfter
-            ? "Too many attempts. OTP locked. Please request a new one."
-            : "Invalid OTP"
-        );
+      if (!otpRow) {
+        throw new Error("OTP not found or already used");
       }
 
       const now = new Date();
 
+      // 🔥 LOCK CHECK
+      if (otpRow.lockedUntil && otpRow.lockedUntil > now) {
+        throw new Error("Too many attempts. Try again later.");
+      }
+
+      const isValid =
+        makeCodeHash(code, otpRow.salt) === otpRow.codeHash;
+
+      if (!isValid) {
+        const attempts = (otpRow.attempts ?? 0) + 1;
+
+        await tx.purchaseOrderDeliveryOtp.update({
+          where: { id: otpRow.id },
+          data: {
+            attempts,
+            lockedUntil: attempts >= 5
+              ? new Date(Date.now() + 10 * 60 * 1000)
+              : null,
+          },
+        });
+
+        throw new Error("Invalid OTP");
+      }
+
+      // ✅ SUCCESS → CONSUME OTP
       await tx.purchaseOrderDeliveryOtp.update({
-        where: { id: row.id },
+        where: { id: otpRow.id },
         data: {
           verifiedAt: now,
-          consumedAt: now,
-          deliveredAt: now,
-          deliveredByUserId: userId,
+          consumedAt: now, // 🔥 THIS is your expiry
         },
       });
 
+      // ✅ MARK DELIVERED
       const updatedPo = await tx.purchaseOrder.update({
         where: { id: po.id },
         data: {
           status: "DELIVERED",
           deliveredAt: now,
           deliveredByUserId: userId,
-          deliveredMetaJson: {
-            byRole: req.user?.role,
-            byUserId: userId,
-            riderId: po.riderId ?? null,
-            verifiedAt: now.toISOString(),
-          },
         },
       });
 
-      let payout: any = null;
-      let payoutReleaseError: string | null = null;
-
+      // ✅ RELEASE PAYOUT
+      let payoutError = null;
       try {
-        payout = await releasePayoutForPOTx(tx, updatedPo.id);
-      } catch (err: any) {
-        payoutReleaseError = String(
-          err?.message || "Delivery confirmed, but payout could not be released yet."
-        );
-
-        try {
-          await tx.purchaseOrder.update({
-            where: { id: updatedPo.id },
-            data: {
-              payoutStatus: "PENDING",
-            },
-          });
-        } catch {}
+        await releasePayoutForPOTx(tx, po.id);
+      } catch (e: any) {
+        payoutError = e.message;
       }
-
-      try {
-        const orderRow = await tx.order.findUnique({
-          where: { id: updatedPo.orderId },
-          select: { id: true, userId: true },
-        });
-
-        const orderId = orderRow?.id ?? updatedPo.orderId;
-        const shopperId = orderRow?.userId ? String(orderRow.userId) : null;
-        const supplierIdStr = String(updatedPo.supplierId);
-
-        if (shopperId) {
-          await notifyUser(
-            shopperId,
-            {
-              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-              title: "Order delivered",
-              body: `Your delivery for order ${orderId} is complete.`,
-              data: {
-                orderId,
-                purchaseOrderId: updatedPo.id,
-              },
-            },
-            tx
-          );
-        }
-
-        await notifySupplierBySupplierId(
-          supplierIdStr,
-          {
-            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-            title: "Order delivered",
-            body: payoutReleaseError
-              ? `Purchase order ${updatedPo.id} for order ${orderId} has been delivered, but payout could not be released yet.`
-              : `Purchase order ${updatedPo.id} for order ${orderId} has been delivered. Payout has been released (or queued).`,
-            data: {
-              orderId,
-              purchaseOrderId: updatedPo.id,
-              payoutReleaseError,
-            },
-          },
-          tx
-        );
-
-        await notifyAdmins(
-          {
-            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-            title: "Purchase order delivered",
-            body: payoutReleaseError
-              ? `Purchase order ${updatedPo.id} for order ${orderId} was marked delivered, but payout release failed for now.`
-              : `Purchase order ${updatedPo.id} for order ${orderId} was marked delivered and payout released.`,
-            data: {
-              orderId,
-              purchaseOrderId: updatedPo.id,
-              payoutReleaseError,
-            },
-          },
-          tx
-        );
-      } catch (notifyErr) {
-        console.error("Failed to send delivery notifications:", notifyErr);
-      }
-
-      try {
-        const all = await tx.purchaseOrder.findMany({
-          where: { orderId: updatedPo.orderId },
-          select: { status: true },
-        });
-
-        const allDelivered =
-          all.length > 0 &&
-          all.every((x: any) => String(x.status || "").toUpperCase() === "DELIVERED");
-
-        if (allDelivered) {
-          await tx.order.update({
-            where: { id: updatedPo.orderId },
-            data: { status: "DELIVERED" },
-          });
-        }
-      } catch {}
 
       return {
         po: updatedPo,
-        payout,
-        payoutReleaseError,
+        payoutError,
       };
     });
 
     return res.json({ ok: true, data: result });
   } catch (e: any) {
-    console.error("POST /purchase-orders/:poId/delivery-otp/verify failed:", e);
-    return res.status(400).json({ error: e?.message || "Failed to verify delivery OTP" });
+    return res.status(400).json({ error: e.message });
   }
 });
 
