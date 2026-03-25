@@ -17,7 +17,7 @@ import {
 import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
 
 const router = Router();
-
+const OTP_RESEND_COOLDOWN_SECS = 60; 
 // ✅ ADD this helper near the top (after router const is fine)
 function normRole(role: any): string {
   return String(role ?? "").trim().toUpperCase();
@@ -864,10 +864,12 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
     const ctx = await resolveSupplierContext(req);
     if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
-    const poId = String(req.params.poId || "").trim();
-    const userId = String(req.user?.id || "");
+    const poId = String(req.params?.poId || "").trim();
+    const userId = String(req.user?.id || "").trim();
+    if (!poId) return res.status(400).json({ error: "Missing poId" });
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const result = await prisma.$transaction(async (tx) => {
+    const out = await prisma.$transaction(async (tx) => {
       const po = await assertCanDeliverPoTx(tx, {
         poId,
         supplierId: ctx.supplierId,
@@ -875,12 +877,50 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
         userId,
       });
 
-      const status = String(po.status || "").toUpperCase();
-      if (!["SHIPPED", "OUT_FOR_DELIVERY"].includes(status)) {
-        throw new Error("PO not deliverable");
+      const poStatus = String(po.status || "").toUpperCase();
+      const allowed = new Set(["SHIPPED", "OUT_FOR_DELIVERY"]);
+      if (!allowed.has(poStatus)) {
+        throw new Error("Delivery OTP can only be requested when PO is SHIPPED / OUT_FOR_DELIVERY");
       }
 
-      // 🔥 CHECK EXISTING ACTIVE OTP
+      if (poStatus === "DELIVERED") {
+        throw new Error("Purchase order is already delivered");
+      }
+
+      const order = await tx.order.findUnique({
+        where: { id: po.orderId },
+        select: { id: true, userId: true, shippingAddressId: true } as any,
+      });
+
+      if (!order) throw new Error("Order not found");
+
+      const userRow = await (tx as any).user?.findUnique?.({
+        where: { id: order.userId },
+        select: {
+          email: true,
+          ...(hasScalarField("User", "phone") ? { phone: true } : {}),
+        } as any,
+      });
+
+      let addressPhone: string | null = null;
+
+      if (hasScalarField("ShippingAddress", "phone") && order.shippingAddressId) {
+        const addr = await (tx as any).shippingAddress?.findUnique?.({
+          where: { id: order.shippingAddressId },
+          select: { phone: true } as any,
+        });
+        addressPhone = (addr as any)?.phone ?? null;
+      }
+
+      const email = (userRow as any)?.email ?? null;
+      const phone = addressPhone ?? (userRow as any)?.phone ?? null;
+
+      if (!email && !phone) {
+        throw new Error("Customer has no email/phone to send delivery OTP.");
+      }
+
+      // IMPORTANT:
+      // Do not generate another OTP if one is still active.
       const existing = await tx.purchaseOrderDeliveryOtp.findFirst({
         where: {
           purchaseOrderId: po.id,
@@ -888,45 +928,82 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
           consumedAt: null,
         },
         orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          createdAt: true,
+          lockedUntil: true,
+        },
       });
 
-      if (existing) {
+      const now = new Date();
+
+      if (existing?.lockedUntil && existing.lockedUntil > now) {
+        throw new Error("OTP is temporarily locked due to too many failed attempts. Please try again later.");
+      }
+
+      if (existing?.id) {
+        const sentAgoSecs = Math.floor((now.getTime() - new Date(existing.createdAt).getTime()) / 1000);
+        const cooldownRemaining = Math.max(0, OTP_RESEND_COOLDOWN_SECS - sentAgoSecs);
+
         return {
-          reused: true,
-          message: "OTP already active",
+          alreadyActive: true,
+          message:
+            cooldownRemaining > 0
+              ? `OTP has already been generated. Please wait ${cooldownRemaining}s before trying again.`
+              : "OTP has already been generated for this delivery.",
+          resendAvailableInSec: cooldownRemaining,
         };
       }
 
-      // 🔥 CREATE NEW OTP
       const otp = sixDigitOtp();
       const salt = newSalt();
+      const codeHash = makeCodeHash(otp, salt);
+
+      // Schema requires expiresAt, so populate it,
+      // but verification will NOT use it as the actual expiry rule.
+      const expiresAt = new Date("2099-12-31T23:59:59.999Z");
 
       await tx.purchaseOrderDeliveryOtp.create({
         data: {
           purchaseOrderId: po.id,
           orderId: po.orderId,
-          codeHash: makeCodeHash(otp, salt),
+          customerId: String(order.userId),
+          codeHash,
           salt,
+          expiresAt,
           attempts: 0,
+          lockedUntil: null,
+          verifiedAt: null,
+          consumedAt: null,
+          deliveredAt: null,
+          deliveredByUserId: null,
         },
       });
 
-      // 🔥 SEND OTP
-      await bestEffortSendDeliveryOtp({
+      const sendReport = await bestEffortSendDeliveryOtp({
         orderId: po.orderId,
         purchaseOrderId: po.id,
         otp,
+        email,
+        phone,
       });
 
+      if (!sendReport.hasEmail && !sendReport.hasPhone) {
+        throw new Error("Customer has no email/phone to send delivery OTP.");
+      }
+
       return {
-        created: true,
+        alreadyActive: false,
+        message: "OTP sent to customer.",
+        sendReport,
         ...(process.env.NODE_ENV !== "production" ? { devOtp: otp } : {}),
       };
     });
 
-    return res.json({ ok: true, data: result });
+    return res.json({ ok: true, data: out });
   } catch (e: any) {
-    return res.status(400).json({ error: e.message });
+    console.error("POST /purchase-orders/:poId/delivery-otp/request failed:", e);
+    return res.status(400).json({ error: e?.message || "Failed to request delivery OTP" });
   }
 });
 
