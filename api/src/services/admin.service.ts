@@ -98,35 +98,51 @@ export async function computeProfitForWindow(
 
   const marginPercent = await loadPlatformMarginPercent(prismaClient);
 
-  const payments = await prismaClient.payment.findMany({
-    where: {
-      status: { in: [$Enums.PaymentStatus.PAID, $Enums.PaymentStatus.REFUNDED] },
-      ...(mode === "sales"
-        ? { orderId: { in: scopedOrderIds! } }
+  // 1) PAID payments only drive incoming revenue
+  const paidPayments = await prismaClient.payment.findMany({
+    where:
+      mode === "sales"
+        ? {
+            orderId: { in: scopedOrderIds! },
+            status: $Enums.PaymentStatus.PAID,
+          }
         : {
-          OR: [
-            {
-              status: $Enums.PaymentStatus.PAID,
-              OR: [
-                { paidAt: { gte: from, lte: to } },
-                { paidAt: null, createdAt: { gte: from, lte: to } },
-              ],
-            },
-            {
-              status: $Enums.PaymentStatus.REFUNDED,
-              OR: [
-                { refundedAt: { gte: from, lte: to } },
-                { refundedAt: null, createdAt: { gte: from, lte: to } },
-              ],
-            },
-          ],
-        }),
-    },
+            status: $Enums.PaymentStatus.PAID,
+            OR: [
+              { paidAt: { gte: from, lte: to } },
+              { paidAt: null, createdAt: { gte: from, lte: to } },
+            ],
+          },
     select: {
-      status: true,
+      orderId: true,
       amount: true,
       feeAmount: true,
+    },
+  });
+
+  // 2) REFUND rows drive outgoing refund value
+  const refundedRows = await prismaClient.refund.findMany({
+    where:
+      mode === "sales"
+        ? {
+            orderId: { in: scopedOrderIds! },
+            status: "REFUNDED" as any,
+          }
+        : {
+            status: "REFUNDED" as any,
+            OR: [
+              { paidAt: { gte: from, lte: to } },
+              { paidAt: null, processedAt: { gte: from, lte: to } },
+              {
+                paidAt: null,
+                processedAt: null,
+                createdAt: { gte: from, lte: to },
+              },
+            ],
+          },
+    select: {
       orderId: true,
+      totalAmount: true,
     },
   });
 
@@ -137,24 +153,35 @@ export async function computeProfitForWindow(
   const paidByOrder = new Map<string, number>();
   const refundedByOrder = new Map<string, number>();
 
-  for (const p of payments) {
+  for (const p of paidPayments) {
     const amt = N(p.amount);
     const fee = N(p.feeAmount);
     const oid = String(p.orderId || "");
 
-    if (p.status === $Enums.PaymentStatus.PAID) {
-      revenuePaid += amt;
-      gatewayFees += fee;
-      if (oid) paidByOrder.set(oid, N(paidByOrder.get(oid)) + amt);
-    } else if (p.status === $Enums.PaymentStatus.REFUNDED) {
-      refunds += amt;
-      if (oid) refundedByOrder.set(oid, N(refundedByOrder.get(oid)) + amt);
+    revenuePaid += amt;
+    gatewayFees += fee;
+
+    if (oid) {
+      paidByOrder.set(oid, N(paidByOrder.get(oid)) + amt);
+    }
+  }
+
+  for (const r of refundedRows) {
+    const amt = N(r.totalAmount);
+    const oid = String(r.orderId || "");
+
+    refunds += amt;
+
+    if (oid) {
+      refundedByOrder.set(oid, N(refundedByOrder.get(oid)) + amt);
     }
   }
 
   const revenueNet = revenuePaid - refunds;
 
-  const orderIds = Array.from(new Set([...paidByOrder.keys(), ...refundedByOrder.keys()]));
+  const orderIds = Array.from(
+    new Set([...paidByOrder.keys(), ...refundedByOrder.keys()])
+  );
 
   if (!orderIds.length) {
     return {
@@ -188,6 +215,7 @@ export async function computeProfitForWindow(
   const effectiveFactorFor = (orderTotal: number, orderId: string) => {
     const paid = N(paidByOrder.get(orderId));
     const refunded = N(refundedByOrder.get(orderId));
+
     if (orderTotal <= 0) return 0;
 
     const ratio = (paid - refunded) / orderTotal;
