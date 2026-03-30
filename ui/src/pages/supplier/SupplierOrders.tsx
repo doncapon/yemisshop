@@ -30,6 +30,7 @@ import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 import { AssignRiderControl } from "../../components/supplier/AssignRiderControl";
+import { useSupplierVerificationGate } from "../../hooks/useSupplierVerificationGate";
 
 function Card({
   children,
@@ -262,6 +263,40 @@ export default function SupplierOrders() {
   const isRider = role === "SUPPLIER_RIDER";
   const isSupplierUser = role === "SUPPLIER";
 
+  const verificationQ = useSupplierVerificationGate(hydrated && isSupplierUser);
+  const verificationGate = verificationQ.data?.gate;
+
+  const onboardingBlocked =
+    isSupplierUser &&
+    !verificationQ.isLoading &&
+    !!verificationGate &&
+    verificationGate.isLocked;
+
+  const onboardingProgressItems = verificationGate?.progressItems ?? [];
+
+  const onboardingPct = useMemo(() => {
+    if (!onboardingProgressItems.length) return 0;
+    const done = onboardingProgressItems.filter((x: any) => x.done).length;
+    return Math.round((done / onboardingProgressItems.length) * 100);
+  }, [onboardingProgressItems]);
+
+  const nextStepLabel = useMemo(() => {
+    const gate = verificationGate;
+    if (!gate) return "Continue verification";
+
+    if (!gate.contactDone) return "Continue contact verification";
+    if (!gate.businessDone) return "Continue business onboarding";
+    if (!gate.addressDone) return "Continue address setup";
+    if (gate.hasPendingRequiredDoc) return "Check document re-verification";
+    return "Continue document upload";
+  }, [verificationGate]);
+
+  const lockReason =
+    onboardingBlocked
+      ? verificationGate?.lockReason ||
+        "Your updated documents are currently under review. Payout and payout-related actions stay locked until re-verification is completed."
+      : undefined;
+
   const urlSupplierId = useMemo(() => {
     const v = normStr(searchParams.get("supplierId"));
     return v || undefined;
@@ -335,6 +370,7 @@ export default function SupplierOrders() {
 
   const [deliveryOtpToken, setDeliveryOtpToken] = useState<Record<string, string>>({});
   const [deliveryOtpAutoRequested, setDeliveryOtpAutoRequested] = useState<Record<string, boolean>>({});
+
   const [riderView, setRiderView] = useState<"active" | "delivered">("active");
 
   const [deliveryOtpCode, setDeliveryOtpCode] = useState<Record<string, string>>({});
@@ -383,9 +419,10 @@ export default function SupplierOrders() {
     Record<string, { type: "info" | "error"; text?: React.ReactNode }>
   >({});
   const [payoutPendingByPo, setPayoutPendingByPo] = useState<Record<string, boolean>>({});
-  const payoutBankDetailsLink = withSupplierCtx(
-    "/supplier/settings?focus=payout-bank-details#payout-bank-details"
-  );
+
+  const payoutBankDetailsLink = onboardingBlocked
+    ? (verificationGate?.nextPath || "/supplier/verify-contact")
+    : withSupplierCtx("/supplier/settings?focus=payout-bank-details#payout-bank-details");
 
   const PAGE_SIZES = [10, 20, 50, 100] as const;
   const [pageSize, setPageSize] = useState<number>(20);
@@ -650,12 +687,14 @@ export default function SupplierOrders() {
           type: "error",
           text: isPayoutNotReady ? (
             <span>
-              Supplier is not payout-ready.{" "}
+              {onboardingBlocked
+                ? "Payout actions are locked while your updated documents are under review. "
+                : "Supplier is not payout-ready. "}
               <Link
                 to={payoutBankDetailsLink}
                 className="underline font-semibold text-rose-700 hover:text-rose-800"
               >
-                Add payout bank details
+                {onboardingBlocked ? "Continue verification" : "Add payout bank details"}
               </Link>
             </span>
           ) : (
@@ -722,12 +761,14 @@ export default function SupplierOrders() {
             type: "error",
             text: isPayoutNotReady ? (
               <span>
-                Supplier is not payout-ready (missing bank details or payouts disabled).{" "}
+                {onboardingBlocked
+                  ? "Payout actions are locked while your updated documents are under review. "
+                  : "Supplier is not payout-ready (missing bank details or payouts disabled). "}
                 <Link
                   to={payoutBankDetailsLink}
                   className="underline font-semibold text-rose-700 hover:text-rose-800"
                 >
-                  Add payout bank details
+                  {onboardingBlocked ? "Continue verification" : "Add payout bank details"}
                 </Link>
               </span>
             ) : (
@@ -849,6 +890,8 @@ export default function SupplierOrders() {
   });
 
   function canAttemptReleasePayout(o: SupplierOrder) {
+    if (onboardingBlocked) return false;
+
     const poId = String(o.purchaseOrderId || "").trim();
     if (!poId) return false;
 
@@ -862,6 +905,7 @@ export default function SupplierOrders() {
 
   function shouldShowReleasePayout(o: SupplierOrder) {
     if (isRider) return false;
+    if (onboardingBlocked) return false;
 
     const poId = String(o.purchaseOrderId || "").trim();
     if (!poId) return false;
@@ -988,6 +1032,66 @@ export default function SupplierOrders() {
             )}
           </div>
         </div>
+
+        {onboardingBlocked && (
+          <div className="mt-4 sm:mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <div className="font-semibold">Verification in progress</div>
+                <div className="mt-1 text-amber-800">
+                  Your updated documents are currently under review. Order visibility remains available,
+                  but payout-related actions and further payout bank-detail changes stay locked until re-verification is completed.
+                </div>
+
+                {verificationGate?.hasPendingRequiredDoc && (
+                  <div className="mt-3 rounded-xl border border-amber-300 bg-white/70 px-3 py-2 text-[12px] text-amber-900">
+                    Product, payout, withdrawal, and payout-release actions stay locked until all required documents are approved.
+                  </div>
+                )}
+
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
+                  <div
+                    className="h-full rounded-full bg-amber-500 transition-all"
+                    style={{ width: `${onboardingPct}%` }}
+                  />
+                </div>
+
+                <div className="mt-2 text-[12px] text-amber-800">
+                  Progress: <b>{onboardingPct}%</b>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {onboardingProgressItems.map((item: any) => (
+                    <span
+                      key={item.key}
+                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
+                      }`}
+                    >
+                      {item.label}: {item.done ? "Done" : "Pending"}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="mt-3 text-[12px] text-amber-800">
+                  Supplier status: <b>{String(verificationGate?.supplierStatus ?? "PENDING")}</b>
+                  {" • "}
+                  KYC: <b>{String(verificationGate?.kycStatus ?? "PENDING")}</b>
+                </div>
+              </div>
+
+              <div className="shrink-0">
+                <Link
+                  to={verificationGate?.nextPath || "/supplier/verify-contact"}
+                  className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                >
+                  {nextStepLabel}
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
           <Card className="lg:col-span-2">
@@ -1330,7 +1434,9 @@ export default function SupplierOrders() {
                             className="inline-flex col-span-2 sm:col-span-1 items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                             title={
                               !canAttemptPayout
-                                ? "Available when DELIVERED + OTP verified"
+                                ? onboardingBlocked
+                                  ? lockReason
+                                  : "Available when DELIVERED + OTP verified"
                                 : "Release payout"
                             }
                           >

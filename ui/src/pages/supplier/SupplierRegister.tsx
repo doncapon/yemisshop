@@ -11,11 +11,18 @@ type RegisterSupplierResponse = {
   message: string;
   supplierId?: string;
   tempToken?: string;
-  emailSent?: boolean;
-  phoneOtpSent?: boolean;
+  emailSent?: boolean | string | number | null;
+  phoneOtpSent?: boolean | string | number | null;
 };
 
 const VERIFY_ROUTE = "/supplier/verify-contact";
+
+function asSentFlag(v: unknown) {
+  if (v === true) return true;
+  if (v === 1) return true;
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "true" || s === "1" || s === "yes" || s === "sent";
+}
 
 export default function SupplierRegister() {
   const nav = useNavigate();
@@ -48,7 +55,7 @@ export default function SupplierRegister() {
   const scrollTopOnError = () => {
     try {
       window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch { }
+    } catch {}
   };
 
   useEffect(() => {
@@ -64,16 +71,16 @@ export default function SupplierRegister() {
 
   const onChange =
     (key: keyof typeof form) =>
-      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-        const val = e.target.value;
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      const val = e.target.value;
 
-        setForm((f) => ({
-          ...f,
-          [key]: val,
-        }));
+      setForm((f) => ({
+        ...f,
+        [key]: val,
+      }));
 
-        setErr(null);
-      };
+      setErr(null);
+    };
 
   const legalEntityLabel =
     form.registrationType === "REGISTERED_BUSINESS"
@@ -187,20 +194,52 @@ export default function SupplierRegister() {
         payload
       );
 
-      const emailSent = !!data?.emailSent;
-      const phoneOtpSent = !!data?.phoneOtpSent;
+      const tempToken = String(data?.tempToken || "").trim();
 
-      if (!emailSent && !phoneOtpSent) {
+      try {
+        if (tempToken) {
+          localStorage.setItem("tempToken", tempToken);
+        }
+      } catch {}
+
+      let emailSent = asSentFlag(data?.emailSent);
+      let phoneOtpSent = asSentFlag(data?.phoneOtpSent);
+
+      const verifyCfg = {
+        withCredentials: true,
+        headers: tempToken ? { Authorization: `Bearer ${tempToken}` } : {},
+      };
+
+      if (!emailSent) {
+        try {
+          await api.post(
+            "/api/auth/resend-verification",
+            { email },
+            { withCredentials: true }
+          );
+          emailSent = true;
+        } catch {}
+      }
+
+      if (!phoneOtpSent) {
+        try {
+          await api.post("/api/auth/resend-otp", {}, verifyCfg);
+          phoneOtpSent = true;
+        } catch {}
+      }
+
+      if (!tempToken) {
         throw new Error(
-          data?.message || "Account was created, but verification codes were not sent."
+          "Account was created, but the temporary verification session could not be started."
         );
       }
 
-      try {
-        if (data?.tempToken) {
-          localStorage.setItem("tempToken", data.tempToken);
-        }
-      } catch { }
+      if (!emailSent && !phoneOtpSent) {
+        throw new Error(
+          data?.message ||
+            "Account was created, but email verification and phone OTP could not be sent."
+        );
+      }
 
       nav(VERIFY_ROUTE, {
         replace: true,
@@ -214,7 +253,6 @@ export default function SupplierRegister() {
           flow: "supplier-register",
         },
       });
-
     } catch (e: any) {
       const msg =
         e?.response?.data?.error ||

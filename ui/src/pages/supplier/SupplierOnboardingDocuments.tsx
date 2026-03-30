@@ -3,7 +3,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom";
 import {
     ArrowLeft,
-    ArrowRight,
     BadgeCheck,
     CheckCircle2,
     Clock,
@@ -15,6 +14,7 @@ import {
     ShieldCheck,
     UploadCloud,
     XCircle,
+    Info,
 } from "lucide-react";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
@@ -185,8 +185,8 @@ function normalizeDocumentsResponse(raw: unknown): SupplierDocument[] {
     const candidates: unknown[] = [
         source && typeof source === "object" && "data" in source
             ? (source as { data?: unknown }).data &&
-            typeof (source as { data?: unknown }).data === "object" &&
-            (source as { data?: { data?: SupplierDocument[] } }).data?.data
+              typeof (source as { data?: unknown }).data === "object" &&
+              (source as { data?: { data?: SupplierDocument[] } }).data?.data
             : undefined,
         source && typeof source === "object" && "data" in source
             ? (source as { data?: { documents?: SupplierDocument[] } }).data?.documents
@@ -237,13 +237,13 @@ function statusPillClass(status?: string | null) {
 function extractUploadedFileMeta(payload: unknown): UploadedFileMeta | null {
     const p = payload as
         | {
-            data?: {
-                files?: Array<Record<string, unknown>>;
-                file?: Record<string, unknown>;
-            } | Array<Record<string, unknown>>;
-            files?: Array<Record<string, unknown>>;
-            file?: Record<string, unknown>;
-        }
+              data?: {
+                  files?: Array<Record<string, unknown>>;
+                  file?: Record<string, unknown>;
+              } | Array<Record<string, unknown>>;
+              files?: Array<Record<string, unknown>>;
+              file?: Record<string, unknown>;
+          }
         | Array<Record<string, unknown>>
         | null;
 
@@ -279,8 +279,8 @@ function extractUploadedFileMeta(payload: unknown): UploadedFileMeta | null {
                     typeof candidate.size === "number"
                         ? candidate.size
                         : candidate.size != null
-                            ? Number(candidate.size)
-                            : null,
+                          ? Number(candidate.size)
+                          : null,
             };
         }
     }
@@ -362,8 +362,8 @@ export default function SupplierOnboardingDocuments() {
 
             setErr(
                 errorObj?.response?.data?.error ||
-                errorObj?.response?.data?.message ||
-                "Could not load supplier documents."
+                    errorObj?.response?.data?.message ||
+                    "Could not load supplier documents."
             );
         } finally {
             if (!silent) setLoading(false);
@@ -436,6 +436,10 @@ export default function SupplierOnboardingDocuments() {
         return isSupplierApproved(supplier);
     }, [supplier]);
 
+    const canGoToSupplierHome = useMemo(() => {
+        return progress.docsComplete && !hasUnsavedChanges;
+    }, [progress.docsComplete, hasUnsavedChanges]);
+
     const canGoToDashboard = useMemo(() => {
         return progress.docsComplete && adminApproved && !hasUnsavedChanges;
     }, [progress.docsComplete, adminApproved, hasUnsavedChanges]);
@@ -455,12 +459,6 @@ export default function SupplierOnboardingDocuments() {
         return progress.anyRejected || currentKycStatus === "REJECTED";
     }, [progress.anyRejected, currentKycStatus]);
 
-    useEffect(() => {
-        if (!loading && isFullyActive && !hasUnsavedChanges) {
-            nav("/supplier", { replace: true });
-        }
-    }, [loading, isFullyActive, hasUnsavedChanges, nav]);
-
     const optionalDocs = useMemo(() => {
         return docs
             .filter((d) => d.kind === "OTHER")
@@ -472,22 +470,22 @@ export default function SupplierOnboardingDocuments() {
 
     const onPickFile =
         (kind: SupplierDocumentKind) =>
-            (e: React.ChangeEvent<HTMLInputElement>) => {
-                const file = e.target.files?.[0] || null;
+        (e: React.ChangeEvent<HTMLInputElement>) => {
+            const file = e.target.files?.[0] || null;
 
-                setPending((s) => ({
-                    ...s,
-                    [kind]: {
-                        ...s[kind],
-                        file,
-                        uploading: false,
-                        error: file && file.size <= 0 ? "The selected file is empty." : null,
-                    },
-                }));
+            setPending((s) => ({
+                ...s,
+                [kind]: {
+                    ...s[kind],
+                    file,
+                    uploading: false,
+                    error: file && file.size <= 0 ? "The selected file is empty." : null,
+                },
+            }));
 
-                setSaveState("idle");
-                setErr(null);
-            };
+            setSaveState("idle");
+            setErr(null);
+        };
 
     const clearPendingFile = useCallback((kind: SupplierDocumentKind) => {
         setPending((s) => ({
@@ -568,7 +566,6 @@ export default function SupplierOnboardingDocuments() {
             clearPendingFile(kind);
             setSaveState("saved");
             await load({ silent: true });
-
         } catch (e: unknown) {
             const errorObj = e as {
                 message?: string;
@@ -599,7 +596,7 @@ export default function SupplierOnboardingDocuments() {
     const goToSupplierHome = () => nav("/supplier");
     const goToDashboard = () => nav("/supplier");
 
-    const goNext = () => {
+    const goToSupplierHomeAfterDocs = () => {
         if (hasUnsavedChanges) {
             setErr("You have selected files that are not uploaded yet. Upload them before continuing.");
             return;
@@ -607,11 +604,6 @@ export default function SupplierOnboardingDocuments() {
 
         if (!progress.docsComplete) {
             setErr("Please upload all required documents before continuing.");
-            return;
-        }
-
-        if (!adminApproved) {
-            setErr("Your documents have been submitted. Full dashboard access will unlock after admin approval.");
             return;
         }
 
@@ -651,15 +643,15 @@ export default function SupplierOnboardingDocuments() {
                     {needsResubmission
                         ? "Update your supplier documents"
                         : isAwaitingFinalApproval
-                            ? "Your documents are under review"
-                            : "Upload your supplier documents"}
+                          ? "Your documents are under review"
+                          : "Upload your supplier documents"}
                 </h1>
                 <p className="mt-2 text-sm text-zinc-600">
                     {needsResubmission
                         ? "One or more required documents need to be replaced before onboarding can continue."
                         : isAwaitingFinalApproval
-                            ? "Your required documents have been approved. Your account is awaiting final admin approval."
-                            : "Complete document upload to finish onboarding and unlock supplier access."}
+                          ? "Your required documents have been approved. Your account is now awaiting final admin approval."
+                          : "Complete document upload to finish onboarding and unlock supplier access."}
                 </p>
             </div>
 
@@ -694,7 +686,7 @@ export default function SupplierOnboardingDocuments() {
                 </div>
 
                 <div
-                    className={`${stepBase} ${canGoToDashboard || isAwaitingFinalApproval ? stepDone : stepLocked
+                    className={`${stepBase} ${canGoToSupplierHome || isAwaitingFinalApproval ? stepDone : stepLocked
                         }`}
                 >
                     <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
@@ -808,7 +800,7 @@ export default function SupplierOnboardingDocuments() {
                                 {approvalReady && !adminApproved && !needsResubmission && (
                                     <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-800">
                                         <div>
-                                            All required documents have been submitted. You can visit your supplier home while your profile is under review. Full dashboard access will be enabled after admin approval.
+                                            All required documents have been submitted. You can now go to your supplier home while your profile is under review. Full dashboard access will be enabled after admin approval.
                                         </div>
 
                                         <div className="mt-3">
@@ -841,6 +833,8 @@ export default function SupplierOnboardingDocuments() {
                                             const pendingState = pending[kind];
                                             const labelText = getDocLabel(kind, { isNigerianSeller });
                                             const helperText = getDocHelperText(kind, { isNigerianSeller });
+                                            const isApprovedRequiredDoc =
+                                                !!existing && existing.status === "APPROVED";
 
                                             return (
                                                 <div key={kind} className={panel}>
@@ -860,10 +854,10 @@ export default function SupplierOnboardingDocuments() {
                                                                     className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${existing?.status === "APPROVED"
                                                                         ? "bg-emerald-100 text-emerald-700"
                                                                         : existing?.status === "PENDING"
-                                                                            ? "bg-amber-100 text-amber-700"
-                                                                            : existing?.status === "REJECTED"
-                                                                                ? "bg-rose-100 text-rose-700"
-                                                                                : "bg-zinc-100 text-zinc-700"
+                                                                          ? "bg-amber-100 text-amber-700"
+                                                                          : existing?.status === "REJECTED"
+                                                                            ? "bg-rose-100 text-rose-700"
+                                                                            : "bg-zinc-100 text-zinc-700"
                                                                         }`}
                                                                 >
                                                                     {existing?.status || "Not uploaded"}
@@ -888,6 +882,17 @@ export default function SupplierOnboardingDocuments() {
                                                                 {existing.note ? (
                                                                     <span className="text-rose-700">Note: {existing.note}</span>
                                                                 ) : null}
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {isApprovedRequiredDoc && (
+                                                        <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-800">
+                                                            <div className="flex items-start gap-2">
+                                                                <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                                                                <div>
+                                                                    Uploading a replacement for this required document will submit the new file for admin review. It should not be treated as immediately approved.
+                                                                </div>
                                                             </div>
                                                         </div>
                                                     )}
@@ -931,8 +936,8 @@ export default function SupplierOnboardingDocuments() {
                                                                 {pendingState?.uploading
                                                                     ? "Uploading…"
                                                                     : existing
-                                                                        ? "Replace file"
-                                                                        : "Upload file"}
+                                                                      ? "Replace file"
+                                                                      : "Upload file"}
                                                             </button>
 
                                                             {pendingState?.file && !pendingState?.uploading && (
@@ -985,12 +990,12 @@ export default function SupplierOnboardingDocuments() {
 
                                                                     <span
                                                                         className={`rounded-full px-2.5 py-1 text-xs font-semibold ${doc.status === "APPROVED"
-                                                                                ? "bg-emerald-100 text-emerald-700"
-                                                                                : doc.status === "PENDING"
-                                                                                    ? "bg-amber-100 text-amber-700"
-                                                                                    : doc.status === "REJECTED"
-                                                                                        ? "bg-rose-100 text-rose-700"
-                                                                                        : "bg-zinc-100 text-zinc-700"
+                                                                            ? "bg-emerald-100 text-emerald-700"
+                                                                            : doc.status === "PENDING"
+                                                                              ? "bg-amber-100 text-amber-700"
+                                                                              : doc.status === "REJECTED"
+                                                                                ? "bg-rose-100 text-rose-700"
+                                                                                : "bg-zinc-100 text-zinc-700"
                                                                             }`}
                                                                     >
                                                                         {doc.status || "Uploaded"}
@@ -1070,7 +1075,7 @@ export default function SupplierOnboardingDocuments() {
                                                 Document progress
                                             </h2>
                                             <p className="mt-1 text-sm text-zinc-600">
-                                                Required supplier documents must be uploaded before dashboard access.
+                                                Required supplier documents must be uploaded before supplier home can be unlocked.
                                             </p>
 
                                             <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-200">
@@ -1097,10 +1102,10 @@ export default function SupplierOnboardingDocuments() {
                                                             className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.status === "APPROVED"
                                                                 ? "bg-emerald-100 text-emerald-700"
                                                                 : item.status === "REJECTED"
-                                                                    ? "bg-rose-100 text-rose-700"
-                                                                    : item.status === "PENDING"
-                                                                        ? "bg-amber-100 text-amber-700"
-                                                                        : "bg-zinc-100 text-zinc-700"
+                                                                  ? "bg-rose-100 text-rose-700"
+                                                                  : item.status === "PENDING"
+                                                                    ? "bg-amber-100 text-amber-700"
+                                                                    : "bg-zinc-100 text-zinc-700"
                                                                 }`}
                                                         >
                                                             {item.status === "MISSING" ? "Pending" : item.status}
@@ -1174,8 +1179,8 @@ export default function SupplierOnboardingDocuments() {
                                                         {adminApproved
                                                             ? "Admin approval complete"
                                                             : needsResubmission
-                                                                ? "Action required: replace rejected document(s)"
-                                                                : "Awaiting admin review / approval"}
+                                                              ? "Action required: replace rejected document(s)"
+                                                              : "Awaiting admin review / approval"}
                                                     </span>
                                                 </div>
                                             </div>
@@ -1186,18 +1191,17 @@ export default function SupplierOnboardingDocuments() {
                                                 Dashboard access
                                             </h3>
                                             <p className="mt-1 text-sm text-zinc-600">
-                                                Full dashboard access is enabled after all required documents are uploaded and approved by admin.
+                                                Supplier home is available once required documents are submitted. Full dashboard access is enabled after admin approval.
                                             </p>
 
-                                            {!adminApproved && approvalReady && (
-                                                <button
-                                                    type="button"
-                                                    onClick={goToSupplierHome}
-                                                    className={`${secondaryBtn} mt-4 w-full`}
-                                                >
-                                                    Go to supplier home
-                                                </button>
-                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={goToSupplierHomeAfterDocs}
+                                                disabled={!canGoToSupplierHome}
+                                                className={`${secondaryBtn} mt-4 w-full`}
+                                            >
+                                                Go to supplier home
+                                            </button>
 
                                             <button
                                                 type="button"
@@ -1229,12 +1233,11 @@ export default function SupplierOnboardingDocuments() {
 
                                         <button
                                             type="button"
-                                            onClick={goNext}
-                                            disabled={!canGoToDashboard}
+                                            onClick={goToSupplierHomeAfterDocs}
+                                            disabled={!canGoToSupplierHome}
                                             className={primaryBtn}
                                         >
-                                            Finish onboarding
-                                            <ArrowRight className="ml-2 h-4 w-4" />
+                                            Go to supplier home
                                         </button>
                                     </div>
                                 </div>

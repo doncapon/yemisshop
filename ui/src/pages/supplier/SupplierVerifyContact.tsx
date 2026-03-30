@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
+import { useAuthStore } from "../../store/auth";
 
 type VerifyLocationState = {
   supplierId?: string | null;
@@ -52,14 +53,18 @@ type SupplierMeLite = {
 };
 
 type AuthMeLite = {
+  id?: string | null;
   email?: string | null;
+  role?: string | null;
   phone?: string | null;
   firstName?: string | null;
+  middleName?: string | null;
   lastName?: string | null;
   emailVerified?: boolean | null;
   phoneVerified?: boolean | null;
   emailVerifiedAt?: string | null;
   phoneVerifiedAt?: string | null;
+  status?: string | null;
 };
 
 function maskEmail(v: string) {
@@ -78,6 +83,11 @@ function maskPhone(v: string) {
 function getTempToken() {
   if (typeof window === "undefined") return "";
   return localStorage.getItem("tempToken") || "";
+}
+
+function clearTempToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("tempToken");
 }
 
 function getVerifyConfig() {
@@ -134,6 +144,32 @@ function registrationTypeLabel(v?: string | null) {
   return "—";
 }
 
+function normalizeAuthMePayload(payload: any) {
+  const data = payload?.data ?? payload?.user ?? payload ?? {};
+
+  const id = String(data?.id ?? "").trim();
+  const email = String(data?.email ?? "").trim();
+
+  if (!id || !email) {
+    return null;
+  }
+
+  return {
+    id,
+    email,
+    role: String(data?.role ?? "").trim(),
+    phone: data?.phone ?? null,
+    firstName: data?.firstName ?? null,
+    middleName: data?.middleName ?? null,
+    lastName: data?.lastName ?? null,
+    emailVerified: !!(data?.emailVerified ?? data?.emailVerifiedAt),
+    phoneVerified: !!(data?.phoneVerified ?? data?.phoneVerifiedAt),
+    emailVerifiedAt: data?.emailVerifiedAt ?? null,
+    phoneVerifiedAt: data?.phoneVerifiedAt ?? null,
+    status: data?.status ?? null,
+  };
+}
+
 export default function SupplierVerifyContact() {
   const nav = useNavigate();
   const location = useLocation();
@@ -143,16 +179,16 @@ export default function SupplierVerifyContact() {
   const [summary, setSummary] = useState<VerifySummary | null>(
     state.email || state.phone
       ? {
-          businessName: "",
-          legalName: "",
-          registrationType: "",
-          registrationCountryCode: "",
-          contactFirstName: "",
-          contactLastName: "",
-          registeredBusinessName: "",
-          contactEmail: state.email || "",
-          contactPhone: state.phone || "",
-        }
+        businessName: "",
+        legalName: "",
+        registrationType: "",
+        registrationCountryCode: "",
+        contactFirstName: "",
+        contactLastName: "",
+        registeredBusinessName: "",
+        contactEmail: state.email || "",
+        contactPhone: state.phone || "",
+      }
       : null
   );
 
@@ -171,7 +207,10 @@ export default function SupplierVerifyContact() {
   const [busyVerifyOtp, setBusyVerifyOtp] = useState(false);
   const [checking, setChecking] = useState(true);
   const [loadingSummary, setLoadingSummary] = useState(true);
+  const [finalizingSession, setFinalizingSession] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const hasAutoFinalizedRef = useRef(false);
 
   const nextAfterVerify = state.nextAfterVerify || "/supplier/onboarding";
 
@@ -190,19 +229,12 @@ export default function SupplierVerifyContact() {
         supplierData = ((supplierRes.data as any)?.data ??
           supplierRes.data ??
           {}) as SupplierMeLite;
-      } catch {}
+      } catch { }
 
       try {
         const authRes = await api.get("/api/auth/me", cfg);
-        const authPayload = authRes.data as any;
-        authData = (
-          authPayload?.data?.user ??
-          authPayload?.user ??
-          authPayload?.data ??
-          authPayload ??
-          {}
-        ) as AuthMeLite;
-      } catch {}
+        authData = normalizeAuthMePayload(authRes.data);
+      } catch { }
 
       const resolvedEmail =
         state.email ||
@@ -244,8 +276,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not load supplier registration details."
+        e?.response?.data?.message ||
+        "Could not load supplier registration details."
       );
     } finally {
       setLoadingSummary(false);
@@ -275,21 +307,14 @@ export default function SupplierVerifyContact() {
         withCredentials: true,
       });
 
-      setEmailVerified(
-        !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified
-      );
+      const nextEmailVerified =
+        !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified;
+
+      setEmailVerified(nextEmailVerified);
 
       try {
         const meRes = await api.get("/api/auth/me", cfg);
-        const mePayload = meRes.data as any;
-        const me = (
-          mePayload?.data?.user ??
-          mePayload?.user ??
-          mePayload?.data ??
-          mePayload ??
-          {}
-        ) as AuthMeLite;
-
+        const me = normalizeAuthMePayload(meRes.data);
         setPhoneVerified(isPhoneVerified(me));
       } catch {
         // ignore
@@ -297,11 +322,83 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not load verification status."
+        e?.response?.data?.message ||
+        "Could not load verification status."
       );
     } finally {
       setChecking(false);
+    }
+  };
+
+  const hydrateAuthStoreFromSession = async () => {
+    await useAuthStore.getState().bootstrap();
+
+    const authedUser = useAuthStore.getState().user;
+    if (!authedUser?.id) {
+      throw new Error("Could not hydrate authenticated user.");
+    }
+
+    return authedUser;
+  };
+
+
+  const finalizeVerifiedSession = async () => {
+    if (hasAutoFinalizedRef.current) return;
+
+    hasAutoFinalizedRef.current = true;
+
+    try {
+      setErr(null);
+      setFinalizingSession(true);
+
+      try {
+        await hydrateAuthStoreFromSession();
+        clearTempToken();
+        nav(nextAfterVerify, {
+          replace: true,
+          state: { fromVerifyContact: true },
+        });
+        return;
+      } catch {
+        // no normal session yet
+      }
+
+      const tempToken = getTempToken();
+
+      if (!tempToken) {
+        hasAutoFinalizedRef.current = false;
+        setErr("Verification session expired. Please log in to continue.");
+        return;
+      }
+
+      await api.post(
+        "/api/auth/complete-verified-login",
+        {},
+        {
+          withCredentials: true,
+          headers: {
+            Authorization: `Bearer ${tempToken}`,
+          },
+        }
+      );
+
+      clearTempToken();
+      await hydrateAuthStoreFromSession();
+
+      nav(nextAfterVerify, {
+        replace: true,
+        state: { fromVerifyContact: true },
+      });
+
+    } catch (e: any) {
+      hasAutoFinalizedRef.current = false;
+      setErr(
+        e?.response?.data?.error ||
+        e?.response?.data?.message ||
+        "Your details were verified, but we could not finish signing you in automatically. Please try again."
+      );
+    } finally {
+      setFinalizingSession(false);
     }
   };
 
@@ -321,6 +418,13 @@ export default function SupplierVerifyContact() {
     () => emailVerified && phoneVerified,
     [emailVerified, phoneVerified]
   );
+
+  useEffect(() => {
+    if (canContinue) {
+      finalizeVerifiedSession();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canContinue]);
 
   const resendEmail = async () => {
     try {
@@ -343,8 +447,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not resend email verification."
+        e?.response?.data?.message ||
+        "Could not resend email verification."
       );
     } finally {
       setBusyEmail(false);
@@ -362,8 +466,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not send phone verification code."
+        e?.response?.data?.message ||
+        "Could not send phone verification code."
       );
     } finally {
       setBusyPhone(false);
@@ -412,8 +516,9 @@ export default function SupplierVerifyContact() {
     }
   };
 
-  const continueToOnboarding = () => {
-    nav(nextAfterVerify, { replace: true });
+  const continueToOnboarding = async () => {
+    if (!canContinue) return;
+    await finalizeVerifiedSession();
   };
 
   const stepBase =
@@ -515,11 +620,10 @@ export default function SupplierVerifyContact() {
                         </div>
 
                         <div
-                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            emailVerified
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-amber-100 text-amber-700"
-                          }`}
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${emailVerified
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-700"
+                            }`}
                         >
                           {emailVerified ? "Verified" : "Pending"}
                         </div>
@@ -543,8 +647,8 @@ export default function SupplierVerifyContact() {
                             {busyEmail
                               ? "Sending…"
                               : emailSent
-                              ? "Resend email"
-                              : "Send email"}
+                                ? "Resend email"
+                                : "Send email"}
                           </button>
 
                           <button
@@ -580,11 +684,10 @@ export default function SupplierVerifyContact() {
                         </div>
 
                         <div
-                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            phoneVerified
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-amber-100 text-amber-700"
-                          }`}
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${phoneVerified
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-700"
+                            }`}
                         >
                           {phoneVerified ? "Verified" : "Pending"}
                         </div>
@@ -629,8 +732,8 @@ export default function SupplierVerifyContact() {
                               {busyPhone
                                 ? "Sending…"
                                 : phoneOtpSent
-                                ? "Resend code"
-                                : "Send code"}
+                                  ? "Resend code"
+                                  : "Send code"}
                             </button>
                           </div>
                         )}
@@ -655,10 +758,12 @@ export default function SupplierVerifyContact() {
                   <button
                     type="button"
                     onClick={continueToOnboarding}
-                    disabled={!canContinue}
+                    disabled={!canContinue || finalizingSession}
                     className={`${primaryBtn} min-w-[240px]`}
                   >
-                    Continue to business details
+                    {finalizingSession
+                      ? "Finishing setup…"
+                      : "Continue to business details"}
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </button>
                 </div>

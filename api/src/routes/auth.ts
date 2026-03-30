@@ -435,6 +435,84 @@ router.post(
   })
 );
 
+
+
+// ---------------- COMPLETE VERIFIED LOGIN ----------------
+// Exchanges a temporary verify-session token for a normal authenticated session cookie.
+router.post(
+  "/complete-verified-login",
+  requireVerifySession,
+  wrap(async (req, res) => {
+    const userId = String(req.user?.id ?? "").trim();
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const userSelect = {
+      id: true,
+      email: true,
+      role: true,
+      firstName: true,
+      middleName: true,
+      lastName: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true,
+      status: true,
+      phone: true,
+    } satisfies Prisma.UserSelect;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: userSelect,
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const profile = buildPublicProfile(user);
+    const roleNorm = normRoleLoose(user.role);
+
+    const fullyVerified =
+      !!user.emailVerifiedAt &&
+      (!isPhoneVerificationRequired({ role: user.role, phone: user.phone }) ||
+        !!user.phoneVerifiedAt);
+
+    if (!fullyVerified) {
+      return res.status(400).json({
+        error: "Please verify your email and phone before continuing.",
+        profile,
+      });
+    }
+
+    await activateSupplierIfFullyVerified(user as any);
+
+    const sid = await createUserSession(req, user.id, user.role);
+    const ttlDays = getSessionTtlDays(user.role);
+
+    const token = signAccessJwt(
+      {
+        id: user.id,
+        sub: user.id,
+        email: String(user.email ?? ""),
+        role: roleNorm,
+        k: "access",
+        sid: sid || undefined,
+      } as any,
+      `${ttlDays}d`
+    );
+
+    setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.json({
+      ok: true,
+      profile,
+      needsVerification: false,
+    });
+  })
+);
+
 // ---------------- ME ----------------
 router.get(
   "/me",
@@ -1038,7 +1116,7 @@ router.post("/verify-otp", requireVerifySession, async (req, res) => {
 });
 
 // ---------------- Resend OTP (phone) ----------------
-router.post("/resend-otp", requireAuth, async (req, res) => {
+router.post("/resend-otp", requireVerifySession, async (req, res) => {
   try {
     const userId = String(req.user?.id || "");
     if (!userId) {

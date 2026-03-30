@@ -8,6 +8,7 @@ import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "../../store/auth";
+import { useSupplierVerificationGate } from "../../hooks/useSupplierVerificationGate";
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
@@ -126,9 +127,53 @@ function normalizeHistoryPayload(raw: any): PayoutHistoryDTO {
   };
 }
 
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
 export default function SupplierPayouts() {
+  const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role);
-  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+  const roleNorm = normRole(role);
+  const isAdmin = roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN";
+  const isSupplier = roleNorm === "SUPPLIER";
+
+  const verificationQ = useSupplierVerificationGate(hydrated && isSupplier);
+  const verificationGate = verificationQ.data?.gate;
+
+  const onboardingBlocked =
+    isSupplier &&
+    !verificationQ.isLoading &&
+    !!verificationGate &&
+    verificationGate.isLocked;
+
+  const onboardingProgressItems = verificationGate?.progressItems ?? [];
+
+  const onboardingPct = useMemo(() => {
+    if (!onboardingProgressItems.length) return 0;
+    const done = onboardingProgressItems.filter((x: any) => x.done).length;
+    return Math.round((done / onboardingProgressItems.length) * 100);
+  }, [onboardingProgressItems]);
+
+  const nextStepLabel = useMemo(() => {
+    const gate = verificationGate;
+    if (!gate) return "Continue verification";
+
+    if (!gate.contactDone) return "Continue contact verification";
+    if (!gate.businessDone) return "Continue business onboarding";
+    if (!gate.addressDone) return "Continue address setup";
+    if (gate.hasPendingRequiredDoc) return "Check document re-verification";
+    return "Continue document upload";
+  }, [verificationGate]);
+
+  const lockReason = onboardingBlocked
+    ? verificationGate?.lockReason ||
+      "Your updated documents are currently under review. Payout actions stay locked until re-verification is completed."
+    : undefined;
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -210,7 +255,7 @@ export default function SupplierPayouts() {
     return normalizeHistoryPayload(res.data);
   }
 
-  const enabled = !isAdmin || !!adminSupplierId;
+  const enabled = (!isAdmin || !!adminSupplierId) && (!isSupplier || !!hydrated);
 
   const summaryQ = useQuery({
     queryKey: ["supplier-payouts", "summary", { supplierId: adminSupplierId }],
@@ -277,12 +322,24 @@ export default function SupplierPayouts() {
               >
                 Back to overview <ArrowRight size={16} />
               </Link>
-              <Link
-                to={withSupplierCtx("/supplier/settings")}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/15"
-              >
-                Update payout details <ArrowRight size={16} />
-              </Link>
+
+              {onboardingBlocked ? (
+                <button
+                  type="button"
+                  disabled
+                  title={lockReason}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm text-white/70 cursor-not-allowed"
+                >
+                  Update payout details <ArrowRight size={16} />
+                </button>
+              ) : (
+                <Link
+                  to={withSupplierCtx("/supplier/settings")}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/15"
+                >
+                  Update payout details <ArrowRight size={16} />
+                </Link>
+              )}
             </div>
 
             {isAdmin && !adminSupplierId ? (
@@ -291,9 +348,14 @@ export default function SupplierPayouts() {
               </div>
             ) : null}
 
+            {isSupplier && verificationQ.isLoading && (
+              <div className="mt-3 text-xs text-white/80">Checking verification status…</div>
+            )}
+
             {(summaryQ.isLoading || summaryQ.isFetching) && (
               <div className="mt-3 text-xs text-white/80">Loading payout summary…</div>
             )}
+
             {summaryQ.isError && (
               <div className="mt-3 text-xs text-white/90">
                 Failed to load summary.{" "}
@@ -304,6 +366,65 @@ export default function SupplierPayouts() {
             )}
           </div>
         </div>
+
+        {onboardingBlocked && (
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <div className="font-semibold">Verification in progress</div>
+                <div className="mt-1 text-amber-800">
+                  Your payout history remains visible, but payout-related actions are locked until supplier verification is complete.
+                </div>
+
+                {verificationGate?.hasPendingRequiredDoc && (
+                  <div className="mt-3 rounded-xl border border-amber-300 bg-white/70 px-3 py-2 text-[12px] text-amber-900">
+                    Your updated documents are currently under review. Payout actions stay locked until re-verification is completed.
+                  </div>
+                )}
+
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
+                  <div
+                    className="h-full rounded-full bg-amber-500 transition-all"
+                    style={{ width: `${onboardingPct}%` }}
+                  />
+                </div>
+
+                <div className="mt-2 text-[12px] text-amber-800">
+                  Progress: <b>{onboardingPct}%</b>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {onboardingProgressItems.map((item: any) => (
+                    <span
+                      key={item.key}
+                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
+                      }`}
+                    >
+                      {item.label}: {item.done ? "Done" : "Pending"}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="mt-3 text-[12px] text-amber-800">
+                  Supplier status: <b>{String(verificationGate?.supplierStatus ?? "PENDING")}</b>
+                  {" • "}
+                  KYC: <b>{String(verificationGate?.kycStatus ?? "PENDING")}</b>
+                </div>
+              </div>
+
+              <div className="shrink-0">
+                <Link
+                  to={verificationGate?.nextPath || "/supplier/verify-contact"}
+                  className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                >
+                  {nextStepLabel}
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card
