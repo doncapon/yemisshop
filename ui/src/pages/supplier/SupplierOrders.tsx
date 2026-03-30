@@ -294,7 +294,18 @@ export default function SupplierOrders() {
   const lockReason =
     onboardingBlocked
       ? verificationGate?.lockReason ||
-        "Your updated documents are currently under review. Payout and payout-related actions stay locked until re-verification is completed."
+      "Your updated documents are currently under review. Payout and payout-related actions stay locked until re-verification is completed."
+      : undefined;
+
+
+  const ridersLocked =
+    onboardingBlocked &&
+    !!verificationGate?.hasPendingRequiredDoc;
+
+  const ridersLockReason =
+    ridersLocked
+      ? verificationGate?.lockReason ||
+      "Your updated documents are under review. Rider management is locked until verification is completed."
       : undefined;
 
   const urlSupplierId = useMemo(() => {
@@ -997,15 +1008,25 @@ export default function SupplierOrders() {
                 Overview <ArrowRight size={14} />
               </Link>
 
-              {(isSupplierUser || isAdmin) && (
-                <Link
-                  to={withSupplierCtx("/supplier/riders")}
-                  className="inline-flex items-center justify-center gap-2 rounded-full bg-white/15 text-white px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/30 hover:bg-white/20"
-                  title="Invite and manage riders"
-                >
-                  <Users size={14} /> Riders
-                </Link>
-              )}
+              {(isSupplierUser || isAdmin) &&
+                (ridersLocked ? (
+                  <button
+                    type="button"
+                    disabled
+                    title={ridersLockReason}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white/10 text-white/70 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/20 cursor-not-allowed opacity-70"
+                  >
+                    <Users size={14} /> Riders locked
+                  </button>
+                ) : (
+                  <Link
+                    to={withSupplierCtx("/supplier/riders")}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white/15 text-white px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/30 hover:bg-white/20"
+                    title="Invite and manage riders"
+                  >
+                    <Users size={14} /> Riders
+                  </Link>
+                ))}
             </div>
 
             {!hydrated ? (
@@ -1064,9 +1085,8 @@ export default function SupplierOrders() {
                   {onboardingProgressItems.map((item: any) => (
                     <span
                       key={item.key}
-                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                        item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
-                      }`}
+                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
+                        }`}
                     >
                       {item.label}: {item.done ? "Done" : "Pending"}
                     </span>
@@ -1079,6 +1099,25 @@ export default function SupplierOrders() {
                   KYC: <b>{String(verificationGate?.kycStatus ?? "PENDING")}</b>
                 </div>
               </div>
+
+              <div className="shrink-0">
+                <Link
+                  to={verificationGate?.nextPath || "/supplier/verify-contact"}
+                  className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                >
+                  {nextStepLabel}
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </div>
+
+
+              {ridersLocked && (
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  <b>Rider management locked:</b> You cannot add or assign riders while your required
+                  verification documents are pending review.
+                </div>
+              )}
+
 
               <div className="shrink-0">
                 <Link
@@ -1369,11 +1408,10 @@ export default function SupplierOrders() {
 
                         {poId && (
                           <span
-                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${
-                              otpVerified
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                : "bg-amber-50 text-amber-700 border-amber-200"
-                            }`}
+                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${otpVerified
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-amber-50 text-amber-700 border-amber-200"
+                              }`}
                           >
                             OTP: {otpVerified ? "VERIFIED" : "NOT VERIFIED"}
                           </span>
@@ -1456,11 +1494,10 @@ export default function SupplierOrders() {
 
                       {poId && payoutMsg[String(o.purchaseOrderId)]?.text ? (
                         <div
-                          className={`text-[12px] ${
-                            payoutMsg[String(o.purchaseOrderId)]?.type === "error"
-                              ? "text-rose-700"
-                              : "text-emerald-700"
-                          }`}
+                          className={`text-[12px] ${payoutMsg[String(o.purchaseOrderId)]?.type === "error"
+                            ? "text-rose-700"
+                            : "text-emerald-700"
+                            }`}
                         >
                           {payoutMsg[String(o.purchaseOrderId)]?.text}
                         </div>
@@ -1495,13 +1532,21 @@ export default function SupplierOrders() {
                         {(isSupplierUser || isAdmin) &&
                           normStatus(o.supplierStatus) === "SHIPPED" &&
                           o.purchaseOrderId && (
-                            <div className="mb-3">
+                            <div className="mb-3 space-y-2">
+                              {ridersLocked && (
+                                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                                  Rider assignment is locked while supplier verification documents are under review.
+                                </div>
+                              )}
+
                               <AssignRiderControl
                                 purchaseOrderId={o.purchaseOrderId}
                                 currentRiderId={o.riderId ?? null}
                                 disabled={
+                                  ridersLocked ||
                                   normStatus(o.supplierStatus) === "DELIVERED" ||
-                                  normStatus(o.supplierStatus) === "CANCELED"
+                                  normStatus(o.supplierStatus) === "CANCELED" ||
+                                  normStatus(o.supplierStatus) === "CANCELLED"
                                 }
                               />
                             </div>
@@ -1666,13 +1711,12 @@ export default function SupplierOrders() {
 
                         {cancelOtpMsg[o.id]?.text ? (
                           <div
-                            className={`mt-2 text-[12px] ${
-                              cancelOtpMsg[o.id].type === "warn"
-                                ? "text-amber-700"
-                                : cancelOtpMsg[o.id].type === "error"
-                                  ? "text-rose-700"
-                                  : "text-emerald-700"
-                            }`}
+                            className={`mt-2 text-[12px] ${cancelOtpMsg[o.id].type === "warn"
+                              ? "text-amber-700"
+                              : cancelOtpMsg[o.id].type === "error"
+                                ? "text-rose-700"
+                                : "text-emerald-700"
+                              }`}
                           >
                             {cancelOtpMsg[o.id].text}
                             {cancelOtpMsg[o.id].type === "warn" ? (
@@ -1742,13 +1786,12 @@ export default function SupplierOrders() {
 
                               {deliveryOtpMsg[poId]?.text ? (
                                 <div
-                                  className={`text-xs ${
-                                    deliveryOtpMsg[poId]?.type === "error"
-                                      ? "text-rose-700"
-                                      : deliveryOtpMsg[poId]?.type === "warn"
-                                        ? "text-amber-700"
-                                        : "text-emerald-700"
-                                  }`}
+                                  className={`text-xs ${deliveryOtpMsg[poId]?.type === "error"
+                                    ? "text-rose-700"
+                                    : deliveryOtpMsg[poId]?.type === "warn"
+                                      ? "text-amber-700"
+                                      : "text-emerald-700"
+                                    }`}
                                 >
                                   {deliveryOtpMsg[poId]?.text}
                                 </div>
@@ -1838,6 +1881,6 @@ export default function SupplierOrders() {
           </Card>
         </div>
       </SupplierLayout>
-    </SiteLayout>
+    </SiteLayout >
   );
 }
