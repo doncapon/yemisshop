@@ -188,6 +188,30 @@ function isRegisteredBusinessType(v: string | null | undefined) {
   return String(v ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
 }
 
+function isPlaceholderBankText(value: unknown) {
+  const v = String(value ?? "").trim().toLowerCase();
+  return (
+    !v ||
+    v === "0" ||
+    v === "00" ||
+    v === "000" ||
+    v === "select bank" ||
+    v === "select bank..." ||
+    v === "account name" ||
+    v === "account number" ||
+    v === "null" ||
+    v === "undefined" ||
+    v === "n/a" ||
+    v === "na" ||
+    v === "-"
+  );
+}
+
+function isZeroOnly(value: unknown) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return !!digits && /^0+$/.test(digits);
+}
+
 function hasMeaningfulBankDetails(source: {
   bankCountry?: string | null;
   bankCode?: string | null;
@@ -197,14 +221,29 @@ function hasMeaningfulBankDetails(source: {
 } | null | undefined) {
   if (!source) return false;
 
-  const bankCountry = norm(source.bankCountry).toUpperCase();
-  const bankCode = norm(source.bankCode);
-  const bankName = norm(source.bankName);
-  const accountName = norm(source.accountName);
-  const accountNumber = norm(source.accountNumber);
+  const bankCountry = String(source.bankCountry ?? "").trim().toUpperCase();
+  const bankCode = String(source.bankCode ?? "").trim();
+  const bankName = String(source.bankName ?? "").trim();
+  const accountName = String(source.accountName ?? "").trim();
+  const accountNumber = String(source.accountNumber ?? "").trim();
+
+  const meaningfulBankCode =
+    !isPlaceholderBankText(bankCode) && !isZeroOnly(bankCode);
+
+  const meaningfulBankName =
+    !isPlaceholderBankText(bankName);
+
+  const meaningfulAccountName =
+    !isPlaceholderBankText(accountName);
+
+  const meaningfulAccountNumber =
+    !isPlaceholderBankText(accountNumber) && !isZeroOnly(accountNumber);
 
   const hasCoreBankFields =
-    !!bankCode || !!bankName || !!accountName || !!accountNumber;
+    meaningfulBankCode ||
+    meaningfulBankName ||
+    meaningfulAccountName ||
+    meaningfulAccountNumber;
 
   const onlyDefaultCountry =
     !bankCountry || bankCountry === "NG" || bankCountry === "NIGERIA";
@@ -413,7 +452,10 @@ export default function SupplierBusinessDetails() {
   const missingSavedBusinessFields = useMemo(() => {
     const items: string[] = [];
     if (!savedBusinessFieldsComplete.legalName) items.push("Legal entity name");
-    if (!savedBusinessFieldsComplete.registeredBusinessName && isRegisteredBusinessType(supplier?.registrationType)) {
+    if (
+      !savedBusinessFieldsComplete.registeredBusinessName &&
+      isRegisteredBusinessType(supplier?.registrationType)
+    ) {
       items.push("Registered business name");
     }
     if (!savedBusinessFieldsComplete.registrationNumber) items.push("Registration number");
@@ -486,10 +528,7 @@ export default function SupplierBusinessDetails() {
   }, [supplier]);
 
   const bankLockedByStatus = useMemo(() => {
-    return (
-      effectiveBankStatus === "VERIFIED" ||
-      effectiveBankStatus === "PENDING"
-    );
+    return effectiveBankStatus === "VERIFIED" || effectiveBankStatus === "PENDING";
   }, [effectiveBankStatus]);
 
   const bankEditable = useMemo(() => {
@@ -505,7 +544,13 @@ export default function SupplierBusinessDetails() {
   }, [businessReadyLive, businessDirty, isBusinessAutosaving]);
 
   const canProceedToDocuments = useMemo(() => {
-    return businessReadyLive && addressDone && !hasUnsavedChanges && !isBusinessAutosaving && !isBankSaving;
+    return (
+      businessReadyLive &&
+      addressDone &&
+      !hasUnsavedChanges &&
+      !isBusinessAutosaving &&
+      !isBankSaving
+    );
   }, [businessReadyLive, addressDone, hasUnsavedChanges, isBusinessAutosaving, isBankSaving]);
 
   const load = useCallback(async () => {
@@ -916,23 +961,23 @@ export default function SupplierBusinessDetails() {
     businessSaveState === "saving"
       ? "Saving business details…"
       : businessSaveState === "saved"
-      ? "Business details saved"
-      : businessSaveState === "error"
-      ? "Business autosave failed"
-      : businessDirty
-      ? "Unsaved business changes"
-      : "Business details up to date";
+        ? "Business details saved"
+        : businessSaveState === "error"
+          ? "Business autosave failed"
+          : businessDirty
+            ? "Unsaved business changes"
+            : "Business details up to date";
 
   const bankSaveStatusText =
     bankSaveState === "saving"
       ? "Saving bank details…"
       : bankSaveState === "saved"
-      ? "Bank details saved"
-      : bankSaveState === "error"
-      ? "Bank save failed"
-      : bankDirty
-      ? "Unsaved bank changes"
-      : "Bank details up to date";
+        ? "Bank details saved"
+        : bankSaveState === "error"
+          ? "Bank save failed"
+          : bankDirty
+            ? "Unsaved bank changes"
+            : "Bank details up to date";
 
   return (
     <SiteLayout>
@@ -1310,8 +1355,8 @@ export default function SupplierBusinessDetails() {
                           bankSaveState === "error"
                             ? "text-rose-600"
                             : bankSaveState === "saving"
-                            ? "text-amber-700"
-                            : "text-zinc-600"
+                              ? "text-amber-700"
+                              : "text-zinc-600"
                         }`}
                       >
                         {bankSaveStatusText}
@@ -1326,8 +1371,8 @@ export default function SupplierBusinessDetails() {
                         {bankSaveState === "saving"
                           ? "Saving bank details…"
                           : bankSaveState === "saved" && !bankDirty
-                          ? "Bank details saved"
-                          : "Save bank details"}
+                            ? "Bank details saved"
+                            : "Save bank details"}
                       </button>
                     </div>
                   </div>
@@ -1453,8 +1498,8 @@ export default function SupplierBusinessDetails() {
                       businessSaveState === "error"
                         ? "text-rose-600"
                         : businessSaveState === "saving"
-                        ? "text-amber-700"
-                        : "text-zinc-600"
+                          ? "text-amber-700"
+                          : "text-zinc-600"
                     }`}
                   >
                     {businessAutosaveStatusText}
