@@ -193,7 +193,8 @@ export default function SupplierBusinessDetails() {
   const location = useLocation();
 
   const [loading, setLoading] = useState(true);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [businessSaveState, setBusinessSaveState] = useState<SaveState>("idle");
+  const [bankSaveState, setBankSaveState] = useState<SaveState>("idle");
   const [err, setErr] = useState<string | null>(null);
 
   const [form, setForm] = useState(EMPTY_FORM);
@@ -209,10 +210,8 @@ export default function SupplierBusinessDetails() {
   const hasHydratedRef = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
 
-  const businessStepStorageKey = useMemo(
-    () => (supplier?.id ? `supplier:onboarding:business-step-saved:${supplier.id}` : ""),
-    [supplier?.id]
-  );
+  const isBusinessAutosaving = businessSaveState === "saving";
+  const isBankSaving = bankSaveState === "saving";
 
   const isRegisteredBusiness = useMemo(
     () => isRegisteredBusinessType(form.registrationType),
@@ -230,7 +229,22 @@ export default function SupplierBusinessDetails() {
         }
         return next;
       });
-      setSaveState("idle");
+
+      if (
+        key === "legalName" ||
+        key === "registeredBusinessName" ||
+        key === "registrationNumber" ||
+        key === "registrationType" ||
+        key === "registrationDate" ||
+        key === "registrationCountryCode" ||
+        key === "registryAuthorityId" ||
+        key === "natureOfBusiness"
+      ) {
+        setBusinessSaveState("idle");
+      } else {
+        setBankSaveState("idle");
+      }
+
       setErr(null);
     };
 
@@ -354,10 +368,7 @@ export default function SupplierBusinessDetails() {
   const missingSavedBusinessFields = useMemo(() => {
     const items: string[] = [];
     if (!savedBusinessFieldsComplete.legalName) items.push("Legal entity name");
-    if (
-      !savedBusinessFieldsComplete.registeredBusinessName &&
-      isRegisteredBusinessType(supplier?.registrationType)
-    ) {
+    if (!savedBusinessFieldsComplete.registeredBusinessName && isRegisteredBusinessType(supplier?.registrationType)) {
       items.push("Registered business name");
     }
     if (!savedBusinessFieldsComplete.registrationNumber) items.push("Registration number");
@@ -418,17 +429,16 @@ export default function SupplierBusinessDetails() {
     return hasDocuments(supplier);
   }, [supplier]);
 
-  const isAutosaving = saveState === "saving";
   const businessReadyLive = draftBusinessDone;
   const bankReadyLive = draftBankDone;
 
   const canProceedToAddress = useMemo(() => {
-    return businessReadyLive && !businessDirty && !isAutosaving;
-  }, [businessReadyLive, businessDirty, isAutosaving]);
+    return businessReadyLive && !businessDirty && !isBusinessAutosaving;
+  }, [businessReadyLive, businessDirty, isBusinessAutosaving]);
 
   const canProceedToDocuments = useMemo(() => {
-    return businessReadyLive && addressDone && !hasUnsavedChanges && !isAutosaving;
-  }, [businessReadyLive, addressDone, hasUnsavedChanges, isAutosaving]);
+    return businessReadyLive && addressDone && !hasUnsavedChanges && !isBusinessAutosaving && !isBankSaving;
+  }, [businessReadyLive, addressDone, hasUnsavedChanges, isBusinessAutosaving, isBankSaving]);
 
   const load = useCallback(async () => {
     try {
@@ -481,12 +491,12 @@ export default function SupplierBusinessDetails() {
   }, [cameFromVerifyContact, hydrateFormFromSupplier]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load, location.key]);
 
   useEffect(() => {
-    const onFocus = () => load();
-    const onPageShow = () => load();
+    const onFocus = () => void load();
+    const onPageShow = () => void load();
 
     window.addEventListener("focus", onFocus);
     window.addEventListener("pageshow", onPageShow);
@@ -522,7 +532,7 @@ export default function SupplierBusinessDetails() {
   const bankStatus = (supplier?.bankVerificationStatus ?? "UNVERIFIED") as BankVerificationStatus;
   const bankLockedByStatus = bankStatus === "VERIFIED" || bankStatus === "PENDING";
   const bankEditable = !bankLockedByStatus || bankEditUnlocked;
-  const bankFieldsDisabled = !bankEditable || loading || saveState === "saving";
+  const bankFieldsDisabled = !bankEditable || loading || isBankSaving;
 
   const countryBanks = useMemo(() => {
     const country = form.bankCountry || "NG";
@@ -573,7 +583,7 @@ export default function SupplierBusinessDetails() {
       bankName: name || "",
       bankCode: match ? normCode(match.code) : "",
     }));
-    setSaveState("idle");
+    setBankSaveState("idle");
     setErr(null);
   }
 
@@ -585,13 +595,13 @@ export default function SupplierBusinessDetails() {
       bankCode: c,
       bankName: match?.name || f.bankName || "",
     }));
-    setSaveState("idle");
+    setBankSaveState("idle");
     setErr(null);
   }
 
-  const save = useCallback(async () => {
+  const saveBusinessOnly = useCallback(async () => {
     try {
-      setSaveState("saving");
+      setBusinessSaveState("saving");
       setErr(null);
 
       const payload: any = {
@@ -606,16 +616,6 @@ export default function SupplierBusinessDetails() {
         registryAuthorityId: form.registryAuthorityId.trim() || null,
         natureOfBusiness: form.natureOfBusiness.trim() || null,
       };
-
-      const shouldSubmitBankPayload = bankEditable && bankDirty;
-
-      if (shouldSubmitBankPayload) {
-        payload.bankCountry = form.bankCountry.trim() || null;
-        payload.bankCode = normCode(form.bankCode) || null;
-        payload.bankName = form.bankName.trim() || null;
-        payload.accountName = form.accountName.trim() || null;
-        payload.accountNumber = form.accountNumber.replace(/\D/g, "").trim() || null;
-      }
 
       const { data } = await api.put("/api/supplier/me", payload, {
         withCredentials: true,
@@ -653,30 +653,64 @@ export default function SupplierBusinessDetails() {
         } catch {}
       }
 
-      setSaveState("saved");
-      setBankEditUnlocked(false);
+      setBusinessSaveState("saved");
     } catch (e: any) {
-      setSaveState("error");
+      setBusinessSaveState("error");
       setErr(
         e?.response?.data?.error ||
           e?.response?.data?.message ||
-          "Could not save onboarding details."
+          "Could not save business details."
       );
     }
-  }, [bankDirty, bankEditable, form, hydrateFormFromSupplier, isRegisteredBusiness]);
+  }, [form, hydrateFormFromSupplier, isRegisteredBusiness]);
+
+  const saveBankDetails = useCallback(async () => {
+    try {
+      if (!bankEditable) return;
+
+      setBankSaveState("saving");
+      setErr(null);
+
+      const payload: any = {
+        bankCountry: form.bankCountry.trim() || null,
+        bankCode: normCode(form.bankCode) || null,
+        bankName: form.bankName.trim() || null,
+        accountName: form.accountName.trim() || null,
+        accountNumber: form.accountNumber.replace(/\D/g, "").trim() || null,
+      };
+
+      const { data } = await api.put("/api/supplier/me", payload, {
+        withCredentials: true,
+      });
+
+      const s = normalizeSupplierPayload(data);
+      setSupplier(s);
+      hydrateFormFromSupplier(s, true);
+
+      setBankSaveState("saved");
+      setBankEditUnlocked(false);
+    } catch (e: any) {
+      setBankSaveState("error");
+      setErr(
+        e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          "Could not save bank details."
+      );
+    }
+  }, [bankEditable, form, hydrateFormFromSupplier]);
 
   useEffect(() => {
     if (!hasHydratedRef.current) return;
     if (loading) return;
-    if (!hasUnsavedChanges) return;
-    if (saveState === "saving") return;
+    if (!businessDirty) return;
+    if (isBusinessAutosaving) return;
 
     if (autosaveTimerRef.current) {
       window.clearTimeout(autosaveTimerRef.current);
     }
 
     autosaveTimerRef.current = window.setTimeout(() => {
-      void save();
+      void saveBusinessOnly();
     }, 800);
 
     return () => {
@@ -684,7 +718,7 @@ export default function SupplierBusinessDetails() {
         window.clearTimeout(autosaveTimerRef.current);
       }
     };
-  }, [form, hasUnsavedChanges, loading, saveState, save]);
+  }, [businessDirty, loading, isBusinessAutosaving, saveBusinessOnly, form]);
 
   useEffect(() => {
     return () => {
@@ -700,7 +734,7 @@ export default function SupplierBusinessDetails() {
       return;
     }
 
-    if (isAutosaving || businessDirty) {
+    if (isBusinessAutosaving || businessDirty) {
       setErr("Please wait for your business details to finish saving before continuing.");
       return;
     }
@@ -714,8 +748,8 @@ export default function SupplierBusinessDetails() {
       return;
     }
 
-    if (isAutosaving || hasUnsavedChanges) {
-      setErr("Please wait for your changes to finish saving before continuing.");
+    if (isBusinessAutosaving || isBankSaving || hasUnsavedChanges) {
+      setErr("Please save all pending changes before continuing.");
       return;
     }
 
@@ -810,20 +844,32 @@ export default function SupplierBusinessDetails() {
       progress.bankDone &&
       progress.docsDone &&
       !hasUnsavedChanges &&
-      !isAutosaving
+      !isBusinessAutosaving &&
+      !isBankSaving
     );
-  }, [progress, hasUnsavedChanges, isAutosaving]);
+  }, [progress, hasUnsavedChanges, isBusinessAutosaving, isBankSaving]);
 
-  const autosaveStatusText =
-    saveState === "saving"
-      ? "Saving changes…"
-      : saveState === "saved"
-      ? "All changes saved"
-      : saveState === "error"
-      ? "Autosave failed"
-      : hasUnsavedChanges
-      ? "Unsaved changes"
-      : "Up to date";
+  const businessAutosaveStatusText =
+    businessSaveState === "saving"
+      ? "Saving business details…"
+      : businessSaveState === "saved"
+      ? "Business details saved"
+      : businessSaveState === "error"
+      ? "Business autosave failed"
+      : businessDirty
+      ? "Unsaved business changes"
+      : "Business details up to date";
+
+  const bankSaveStatusText =
+    bankSaveState === "saving"
+      ? "Saving bank details…"
+      : bankSaveState === "saved"
+      ? "Bank details saved"
+      : bankSaveState === "error"
+      ? "Bank save failed"
+      : bankDirty
+      ? "Unsaved bank changes"
+      : "Bank details up to date";
 
   return (
     <SiteLayout>
@@ -878,9 +924,15 @@ export default function SupplierBusinessDetails() {
               </div>
             </div>
 
-            {hasUnsavedChanges && (
+            {businessDirty && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Changes are being saved automatically. Please wait before moving to the next step.
+                Business changes are being saved automatically. Please wait before moving to the next step.
+              </div>
+            )}
+
+            {bankDirty && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                You have unsaved bank changes. Use the bank save button before continuing.
               </div>
             )}
 
@@ -892,7 +944,7 @@ export default function SupplierBusinessDetails() {
 
             {draftBankDone && !savedBankDone && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Bank details look complete. Autosave will store them shortly.
+                Bank details look complete, but they are not saved yet.
               </div>
             )}
 
@@ -1090,7 +1142,7 @@ export default function SupplierBusinessDetails() {
                               bankCode: "",
                               bankName: "",
                             }));
-                            setSaveState("idle");
+                            setBankSaveState("idle");
                             setErr(null);
                           }}
                           disabled={bankFieldsDisabled}
@@ -1175,7 +1227,7 @@ export default function SupplierBusinessDetails() {
                               ...f,
                               accountNumber: e.target.value.replace(/\D/g, "").slice(0, 16),
                             }));
-                            setSaveState("idle");
+                            setBankSaveState("idle");
                             setErr(null);
                           }}
                           disabled={bankFieldsDisabled}
@@ -1187,6 +1239,33 @@ export default function SupplierBusinessDetails() {
                           placeholder="Account number"
                         />
                       </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                      <span
+                        className={`text-sm ${
+                          bankSaveState === "error"
+                            ? "text-rose-600"
+                            : bankSaveState === "saving"
+                            ? "text-amber-700"
+                            : "text-zinc-600"
+                        }`}
+                      >
+                        {bankSaveStatusText}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => void saveBankDetails()}
+                        disabled={!bankEditable || !bankDirty || isBankSaving}
+                        className={secondaryBtn}
+                      >
+                        {bankSaveState === "saving"
+                          ? "Saving bank details…"
+                          : bankSaveState === "saved" && !bankDirty
+                          ? "Bank details saved"
+                          : "Save bank details"}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1308,14 +1387,14 @@ export default function SupplierBusinessDetails() {
                 <div className="flex items-center gap-3">
                   <span
                     className={`text-sm ${
-                      saveState === "error"
+                      businessSaveState === "error"
                         ? "text-rose-600"
-                        : saveState === "saving"
+                        : businessSaveState === "saving"
                         ? "text-amber-700"
                         : "text-zinc-600"
                     }`}
                   >
-                    {autosaveStatusText}
+                    {businessAutosaveStatusText}
                   </span>
 
                   <button
