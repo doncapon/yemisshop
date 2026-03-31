@@ -354,7 +354,10 @@ export default function SupplierBusinessDetails() {
   const missingSavedBusinessFields = useMemo(() => {
     const items: string[] = [];
     if (!savedBusinessFieldsComplete.legalName) items.push("Legal entity name");
-    if (!savedBusinessFieldsComplete.registeredBusinessName && isRegisteredBusinessType(supplier?.registrationType)) {
+    if (
+      !savedBusinessFieldsComplete.registeredBusinessName &&
+      isRegisteredBusinessType(supplier?.registrationType)
+    ) {
       items.push("Registered business name");
     }
     if (!savedBusinessFieldsComplete.registrationNumber) items.push("Registration number");
@@ -604,7 +607,9 @@ export default function SupplierBusinessDetails() {
         natureOfBusiness: form.natureOfBusiness.trim() || null,
       };
 
-      if (bankEditable) {
+      const shouldSubmitBankPayload = bankEditable && bankDirty;
+
+      if (shouldSubmitBankPayload) {
         payload.bankCountry = form.bankCountry.trim() || null;
         payload.bankCode = normCode(form.bankCode) || null;
         payload.bankName = form.bankName.trim() || null;
@@ -658,7 +663,7 @@ export default function SupplierBusinessDetails() {
           "Could not save onboarding details."
       );
     }
-  }, [bankEditable, form, hydrateFormFromSupplier, isRegisteredBusiness]);
+  }, [bankDirty, bankEditable, form, hydrateFormFromSupplier, isRegisteredBusiness]);
 
   useEffect(() => {
     if (!hasHydratedRef.current) return;
@@ -671,7 +676,7 @@ export default function SupplierBusinessDetails() {
     }
 
     autosaveTimerRef.current = window.setTimeout(() => {
-      save();
+      void save();
     }, 800);
 
     return () => {
