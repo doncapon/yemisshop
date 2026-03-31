@@ -210,7 +210,6 @@ function hasMeaningfulBankDetails(source: {
     !bankCountry || bankCountry === "NG" || bankCountry === "NIGERIA";
 
   if (!hasCoreBankFields && onlyDefaultCountry) return false;
-
   return hasCoreBankFields;
 }
 
@@ -228,11 +227,9 @@ function getEffectiveBankStatus(
 
   if (status === "VERIFIED") return "VERIFIED";
   if (status === "REJECTED") return "REJECTED";
-
   if (status === "PENDING") {
     return hasMeaningfulBankDetails(source) ? "PENDING" : "UNVERIFIED";
   }
-
   return "UNVERIFIED";
 }
 
@@ -480,13 +477,28 @@ export default function SupplierBusinessDetails() {
   const businessReadyLive = draftBusinessDone;
   const bankReadyLive = draftBankDone;
 
+  const savedBankIsMeaningful = useMemo(() => {
+    return hasMeaningfulBankDetails(supplier);
+  }, [supplier]);
+
   const effectiveBankStatus = useMemo<BankVerificationStatus>(() => {
     return getEffectiveBankStatus(supplier?.bankVerificationStatus, supplier);
   }, [supplier]);
 
-  const savedBankIsMeaningful = useMemo(() => {
-    return hasMeaningfulBankDetails(supplier);
-  }, [supplier]);
+  const bankLockedByStatus = useMemo(() => {
+    return (
+      effectiveBankStatus === "VERIFIED" ||
+      effectiveBankStatus === "PENDING"
+    );
+  }, [effectiveBankStatus]);
+
+  const bankEditable = useMemo(() => {
+    if (!savedBankIsMeaningful) return true;
+    if (!bankLockedByStatus) return true;
+    return bankEditUnlocked;
+  }, [savedBankIsMeaningful, bankLockedByStatus, bankEditUnlocked]);
+
+  const bankFieldsDisabled = !bankEditable || loading || isBankSaving;
 
   const canProceedToAddress = useMemo(() => {
     return businessReadyLive && !businessDirty && !isBusinessAutosaving;
@@ -530,7 +542,7 @@ export default function SupplierBusinessDetails() {
         setBusinessStepSaved(false);
       }
 
-      if (effectiveBankStatus === "VERIFIED") {
+      if (getEffectiveBankStatus(s.bankVerificationStatus, s) !== "VERIFIED") {
         setBankEditUnlocked(false);
       }
 
@@ -544,7 +556,7 @@ export default function SupplierBusinessDetails() {
     } finally {
       setLoading(false);
     }
-  }, [cameFromVerifyContact, effectiveBankStatus, hydrateFormFromSupplier]);
+  }, [cameFromVerifyContact, hydrateFormFromSupplier]);
 
   useEffect(() => {
     void load();
@@ -584,13 +596,6 @@ export default function SupplierBusinessDetails() {
       })
       .catch(() => setBanks(FALLBACK_BANKS));
   }, []);
-
-  const bankLockedByStatus =
-    effectiveBankStatus === "VERIFIED" ||
-    (effectiveBankStatus === "PENDING" && savedBankIsMeaningful);
-
-  const bankEditable = !bankLockedByStatus || bankEditUnlocked;
-  const bankFieldsDisabled = !bankEditable || loading || isBankSaving;
 
   const countryBanks = useMemo(() => {
     const country = form.bankCountry || "NG";
