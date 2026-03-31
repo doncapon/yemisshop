@@ -1,5 +1,5 @@
 // src/pages/supplier/SupplierOnboardingAddress.tsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -530,6 +530,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   const [pickup, setPickup] = useState<AddressState>(EMPTY_ADDRESS);
   const [pickupMeta, setPickupMeta] = useState<PickupMetaState>(EMPTY_PICKUP_META);
 
+  const hasHydratedRef = useRef(false);
+  const autosaveTimerRef = useRef<number | null>(null);
+
   const setRegisteredField =
     (key: keyof AddressState) =>
     (
@@ -740,6 +743,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         hydrateFromSupplier(s, true);
         setDraftRestored(false);
       }
+
+      hasHydratedRef.current = true;
     } catch (e: unknown) {
       const error = e as {
         response?: { data?: { error?: string; message?: string } };
@@ -949,9 +954,12 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     return items;
   }, [savedPickup, savedSameAsRegistered]);
 
+  const liveRegisteredComplete = draftRegisteredComplete;
+  const livePickupComplete = draftPickupComplete;
+
   const canProceedToDocuments = useMemo<boolean>(() => {
-    return verifiedSupplier || savedAddressDone || draftAddressDone;
-  }, [verifiedSupplier, savedAddressDone, draftAddressDone]);
+    return verifiedSupplier || (draftAddressDone && !hasUnsavedChanges && saveState !== "saving");
+  }, [verifiedSupplier, draftAddressDone, hasUnsavedChanges, saveState]);
 
   const docsDone = useMemo<boolean>(() => supplierHasDocuments(supplier), [supplier]);
 
@@ -962,11 +970,11 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     pct: number;
   }>(() => {
     const items = [
-      { key: "registered", label: "Registered address", done: savedRegisteredComplete },
+      { key: "registered", label: "Registered address", done: liveRegisteredComplete },
       {
         key: "pickup",
         label: "Pickup address",
-        done: savedSameAsRegistered ? savedRegisteredComplete : savedPickupComplete,
+        done: sameAsRegistered ? liveRegisteredComplete : livePickupComplete,
       },
     ];
 
@@ -974,9 +982,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     const pct = Math.round((doneCount / items.length) * 100);
 
     return { items, doneCount, total: items.length, pct };
-  }, [savedRegisteredComplete, savedPickupComplete, savedSameAsRegistered]);
+  }, [liveRegisteredComplete, livePickupComplete, sameAsRegistered]);
 
-  const save = async (): Promise<boolean> => {
+  const save = useCallback(async (): Promise<boolean> => {
     try {
       setSaveState("saving");
       setErr(null);
@@ -1065,7 +1073,37 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       );
       return false;
     }
-  };
+  }, [registered, countries, sameAsRegistered, pickup, pickupMeta, hydrateFromSupplier]);
+
+  useEffect(() => {
+    if (!hasHydratedRef.current) return;
+    if (loading) return;
+    if (verifiedSupplier) return;
+    if (!hasUnsavedChanges) return;
+    if (saveState === "saving") return;
+
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void save();
+    }, 800);
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, [loading, verifiedSupplier, hasUnsavedChanges, saveState, save, registered, pickup, pickupMeta, sameAsRegistered]);
+
+  useEffect(() => {
+    return () => {
+      if (autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, []);
 
   const saveAndNext = async (): Promise<void> => {
     setErr(null);
@@ -1080,18 +1118,26 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       return;
     }
 
-    if (addressDirty) {
-      const ok = await save();
-      if (ok) {
-        nav("/supplier/onboarding/documents");
-      }
+    if (saveState === "saving" || hasUnsavedChanges) {
+      setErr("Please wait for your address changes to finish saving before continuing.");
       return;
     }
 
     nav("/supplier/onboarding/documents");
   };
 
-  const goBack = (): any => nav("/supplier/onboarding");
+  const goBack = () => nav("/supplier/onboarding");
+
+  const autosaveStatusText =
+    saveState === "saving"
+      ? "Saving changes…"
+      : saveState === "saved"
+      ? "All changes saved"
+      : saveState === "error"
+      ? "Autosave failed"
+      : hasUnsavedChanges
+      ? "Unsaved changes"
+      : "Up to date";
 
   return (
     <SiteLayout>
@@ -1160,19 +1206,19 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
             {hasUnsavedChanges && !verifiedSupplier && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                You have unsaved changes. Save progress before continuing to the next step.
+                Changes are being saved automatically. Please wait before continuing.
               </div>
             )}
 
             {addressDirty && draftAddressDone && !savedAddressDone && !verifiedSupplier && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Address details look complete, but they are not saved yet.
+                Address details look complete. Autosave will store them shortly.
               </div>
             )}
 
             {!verifiedSupplier && !savedRegisteredComplete && missingSavedRegisteredFields.length > 0 && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Registered address is still missing or not saved:{" "}
+                Registered address is still missing:{" "}
                 {missingSavedRegisteredFields.join(", ")}.
               </div>
             )}
@@ -1182,7 +1228,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
               !savedPickupComplete &&
               missingSavedPickupFields.length > 0 && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                  Pickup address is still missing or not saved:{" "}
+                  Pickup address is still missing:{" "}
                   {missingSavedPickupFields.join(", ")}.
                 </div>
               )}
@@ -1345,7 +1391,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       Address progress
                     </h2>
                     <p className="mt-1 text-sm text-zinc-600">
-                      Continue once your saved address details are complete. Any unsaved changes will pause progression.
+                      Continue once your live address details are complete and autosave has finished.
                     </p>
 
                     <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-200">
@@ -1385,7 +1431,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       What happens next
                     </h3>
                     <p className="mt-1 text-sm text-zinc-600">
-                      After saving your addresses, continue to upload required supplier documents.
+                      After your address changes are saved, continue to upload required supplier documents.
                     </p>
 
                     <button
@@ -1393,7 +1439,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       onClick={() => {
                         void saveAndNext();
                       }}
-                      disabled={!canProceedToDocuments || saveState === "saving"}
+                      disabled={!canProceedToDocuments}
                       className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       Continue to documents
@@ -1434,28 +1480,25 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                   Back
                 </button>
 
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void save();
-                    }}
-                    disabled={loading || saveState === "saving"}
-                    className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                <div className="flex items-center gap-3">
+                  <span
+                    className={`text-sm ${
+                      saveState === "error"
+                        ? "text-rose-600"
+                        : saveState === "saving"
+                        ? "text-amber-700"
+                        : "text-zinc-600"
+                    }`}
                   >
-                    {saveState === "saving"
-                      ? "Saving…"
-                      : saveState === "saved"
-                      ? "Saved"
-                      : "Save progress"}
-                  </button>
+                    {autosaveStatusText}
+                  </span>
 
                   <button
                     type="button"
                     onClick={() => {
                       void saveAndNext();
                     }}
-                    disabled={!canProceedToDocuments || saveState === "saving"}
+                    disabled={!canProceedToDocuments}
                     className="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Next step

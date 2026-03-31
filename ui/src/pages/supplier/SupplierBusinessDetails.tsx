@@ -1,5 +1,5 @@
 // src/pages/supplier/SupplierBusinessDetails.tsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -205,6 +205,9 @@ export default function SupplierBusinessDetails() {
   const [businessStepSaved, setBusinessStepSaved] = useState(false);
 
   const cameFromVerifyContact = Boolean((location.state as any)?.fromVerifyContact);
+
+  const hasHydratedRef = useRef(false);
+  const autosaveTimerRef = useRef<number | null>(null);
 
   const businessStepStorageKey = useMemo(
     () => (supplier?.id ? `supplier:onboarding:business-step-saved:${supplier.id}` : ""),
@@ -412,13 +415,17 @@ export default function SupplierBusinessDetails() {
     return hasDocuments(supplier);
   }, [supplier]);
 
+  const isAutosaving = saveState === "saving";
+  const businessReadyLive = draftBusinessDone;
+  const bankReadyLive = draftBankDone;
+
   const canProceedToAddress = useMemo(() => {
-    return savedBusinessDone && draftBusinessDone && !businessDirty;
-  }, [savedBusinessDone, draftBusinessDone, businessDirty]);
+    return businessReadyLive && !businessDirty && !isAutosaving;
+  }, [businessReadyLive, businessDirty, isAutosaving]);
 
   const canProceedToDocuments = useMemo(() => {
-    return savedBusinessDone && draftBusinessDone && addressDone && !hasUnsavedChanges;
-  }, [savedBusinessDone, draftBusinessDone, addressDone, hasUnsavedChanges]);
+    return businessReadyLive && addressDone && !hasUnsavedChanges && !isAutosaving;
+  }, [businessReadyLive, addressDone, hasUnsavedChanges, isAutosaving]);
 
   const load = useCallback(async () => {
     try {
@@ -457,6 +464,8 @@ export default function SupplierBusinessDetails() {
       if ((s.bankVerificationStatus ?? "UNVERIFIED") === "VERIFIED") {
         setBankEditUnlocked(false);
       }
+
+      hasHydratedRef.current = true;
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
@@ -577,7 +586,7 @@ export default function SupplierBusinessDetails() {
     setErr(null);
   }
 
-  const save = async () => {
+  const save = useCallback(async () => {
     try {
       setSaveState("saving");
       setErr(null);
@@ -649,7 +658,36 @@ export default function SupplierBusinessDetails() {
           "Could not save onboarding details."
       );
     }
-  };
+  }, [bankEditable, form, hydrateFormFromSupplier, isRegisteredBusiness]);
+
+  useEffect(() => {
+    if (!hasHydratedRef.current) return;
+    if (loading) return;
+    if (!hasUnsavedChanges) return;
+    if (saveState === "saving") return;
+
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      save();
+    }, 800);
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, [form, hasUnsavedChanges, loading, saveState, save]);
+
+  useEffect(() => {
+    return () => {
+      if (autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, []);
 
   const goToAddressStep = () => {
     if (!draftBusinessDone) {
@@ -657,13 +695,8 @@ export default function SupplierBusinessDetails() {
       return;
     }
 
-    if (businessDirty) {
-      setErr("You have unsaved business details. Please save progress before continuing.");
-      return;
-    }
-
-    if (!savedBusinessDone) {
-      setErr("Please save your completed business details before continuing to Address.");
+    if (isAutosaving || businessDirty) {
+      setErr("Please wait for your business details to finish saving before continuing.");
       return;
     }
 
@@ -676,13 +709,8 @@ export default function SupplierBusinessDetails() {
       return;
     }
 
-    if (hasUnsavedChanges) {
-      setErr("You have unsaved changes. Please save progress before continuing.");
-      return;
-    }
-
-    if (!savedBusinessDone) {
-      setErr("Please save your completed business details before continuing to Documents.");
+    if (isAutosaving || hasUnsavedChanges) {
+      setErr("Please wait for your changes to finish saving before continuing.");
       return;
     }
 
@@ -749,8 +777,8 @@ export default function SupplierBusinessDetails() {
 
     const items = [
       { key: "contact", label: "Contact verified", done: contactDone },
-      { key: "business", label: "Business details", done: savedBusinessDone },
-      { key: "bank", label: "Bank details", done: savedBankDone },
+      { key: "business", label: "Business details", done: businessReadyLive },
+      { key: "bank", label: "Bank details", done: bankReadyLive },
       { key: "address", label: "Address details", done: addressDone },
       { key: "docs", label: "Documents uploaded", done: docsDone },
     ];
@@ -763,16 +791,34 @@ export default function SupplierBusinessDetails() {
       doneCount,
       total: items.length,
       pct,
-      businessDone: savedBusinessDone,
-      bankDone: savedBankDone,
+      businessDone: businessReadyLive,
+      bankDone: bankReadyLive,
       addressDone,
       docsDone,
     };
-  }, [savedBusinessDone, savedBankDone, addressDone, docsDone]);
+  }, [addressDone, bankReadyLive, businessReadyLive, docsDone]);
 
   const canAccessFullDashboard = useMemo(() => {
-    return progress.businessDone && progress.addressDone && progress.bankDone && progress.docsDone;
-  }, [progress]);
+    return (
+      progress.businessDone &&
+      progress.addressDone &&
+      progress.bankDone &&
+      progress.docsDone &&
+      !hasUnsavedChanges &&
+      !isAutosaving
+    );
+  }, [progress, hasUnsavedChanges, isAutosaving]);
+
+  const autosaveStatusText =
+    saveState === "saving"
+      ? "Saving changes…"
+      : saveState === "saved"
+      ? "All changes saved"
+      : saveState === "error"
+      ? "Autosave failed"
+      : hasUnsavedChanges
+      ? "Unsaved changes"
+      : "Up to date";
 
   return (
     <SiteLayout>
@@ -829,32 +875,31 @@ export default function SupplierBusinessDetails() {
 
             {hasUnsavedChanges && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                You have unsaved changes. Save progress before continuing to the next step.
+                Changes are being saved automatically. Please wait before moving to the next step.
               </div>
             )}
 
             {draftBusinessDone && !savedBusinessDone && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Business details look complete, but they are not saved yet.
+                Business details look complete. Autosave will store them shortly.
               </div>
             )}
 
             {draftBankDone && !savedBankDone && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Bank details look complete, but they are not saved yet.
+                Bank details look complete. Autosave will store them shortly.
               </div>
             )}
 
             {!savedBusinessDone && missingSavedBusinessFields.length > 0 && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Complete and save all required business details before continuing:{" "}
-                {missingSavedBusinessFields.join(", ")}.
+                Complete all required business details: {missingSavedBusinessFields.join(", ")}.
               </div>
             )}
 
             {!savedBankDone && missingSavedBankFields.length > 0 && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Bank details still missing or not saved: {missingSavedBankFields.join(", ")}.
+                Bank details still missing: {missingSavedBankFields.join(", ")}.
               </div>
             )}
 
@@ -1255,19 +1300,18 @@ export default function SupplierBusinessDetails() {
                   Back
                 </button>
 
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={save}
-                    disabled={loading || saveState === "saving"}
-                    className={secondaryBtn}
+                <div className="flex items-center gap-3">
+                  <span
+                    className={`text-sm ${
+                      saveState === "error"
+                        ? "text-rose-600"
+                        : saveState === "saving"
+                        ? "text-amber-700"
+                        : "text-zinc-600"
+                    }`}
                   >
-                    {saveState === "saving"
-                      ? "Saving…"
-                      : saveState === "saved"
-                      ? "Saved"
-                      : "Save progress"}
-                  </button>
+                    {autosaveStatusText}
+                  </span>
 
                   <button
                     type="button"

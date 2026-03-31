@@ -1,3 +1,4 @@
+// src/pages/supplier/SupplierVerifyContact.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
@@ -19,6 +20,7 @@ type VerifyLocationState = {
   supplierId?: string | null;
   email?: string | null;
   phone?: string | null;
+  dialCode?: string | null;
   emailSent?: boolean;
   phoneOtpSent?: boolean;
   nextAfterVerify?: string;
@@ -35,6 +37,7 @@ type VerifySummary = {
   contactLastName: string;
   contactEmail: string;
   contactPhone: string;
+  contactDialCode: string;
 };
 
 type SupplierMeLite = {
@@ -49,6 +52,7 @@ type SupplierMeLite = {
   contactLastName?: string | null;
   contactEmail?: string | null;
   contactPhone?: string | null;
+  contactDialCode?: string | null;
   name?: string | null;
 };
 
@@ -78,6 +82,11 @@ function maskPhone(v: string) {
   const raw = String(v || "").trim();
   if (raw.length < 6) return raw;
   return `${raw.slice(0, 4)}***${raw.slice(-3)}`;
+}
+
+function normalizeDialCode(raw: unknown): string {
+  const digits = String(raw ?? "").replace(/[^\d]/g, "");
+  return digits ? `+${digits}` : "";
 }
 
 function getTempToken() {
@@ -179,21 +188,23 @@ export default function SupplierVerifyContact() {
   const [summary, setSummary] = useState<VerifySummary | null>(
     state.email || state.phone
       ? {
-        businessName: "",
-        legalName: "",
-        registrationType: "",
-        registrationCountryCode: "",
-        contactFirstName: "",
-        contactLastName: "",
-        registeredBusinessName: "",
-        contactEmail: state.email || "",
-        contactPhone: state.phone || "",
-      }
+          businessName: "",
+          legalName: "",
+          registrationType: "",
+          registrationCountryCode: "",
+          contactFirstName: "",
+          contactLastName: "",
+          registeredBusinessName: "",
+          contactEmail: state.email || "",
+          contactPhone: state.phone || "",
+          contactDialCode: normalizeDialCode(state.dialCode || ""),
+        }
       : null
   );
 
   const [email, setEmail] = useState(state.email || "");
   const [phone, setPhone] = useState(state.phone || "");
+  const [dialCode, setDialCode] = useState(normalizeDialCode(state.dialCode || ""));
 
   const [emailSent, setEmailSent] = useState(!!state.emailSent);
   const [phoneOtpSent, setPhoneOtpSent] = useState(!!state.phoneOtpSent);
@@ -202,6 +213,8 @@ export default function SupplierVerifyContact() {
   const [phoneVerified, setPhoneVerified] = useState(false);
 
   const [otp, setOtp] = useState("");
+  const [otpError, setOtpError] = useState<string | null>(null);
+
   const [busyEmail, setBusyEmail] = useState(false);
   const [busyPhone, setBusyPhone] = useState(false);
   const [busyVerifyOtp, setBusyVerifyOtp] = useState(false);
@@ -211,6 +224,7 @@ export default function SupplierVerifyContact() {
   const [err, setErr] = useState<string | null>(null);
 
   const hasAutoFinalizedRef = useRef(false);
+  const hasAutoRequestedOtpRef = useRef(false);
 
   const nextAfterVerify = state.nextAfterVerify || "/supplier/onboarding";
 
@@ -229,12 +243,12 @@ export default function SupplierVerifyContact() {
         supplierData = ((supplierRes.data as any)?.data ??
           supplierRes.data ??
           {}) as SupplierMeLite;
-      } catch { }
+      } catch {}
 
       try {
         const authRes = await api.get("/api/auth/me", cfg);
         authData = normalizeAuthMePayload(authRes.data);
-      } catch { }
+      } catch {}
 
       const resolvedEmail =
         state.email ||
@@ -246,8 +260,13 @@ export default function SupplierVerifyContact() {
         pickString(supplierData?.contactPhone) ||
         pickString(authData?.phone);
 
+      const resolvedDialCode =
+        normalizeDialCode(state.dialCode) ||
+        normalizeDialCode(supplierData?.contactDialCode);
+
       setEmail(resolvedEmail);
       setPhone(resolvedPhone);
+      setDialCode(resolvedDialCode);
 
       if (supplierData || authData) {
         setSummary({
@@ -268,6 +287,7 @@ export default function SupplierVerifyContact() {
             pickString(authData?.lastName),
           contactEmail: resolvedEmail,
           contactPhone: resolvedPhone,
+          contactDialCode: resolvedDialCode,
         });
 
         setEmailVerified(isEmailVerified(authData));
@@ -276,8 +296,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not load supplier registration details."
+          e?.response?.data?.message ||
+          "Could not load supplier registration details."
       );
     } finally {
       setLoadingSummary(false);
@@ -322,8 +342,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not load verification status."
+          e?.response?.data?.message ||
+          "Could not load verification status."
       );
     } finally {
       setChecking(false);
@@ -340,7 +360,6 @@ export default function SupplierVerifyContact() {
 
     return authedUser;
   };
-
 
   const finalizeVerifiedSession = async () => {
     if (hasAutoFinalizedRef.current) return;
@@ -389,13 +408,12 @@ export default function SupplierVerifyContact() {
         replace: true,
         state: { fromVerifyContact: true },
       });
-
     } catch (e: any) {
       hasAutoFinalizedRef.current = false;
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Your details were verified, but we could not finish signing you in automatically. Please try again."
+          e?.response?.data?.message ||
+          "Your details were verified, but we could not finish signing you in automatically. Please try again."
       );
     } finally {
       setFinalizingSession(false);
@@ -440,15 +458,15 @@ export default function SupplierVerifyContact() {
       await api.post(
         "/api/auth/resend-verification",
         { email: activeEmail },
-        { withCredentials: true }
+        getVerifyConfig()
       );
 
       setEmailSent(true);
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not resend email verification."
+          e?.response?.data?.message ||
+          "Could not resend email verification."
       );
     } finally {
       setBusyEmail(false);
@@ -458,32 +476,66 @@ export default function SupplierVerifyContact() {
   const resendPhoneOtp = async () => {
     try {
       setErr(null);
+      setOtpError(null);
       setBusyPhone(true);
 
-      await api.post("/api/auth/resend-otp", {}, getVerifyConfig());
+      const activePhone = phone || summary?.contactPhone || "";
+      const activeDialCode =
+        normalizeDialCode(dialCode) ||
+        normalizeDialCode(summary?.contactDialCode) ||
+        normalizeDialCode(state.dialCode);
+
+      await api.post(
+        "/api/auth/resend-otp",
+        {
+          phone: activePhone,
+          contactPhone: activePhone,
+          dialCode: activeDialCode,
+          contactDialCode: activeDialCode,
+        },
+        getVerifyConfig()
+      );
 
       setPhoneOtpSent(true);
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not send phone verification code."
+          e?.response?.data?.message ||
+          "Could not send phone verification code."
       );
     } finally {
       setBusyPhone(false);
     }
   };
 
+  useEffect(() => {
+    if (
+      loadingSummary ||
+      hasAutoRequestedOtpRef.current ||
+      phoneVerified ||
+      phoneOtpSent ||
+      !(phone || summary?.contactPhone)
+    ) {
+      return;
+    }
+
+    hasAutoRequestedOtpRef.current = true;
+    resendPhoneOtp();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingSummary, phoneVerified, phoneOtpSent, phone, summary?.contactPhone]);
+
   const verifyPhoneOtp = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!otp.trim()) {
-      setErr("Please enter the verification code sent to your phone.");
+      setOtpError("Please enter the verification code sent to your phone.");
+      setErr(null);
       return;
     }
 
     try {
       setErr(null);
+      setOtpError(null);
       setBusyVerifyOtp(true);
 
       await api.post(
@@ -496,6 +548,7 @@ export default function SupplierVerifyContact() {
 
       setPhoneVerified(true);
       setOtp("");
+      setOtpError(null);
       await loadStatus();
     } catch (e: any) {
       const msg =
@@ -506,11 +559,13 @@ export default function SupplierVerifyContact() {
       if (/phone already verified/i.test(msg)) {
         setPhoneVerified(true);
         setErr(null);
+        setOtpError(null);
         setOtp("");
         return;
       }
 
-      setErr(msg);
+      setOtpError(msg);
+      setErr(null);
     } finally {
       setBusyVerifyOtp(false);
     }
@@ -537,6 +592,10 @@ export default function SupplierVerifyContact() {
   const secondaryBtn = `${button} border border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-50`;
   const input =
     "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm";
+
+  const otpInputClass = otpError
+    ? `${input} border-rose-400 bg-rose-50/40 focus:border-rose-500 focus:ring-rose-200`
+    : input;
 
   return (
     <SiteLayout>
@@ -620,10 +679,11 @@ export default function SupplierVerifyContact() {
                         </div>
 
                         <div
-                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${emailVerified
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-amber-100 text-amber-700"
-                            }`}
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            emailVerified
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-amber-100 text-amber-700"
+                          }`}
                         >
                           {emailVerified ? "Verified" : "Pending"}
                         </div>
@@ -647,8 +707,8 @@ export default function SupplierVerifyContact() {
                             {busyEmail
                               ? "Sending…"
                               : emailSent
-                                ? "Resend email"
-                                : "Send email"}
+                              ? "Resend email"
+                              : "Send email"}
                           </button>
 
                           <button
@@ -684,10 +744,11 @@ export default function SupplierVerifyContact() {
                         </div>
 
                         <div
-                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${phoneVerified
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-amber-100 text-amber-700"
-                            }`}
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            phoneVerified
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-amber-100 text-amber-700"
+                          }`}
                         >
                           {phoneVerified ? "Verified" : "Pending"}
                         </div>
@@ -701,16 +762,22 @@ export default function SupplierVerifyContact() {
 
                       <form onSubmit={verifyPhoneOtp} className="mt-4 space-y-3">
                         {!phoneVerified && (
-                          <input
-                            value={otp}
-                            onChange={(e) => {
-                              setOtp(e.target.value);
-                              setErr(null);
-                            }}
-                            className={input}
-                            placeholder="Enter verification code"
-                            inputMode="numeric"
-                          />
+                          <>
+                            <input
+                              value={otp}
+                              onChange={(e) => {
+                                setOtp(e.target.value);
+                                setErr(null);
+                                setOtpError(null);
+                              }}
+                              className={otpInputClass}
+                              placeholder="Enter verification code"
+                              inputMode="numeric"
+                            />
+                            {otpError && (
+                              <p className="text-xs text-rose-600">{otpError}</p>
+                            )}
+                          </>
                         )}
 
                         {!phoneVerified && (
@@ -732,8 +799,8 @@ export default function SupplierVerifyContact() {
                               {busyPhone
                                 ? "Sending…"
                                 : phoneOtpSent
-                                  ? "Resend code"
-                                  : "Send code"}
+                                ? "Resend code"
+                                : "Send code"}
                             </button>
                           </div>
                         )}

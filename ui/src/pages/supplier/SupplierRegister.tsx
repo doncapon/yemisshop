@@ -1,3 +1,4 @@
+// src/pages/supplier/SupplierRegister.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle2, Eye, EyeOff } from "lucide-react";
@@ -417,6 +418,7 @@ export default function SupplierRegister() {
 
       const email = form.contactEmail.trim().toLowerCase();
       const phone = form.contactPhone.trim();
+      const dialCode = normalizeDialCode(form.contactDialCode);
       const businessName = form.businessName.trim();
       const legalName = form.legalName.trim();
       const registeredBusinessName =
@@ -448,7 +450,7 @@ export default function SupplierRegister() {
         contactEmail: email,
         email,
 
-        contactDialCode: normalizeDialCode(form.contactDialCode),
+        contactDialCode: dialCode,
 
         contactPhone: phone,
         phone,
@@ -483,7 +485,7 @@ export default function SupplierRegister() {
           await api.post(
             "/api/auth/resend-verification",
             { email },
-            { withCredentials: true }
+            verifyCfg
           );
           emailSent = true;
         } catch {}
@@ -493,7 +495,12 @@ export default function SupplierRegister() {
         try {
           await api.post(
             "/api/auth/resend-otp",
-            { dialCode: normalizeDialCode(form.contactDialCode) },
+            {
+              phone,
+              contactPhone: phone,
+              dialCode,
+              contactDialCode: dialCode,
+            },
             verifyCfg
           );
           phoneOtpSent = true;
@@ -519,7 +526,7 @@ export default function SupplierRegister() {
           supplierId: data?.supplierId ?? null,
           email,
           phone,
-          dialCode: normalizeDialCode(form.contactDialCode),
+          dialCode,
           emailSent,
           phoneOtpSent,
           nextAfterVerify: "/supplier/onboarding",
