@@ -3,8 +3,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowRight,
-  BadgeCheck,
-  CheckCircle2,
   Mail,
   Phone,
   RefreshCw,
@@ -614,12 +612,16 @@ export default function SupplierVerifyContact() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                 <div className={`${stepBase} ${stepDone}`}>
-                  <CheckCircle2 size={16} />
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                    1
+                  </span>
                   <span>Register</span>
                 </div>
 
                 <div className={`${stepBase} ${stepActive}`}>
-                  <BadgeCheck size={16} />
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                    2
+                  </span>
                   <span>Verify email / phone</span>
                 </div>
 
@@ -646,7 +648,7 @@ export default function SupplierVerifyContact() {
 
                 <div className={`${stepBase} ${stepLocked}`}>
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    6
+                    *
                   </span>
                   <span>Dashboard access</span>
                 </div>

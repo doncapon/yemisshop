@@ -212,13 +212,18 @@ function isZeroOnly(value: unknown) {
   return !!digits && /^0+$/.test(digits);
 }
 
-function hasMeaningfulBankDetails(source: {
-  bankCountry?: string | null;
-  bankCode?: string | null;
-  bankName?: string | null;
-  accountName?: string | null;
-  accountNumber?: string | null;
-} | null | undefined) {
+function hasMeaningfulBankDetails(
+  source:
+    | {
+        bankCountry?: string | null;
+        bankCode?: string | null;
+        bankName?: string | null;
+        accountName?: string | null;
+        accountNumber?: string | null;
+      }
+    | null
+    | undefined
+) {
   if (!source) return false;
 
   const bankCountry = String(source.bankCountry ?? "").trim().toUpperCase();
@@ -227,14 +232,11 @@ function hasMeaningfulBankDetails(source: {
   const accountName = String(source.accountName ?? "").trim();
   const accountNumber = String(source.accountNumber ?? "").trim();
 
-  const meaningfulBankCode =
-    !isPlaceholderBankText(bankCode) && !isZeroOnly(bankCode);
+  const meaningfulBankCode = !isPlaceholderBankText(bankCode) && !isZeroOnly(bankCode);
 
-  const meaningfulBankName =
-    !isPlaceholderBankText(bankName);
+  const meaningfulBankName = !isPlaceholderBankText(bankName);
 
-  const meaningfulAccountName =
-    !isPlaceholderBankText(accountName);
+  const meaningfulAccountName = !isPlaceholderBankText(accountName);
 
   const meaningfulAccountNumber =
     !isPlaceholderBankText(accountNumber) && !isZeroOnly(accountNumber);
@@ -254,13 +256,16 @@ function hasMeaningfulBankDetails(source: {
 
 function getEffectiveBankStatus(
   rawStatus: string | null | undefined,
-  source: {
-    bankCountry?: string | null;
-    bankCode?: string | null;
-    bankName?: string | null;
-    accountName?: string | null;
-    accountNumber?: string | null;
-  } | null | undefined
+  source:
+    | {
+        bankCountry?: string | null;
+        bankCode?: string | null;
+        bankName?: string | null;
+        accountName?: string | null;
+        accountNumber?: string | null;
+      }
+    | null
+    | undefined
 ): BankVerificationStatus {
   const status = String(rawStatus ?? "").trim().toUpperCase();
 
@@ -996,39 +1001,77 @@ export default function SupplierBusinessDetails() {
               </div>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-6">
-                <div className={`${stepBase} ${stepDone}`}>
-                  <CheckCircle2 size={16} />
-                  <span>Register</span>
-                </div>
+                {[
+                  {
+                    step: 1,
+                    label: "Register",
+                    done: true,
+                    active: false,
+                    onClick: () => nav("/supplier/register"),
+                    allowed: true,
+                  },
+                  {
+                    step: 2,
+                    label: "Verify contact",
+                    done: true,
+                    active: false,
+                    onClick: () => nav("/supplier/verify-contact"),
+                    allowed: true,
+                  },
+                  {
+                    step: 3,
+                    label: "Business details",
+                    done: businessReadyLive,
+                    active: true,
+                    onClick: null,
+                    allowed: true,
+                  },
+                  {
+                    step: 4,
+                    label: "Address",
+                    done: progress.addressDone,
+                    active: false,
+                    onClick: () => nav("/supplier/onboarding/address"),
+                    allowed: canProceedToAddress,
+                  },
+                  {
+                    step: 5,
+                    label: "Documents",
+                    done: progress.docsDone,
+                    active: false,
+                    onClick: () => nav("/supplier/onboarding/documents"),
+                    allowed: canProceedToDocuments,
+                  },
+                  {
+                    step: 6,
+                    label: "Dashboard",
+                    done: canAccessFullDashboard,
+                    active: false,
+                    onClick: () => nav("/supplier"),
+                    allowed: canAccessFullDashboard,
+                  },
+                ].map((item) => {
+                  const stateClass = item.active
+                    ? stepActive
+                    : item.done || (item.step > 3 && item.allowed)
+                      ? stepDone
+                      : stepLocked;
 
-                <div className={`${stepBase} ${stepDone}`}>
-                  <BadgeCheck size={16} />
-                  <span>Verify email / phone</span>
-                </div>
-
-                <div className={`${stepBase} ${stepActive}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    3
-                  </span>
-                  <span>Business details</span>
-                </div>
-
-                <div className={`${stepBase} ${progress.addressDone ? stepDone : stepLocked}`}>
-                  <MapPin size={16} />
-                  <span>Address details</span>
-                </div>
-
-                <div className={`${stepBase} ${progress.docsDone ? stepDone : stepLocked}`}>
-                  <ShieldCheck size={16} />
-                  <span>Documents</span>
-                </div>
-
-                <div className={`${stepBase} ${canAccessFullDashboard ? stepDone : stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    6
-                  </span>
-                  <span>Dashboard access</span>
-                </div>
+                  return (
+                    <button
+                      key={item.step}
+                      type="button"
+                      disabled={!item.allowed || item.active}
+                      onClick={() => item.allowed && item.onClick?.()}
+                      className={`${stepBase} ${stateClass} ${!item.allowed ? "cursor-not-allowed" : "cursor-pointer"}`}
+                    >
+                      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
+                        {item.step}
+                      </span>
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

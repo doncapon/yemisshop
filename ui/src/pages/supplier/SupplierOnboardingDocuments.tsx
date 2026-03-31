@@ -3,14 +3,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom";
 import {
     ArrowLeft,
-    BadgeCheck,
     CheckCircle2,
     Clock,
     FileBadge2,
     FileText,
     IdCard,
     Landmark,
-    MapPin,
     ShieldCheck,
     UploadCloud,
     XCircle,
@@ -173,12 +171,12 @@ function normalizeSupplier(raw: unknown): SupplierMe {
 function normalizeDocumentsResponse(raw: unknown): SupplierDocument[] {
     const source = raw as
         | {
-            data?: {
-                data?: SupplierDocument[];
-                documents?: SupplierDocument[];
-            } | SupplierDocument[];
-            documents?: SupplierDocument[];
-        }
+              data?: {
+                  data?: SupplierDocument[];
+                  documents?: SupplierDocument[];
+              } | SupplierDocument[];
+              documents?: SupplierDocument[];
+          }
         | SupplierDocument[]
         | null;
 
@@ -447,6 +445,10 @@ export default function SupplierOnboardingDocuments() {
     const currentStatus = String(supplier?.status || "").toUpperCase();
     const currentKycStatus = String(supplier?.kycStatus || "").toUpperCase();
 
+    const needsResubmission = useMemo(() => {
+        return progress.anyRejected || currentKycStatus === "REJECTED";
+    }, [progress.anyRejected, currentKycStatus]);
+
     const isFullyActive = useMemo(() => {
         return currentStatus === "ACTIVE" || (adminApproved && progress.docsComplete);
     }, [currentStatus, adminApproved, progress.docsComplete]);
@@ -455,9 +457,9 @@ export default function SupplierOnboardingDocuments() {
         return approvalReady && !isFullyActive && currentKycStatus === "APPROVED";
     }, [approvalReady, isFullyActive, currentKycStatus]);
 
-    const needsResubmission = useMemo(() => {
-        return progress.anyRejected || currentKycStatus === "REJECTED";
-    }, [progress.anyRejected, currentKycStatus]);
+    const isApprovalPending = useMemo(() => {
+        return approvalReady && !adminApproved && !isFullyActive && !needsResubmission;
+    }, [approvalReady, adminApproved, isFullyActive, needsResubmission]);
 
     const optionalDocs = useMemo(() => {
         return docs
@@ -593,6 +595,8 @@ export default function SupplierOnboardingDocuments() {
     };
 
     const goBack = () => nav("/supplier/onboarding/address");
+    const goToBusinessDetails = () => nav("/supplier/onboarding/business-details");
+    const goToAddressDetails = () => nav("/supplier/onboarding/address");
     const goToSupplierHome = () => nav("/supplier");
     const goToDashboard = () => nav("/supplier");
 
@@ -611,10 +615,13 @@ export default function SupplierOnboardingDocuments() {
     };
 
     const stepBase =
-        "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
+        "flex w-full items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
     const stepDone = "border-emerald-200 bg-emerald-50 text-emerald-700";
     const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
+    const stepPending = "border-amber-200 bg-amber-50 text-amber-700";
+    const stepRejected = "border-rose-200 bg-rose-50 text-rose-700";
     const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
+    const stepClickable = "cursor-pointer hover:border-zinc-300 hover:bg-zinc-50 hover:text-zinc-800";
 
     const label = "block text-sm font-semibold text-slate-800 mb-1.5";
     const input =
@@ -636,67 +643,81 @@ export default function SupplierOnboardingDocuments() {
         return <FileText className="h-5 w-5 text-zinc-700" />;
     };
 
-    const renderStepHeader = () => (
-        <div className="space-y-4">
-            <div className="text-center">
-                <h1 className="text-2xl sm:text-3xl font-semibold text-zinc-900">
-                    {needsResubmission
-                        ? "Update your supplier documents"
-                        : isAwaitingFinalApproval
-                          ? "Your documents are under review"
-                          : "Upload your supplier documents"}
-                </h1>
-                <p className="mt-2 text-sm text-zinc-600">
-                    {needsResubmission
-                        ? "One or more required documents need to be replaced before onboarding can continue."
-                        : isAwaitingFinalApproval
-                          ? "Your required documents have been approved. Your account is now awaiting final admin approval."
-                          : "Complete document upload to finish onboarding and unlock supplier access."}
-                </p>
+    const stepCircleClass = (active = false) =>
+        `inline-flex h-5 w-5 items-center justify-center rounded-full border text-[10px] font-semibold ${
+            active ? "border-current" : "border-current/80"
+        }`;
+
+    const renderStepHeader = () => {
+        const finalApprovalStepClass = needsResubmission
+            ? stepRejected
+            : canGoToDashboard
+              ? stepDone
+              : isApprovalPending || isAwaitingFinalApproval
+                ? stepPending
+                : stepLocked;
+
+        return (
+            <div className="space-y-4">
+                <div className="text-center">
+                    <h1 className="text-2xl sm:text-3xl font-semibold text-zinc-900">
+                        {needsResubmission
+                            ? "Update your supplier documents"
+                            : isAwaitingFinalApproval
+                              ? "Your documents are under review"
+                              : "Upload your supplier documents"}
+                    </h1>
+                    <p className="mt-2 text-sm text-zinc-600">
+                        {needsResubmission
+                            ? "One or more required documents need to be replaced before onboarding can continue."
+                            : isAwaitingFinalApproval
+                              ? "Your required documents have been approved. Your account is now awaiting final admin approval."
+                              : "Complete document upload to finish onboarding and unlock supplier access."}
+                    </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-6">
+                    <div className={`${stepBase} ${stepDone}`}>
+                        <span className={stepCircleClass()}>1</span>
+                        <span>Register</span>
+                    </div>
+
+                    <div className={`${stepBase} ${stepDone}`}>
+                        <span className={stepCircleClass()}>2</span>
+                        <span>Verify email / phone</span>
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={goToBusinessDetails}
+                        className={`${stepBase} ${stepDone} ${stepClickable} text-left`}
+                    >
+                        <span className={stepCircleClass()}>3</span>
+                        <span>Business details</span>
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={goToAddressDetails}
+                        className={`${stepBase} ${stepDone} ${stepClickable} text-left`}
+                    >
+                        <span className={stepCircleClass()}>4</span>
+                        <span>Address details</span>
+                    </button>
+
+                    <div className={`${stepBase} ${stepActive}`}>
+                        <span className={stepCircleClass(true)}>5</span>
+                        <span>Documents</span>
+                    </div>
+
+                    <div className={`${stepBase} ${finalApprovalStepClass}`}>
+                        <span className={stepCircleClass()}>*</span>
+                        <span>{canGoToDashboard ? "Dashboard access" : "Final approval"}</span>
+                    </div>
+                </div>
             </div>
-
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-6">
-                <div className={`${stepBase} ${stepDone}`}>
-                    <CheckCircle2 size={16} />
-                    <span>Register</span>
-                </div>
-
-                <div className={`${stepBase} ${stepDone}`}>
-                    <BadgeCheck size={16} />
-                    <span>Verify email / phone</span>
-                </div>
-
-                <div className={`${stepBase} ${stepDone}`}>
-                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                        3
-                    </span>
-                    <span>Business details</span>
-                </div>
-
-                <div className={`${stepBase} ${stepDone}`}>
-                    <MapPin size={16} />
-                    <span>Address details</span>
-                </div>
-
-                <div className={`${stepBase} ${stepActive}`}>
-                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                        5
-                    </span>
-                    <span>Documents</span>
-                </div>
-
-                <div
-                    className={`${stepBase} ${canGoToSupplierHome || isAwaitingFinalApproval ? stepDone : stepLocked
-                        }`}
-                >
-                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                        6
-                    </span>
-                    <span>{canGoToDashboard ? "Dashboard access" : "Final approval"}</span>
-                </div>
-            </div>
-        </div>
-    );
+        );
+    };
 
     return (
         <SiteLayout>
@@ -851,14 +872,15 @@ export default function SupplierOnboardingDocuments() {
                                                                 </div>
 
                                                                 <div
-                                                                    className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${existing?.status === "APPROVED"
-                                                                        ? "bg-emerald-100 text-emerald-700"
-                                                                        : existing?.status === "PENDING"
-                                                                          ? "bg-amber-100 text-amber-700"
-                                                                          : existing?.status === "REJECTED"
-                                                                            ? "bg-rose-100 text-rose-700"
-                                                                            : "bg-zinc-100 text-zinc-700"
-                                                                        }`}
+                                                                    className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                                                        existing?.status === "APPROVED"
+                                                                            ? "bg-emerald-100 text-emerald-700"
+                                                                            : existing?.status === "PENDING"
+                                                                              ? "bg-amber-100 text-amber-700"
+                                                                              : existing?.status === "REJECTED"
+                                                                                ? "bg-rose-100 text-rose-700"
+                                                                                : "bg-zinc-100 text-zinc-700"
+                                                                    }`}
                                                                 >
                                                                     {existing?.status || "Not uploaded"}
                                                                 </div>
@@ -989,14 +1011,15 @@ export default function SupplierOnboardingDocuments() {
                                                                     </span>
 
                                                                     <span
-                                                                        className={`rounded-full px-2.5 py-1 text-xs font-semibold ${doc.status === "APPROVED"
-                                                                            ? "bg-emerald-100 text-emerald-700"
-                                                                            : doc.status === "PENDING"
-                                                                              ? "bg-amber-100 text-amber-700"
-                                                                              : doc.status === "REJECTED"
-                                                                                ? "bg-rose-100 text-rose-700"
-                                                                                : "bg-zinc-100 text-zinc-700"
-                                                                            }`}
+                                                                        className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                                                            doc.status === "APPROVED"
+                                                                                ? "bg-emerald-100 text-emerald-700"
+                                                                                : doc.status === "PENDING"
+                                                                                  ? "bg-amber-100 text-amber-700"
+                                                                                  : doc.status === "REJECTED"
+                                                                                    ? "bg-rose-100 text-rose-700"
+                                                                                    : "bg-zinc-100 text-zinc-700"
+                                                                        }`}
                                                                     >
                                                                         {doc.status || "Uploaded"}
                                                                     </span>
@@ -1099,14 +1122,15 @@ export default function SupplierOnboardingDocuments() {
                                                             {getDocLabel(item.kind, { isNigerianSeller })}
                                                         </span>
                                                         <span
-                                                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.status === "APPROVED"
-                                                                ? "bg-emerald-100 text-emerald-700"
-                                                                : item.status === "REJECTED"
-                                                                  ? "bg-rose-100 text-rose-700"
-                                                                  : item.status === "PENDING"
-                                                                    ? "bg-amber-100 text-amber-700"
-                                                                    : "bg-zinc-100 text-zinc-700"
-                                                                }`}
+                                                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                                                item.status === "APPROVED"
+                                                                    ? "bg-emerald-100 text-emerald-700"
+                                                                    : item.status === "REJECTED"
+                                                                      ? "bg-rose-100 text-rose-700"
+                                                                      : item.status === "PENDING"
+                                                                        ? "bg-amber-100 text-amber-700"
+                                                                        : "bg-zinc-100 text-zinc-700"
+                                                            }`}
                                                         >
                                                             {item.status === "MISSING" ? "Pending" : item.status}
                                                         </span>

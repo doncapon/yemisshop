@@ -4,8 +4,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
-  BadgeCheck,
-  CheckCircle2,
   MapPin,
   Store,
   Truck,
@@ -532,6 +530,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
   const hasHydratedRef = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
+  const savePromiseRef = useRef<Promise<boolean> | null>(null);
 
   const setRegisteredField =
     (key: keyof AddressState) =>
@@ -958,8 +957,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   const livePickupComplete = draftPickupComplete;
 
   const canProceedToDocuments = useMemo<boolean>(() => {
-    return verifiedSupplier || (draftAddressDone && !hasUnsavedChanges && saveState !== "saving");
-  }, [verifiedSupplier, draftAddressDone, hasUnsavedChanges, saveState]);
+    return verifiedSupplier || (draftAddressDone && !loading);
+  }, [verifiedSupplier, draftAddressDone, loading]);
 
   const docsDone = useMemo<boolean>(() => supplierHasDocuments(supplier), [supplier]);
 
@@ -985,94 +984,103 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   }, [liveRegisteredComplete, livePickupComplete, sameAsRegistered]);
 
   const save = useCallback(async (): Promise<boolean> => {
-    try {
-      setSaveState("saving");
-      setErr(null);
+    if (savePromiseRef.current) return savePromiseRef.current;
 
-      const payload = {
-        registeredAddress: {
-          houseNumber: registered.houseNumber.trim() || null,
-          streetName: registered.streetName.trim() || null,
-          postCode: registered.postCode.trim() || null,
-          town: registered.town.trim() || null,
-          city: registered.city.trim() || null,
-          state: registered.state.trim() || null,
-          country:
-            countryValueToCodeOrName(registered.country, countries) ||
-            registered.country.trim() ||
-            null,
-          lga: registered.lga.trim() || null,
-          landmark: registered.landmark.trim() || null,
-          directionsNote: registered.directionsNote.trim() || null,
-        },
-        pickupAddress: sameAsRegistered
-          ? {
-              houseNumber: registered.houseNumber.trim() || null,
-              streetName: registered.streetName.trim() || null,
-              postCode: registered.postCode.trim() || null,
-              town: registered.town.trim() || null,
-              city: registered.city.trim() || null,
-              state: registered.state.trim() || null,
-              country:
-                countryValueToCodeOrName(registered.country, countries) ||
-                registered.country.trim() ||
-                null,
-              lga: registered.lga.trim() || null,
-              landmark: registered.landmark.trim() || null,
-              directionsNote: registered.directionsNote.trim() || null,
-            }
-          : {
-              houseNumber: pickup.houseNumber.trim() || null,
-              streetName: pickup.streetName.trim() || null,
-              postCode: pickup.postCode.trim() || null,
-              town: pickup.town.trim() || null,
-              city: pickup.city.trim() || null,
-              state: pickup.state.trim() || null,
-              country:
-                countryValueToCodeOrName(pickup.country, countries) ||
-                pickup.country.trim() ||
-                null,
-              lga: pickup.lga.trim() || null,
-              landmark: pickup.landmark.trim() || null,
-              directionsNote: pickup.directionsNote.trim() || null,
-            },
-
-        pickupContactName: pickupMeta.pickupContactName.trim() || null,
-        pickupContactPhone: pickupMeta.pickupContactPhone.trim() || null,
-        pickupInstructions: pickupMeta.pickupInstructions.trim() || null,
-
-        shippingEnabled: pickupMeta.shippingEnabled,
-        shipsNationwide: pickupMeta.shipsNationwide,
-        supportsDoorDelivery: pickupMeta.supportsDoorDelivery,
-        supportsPickupPoint: pickupMeta.supportsPickupPoint,
-      };
-
-      const { data } = await api.put("/api/supplier/me", payload, {
-        withCredentials: true,
-      });
-
-      const s = (data?.data || data) as SupplierMe;
-      setSupplier(s);
-      hydrateFromSupplier(s, true);
-      setSaveState("saved");
-
+    const request = (async (): Promise<boolean> => {
       try {
-        sessionStorage.removeItem(ADDRESS_DRAFT_KEY);
-      } catch {}
+        setSaveState("saving");
+        setErr(null);
 
-      return true;
-    } catch (e: unknown) {
-      const error = e as {
-        response?: { data?: { error?: string; message?: string } };
-      };
-      setSaveState("error");
-      setErr(
-        error?.response?.data?.error ||
-          error?.response?.data?.message ||
-          "Could not save address details."
-      );
-      return false;
-    }
+        const payload = {
+          registeredAddress: {
+            houseNumber: registered.houseNumber.trim() || null,
+            streetName: registered.streetName.trim() || null,
+            postCode: registered.postCode.trim() || null,
+            town: registered.town.trim() || null,
+            city: registered.city.trim() || null,
+            state: registered.state.trim() || null,
+            country:
+              countryValueToCodeOrName(registered.country, countries) ||
+              registered.country.trim() ||
+              null,
+            lga: registered.lga.trim() || null,
+            landmark: registered.landmark.trim() || null,
+            directionsNote: registered.directionsNote.trim() || null,
+          },
+          pickupAddress: sameAsRegistered
+            ? {
+                houseNumber: registered.houseNumber.trim() || null,
+                streetName: registered.streetName.trim() || null,
+                postCode: registered.postCode.trim() || null,
+                town: registered.town.trim() || null,
+                city: registered.city.trim() || null,
+                state: registered.state.trim() || null,
+                country:
+                  countryValueToCodeOrName(registered.country, countries) ||
+                  registered.country.trim() ||
+                  null,
+                lga: registered.lga.trim() || null,
+                landmark: registered.landmark.trim() || null,
+                directionsNote: registered.directionsNote.trim() || null,
+              }
+            : {
+                houseNumber: pickup.houseNumber.trim() || null,
+                streetName: pickup.streetName.trim() || null,
+                postCode: pickup.postCode.trim() || null,
+                town: pickup.town.trim() || null,
+                city: pickup.city.trim() || null,
+                state: pickup.state.trim() || null,
+                country:
+                  countryValueToCodeOrName(pickup.country, countries) ||
+                  pickup.country.trim() ||
+                  null,
+                lga: pickup.lga.trim() || null,
+                landmark: pickup.landmark.trim() || null,
+                directionsNote: pickup.directionsNote.trim() || null,
+              },
+
+          pickupContactName: pickupMeta.pickupContactName.trim() || null,
+          pickupContactPhone: pickupMeta.pickupContactPhone.trim() || null,
+          pickupInstructions: pickupMeta.pickupInstructions.trim() || null,
+
+          shippingEnabled: pickupMeta.shippingEnabled,
+          shipsNationwide: pickupMeta.shipsNationwide,
+          supportsDoorDelivery: pickupMeta.supportsDoorDelivery,
+          supportsPickupPoint: pickupMeta.supportsPickupPoint,
+        };
+
+        const { data } = await api.put("/api/supplier/me", payload, {
+          withCredentials: true,
+        });
+
+        const s = (data?.data || data) as SupplierMe;
+        setSupplier(s);
+        hydrateFromSupplier(s, true);
+        setSaveState("saved");
+
+        try {
+          sessionStorage.removeItem(ADDRESS_DRAFT_KEY);
+        } catch {}
+
+        return true;
+      } catch (e: unknown) {
+        const error = e as {
+          response?: { data?: { error?: string; message?: string } };
+        };
+        setSaveState("error");
+        setErr(
+          error?.response?.data?.error ||
+            error?.response?.data?.message ||
+            "Could not save address details."
+        );
+        return false;
+      } finally {
+        savePromiseRef.current = null;
+      }
+    })();
+
+    savePromiseRef.current = request;
+    return request;
   }, [registered, countries, sameAsRegistered, pickup, pickupMeta, hydrateFromSupplier]);
 
   useEffect(() => {
@@ -1095,7 +1103,17 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         window.clearTimeout(autosaveTimerRef.current);
       }
     };
-  }, [loading, verifiedSupplier, hasUnsavedChanges, saveState, save, registered, pickup, pickupMeta, sameAsRegistered]);
+  }, [
+    loading,
+    verifiedSupplier,
+    hasUnsavedChanges,
+    saveState,
+    save,
+    registered,
+    pickup,
+    pickupMeta,
+    sameAsRegistered,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -1118,15 +1136,26 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       return;
     }
 
-    if (saveState === "saving" || hasUnsavedChanges) {
-      setErr("Please wait for your address changes to finish saving before continuing.");
-      return;
+    if (hasUnsavedChanges || saveState === "saving" || saveState === "error") {
+      const ok = await save();
+      if (!ok) return;
     }
 
     nav("/supplier/onboarding/documents");
   };
 
   const goBack = () => nav("/supplier/onboarding");
+
+  const goToBusinessTab = (): void => {
+    nav("/supplier/onboarding");
+  };
+
+  const goToDocumentsTab = async (): Promise<void> => {
+    await saveAndNext();
+  };
+
+  const canClickBusinessTab = true;
+  const canClickDocumentsTab = canProceedToDocuments || docsDone || verifiedSupplier;
 
   const autosaveStatusText =
     saveState === "saving"
@@ -1138,6 +1167,14 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       : hasUnsavedChanges
       ? "Unsaved changes"
       : "Up to date";
+
+  const stepBase =
+    "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
+  const stepDone = "border-emerald-200 bg-emerald-50 text-emerald-700";
+  const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
+  const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
+  const stepClickable = "cursor-pointer hover:bg-zinc-50";
+  const stepButtonBase = "w-full text-left";
 
   return (
     <SiteLayout>
@@ -1160,38 +1197,72 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
               </div>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-6">
-                <div className={`${"flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition"} ${"border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
-                  <CheckCircle2 size={16} />
+                <div
+                  className={`${stepBase} ${stepDone}`}
+                  aria-current={undefined}
+                >
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                    1
+                  </span>
                   <span>Register</span>
                 </div>
 
-                <div className={`${"flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition"} ${"border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
-                  <BadgeCheck size={16} />
+                <div
+                  className={`${stepBase} ${stepDone}`}
+                  aria-current={undefined}
+                >
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                    2
+                  </span>
                   <span>Verify email / phone</span>
                 </div>
 
-                <div className={`${"flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition"} ${"border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                <button
+                  type="button"
+                  onClick={goToBusinessTab}
+                  disabled={!canClickBusinessTab}
+                  className={`${stepButtonBase} ${stepBase} ${stepDone} ${
+                    canClickBusinessTab ? stepClickable : "cursor-not-allowed"
+                  }`}
+                >
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
                     3
                   </span>
                   <span>Business details</span>
-                </div>
+                </button>
 
-                <div className={`${"flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition"} ${"border-zinc-900 bg-zinc-900 text-white shadow-sm"}`}>
-                  <MapPin size={16} />
+                <div
+                  className={`${stepBase} ${stepActive}`}
+                  aria-current="step"
+                >
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                    4
+                  </span>
                   <span>Address details</span>
                 </div>
 
-                <div className={`${"flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition"} ${docsDone || verifiedSupplier ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-zinc-100 bg-zinc-50 text-zinc-400"}`}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void goToDocumentsTab();
+                  }}
+                  disabled={!canClickDocumentsTab}
+                  className={`${stepButtonBase} ${stepBase} ${
+                    canClickDocumentsTab ? stepDone : stepLocked
+                  } ${canClickDocumentsTab ? stepClickable : "cursor-not-allowed"}`}
+                >
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
                     5
                   </span>
                   <span>Documents</span>
-                </div>
+                </button>
 
-                <div className={`${"flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition"} ${"border-zinc-100 bg-zinc-50 text-zinc-400"}`}>
+                <div
+                  className={`${stepBase} ${stepLocked}`}
+                  aria-current={undefined}
+                >
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    6
+                    *
                   </span>
                   <span>Dashboard access</span>
                 </div>
@@ -1206,13 +1277,13 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
             {hasUnsavedChanges && !verifiedSupplier && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Changes are being saved automatically. Please wait before continuing.
+                Changes are being saved automatically. You can continue now and this page will save before moving on.
               </div>
             )}
 
             {addressDirty && draftAddressDone && !savedAddressDone && !verifiedSupplier && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Address details look complete. Autosave will store them shortly.
+                Address details look complete. Continuing will save them immediately.
               </div>
             )}
 
@@ -1391,7 +1462,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       Address progress
                     </h2>
                     <p className="mt-1 text-sm text-zinc-600">
-                      Continue once your live address details are complete and autosave has finished.
+                      Continue once your live address details are complete.
                     </p>
 
                     <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-200">

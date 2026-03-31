@@ -1,7 +1,7 @@
 // src/pages/supplier/SupplierRegister.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CheckCircle2, Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff } from "lucide-react";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
 
@@ -584,7 +584,9 @@ export default function SupplierRegister() {
 
               <div className="mx-auto grid max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
                 <div className={`${stepBase} ${stepActive}`}>
-                  <CheckCircle2 size={16} />
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                    1
+                  </span>
                   <span>Create account</span>
                 </div>
 
