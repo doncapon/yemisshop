@@ -197,21 +197,43 @@ function hasMeaningfulBankDetails(source: {
 } | null | undefined) {
   if (!source) return false;
 
+  const bankCountry = norm(source.bankCountry).toUpperCase();
   const bankCode = norm(source.bankCode);
   const bankName = norm(source.bankName);
   const accountName = norm(source.accountName);
   const accountNumber = norm(source.accountNumber);
-  const bankCountry = norm(source.bankCountry).toUpperCase();
 
   const hasCoreBankFields =
     !!bankCode || !!bankName || !!accountName || !!accountNumber;
 
   const onlyDefaultCountry =
-    bankCountry === "" || bankCountry === "NG" || bankCountry === "NIGERIA";
+    !bankCountry || bankCountry === "NG" || bankCountry === "NIGERIA";
 
   if (!hasCoreBankFields && onlyDefaultCountry) return false;
 
   return hasCoreBankFields;
+}
+
+function getEffectiveBankStatus(
+  rawStatus: string | null | undefined,
+  source: {
+    bankCountry?: string | null;
+    bankCode?: string | null;
+    bankName?: string | null;
+    accountName?: string | null;
+    accountNumber?: string | null;
+  } | null | undefined
+): BankVerificationStatus {
+  const status = String(rawStatus ?? "").trim().toUpperCase();
+
+  if (status === "VERIFIED") return "VERIFIED";
+  if (status === "REJECTED") return "REJECTED";
+
+  if (status === "PENDING") {
+    return hasMeaningfulBankDetails(source) ? "PENDING" : "UNVERIFIED";
+  }
+
+  return "UNVERIFIED";
 }
 
 export default function SupplierBusinessDetails() {
@@ -458,6 +480,10 @@ export default function SupplierBusinessDetails() {
   const businessReadyLive = draftBusinessDone;
   const bankReadyLive = draftBankDone;
 
+  const effectiveBankStatus = useMemo<BankVerificationStatus>(() => {
+    return getEffectiveBankStatus(supplier?.bankVerificationStatus, supplier);
+  }, [supplier]);
+
   const savedBankIsMeaningful = useMemo(() => {
     return hasMeaningfulBankDetails(supplier);
   }, [supplier]);
@@ -504,7 +530,7 @@ export default function SupplierBusinessDetails() {
         setBusinessStepSaved(false);
       }
 
-      if ((s.bankVerificationStatus ?? "UNVERIFIED") === "VERIFIED") {
+      if (effectiveBankStatus === "VERIFIED") {
         setBankEditUnlocked(false);
       }
 
@@ -518,7 +544,7 @@ export default function SupplierBusinessDetails() {
     } finally {
       setLoading(false);
     }
-  }, [cameFromVerifyContact, hydrateFormFromSupplier]);
+  }, [cameFromVerifyContact, effectiveBankStatus, hydrateFormFromSupplier]);
 
   useEffect(() => {
     void load();
@@ -559,10 +585,9 @@ export default function SupplierBusinessDetails() {
       .catch(() => setBanks(FALLBACK_BANKS));
   }, []);
 
-  const bankStatus = (supplier?.bankVerificationStatus ?? "UNVERIFIED") as BankVerificationStatus;
   const bankLockedByStatus =
-    bankStatus === "VERIFIED" ||
-    (bankStatus === "PENDING" && savedBankIsMeaningful);
+    effectiveBankStatus === "VERIFIED" ||
+    (effectiveBankStatus === "PENDING" && savedBankIsMeaningful);
 
   const bankEditable = !bankLockedByStatus || bankEditUnlocked;
   const bankFieldsDisabled = !bankEditable || loading || isBankSaving;
@@ -816,21 +841,21 @@ export default function SupplierBusinessDetails() {
     "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50";
 
   const bankStatusChip = (() => {
-    if (bankStatus === "VERIFIED") {
+    if (effectiveBankStatus === "VERIFIED") {
       return (
         <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] text-emerald-700">
           <VerifiedIcon size={14} /> Verified
         </span>
       );
     }
-    if (bankStatus === "PENDING") {
+    if (effectiveBankStatus === "PENDING") {
       return (
         <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] text-amber-700">
           <Clock size={14} /> Pending verification
         </span>
       );
     }
-    if (bankStatus === "REJECTED") {
+    if (effectiveBankStatus === "REJECTED") {
       return (
         <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] text-rose-700">
           <AlertTriangle size={14} /> Rejected
@@ -1115,7 +1140,7 @@ export default function SupplierBusinessDetails() {
 
                       <div className="flex flex-wrap items-center gap-2">
                         {bankStatusChip}
-                        {bankStatus === "VERIFIED" && !bankEditUnlocked && (
+                        {effectiveBankStatus === "VERIFIED" && !bankEditUnlocked && (
                           <button
                             type="button"
                             onClick={() => setBankEditUnlocked(true)}
@@ -1136,28 +1161,28 @@ export default function SupplierBusinessDetails() {
                       </div>
                     </div>
 
-                    {supplier?.bankVerificationNote && (
+                    {supplier?.bankVerificationNote && savedBankIsMeaningful && (
                       <div className="mb-3 rounded-xl border bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
                         <span className="font-semibold">Admin note:</span>{" "}
                         {supplier.bankVerificationNote}
                       </div>
                     )}
 
-                    {bankStatus === "PENDING" && savedBankIsMeaningful && (
+                    {effectiveBankStatus === "PENDING" && savedBankIsMeaningful && (
                       <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
                         Bank details are <span className="font-semibold">pending verification</span>.
                         Editing is locked until review is complete.
                       </div>
                     )}
 
-                    {bankStatus === "VERIFIED" && !bankEditUnlocked && (
+                    {effectiveBankStatus === "VERIFIED" && !bankEditUnlocked && (
                       <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800">
                         Your bank details are verified and locked. Use{" "}
                         <span className="font-semibold">Request change</span> to update them.
                       </div>
                     )}
 
-                    {bankEditUnlocked && bankStatus !== "PENDING" && (
+                    {bankEditUnlocked && effectiveBankStatus !== "PENDING" && (
                       <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
                         When you save new bank details, they will be submitted for verification.
                       </div>
