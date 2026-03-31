@@ -188,6 +188,32 @@ function isRegisteredBusinessType(v: string | null | undefined) {
   return String(v ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
 }
 
+function hasMeaningfulBankDetails(source: {
+  bankCountry?: string | null;
+  bankCode?: string | null;
+  bankName?: string | null;
+  accountName?: string | null;
+  accountNumber?: string | null;
+} | null | undefined) {
+  if (!source) return false;
+
+  const bankCode = norm(source.bankCode);
+  const bankName = norm(source.bankName);
+  const accountName = norm(source.accountName);
+  const accountNumber = norm(source.accountNumber);
+  const bankCountry = norm(source.bankCountry).toUpperCase();
+
+  const hasCoreBankFields =
+    !!bankCode || !!bankName || !!accountName || !!accountNumber;
+
+  const onlyDefaultCountry =
+    bankCountry === "" || bankCountry === "NG" || bankCountry === "NIGERIA";
+
+  if (!hasCoreBankFields && onlyDefaultCountry) return false;
+
+  return hasCoreBankFields;
+}
+
 export default function SupplierBusinessDetails() {
   const nav = useNavigate();
   const location = useLocation();
@@ -432,6 +458,10 @@ export default function SupplierBusinessDetails() {
   const businessReadyLive = draftBusinessDone;
   const bankReadyLive = draftBankDone;
 
+  const savedBankIsMeaningful = useMemo(() => {
+    return hasMeaningfulBankDetails(supplier);
+  }, [supplier]);
+
   const canProceedToAddress = useMemo(() => {
     return businessReadyLive && !businessDirty && !isBusinessAutosaving;
   }, [businessReadyLive, businessDirty, isBusinessAutosaving]);
@@ -530,7 +560,10 @@ export default function SupplierBusinessDetails() {
   }, []);
 
   const bankStatus = (supplier?.bankVerificationStatus ?? "UNVERIFIED") as BankVerificationStatus;
-  const bankLockedByStatus = bankStatus === "VERIFIED" || bankStatus === "PENDING";
+  const bankLockedByStatus =
+    bankStatus === "VERIFIED" ||
+    (bankStatus === "PENDING" && savedBankIsMeaningful);
+
   const bankEditable = !bankLockedByStatus || bankEditUnlocked;
   const bankFieldsDisabled = !bankEditable || loading || isBankSaving;
 
@@ -1110,7 +1143,7 @@ export default function SupplierBusinessDetails() {
                       </div>
                     )}
 
-                    {bankStatus === "PENDING" && (
+                    {bankStatus === "PENDING" && savedBankIsMeaningful && (
                       <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
                         Bank details are <span className="font-semibold">pending verification</span>.
                         Editing is locked until review is complete.
