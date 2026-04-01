@@ -1,6 +1,6 @@
 // src/pages/supplier/SupplierVerifyContact.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   Mail,
@@ -14,6 +14,8 @@ import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
 import { useAuthStore } from "../../store/auth";
 
+const ADMIN_SUPPLIER_KEY = "adminSupplierId";
+
 type VerifyLocationState = {
   supplierId?: string | null;
   email?: string | null;
@@ -23,6 +25,12 @@ type VerifyLocationState = {
   phoneOtpSent?: boolean;
   nextAfterVerify?: string;
   flow?: string;
+  adminReview?: boolean;
+  allowReview?: boolean;
+  skipAutoFinalize?: boolean;
+  returnTo?: string;
+  fromBusinessDetails?: boolean;
+  fromOnboardingTab?: boolean;
 };
 
 type VerifySummary = {
@@ -38,20 +46,63 @@ type VerifySummary = {
   contactDialCode: string;
 };
 
+type AddressLite = {
+  id?: string;
+  houseNumber?: string | null;
+  streetName?: string | null;
+  town?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  postCode?: string | null;
+};
+
 type SupplierMeLite = {
   id?: string;
   supplierId?: string;
+  userId?: string | null;
+
   businessName?: string | null;
   legalName?: string | null;
   registeredBusinessName?: string | null;
+  registrationNumber?: string | null;
   registrationType?: string | null;
+  registrationDate?: string | null;
   registrationCountryCode?: string | null;
+  registryAuthorityId?: string | null;
+  natureOfBusiness?: string | null;
+
+  bankCountry?: string | null;
+  bankCode?: string | null;
+  bankName?: string | null;
+  accountName?: string | null;
+  accountNumber?: string | null;
+
   contactFirstName?: string | null;
   contactLastName?: string | null;
   contactEmail?: string | null;
   contactPhone?: string | null;
   contactDialCode?: string | null;
   name?: string | null;
+
+  registeredAddress?: AddressLite | null;
+  pickupAddress?: AddressLite | null;
+
+  documents?: any[] | null;
+  verificationDocuments?: any[] | null;
+  identityDocumentUrl?: string | null;
+  proofOfAddressUrl?: string | null;
+  cacDocumentUrl?: string | null;
+
+  user?: {
+    id?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    emailVerifiedAt?: string | null;
+    phoneVerifiedAt?: string | null;
+  } | null;
 };
 
 type AuthMeLite = {
@@ -67,6 +118,14 @@ type AuthMeLite = {
   emailVerifiedAt?: string | null;
   phoneVerifiedAt?: string | null;
   status?: string | null;
+};
+
+type PersistedJourneyState = {
+  contactVerified?: boolean;
+  reachedBusiness?: boolean;
+  reachedAddress?: boolean;
+  reachedDocuments?: boolean;
+  reachedDashboard?: boolean;
 };
 
 function maskEmail(v: string) {
@@ -110,23 +169,89 @@ function pickString(v: unknown) {
   return String(v ?? "").trim();
 }
 
+function hasValue(v: unknown) {
+  return String(v ?? "").trim().length > 0;
+}
+
 function isTruthyVerificationFlag(value: unknown) {
   if (value === true) return true;
   if (typeof value === "string" && value.trim()) return true;
   return false;
 }
 
-function isEmailVerified(authMe?: AuthMeLite | null) {
+function isAuthEmailVerified(source?: Pick<AuthMeLite, "emailVerified" | "emailVerifiedAt"> | null) {
   return (
-    isTruthyVerificationFlag(authMe?.emailVerified) ||
-    isTruthyVerificationFlag(authMe?.emailVerifiedAt)
+    isTruthyVerificationFlag(source?.emailVerified) ||
+    isTruthyVerificationFlag(source?.emailVerifiedAt)
   );
 }
 
-function isPhoneVerified(authMe?: AuthMeLite | null) {
+function isAuthPhoneVerified(source?: Pick<AuthMeLite, "phoneVerified" | "phoneVerifiedAt"> | null) {
   return (
-    isTruthyVerificationFlag(authMe?.phoneVerified) ||
-    isTruthyVerificationFlag(authMe?.phoneVerifiedAt)
+    isTruthyVerificationFlag(source?.phoneVerified) ||
+    isTruthyVerificationFlag(source?.phoneVerifiedAt)
+  );
+}
+
+function isSupplierUserEmailVerified(source?: SupplierMeLite | null) {
+  return Boolean(source?.user?.emailVerifiedAt);
+}
+
+function isSupplierUserPhoneVerified(source?: SupplierMeLite | null) {
+  return Boolean(source?.user?.phoneVerifiedAt);
+}
+
+function isRegisteredBusinessType(v?: string | null) {
+  return String(v ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
+}
+
+function hasAddress(addr?: AddressLite | null) {
+  if (!addr) return false;
+  return Boolean(
+    addr.streetName ||
+    addr.houseNumber ||
+    addr.city ||
+    addr.state ||
+    addr.country ||
+    addr.postCode ||
+    addr.town
+  );
+}
+
+function hasDocuments(s?: SupplierMeLite | null) {
+  if (!s) return false;
+  return Boolean(
+    (Array.isArray(s.documents) && s.documents.length > 0) ||
+    (Array.isArray(s.verificationDocuments) && s.verificationDocuments.length > 0) ||
+    s.identityDocumentUrl ||
+    s.proofOfAddressUrl ||
+    s.cacDocumentUrl
+  );
+}
+
+function hasMeaningfulBusinessDetails(s?: SupplierMeLite | null) {
+  if (!s) return false;
+  const registeredBusinessRequired = isRegisteredBusinessType(s.registrationType);
+
+  return (
+    hasValue(s.legalName) &&
+    (!registeredBusinessRequired || hasValue(s.registeredBusinessName)) &&
+    hasValue(s.registrationNumber) &&
+    hasValue(s.registrationType) &&
+    hasValue(s.registrationDate) &&
+    hasValue(s.registrationCountryCode) &&
+    hasValue(s.natureOfBusiness)
+  );
+}
+
+function hasMeaningfulBankDetails(s?: SupplierMeLite | null) {
+  if (!s) return false;
+  return (
+    hasValue(s.bankCountry) &&
+    hasValue(s.bankCode) &&
+    hasValue(s.bankName) &&
+    hasValue(s.accountName) &&
+    hasValue(s.accountNumber)
   );
 }
 
@@ -177,12 +302,167 @@ function normalizeAuthMePayload(payload: any) {
   };
 }
 
+function readJourneyState(key: string): PersistedJourneyState {
+  if (!key || typeof window === "undefined") return {};
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as PersistedJourneyState;
+  } catch {
+    return {};
+  }
+}
+
+function writeJourneyState(key: string, patch: PersistedJourneyState) {
+  if (!key || typeof window === "undefined") return;
+  try {
+    const current = readJourneyState(key);
+    sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        ...current,
+        ...patch,
+      })
+    );
+  } catch {}
+}
+
 export default function SupplierVerifyContact() {
   const nav = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
 
   const state = (location.state ?? {}) as VerifyLocationState;
 
+  const adminSupplierId = useMemo(() => {
+    const fromQuery = searchParams.get("supplierId");
+    const fromState = state.supplierId;
+
+    const explicitAdminMode = Boolean(
+      state.adminReview ||
+      state.allowReview ||
+      location.pathname.startsWith("/admin/")
+    );
+
+    if (!explicitAdminMode) return "";
+
+    let fromStorage = "";
+    try {
+      fromStorage = localStorage.getItem(ADMIN_SUPPLIER_KEY) || "";
+    } catch {}
+
+    return pickString(fromQuery || fromState || fromStorage);
+  }, [
+    location.pathname,
+    searchParams,
+    state.adminReview,
+    state.allowReview,
+    state.supplierId,
+  ]);
+
+  const isAdminReviewMode = useMemo(() => {
+    return Boolean(
+      state.adminReview ||
+      state.allowReview ||
+      location.pathname.startsWith("/admin/")
+    );
+  }, [location.pathname, state.adminReview, state.allowReview]);
+
+  const buildStepUrl = useMemo(() => {
+    return (path: string) => {
+      if (!isAdminReviewMode || !adminSupplierId) return path;
+      const qs = new URLSearchParams();
+      qs.set("supplierId", adminSupplierId);
+      return `${path}?${qs.toString()}`;
+    };
+  }, [adminSupplierId, isAdminReviewMode]);
+
+  const makeStepState = useMemo(() => {
+    return (
+      targetPath: string,
+      extraState?: Record<string, unknown>
+    ): Record<string, unknown> => {
+      return {
+        email: state.email || "",
+        phone: state.phone || "",
+        dialCode: state.dialCode || "",
+        emailSent: state.emailSent || false,
+        phoneOtpSent: state.phoneOtpSent || false,
+        flow: state.flow,
+
+        adminReview: isAdminReviewMode,
+        allowReview: isAdminReviewMode,
+        skipAutoFinalize: true,
+        supplierId: isAdminReviewMode ? adminSupplierId || state.supplierId || "" : "",
+        fromOnboardingTab: true,
+
+        returnTo: targetPath,
+        nextAfterVerify: targetPath,
+
+        fromBusinessDetails: false,
+
+        ...extraState,
+      };
+    };
+  }, [
+    adminSupplierId,
+    isAdminReviewMode,
+    state.dialCode,
+    state.email,
+    state.emailSent,
+    state.flow,
+    state.phone,
+    state.phoneOtpSent,
+    state.supplierId,
+  ]);
+
+  const pushStep = useMemo(() => {
+    return (path: string, extraState?: Record<string, unknown>) => {
+      const targetPath = buildStepUrl(path);
+      nav(targetPath, {
+        state: makeStepState(targetPath, extraState),
+      });
+    };
+  }, [buildStepUrl, makeStepState, nav]);
+
+  const journeyKey = useMemo(() => {
+    const keyId = pickString(adminSupplierId || state.supplierId || searchParams.get("supplierId"));
+    return keyId ? `supplier:verify-contact:journey:${keyId}` : "";
+  }, [adminSupplierId, searchParams, state.supplierId]);
+
+  const stepHint = useMemo(() => {
+    return `${state.returnTo || ""} ${state.nextAfterVerify || ""}`.toLowerCase();
+  }, [state.nextAfterVerify, state.returnTo]);
+
+  const cameFromBusinessStep = useMemo(() => {
+    return Boolean(state.fromBusinessDetails || stepHint.includes("/business-details"));
+  }, [state.fromBusinessDetails, stepHint]);
+
+  const cameFromAddressStep = useMemo(() => {
+    return stepHint.includes("/onboarding/address");
+  }, [stepHint]);
+
+  const cameFromDocumentsStep = useMemo(() => {
+    return stepHint.includes("/onboarding/documents");
+  }, [stepHint]);
+
+  const cameFromDashboardStep = useMemo(() => {
+    return /(^|[\s?])\/supplier($|[/?\s])/.test(stepHint);
+  }, [stepHint]);
+
+  const cameFromOnboardingRoot = useMemo(() => {
+    return (
+      stepHint.includes("/supplier/onboarding") &&
+      !stepHint.includes("/business-details") &&
+      !stepHint.includes("/address") &&
+      !stepHint.includes("/documents") &&
+      !/(^|[\s?])\/supplier($|[/?\s])/.test(stepHint)
+    );
+  }, [stepHint]);
+
+  const [journeyState, setJourneyState] = useState<PersistedJourneyState>({});
   const [summary, setSummary] = useState<VerifySummary | null>(
     state.email || state.phone
       ? {
@@ -199,6 +479,8 @@ export default function SupplierVerifyContact() {
         }
       : null
   );
+
+  const [supplierSnapshot, setSupplierSnapshot] = useState<SupplierMeLite | null>(null);
 
   const [email, setEmail] = useState(state.email || "");
   const [phone, setPhone] = useState(state.phone || "");
@@ -224,7 +506,31 @@ export default function SupplierVerifyContact() {
   const hasAutoFinalizedRef = useRef(false);
   const hasAutoRequestedOtpRef = useRef(false);
 
-  const nextAfterVerify = state.nextAfterVerify || "/supplier/onboarding";
+  useEffect(() => {
+    setJourneyState(readJourneyState(journeyKey));
+  }, [journeyKey]);
+
+  useEffect(() => {
+    if (!journeyKey) return;
+
+    const patch: PersistedJourneyState = {};
+
+    if (cameFromBusinessStep) patch.reachedBusiness = true;
+    if (cameFromAddressStep) patch.reachedAddress = true;
+    if (cameFromDocumentsStep) patch.reachedDocuments = true;
+    if (cameFromDashboardStep) patch.reachedDashboard = true;
+
+    if (Object.keys(patch).length > 0) {
+      writeJourneyState(journeyKey, patch);
+      setJourneyState(readJourneyState(journeyKey));
+    }
+  }, [
+    cameFromAddressStep,
+    cameFromBusinessStep,
+    cameFromDashboardStep,
+    cameFromDocumentsStep,
+    journeyKey,
+  ]);
 
   const loadSummary = async () => {
     try {
@@ -237,25 +543,33 @@ export default function SupplierVerifyContact() {
       let authData: AuthMeLite | null = null;
 
       try {
-        const supplierRes = await api.get("/api/supplier/me", cfg);
+        const supplierRes = await api.get("/api/supplier/me", {
+          ...cfg,
+          params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+        });
         supplierData = ((supplierRes.data as any)?.data ??
           supplierRes.data ??
           {}) as SupplierMeLite;
+        setSupplierSnapshot(supplierData);
       } catch {}
 
-      try {
-        const authRes = await api.get("/api/auth/me", cfg);
-        authData = normalizeAuthMePayload(authRes.data);
-      } catch {}
+      if (!isAdminReviewMode) {
+        try {
+          const authRes = await api.get("/api/auth/me", cfg);
+          authData = normalizeAuthMePayload(authRes.data);
+        } catch {}
+      }
 
       const resolvedEmail =
         state.email ||
         pickString(supplierData?.contactEmail) ||
+        pickString(supplierData?.user?.email) ||
         pickString(authData?.email);
 
       const resolvedPhone =
         state.phone ||
         pickString(supplierData?.contactPhone) ||
+        pickString(supplierData?.user?.phone) ||
         pickString(authData?.phone);
 
       const resolvedDialCode =
@@ -279,23 +593,30 @@ export default function SupplierVerifyContact() {
           ),
           contactFirstName:
             pickString(supplierData?.contactFirstName) ||
+            pickString(supplierData?.user?.firstName) ||
             pickString(authData?.firstName),
           contactLastName:
             pickString(supplierData?.contactLastName) ||
+            pickString(supplierData?.user?.lastName) ||
             pickString(authData?.lastName),
           contactEmail: resolvedEmail,
           contactPhone: resolvedPhone,
           contactDialCode: resolvedDialCode,
         });
 
-        setEmailVerified(isEmailVerified(authData));
-        setPhoneVerified(isPhoneVerified(authData));
+        if (isAdminReviewMode) {
+          setEmailVerified(isSupplierUserEmailVerified(supplierData));
+          setPhoneVerified(isSupplierUserPhoneVerified(supplierData));
+        } else {
+          setEmailVerified(isAuthEmailVerified(authData));
+          setPhoneVerified(isAuthPhoneVerified(authData));
+        }
       }
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not load supplier registration details."
+        e?.response?.data?.message ||
+        "Could not load supplier registration details."
       );
     } finally {
       setLoadingSummary(false);
@@ -311,6 +632,22 @@ export default function SupplierVerifyContact() {
     try {
       setErr(null);
       setChecking(true);
+
+      if (isAdminReviewMode) {
+        const supplierRes = await api.get("/api/supplier/me", {
+          ...getVerifyConfig(),
+          params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+        });
+
+        const supplierData = ((supplierRes.data as any)?.data ??
+          supplierRes.data ??
+          {}) as SupplierMeLite;
+
+        setSupplierSnapshot(supplierData);
+        setEmailVerified(Boolean(supplierData?.user?.emailVerifiedAt));
+        setPhoneVerified(Boolean(supplierData?.user?.phoneVerifiedAt));
+        return;
+      }
 
       const cfg = getVerifyConfig();
       const activeEmail = email || summary?.contactEmail || "";
@@ -331,17 +668,27 @@ export default function SupplierVerifyContact() {
       setEmailVerified(nextEmailVerified);
 
       try {
+        const supplierRes = await api.get("/api/supplier/me", cfg);
+        const supplierData = ((supplierRes.data as any)?.data ??
+          supplierRes.data ??
+          {}) as SupplierMeLite;
+        setSupplierSnapshot(supplierData);
+      } catch {
+        // ignore
+      }
+
+      try {
         const meRes = await api.get("/api/auth/me", cfg);
         const me = normalizeAuthMePayload(meRes.data);
-        setPhoneVerified(isPhoneVerified(me));
+        setPhoneVerified(isAuthPhoneVerified(me));
       } catch {
         // ignore
       }
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not load verification status."
+        e?.response?.data?.message ||
+        "Could not load verification status."
       );
     } finally {
       setChecking(false);
@@ -359,7 +706,132 @@ export default function SupplierVerifyContact() {
     return authedUser;
   };
 
+  const contactVerifiedByJourney = useMemo(() => {
+    return Boolean(
+      journeyState.contactVerified ||
+      journeyState.reachedBusiness ||
+      journeyState.reachedAddress ||
+      journeyState.reachedDocuments ||
+      journeyState.reachedDashboard
+    );
+  }, [journeyState]);
+
+  const reachedBusinessEffective = useMemo(() => {
+    return Boolean(journeyState.reachedBusiness);
+  }, [journeyState]);
+
+  const reachedAddressEffective = useMemo(() => {
+    return Boolean(journeyState.reachedAddress);
+  }, [journeyState]);
+
+  const emailVerifiedEffective = useMemo(() => {
+    return emailVerified || contactVerifiedByJourney;
+  }, [emailVerified, contactVerifiedByJourney]);
+
+  const phoneVerifiedEffective = useMemo(() => {
+    return phoneVerified || contactVerifiedByJourney;
+  }, [phoneVerified, contactVerifiedByJourney]);
+
+  useEffect(() => {
+    if (!journeyKey) return;
+    if (!emailVerifiedEffective || !phoneVerifiedEffective) return;
+
+    writeJourneyState(journeyKey, { contactVerified: true });
+    setJourneyState(readJourneyState(journeyKey));
+  }, [emailVerifiedEffective, journeyKey, phoneVerifiedEffective]);
+
+  const canContinue = useMemo(
+    () => emailVerifiedEffective && phoneVerifiedEffective,
+    [emailVerifiedEffective, phoneVerifiedEffective]
+  );
+
+  const businessDetailsDone = useMemo(() => {
+    return (
+      hasMeaningfulBusinessDetails(supplierSnapshot) &&
+      hasMeaningfulBankDetails(supplierSnapshot)
+    );
+  }, [supplierSnapshot]);
+
+  const addressDone = useMemo(() => {
+    return (
+      hasAddress(supplierSnapshot?.registeredAddress) ||
+      hasAddress(supplierSnapshot?.pickupAddress)
+    );
+  }, [supplierSnapshot]);
+
+  const documentsDone = useMemo(() => {
+    return hasDocuments(supplierSnapshot);
+  }, [supplierSnapshot]);
+
+  useEffect(() => {
+    if (!journeyKey) return;
+
+    const patch: PersistedJourneyState = {};
+    if (businessDetailsDone) patch.reachedBusiness = true;
+    if (addressDone) patch.reachedAddress = true;
+    if (documentsDone) patch.reachedDocuments = true;
+    if (businessDetailsDone && addressDone && documentsDone && canContinue) {
+      patch.reachedDashboard = true;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      writeJourneyState(journeyKey, patch);
+      setJourneyState(readJourneyState(journeyKey));
+    }
+  }, [addressDone, businessDetailsDone, canContinue, documentsDone, journeyKey]);
+
+  const businessDetailsAccessible = useMemo(() => {
+    return canContinue;
+  }, [canContinue]);
+
+  const documentsAccessible = useMemo(() => {
+    return addressDone || reachedAddressEffective;
+  }, [addressDone, reachedAddressEffective]);
+
+  const openedFromOnboardingTab = useMemo(() => {
+    return Boolean(
+      state.fromOnboardingTab ||
+      state.returnTo ||
+      state.nextAfterVerify ||
+      cameFromBusinessStep ||
+      cameFromAddressStep ||
+      cameFromDocumentsStep ||
+      cameFromDashboardStep ||
+      cameFromOnboardingRoot
+    );
+  }, [
+    cameFromAddressStep,
+    cameFromBusinessStep,
+    cameFromDashboardStep,
+    cameFromDocumentsStep,
+    cameFromOnboardingRoot,
+    state.fromOnboardingTab,
+    state.nextAfterVerify,
+    state.returnTo,
+  ]);
+
+  const shouldAutoFinalize = useMemo(() => {
+    return (
+      !isAdminReviewMode &&
+      !state.skipAutoFinalize &&
+      canContinue &&
+      !openedFromOnboardingTab
+    );
+  }, [canContinue, isAdminReviewMode, openedFromOnboardingTab, state.skipAutoFinalize]);
+
   const finalizeVerifiedSession = async () => {
+    const targetPath = buildStepUrl("/supplier/onboarding");
+
+    if (isAdminReviewMode) {
+      nav(targetPath, {
+        replace: true,
+        state: makeStepState(targetPath, {
+          fromVerifyContact: true,
+        }),
+      });
+      return;
+    }
+
     if (hasAutoFinalizedRef.current) return;
 
     hasAutoFinalizedRef.current = true;
@@ -371,9 +843,11 @@ export default function SupplierVerifyContact() {
       try {
         await hydrateAuthStoreFromSession();
         clearTempToken();
-        nav(nextAfterVerify, {
+        nav(targetPath, {
           replace: true,
-          state: { fromVerifyContact: true },
+          state: makeStepState(targetPath, {
+            fromVerifyContact: true,
+          }),
         });
         return;
       } catch {
@@ -402,16 +876,18 @@ export default function SupplierVerifyContact() {
       clearTempToken();
       await hydrateAuthStoreFromSession();
 
-      nav(nextAfterVerify, {
+      nav(targetPath, {
         replace: true,
-        state: { fromVerifyContact: true },
+        state: makeStepState(targetPath, {
+          fromVerifyContact: true,
+        }),
       });
     } catch (e: any) {
       hasAutoFinalizedRef.current = false;
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Your details were verified, but we could not finish signing you in automatically. Please try again."
+        e?.response?.data?.message ||
+        "Your details were verified, but we could not finish signing you in automatically. Please try again."
       );
     } finally {
       setFinalizingSession(false);
@@ -419,30 +895,27 @@ export default function SupplierVerifyContact() {
   };
 
   useEffect(() => {
-    loadSummary();
+    void loadSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (!loadingSummary) {
-      loadStatus();
+      void loadStatus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingSummary, email]);
-
-  const canContinue = useMemo(
-    () => emailVerified && phoneVerified,
-    [emailVerified, phoneVerified]
-  );
+  }, [loadingSummary, email, isAdminReviewMode, adminSupplierId]);
 
   useEffect(() => {
-    if (canContinue) {
-      finalizeVerifiedSession();
+    if (shouldAutoFinalize) {
+      void finalizeVerifiedSession();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canContinue]);
+  }, [shouldAutoFinalize]);
 
   const resendEmail = async () => {
+    if (isAdminReviewMode) return;
+
     try {
       setErr(null);
       setBusyEmail(true);
@@ -463,8 +936,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not resend email verification."
+        e?.response?.data?.message ||
+        "Could not resend email verification."
       );
     } finally {
       setBusyEmail(false);
@@ -472,6 +945,8 @@ export default function SupplierVerifyContact() {
   };
 
   const resendPhoneOtp = async () => {
+    if (isAdminReviewMode) return;
+
     try {
       setErr(null);
       setOtpError(null);
@@ -498,8 +973,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not send phone verification code."
+        e?.response?.data?.message ||
+        "Could not send phone verification code."
       );
     } finally {
       setBusyPhone(false);
@@ -508,6 +983,7 @@ export default function SupplierVerifyContact() {
 
   useEffect(() => {
     if (
+      isAdminReviewMode ||
       loadingSummary ||
       hasAutoRequestedOtpRef.current ||
       phoneVerified ||
@@ -518,12 +994,21 @@ export default function SupplierVerifyContact() {
     }
 
     hasAutoRequestedOtpRef.current = true;
-    resendPhoneOtp();
+    void resendPhoneOtp();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingSummary, phoneVerified, phoneOtpSent, phone, summary?.contactPhone]);
+  }, [
+    isAdminReviewMode,
+    loadingSummary,
+    phoneVerified,
+    phoneOtpSent,
+    phone,
+    summary?.contactPhone,
+  ]);
 
   const verifyPhoneOtp = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (isAdminReviewMode) return;
 
     if (!otp.trim()) {
       setOtpError("Please enter the verification code sent to your phone.");
@@ -574,6 +1059,20 @@ export default function SupplierVerifyContact() {
     await finalizeVerifiedSession();
   };
 
+  const goToBusinessDetails = () => {
+    if (!businessDetailsAccessible) return;
+    if (journeyKey) {
+      writeJourneyState(journeyKey, {
+        contactVerified: canContinue,
+        reachedBusiness: true,
+      });
+    }
+    pushStep("/supplier/onboarding", {
+      fromVerifyContact: true,
+      fromBusinessDetails: true,
+    });
+  };
+
   const stepBase =
     "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
   const stepDone = "border-emerald-200 bg-emerald-50 text-emerald-700";
@@ -595,74 +1094,127 @@ export default function SupplierVerifyContact() {
     ? `${input} border-rose-400 bg-rose-50/40 focus:border-rose-500 focus:ring-rose-200`
     : input;
 
+  const continueButtonLabel = "Continue to business details";
+
+  const steps = [
+    {
+      step: 1,
+      label: "Register",
+      active: false,
+      done: true,
+      accessible: false,
+      onClick: undefined as (() => void) | undefined,
+    },
+    {
+      step: 2,
+      label: "Verify email / phone",
+      active: true,
+      done: canContinue,
+      accessible: true,
+      onClick: undefined as (() => void) | undefined,
+    },
+    {
+      step: 3,
+      label: "Business details",
+      active: false,
+      done: businessDetailsDone || reachedBusinessEffective,
+      accessible: businessDetailsAccessible,
+      onClick: goToBusinessDetails,
+    },
+    {
+      step: 4,
+      label: "Address details",
+      active: false,
+      done: addressDone,
+      accessible: false,
+      onClick: undefined as (() => void) | undefined,
+    },
+    {
+      step: 5,
+      label: "Documents",
+      active: false,
+      done: documentsDone,
+      accessible: documentsAccessible,
+      onClick: undefined as (() => void) | undefined,
+    },
+    {
+      step: 6,
+      label: "Dashboard access",
+      active: false,
+      done: false,
+      accessible: false,
+      onClick: undefined as (() => void) | undefined,
+    },
+  ];
+
   return (
     <SiteLayout>
       <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
-        <div className="px-3 sm:px-4 py-6 sm:py-10">
+        <div className="px-3 py-6 sm:px-4 sm:py-10">
           <div className="mx-auto w-full max-w-5xl space-y-6">
             <div className="space-y-4">
               <div className="text-center">
-                <h1 className="text-2xl sm:text-3xl font-semibold text-zinc-900">
+                <h1 className="text-2xl font-semibold text-zinc-900 sm:text-3xl">
                   Verify your contact details
                 </h1>
                 <p className="mt-2 text-sm text-zinc-600">
-                  Complete email and phone verification before continuing to business details.
+                  {isAdminReviewMode
+                    ? "Review the supplier’s email and phone verification status before continuing."
+                    : "Complete email and phone verification before continuing to business details."}
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                <div className={`${stepBase} ${stepDone}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    1
-                  </span>
-                  <span>Register</span>
-                </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {steps.map((item) => {
+                  const stateClass = item.active
+                    ? stepActive
+                    : item.accessible
+                    ? stepDone
+                    : item.done
+                    ? stepDone
+                    : stepLocked;
 
-                <div className={`${stepBase} ${stepActive}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    2
-                  </span>
-                  <span>Verify email / phone</span>
-                </div>
+                  const clickable =
+                    item.step === 3 && !item.active && !!item.onClick && item.accessible;
 
-                <div className={`${stepBase} ${stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    3
-                  </span>
-                  <span>Business details</span>
-                </div>
-
-                <div className={`${stepBase} ${stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    4
-                  </span>
-                  <span>Address details</span>
-                </div>
-
-                <div className={`${stepBase} ${stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    5
-                  </span>
-                  <span>Documents</span>
-                </div>
-
-                <div className={`${stepBase} ${stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    *
-                  </span>
-                  <span>Dashboard access</span>
-                </div>
+                  return (
+                    <button
+                      key={item.step}
+                      type="button"
+                      onClick={clickable ? item.onClick : undefined}
+                      disabled={!clickable}
+                      className={`${stepBase} ${stateClass} ${
+                        clickable
+                          ? "cursor-pointer"
+                          : item.active
+                          ? "cursor-default"
+                          : "cursor-not-allowed"
+                      }`}
+                    >
+                      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                        {item.step}
+                      </span>
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
+            {isAdminReviewMode && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                Admin review mode is active. This page will not send codes or auto-complete login.
+              </div>
+            )}
+
             {err && (
-              <div className="rounded-xl border border-rose-300 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
+              <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                 {err}
               </div>
             )}
 
             <div className={`${card} space-y-5`}>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <div className={panel}>
                   <div className="flex items-start gap-3">
                     <div className="rounded-xl bg-zinc-100 p-3">
@@ -675,30 +1227,36 @@ export default function SupplierVerifyContact() {
                           <h2 className="text-base font-semibold text-zinc-900">
                             Email verification
                           </h2>
-                          <p className="mt-1 text-sm text-zinc-600 break-all">
+                          <p className="mt-1 break-all text-sm text-zinc-600">
                             {email ? maskEmail(email) : "No email found"}
                           </p>
                         </div>
 
                         <div
                           className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            emailVerified
+                            emailVerifiedEffective
                               ? "bg-emerald-100 text-emerald-700"
                               : "bg-amber-100 text-amber-700"
                           }`}
                         >
-                          {emailVerified ? "Verified" : "Pending"}
+                          {emailVerifiedEffective ? "Verified" : "Pending"}
                         </div>
                       </div>
 
-                      {!emailVerified && (
+                      {!emailVerifiedEffective && !isAdminReviewMode && (
                         <p className="mt-4 text-sm text-zinc-600">
                           Open the verification link sent to your inbox, then
                           return here and refresh your status.
                         </p>
                       )}
 
-                      {!emailVerified && (
+                      {!emailVerifiedEffective && isAdminReviewMode && (
+                        <p className="mt-4 text-sm text-zinc-600">
+                          This supplier’s email is not verified yet.
+                        </p>
+                      )}
+
+                      {!emailVerifiedEffective && !isAdminReviewMode && (
                         <div className="mt-4 flex flex-wrap gap-2">
                           <button
                             type="button"
@@ -715,7 +1273,21 @@ export default function SupplierVerifyContact() {
 
                           <button
                             type="button"
-                            onClick={loadStatus}
+                            onClick={() => void loadStatus()}
+                            disabled={checking}
+                            className={secondaryBtn}
+                          >
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            {checking ? "Checking…" : "Refresh status"}
+                          </button>
+                        </div>
+                      )}
+
+                      {!emailVerifiedEffective && isAdminReviewMode && (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void loadStatus()}
                             disabled={checking}
                             className={secondaryBtn}
                           >
@@ -747,66 +1319,86 @@ export default function SupplierVerifyContact() {
 
                         <div
                           className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            phoneVerified
+                            phoneVerifiedEffective
                               ? "bg-emerald-100 text-emerald-700"
                               : "bg-amber-100 text-amber-700"
                           }`}
                         >
-                          {phoneVerified ? "Verified" : "Pending"}
+                          {phoneVerifiedEffective ? "Verified" : "Pending"}
                         </div>
                       </div>
 
-                      {!phoneVerified && (
+                      {!phoneVerifiedEffective && !isAdminReviewMode && (
                         <p className="mt-4 text-sm text-zinc-600">
                           Enter the OTP sent to your phone or WhatsApp number.
                         </p>
                       )}
 
-                      <form onSubmit={verifyPhoneOtp} className="mt-4 space-y-3">
-                        {!phoneVerified && (
-                          <>
-                            <input
-                              value={otp}
-                              onChange={(e) => {
-                                setOtp(e.target.value);
-                                setErr(null);
-                                setOtpError(null);
-                              }}
-                              className={otpInputClass}
-                              placeholder="Enter verification code"
-                              inputMode="numeric"
-                            />
-                            {otpError && (
-                              <p className="text-xs text-rose-600">{otpError}</p>
-                            )}
-                          </>
-                        )}
+                      {!phoneVerifiedEffective && isAdminReviewMode && (
+                        <p className="mt-4 text-sm text-zinc-600">
+                          This supplier’s phone is not verified yet.
+                        </p>
+                      )}
 
-                        {!phoneVerified && (
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="submit"
-                              disabled={busyVerifyOtp}
-                              className={primaryBtn}
-                            >
-                              {busyVerifyOtp ? "Verifying…" : "Verify phone"}
-                            </button>
+                      {!isAdminReviewMode ? (
+                        <form onSubmit={verifyPhoneOtp} className="mt-4 space-y-3">
+                          {!phoneVerifiedEffective && (
+                            <>
+                              <input
+                                value={otp}
+                                onChange={(e) => {
+                                  setOtp(e.target.value);
+                                  setErr(null);
+                                  setOtpError(null);
+                                }}
+                                className={otpInputClass}
+                                placeholder="Enter verification code"
+                                inputMode="numeric"
+                              />
+                              {otpError && (
+                                <p className="text-xs text-rose-600">{otpError}</p>
+                              )}
+                            </>
+                          )}
 
-                            <button
-                              type="button"
-                              onClick={resendPhoneOtp}
-                              disabled={busyPhone}
-                              className={secondaryBtn}
-                            >
-                              {busyPhone
-                                ? "Sending…"
-                                : phoneOtpSent
-                                ? "Resend code"
-                                : "Send code"}
-                            </button>
-                          </div>
-                        )}
-                      </form>
+                          {!phoneVerifiedEffective && (
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="submit"
+                                disabled={busyVerifyOtp}
+                                className={primaryBtn}
+                              >
+                                {busyVerifyOtp ? "Verifying…" : "Verify phone"}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => void resendPhoneOtp()}
+                                disabled={busyPhone}
+                                className={secondaryBtn}
+                              >
+                                {busyPhone
+                                  ? "Sending…"
+                                  : phoneOtpSent
+                                  ? "Resend code"
+                                  : "Send code"}
+                              </button>
+                            </div>
+                          )}
+                        </form>
+                      ) : (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void loadStatus()}
+                            disabled={checking}
+                            className={secondaryBtn}
+                          >
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            {checking ? "Checking…" : "Refresh status"}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -819,20 +1411,21 @@ export default function SupplierVerifyContact() {
                       Continue to business details
                     </h3>
                     <p className="mt-1 text-sm text-zinc-600">
-                      You’ll unlock the next step once both email and phone are
-                      verified.
+                      {isAdminReviewMode
+                        ? "Move to the next onboarding step for this supplier once both contact methods are verified."
+                        : "Once verified, continue to the next immediate step: Business details."}
                     </p>
                   </div>
 
                   <button
                     type="button"
-                    onClick={continueToOnboarding}
+                    onClick={() => void continueToOnboarding()}
                     disabled={!canContinue || finalizingSession}
                     className={`${primaryBtn} min-w-[240px]`}
                   >
                     {finalizingSession
                       ? "Finishing setup…"
-                      : "Continue to business details"}
+                      : continueButtonLabel}
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </button>
                 </div>
@@ -859,7 +1452,7 @@ export default function SupplierVerifyContact() {
                   Loading registration details…
                 </div>
               ) : summary ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
                   <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
                     <div className="text-zinc-500">Store name</div>
                     <div className="mt-1 font-medium text-zinc-900">
@@ -895,7 +1488,7 @@ export default function SupplierVerifyContact() {
 
                   <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
                     <div className="text-zinc-500">Contact email</div>
-                    <div className="mt-1 font-medium text-zinc-900 break-all">
+                    <div className="mt-1 break-all font-medium text-zinc-900">
                       {summary.contactEmail || "—"}
                     </div>
                   </div>

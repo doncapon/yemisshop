@@ -410,9 +410,7 @@ function useSupplierStageState(): SupplierStageState {
           supplierRes.data ??
           {}) as SupplierMeLite;
 
-        const docsRaw = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
-        const docs = Array.isArray(docsRaw) ? (docsRaw as SupplierDocumentLite[]) : [];
-
+        const docs = normalizeSupplierDocsLite((docsRes as any)?.data);
         const supplierApproved = isSupplierEffectivelyApproved(supplierMe);
 
         const contactDone =
@@ -447,14 +445,15 @@ function useSupplierStageState(): SupplierStageState {
         const docsDone =
           supplierApproved || requiredKinds.every((kind) => docSatisfied(docs, kind));
 
-        const nextPath = supplierApproved
-          ? null
-          : getSupplierNextPath({
-            contactDone,
-            businessDone,
-            addressDone,
-            docsDone,
-          });
+        const nextPath =
+          supplierApproved || (contactDone && businessDone && addressDone && docsDone)
+            ? null
+            : getSupplierNextPath({
+              contactDone,
+              businessDone,
+              addressDone,
+              docsDone,
+            });
 
         if (!alive) return;
 
@@ -464,7 +463,7 @@ function useSupplierStageState(): SupplierStageState {
           businessDone,
           addressDone,
           docsDone,
-          onboardingDone: supplierApproved || !nextPath,
+          onboardingDone: supplierApproved || (contactDone && businessDone && addressDone && docsDone),
           nextPath,
         });
       } catch {
@@ -725,6 +724,45 @@ function RoleDashboardRoute() {
   if (roleNorm === "SUPPLIER_RIDER") return <Navigate to="/supplier/orders" replace />;
   if (roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN") return <AdminDashboard />;
   return <UserDashboard />;
+}
+
+function normalizeSupplierDocsLite(raw: unknown): SupplierDocumentLite[] {
+  const source = raw as
+    | {
+      data?: {
+        data?: SupplierDocumentLite[];
+        documents?: SupplierDocumentLite[];
+      } | SupplierDocumentLite[];
+      documents?: SupplierDocumentLite[];
+    }
+    | SupplierDocumentLite[]
+    | null;
+
+  const candidates: unknown[] = [
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: unknown }).data &&
+      typeof (source as { data?: unknown }).data === "object" &&
+      (source as { data?: { data?: SupplierDocumentLite[] } }).data?.data
+      : undefined,
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: { documents?: SupplierDocumentLite[] } }).data?.documents
+      : undefined,
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: unknown }).data
+      : undefined,
+    source && typeof source === "object" && "documents" in source
+      ? (source as { documents?: SupplierDocumentLite[] }).documents
+      : undefined,
+    source,
+  ];
+
+  for (const item of candidates) {
+    if (Array.isArray(item)) {
+      return item as SupplierDocumentLite[];
+    }
+  }
+
+  return [];
 }
 
 /** Role-aware landing page */

@@ -3,7 +3,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom";
 import {
     ArrowLeft,
-    CheckCircle2,
     Clock,
     FileBadge2,
     FileText,
@@ -65,6 +64,14 @@ type UploadedFileMeta = {
     originalFilename?: string | null;
     mimeType?: string | null;
     size?: number | null;
+};
+
+type PersistedJourneyState = {
+    contactVerified?: boolean;
+    reachedBusiness?: boolean;
+    reachedAddress?: boolean;
+    reachedDocuments?: boolean;
+    reachedDashboard?: boolean;
 };
 
 const BASE_DOC_LABELS: Record<SupplierDocumentKind, string> = {
@@ -302,6 +309,33 @@ async function uploadWithFieldName(
     return extractUploadedFileMeta(res?.data);
 }
 
+function readJourneyState(key: string): PersistedJourneyState {
+    if (!key || typeof window === "undefined") return {};
+    try {
+        const raw = sessionStorage.getItem(key);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return {};
+        return parsed as PersistedJourneyState;
+    } catch {
+        return {};
+    }
+}
+
+function writeJourneyState(key: string, patch: PersistedJourneyState) {
+    if (!key || typeof window === "undefined") return;
+    try {
+        const current = readJourneyState(key);
+        sessionStorage.setItem(
+            key,
+            JSON.stringify({
+                ...current,
+                ...patch,
+            })
+        );
+    } catch {}
+}
+
 export default function SupplierOnboardingDocuments() {
     const nav = useNavigate();
     const location = useLocation();
@@ -424,6 +458,14 @@ export default function SupplierOnboardingDocuments() {
         return Object.values(pending).some((p) => p.uploading);
     }, [pending]);
 
+    const hasPendingSelectedRequiredFiles = useMemo(() => {
+        return requiredKinds.some((kind) => !!pending[kind]?.file);
+    }, [pending, requiredKinds]);
+
+    const hasUploadingRequiredFiles = useMemo(() => {
+        return requiredKinds.some((kind) => !!pending[kind]?.uploading);
+    }, [pending, requiredKinds]);
+
     const hasUnsavedChanges = hasPendingSelectedFiles || hasUploadingFiles;
 
     const approvalReady = useMemo(() => {
@@ -435,12 +477,12 @@ export default function SupplierOnboardingDocuments() {
     }, [supplier]);
 
     const canGoToSupplierHome = useMemo(() => {
-        return progress.docsComplete && !hasUnsavedChanges;
-    }, [progress.docsComplete, hasUnsavedChanges]);
+        return progress.docsComplete && !hasUploadingRequiredFiles;
+    }, [progress.docsComplete, hasUploadingRequiredFiles]);
 
     const canGoToDashboard = useMemo(() => {
-        return progress.docsComplete && adminApproved && !hasUnsavedChanges;
-    }, [progress.docsComplete, adminApproved, hasUnsavedChanges]);
+        return progress.docsComplete && adminApproved && !hasUploadingRequiredFiles;
+    }, [progress.docsComplete, adminApproved, hasUploadingRequiredFiles]);
 
     const currentStatus = String(supplier?.status || "").toUpperCase();
     const currentKycStatus = String(supplier?.kycStatus || "").toUpperCase();
@@ -454,8 +496,8 @@ export default function SupplierOnboardingDocuments() {
     }, [currentStatus, adminApproved, progress.docsComplete]);
 
     const isAwaitingFinalApproval = useMemo(() => {
-        return approvalReady && !isFullyActive && currentKycStatus === "APPROVED";
-    }, [approvalReady, isFullyActive, currentKycStatus]);
+        return approvalReady && !isFullyActive && !needsResubmission;
+    }, [approvalReady, isFullyActive, needsResubmission]);
 
     const isApprovalPending = useMemo(() => {
         return approvalReady && !adminApproved && !isFullyActive && !needsResubmission;
@@ -469,6 +511,37 @@ export default function SupplierOnboardingDocuments() {
                     new Date(b.uploadedAt || 0).getTime() - new Date(a.uploadedAt || 0).getTime()
             );
     }, [docs]);
+
+    const journeyKey = useMemo(() => {
+        const keyId = String(supplier?.supplierId || supplier?.id || "").trim();
+        return keyId ? `supplier:verify-contact:journey:${keyId}` : "";
+    }, [supplier?.id, supplier?.supplierId]);
+
+    useEffect(() => {
+        if (!journeyKey) return;
+
+        const patch: PersistedJourneyState = {
+            reachedDocuments: true,
+        };
+
+        if (progress.docsComplete) {
+            patch.reachedDashboard = true;
+        }
+
+        writeJourneyState(journeyKey, patch);
+    }, [journeyKey, progress.docsComplete]);
+
+    const buildSupplierHomeState = useCallback(() => {
+        return {
+            fromOnboardingDocuments: true,
+            documentsSubmitted: progress.docsComplete,
+            docsComplete: progress.docsComplete,
+            reachedDocuments: true,
+            reachedDashboard: progress.docsComplete,
+            supplierStatus: supplier?.status || "",
+            kycStatus: supplier?.kycStatus || "",
+        };
+    }, [progress.docsComplete, supplier?.kycStatus, supplier?.status]);
 
     const onPickFile =
         (kind: SupplierDocumentKind) =>
@@ -595,14 +668,32 @@ export default function SupplierOnboardingDocuments() {
     };
 
     const goBack = () => nav("/supplier/onboarding/address");
-    const goToBusinessDetails = () => nav("/supplier/onboarding/business-details");
     const goToAddressDetails = () => nav("/supplier/onboarding/address");
-    const goToSupplierHome = () => nav("/supplier");
-    const goToDashboard = () => nav("/supplier");
+
+    const goToSupplierHome = () =>
+        nav("/supplier", {
+            state: buildSupplierHomeState(),
+        });
+
+    const goToDashboard = () =>
+        nav("/supplier", {
+            state: buildSupplierHomeState(),
+        });
+
+    const goToNextStep = () => {
+        if (canGoToDashboard) {
+            nav("/supplier", { state: buildSupplierHomeState() });
+            return;
+        }
+
+        if (canGoToSupplierHome) {
+            nav("/supplier", { state: buildSupplierHomeState() });
+        }
+    };
 
     const goToSupplierHomeAfterDocs = () => {
-        if (hasUnsavedChanges) {
-            setErr("You have selected files that are not uploaded yet. Upload them before continuing.");
+        if (hasUploadingRequiredFiles) {
+            setErr("A required document is still uploading. Please wait for the upload to finish before continuing.");
             return;
         }
 
@@ -611,7 +702,16 @@ export default function SupplierOnboardingDocuments() {
             return;
         }
 
-        nav("/supplier");
+        if (journeyKey) {
+            writeJourneyState(journeyKey, {
+                reachedDocuments: true,
+                reachedDashboard: true,
+            });
+        }
+
+        nav("/supplier", {
+            state: buildSupplierHomeState(),
+        });
     };
 
     const stepBase =
@@ -648,14 +748,19 @@ export default function SupplierOnboardingDocuments() {
             active ? "border-current" : "border-current/80"
         }`;
 
+    const canGoPrevTab = true;
+    const canGoNextTab = canGoToSupplierHome || canGoToDashboard;
+
     const renderStepHeader = () => {
         const finalApprovalStepClass = needsResubmission
             ? stepRejected
             : canGoToDashboard
               ? stepDone
-              : isApprovalPending || isAwaitingFinalApproval
+              : isApprovalPending || isAwaitingFinalApproval || canGoToSupplierHome
                 ? stepPending
                 : stepLocked;
+
+        const finalStepLabel = canGoToDashboard ? "Dashboard access" : "Final approval";
 
         return (
             <div className="space-y-4">
@@ -671,7 +776,7 @@ export default function SupplierOnboardingDocuments() {
                         {needsResubmission
                             ? "One or more required documents need to be replaced before onboarding can continue."
                             : isAwaitingFinalApproval
-                              ? "Your required documents have been approved. Your account is now awaiting final admin approval."
+                              ? "Your required documents have been submitted. Your account may still be under review, but supplier home should now be available."
                               : "Complete document upload to finish onboarding and unlock supplier access."}
                     </p>
                 </div>
@@ -687,19 +792,18 @@ export default function SupplierOnboardingDocuments() {
                         <span>Verify email / phone</span>
                     </div>
 
-                    <button
-                        type="button"
-                        onClick={goToBusinessDetails}
-                        className={`${stepBase} ${stepDone} ${stepClickable} text-left`}
-                    >
+                    <div className={`${stepBase} ${stepDone}`}>
                         <span className={stepCircleClass()}>3</span>
                         <span>Business details</span>
-                    </button>
+                    </div>
 
                     <button
                         type="button"
-                        onClick={goToAddressDetails}
-                        className={`${stepBase} ${stepDone} ${stepClickable} text-left`}
+                        onClick={canGoPrevTab ? goToAddressDetails : undefined}
+                        disabled={!canGoPrevTab}
+                        className={`${stepBase} ${stepDone} ${
+                            canGoPrevTab ? stepClickable : ""
+                        } text-left`}
                     >
                         <span className={stepCircleClass()}>4</span>
                         <span>Address details</span>
@@ -710,10 +814,17 @@ export default function SupplierOnboardingDocuments() {
                         <span>Documents</span>
                     </div>
 
-                    <div className={`${stepBase} ${finalApprovalStepClass}`}>
-                        <span className={stepCircleClass()}>*</span>
-                        <span>{canGoToDashboard ? "Dashboard access" : "Final approval"}</span>
-                    </div>
+                    <button
+                        type="button"
+                        onClick={canGoNextTab ? goToNextStep : undefined}
+                        disabled={!canGoNextTab}
+                        className={`${stepBase} ${finalApprovalStepClass} ${
+                            canGoNextTab ? stepClickable : ""
+                        } text-left`}
+                    >
+                        <span className={stepCircleClass()}>6</span>
+                        <span>{finalStepLabel}</span>
+                    </button>
                 </div>
             </div>
         );
@@ -732,9 +843,21 @@ export default function SupplierOnboardingDocuments() {
                             </div>
                         )}
 
-                        {hasUnsavedChanges && (
+                        {hasUploadingFiles && (
                             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                                You have selected files that are not uploaded yet. Upload them before continuing.
+                                A file upload is still in progress. Please wait for it to finish before continuing.
+                            </div>
+                        )}
+
+                        {!hasUploadingFiles && hasPendingSelectedRequiredFiles && (
+                            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                                You have selected required files that are not uploaded yet. They will not count until you click upload.
+                            </div>
+                        )}
+
+                        {!hasUploadingFiles && !hasPendingSelectedRequiredFiles && hasUnsavedChanges && (
+                            <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                                You have some extra selected files that are not uploaded yet. You can still continue to supplier home if your required documents are complete.
                             </div>
                         )}
 
@@ -746,12 +869,11 @@ export default function SupplierOnboardingDocuments() {
                                     </div>
 
                                     <h2 className="mt-5 text-2xl font-semibold text-zinc-900">
-                                        Documents verified
+                                        Documents submitted
                                     </h2>
 
                                     <p className="mt-3 max-w-2xl text-sm text-zinc-600">
-                                        All required documents have been approved. Your supplier account is now awaiting
-                                        final admin approval. You do not need to upload anything else at this stage.
+                                        All required documents have been submitted. Your supplier account may still be under admin review, but supplier home should already be available. Full dashboard access will unlock after approval.
                                     </p>
 
                                     <div className="mt-6 grid w-full grid-cols-1 gap-3 sm:grid-cols-3">
@@ -796,7 +918,7 @@ export default function SupplierOnboardingDocuments() {
                                     </div>
 
                                     <div className="mt-6 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                                        We’ll unlock full supplier access once final approval is completed.
+                                        Full dashboard access will unlock once final approval is completed.
                                     </div>
 
                                     <div className="mt-6 flex flex-col gap-3 sm:flex-row">
@@ -806,7 +928,7 @@ export default function SupplierOnboardingDocuments() {
 
                                         <button
                                             type="button"
-                                            onClick={goToSupplierHome}
+                                            onClick={goToSupplierHomeAfterDocs}
                                             className={primaryBtn}
                                         >
                                             Go to supplier home
@@ -827,7 +949,7 @@ export default function SupplierOnboardingDocuments() {
                                         <div className="mt-3">
                                             <button
                                                 type="button"
-                                                onClick={goToSupplierHome}
+                                                onClick={goToSupplierHomeAfterDocs}
                                                 className={secondaryBtn}
                                             >
                                                 Go to supplier home
@@ -1168,43 +1290,6 @@ export default function SupplierOnboardingDocuments() {
                                                     <span>Registration type</span>
                                                     <span className="font-medium text-right break-words">
                                                         {supplier?.registrationType || "—"}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className={panel}>
-                                            <h3 className="text-sm font-semibold text-zinc-900">
-                                                Approval status
-                                            </h3>
-                                            <div className="mt-3 space-y-3 text-sm text-zinc-700">
-                                                <div className="flex items-center gap-2">
-                                                    {approvalReady ? (
-                                                        <Clock className="h-4 w-4 text-amber-600" />
-                                                    ) : (
-                                                        <UploadCloud className="h-4 w-4 text-zinc-600" />
-                                                    )}
-                                                    <span>
-                                                        {approvalReady
-                                                            ? "Documents submitted"
-                                                            : "Upload all required documents first"}
-                                                    </span>
-                                                </div>
-
-                                                <div className="flex items-center gap-2">
-                                                    {adminApproved ? (
-                                                        <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                                                    ) : needsResubmission ? (
-                                                        <XCircle className="h-4 w-4 text-rose-600" />
-                                                    ) : (
-                                                        <Clock className="h-4 w-4 text-amber-600" />
-                                                    )}
-                                                    <span>
-                                                        {adminApproved
-                                                            ? "Admin approval complete"
-                                                            : needsResubmission
-                                                              ? "Action required: replace rejected document(s)"
-                                                              : "Awaiting admin review / approval"}
                                                     </span>
                                                 </div>
                                             </div>

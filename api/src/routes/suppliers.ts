@@ -288,6 +288,8 @@ function toSupplierMeDto(s: any) {
           email: s.user.email ?? null,
           phone: s.user.phone ?? null,
           contactPhone: s.user.phone ?? s.whatsappPhone ?? null,
+          emailVerifiedAt: s.user.emailVerifiedAt ?? null,
+          phoneVerifiedAt: s.user.phoneVerifiedAt ?? null,
         }
       : null,
 
@@ -295,6 +297,9 @@ function toSupplierMeDto(s: any) {
     lastName: s.user?.lastName ?? null,
     contactFirstName: s.user?.firstName ?? null,
     contactLastName: s.user?.lastName ?? null,
+
+    emailVerifiedAt: s.user?.emailVerifiedAt ?? null,
+    phoneVerifiedAt: s.user?.phoneVerifiedAt ?? null,
   };
 }
 
@@ -367,6 +372,8 @@ const supplierMeSelect = {
       lastName: true,
       email: true,
       phone: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true,
     },
   },
 } as const;
@@ -421,7 +428,6 @@ const yyyyMmDd = /^\d{4}-\d{2}-\d{2}$/;
 
 const UpdateSupplierMeSchema = z
   .object({
-    /* frontend aliases */
     businessName: z.string().nullable().optional(),
     supplierType: z.string().nullable().optional(),
     contactPhone: z.string().nullable().optional(),
@@ -431,7 +437,6 @@ const UpdateSupplierMeSchema = z
     contactFirstName: z.string().nullable().optional(),
     contactLastName: z.string().nullable().optional(),
 
-    /* backend/original names */
     name: z.string().nullable().optional(),
     type: z.string().nullable().optional(),
     contactEmail: z.string().email().nullable().optional(),
@@ -454,7 +459,6 @@ const UpdateSupplierMeSchema = z
     accountNumber: z.string().nullable().optional(),
     accountName: z.string().nullable().optional(),
 
-    /* address + shipping onboarding */
     registeredAddress: AddressInputSchema.nullable().optional(),
     pickupAddress: AddressInputSchema.nullable().optional(),
     pickupContactName: z.string().nullable().optional(),
@@ -525,8 +529,6 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
     const supplierData: any = {};
     const userData: any = {};
 
-    /* ---------- supplier core identity ---------- */
-
     const nextStoreName =
       cleanString(parsed.businessName) !== undefined
         ? cleanString(parsed.businessName)
@@ -565,8 +567,6 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
       userData.phone = nextPhone;
     }
 
-    /* ---------- legal / registration ---------- */
-
     if ("legalName" in parsed) {
       supplierData.legalName = cleanString(parsed.legalName);
     }
@@ -601,8 +601,6 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
       supplierData.natureOfBusiness = cleanString(parsed.natureOfBusiness);
     }
 
-    /* ---------- bank ---------- */
-
     if ("bankCountry" in parsed) {
       supplierData.bankCountry = cleanString(parsed.bankCountry);
     }
@@ -622,8 +620,6 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
     if ("accountName" in parsed) {
       supplierData.accountName = cleanString(parsed.accountName);
     }
-
-    /* ---------- pickup / shipping ---------- */
 
     if ("pickupContactName" in parsed) {
       supplierData.pickupContactName = cleanString(parsed.pickupContactName);
@@ -652,8 +648,6 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
     if ("supportsPickupPoint" in parsed) {
       supplierData.supportsPickupPoint = cleanBool(parsed.supportsPickupPoint);
     }
-
-    /* ---------- linked user contact names ---------- */
 
     const nextFirstName =
       cleanString(parsed.contactFirstName) !== undefined
@@ -845,7 +839,6 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
                 type: "SUPPLIER_DOCUMENT_UPLOADED" as any,
                 title: "Supplier details changed",
                 body: `${supplierDisplayName} updated verification-sensitive details and requires re-review. Supplier ID: ${supplier.id}`,
-                isRead: false,
               })),
             });
           } catch (notificationError) {
