@@ -20,6 +20,14 @@ type AddressDto = {
   landmark?: string | null;
 };
 
+type SupplierDocument = {
+  id?: string;
+  kind?: string | null;
+  status?: string | null;
+  storageKey?: string | null;
+  originalFilename?: string | null;
+};
+
 type SupplierMe = {
   id: string;
   supplierId?: string;
@@ -187,22 +195,6 @@ function safeReadAddressDraft(): AddressDraft | null {
   }
 }
 
-function resolveCountryName(
-  value: string | null | undefined,
-  countries: CountryOption[]
-): string {
-  const raw = String(value ?? "").trim();
-  if (!raw) return countries[0]?.name || "Nigeria";
-
-  const byName = countries.find((c) => c.name.toLowerCase() === raw.toLowerCase());
-  if (byName) return byName.name;
-
-  const byCode = countries.find((c) => c.code.toLowerCase() === raw.toLowerCase());
-  if (byCode) return byCode.name;
-
-  return raw;
-}
-
 function countryValueToCodeOrName(
   value: string,
   countries: CountryOption[]
@@ -219,10 +211,7 @@ function countryValueToCodeOrName(
   return raw;
 }
 
-function normalizeAddressDto(
-  addr: AddressDto | null | undefined,
-  countries: CountryOption[]
-): AddressState {
+function normalizeAddressDto(addr: AddressDto | null | undefined): AddressState {
   return {
     houseNumber: pickString(addr?.houseNumber),
     streetName: pickString(addr?.streetName),
@@ -230,7 +219,7 @@ function normalizeAddressDto(
     town: pickString(addr?.town),
     city: pickString(addr?.city),
     state: pickString(addr?.state),
-    country: resolveCountryName(addr?.country, countries),
+    country: pickString(addr?.country) || "Nigeria",
     lga: pickString(addr?.lga),
     landmark: pickString(addr?.landmark),
     directionsNote: pickString(addr?.directionsNote),
@@ -276,7 +265,7 @@ function pickupMetaEqual(a: PickupMetaState, b: PickupMetaState): boolean {
   );
 }
 
-function supplierHasDocuments(s: SupplierMe | null): boolean {
+function supplierHasInlineDocuments(s: SupplierMe | null): boolean {
   if (!s) return false;
   return Boolean(
     (Array.isArray(s.documents) && s.documents.length > 0) ||
@@ -285,6 +274,26 @@ function supplierHasDocuments(s: SupplierMe | null): boolean {
       s.proofOfAddressUrl ||
       s.cacDocumentUrl
   );
+}
+
+function normalizeDocumentsPayload(raw: any): SupplierDocument[] {
+  const candidates = [
+    raw?.data?.data,
+    raw?.data?.documents,
+    raw?.data,
+    raw?.documents,
+    raw,
+  ];
+
+  for (const item of candidates) {
+    if (Array.isArray(item)) return item as SupplierDocument[];
+  }
+
+  return [];
+}
+
+function hasFetchedDocuments(docs: SupplierDocument[]): boolean {
+  return Array.isArray(docs) && docs.length > 0;
 }
 
 function isAddressMeaningfullyPresent(addr: AddressDto | null | undefined): boolean {
@@ -376,6 +385,7 @@ type AddressSectionProps = {
   countries: CountryOption[];
   fieldRefs: AddressFieldRefs;
   errors: FieldErrors;
+  isReadOnly: boolean;
   onFieldChange: (
     key: keyof AddressState
   ) => (
@@ -392,6 +402,7 @@ function AddressFieldsSection({
   countries,
   fieldRefs,
   errors,
+  isReadOnly,
   onFieldChange,
 }: AddressSectionProps): React.ReactElement {
   const nigeria = isNigeriaCountry(value.country);
@@ -403,10 +414,14 @@ function AddressFieldsSection({
       errors[`${sectionKey}.${field}`]
         ? "border-rose-300 focus:border-rose-400 focus:ring-rose-200"
         : "border-slate-300"
+    } ${
+      isReadOnly
+        ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
+        : ""
     }`;
 
   const renderError = (field: AddressFieldKey) =>
-    errors[`${sectionKey}.${field}`] ? (
+    !isReadOnly && errors[`${sectionKey}.${field}`] ? (
       <p className="mt-1.5 text-xs text-rose-600">{errors[`${sectionKey}.${field}`]}</p>
     ) : null;
 
@@ -429,6 +444,8 @@ function AddressFieldsSection({
             ref={fieldRefs.houseNumber}
             value={value.houseNumber}
             onChange={onFieldChange("houseNumber")}
+            disabled={isReadOnly}
+            readOnly={isReadOnly}
             className={fieldClass("houseNumber")}
             placeholder="House number"
           />
@@ -443,6 +460,8 @@ function AddressFieldsSection({
             ref={fieldRefs.streetName}
             value={value.streetName}
             onChange={onFieldChange("streetName")}
+            disabled={isReadOnly}
+            readOnly={isReadOnly}
             className={fieldClass("streetName")}
             placeholder="Street name"
           />
@@ -457,6 +476,8 @@ function AddressFieldsSection({
             ref={fieldRefs.town}
             value={value.town}
             onChange={onFieldChange("town")}
+            disabled={isReadOnly}
+            readOnly={isReadOnly}
             className={fieldClass("town")}
             placeholder="Town / Area"
           />
@@ -471,6 +492,8 @@ function AddressFieldsSection({
             ref={fieldRefs.city}
             value={value.city}
             onChange={onFieldChange("city")}
+            disabled={isReadOnly}
+            readOnly={isReadOnly}
             className={fieldClass("city")}
             placeholder="City"
           />
@@ -485,6 +508,7 @@ function AddressFieldsSection({
             ref={fieldRefs.country}
             value={value.country}
             onChange={onFieldChange("country")}
+            disabled={isReadOnly}
             className={fieldClass("country")}
           >
             {countries.length === 0 && <option value="Nigeria">Loading countries...</option>}
@@ -507,6 +531,7 @@ function AddressFieldsSection({
               ref={fieldRefs.state as SelectRef}
               value={getCanonicalStateName(value.state)}
               onChange={onFieldChange("state")}
+              disabled={isReadOnly}
               className={fieldClass("state")}
             >
               <option value="">Select state</option>
@@ -521,6 +546,8 @@ function AddressFieldsSection({
               ref={fieldRefs.state as InputRef}
               value={value.state}
               onChange={onFieldChange("state")}
+              disabled={isReadOnly}
+              readOnly={isReadOnly}
               className={fieldClass("state")}
               placeholder="State"
             />
@@ -536,6 +563,8 @@ function AddressFieldsSection({
             ref={fieldRefs.postCode}
             value={value.postCode}
             onChange={onFieldChange("postCode")}
+            disabled={isReadOnly}
+            readOnly={isReadOnly}
             className={fieldClass("postCode")}
             placeholder="Post code"
           />
@@ -552,7 +581,7 @@ function AddressFieldsSection({
               ref={fieldRefs.lga as SelectRef}
               value={value.lga}
               onChange={onFieldChange("lga")}
-              disabled={!value.state}
+              disabled={isReadOnly || !value.state}
               className={`${fieldClass("lga")} disabled:cursor-not-allowed disabled:bg-zinc-50 disabled:text-zinc-500`}
             >
               <option value="">{value.state ? "Select LGA" : "Select state first"}</option>
@@ -567,6 +596,8 @@ function AddressFieldsSection({
               ref={fieldRefs.lga as InputRef}
               value={value.lga}
               onChange={onFieldChange("lga")}
+              disabled={isReadOnly}
+              readOnly={isReadOnly}
               className={fieldClass("lga")}
               placeholder="LGA / County / Region"
             />
@@ -582,6 +613,8 @@ function AddressFieldsSection({
             ref={fieldRefs.landmark}
             value={value.landmark}
             onChange={onFieldChange("landmark")}
+            disabled={isReadOnly}
+            readOnly={isReadOnly}
             className={fieldClass("landmark")}
             placeholder="Nearby landmark"
           />
@@ -596,6 +629,8 @@ function AddressFieldsSection({
             ref={fieldRefs.directionsNote}
             value={value.directionsNote}
             onChange={onFieldChange("directionsNote")}
+            disabled={isReadOnly}
+            readOnly={isReadOnly}
             className={`${fieldClass("directionsNote")} min-h-[100px] resize-y`}
             placeholder="Helpful directions for finding this address"
           />
@@ -613,6 +648,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   const [err, setErr] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [supplier, setSupplier] = useState<SupplierMe | null>(null);
+  const [supplierDocuments, setSupplierDocuments] = useState<SupplierDocument[]>([]);
   const [countries, setCountries] = useState<CountryOption[]>([]);
   const [draftRestored, setDraftRestored] = useState<boolean>(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -628,41 +664,41 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   const autosaveTimerRef = useRef<number | null>(null);
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
 
-  const fieldRefs: FieldRefsMap = {
+  const fieldRefs = useRef<FieldRefsMap>({
     registered: {
-      houseNumber: useRef<HTMLInputElement | null>(null),
-      streetName: useRef<HTMLInputElement | null>(null),
-      postCode: useRef<HTMLInputElement | null>(null),
-      town: useRef<HTMLInputElement | null>(null),
-      city: useRef<HTMLInputElement | null>(null),
-      state: useRef<HTMLInputElement | HTMLSelectElement | null>(null),
-      country: useRef<HTMLSelectElement | null>(null),
-      lga: useRef<HTMLInputElement | HTMLSelectElement | null>(null),
-      landmark: useRef<HTMLInputElement | null>(null),
-      directionsNote: useRef<HTMLTextAreaElement | null>(null),
+      houseNumber: React.createRef<HTMLInputElement>(),
+      streetName: React.createRef<HTMLInputElement>(),
+      postCode: React.createRef<HTMLInputElement>(),
+      town: React.createRef<HTMLInputElement>(),
+      city: React.createRef<HTMLInputElement>(),
+      state: React.createRef<HTMLInputElement | HTMLSelectElement>(),
+      country: React.createRef<HTMLSelectElement>(),
+      lga: React.createRef<HTMLInputElement | HTMLSelectElement>(),
+      landmark: React.createRef<HTMLInputElement>(),
+      directionsNote: React.createRef<HTMLTextAreaElement>(),
     },
     pickup: {
-      houseNumber: useRef<HTMLInputElement | null>(null),
-      streetName: useRef<HTMLInputElement | null>(null),
-      postCode: useRef<HTMLInputElement | null>(null),
-      town: useRef<HTMLInputElement | null>(null),
-      city: useRef<HTMLInputElement | null>(null),
-      state: useRef<HTMLInputElement | HTMLSelectElement | null>(null),
-      country: useRef<HTMLSelectElement | null>(null),
-      lga: useRef<HTMLInputElement | HTMLSelectElement | null>(null),
-      landmark: useRef<HTMLInputElement | null>(null),
-      directionsNote: useRef<HTMLTextAreaElement | null>(null),
+      houseNumber: React.createRef<HTMLInputElement>(),
+      streetName: React.createRef<HTMLInputElement>(),
+      postCode: React.createRef<HTMLInputElement>(),
+      town: React.createRef<HTMLInputElement>(),
+      city: React.createRef<HTMLInputElement>(),
+      state: React.createRef<HTMLInputElement | HTMLSelectElement>(),
+      country: React.createRef<HTMLSelectElement>(),
+      lga: React.createRef<HTMLInputElement | HTMLSelectElement>(),
+      landmark: React.createRef<HTMLInputElement>(),
+      directionsNote: React.createRef<HTMLTextAreaElement>(),
     },
     pickupMeta: {
-      pickupContactName: useRef<HTMLInputElement | null>(null),
-      pickupContactPhone: useRef<HTMLInputElement | null>(null),
-      pickupInstructions: useRef<HTMLTextAreaElement | null>(null),
-      shippingEnabled: useRef<HTMLInputElement | null>(null),
-      shipsNationwide: useRef<HTMLInputElement | null>(null),
-      supportsDoorDelivery: useRef<HTMLInputElement | null>(null),
-      supportsPickupPoint: useRef<HTMLInputElement | null>(null),
+      pickupContactName: React.createRef<HTMLInputElement>(),
+      pickupContactPhone: React.createRef<HTMLInputElement>(),
+      pickupInstructions: React.createRef<HTMLTextAreaElement>(),
+      shippingEnabled: React.createRef<HTMLInputElement>(),
+      shipsNationwide: React.createRef<HTMLInputElement>(),
+      supportsDoorDelivery: React.createRef<HTMLInputElement>(),
+      supportsPickupPoint: React.createRef<HTMLInputElement>(),
     },
-  };
+  });
 
   const clearFieldError = useCallback((key: keyof FieldErrors) => {
     setFieldErrors((prev) => {
@@ -673,34 +709,33 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     });
   }, []);
 
-  const scrollToField = useCallback(
-    (key: keyof FieldErrors) => {
-      const [section, field] = String(key).split(".") as [
-        "registered" | "pickup" | "pickupMeta",
-        string
-      ];
+  const scrollToField = useCallback((key: keyof FieldErrors) => {
+    const [section, field] = String(key).split(".") as [
+      "registered" | "pickup" | "pickupMeta",
+      string
+    ];
 
-      const ref =
-        section === "pickupMeta"
-          ? fieldRefs.pickupMeta[field as PickupMetaFieldKey]
-          : section === "pickup"
-            ? fieldRefs.pickup[field as AddressFieldKey]
-            : fieldRefs.registered[field as AddressFieldKey];
+    const refs = fieldRefs.current;
 
-      const el = ref?.current;
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        window.setTimeout(() => {
-          try {
-            el.focus();
-          } catch {}
-        }, 220);
-      } else {
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      }
-    },
-    [fieldRefs]
-  );
+    const ref =
+      section === "pickupMeta"
+        ? refs.pickupMeta[field as PickupMetaFieldKey]
+        : section === "pickup"
+        ? refs.pickup[field as AddressFieldKey]
+        : refs.registered[field as AddressFieldKey];
+
+    const el = ref?.current;
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.setTimeout(() => {
+        try {
+          el.focus();
+        } catch {}
+      }, 220);
+    } else {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, []);
 
   const scrollToTop = useCallback(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -744,7 +779,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         const lgaOptions = getLgaOptionsForState(canonical);
 
         if (!canonical || !NIGERIAN_STATES.some((s) => s === canonical)) {
-          errors[`${section}.state`] = `“${value.state}” is not a valid Nigerian state. Please select a valid state.`;
+          errors[
+            `${section}.state`
+          ] = `“${value.state}” is not a valid Nigerian state. Please select a valid state.`;
         }
 
         if (
@@ -788,6 +825,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     };
   }, [buildAddressErrors, pickup, registered, sameAsRegistered]);
 
+  const currentValidation = useMemo(() => validateForm(), [validateForm]);
+
   const buildSpecificErrorSummary = useCallback((errors: FieldErrors): string => {
     const orderedKeys = Object.keys(errors) as (keyof FieldErrors)[];
     if (orderedKeys.length === 0) {
@@ -810,8 +849,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       section === "registered"
         ? "Registered address error"
         : section === "pickup"
-          ? "Pickup address error"
-          : "Pickup settings error";
+        ? "Pickup address error"
+        : "Pickup settings error";
 
     if (orderedKeys.length === 1) {
       return `${prefix}: ${firstMessage}`;
@@ -822,11 +861,19 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     }).`;
   }, []);
 
+  const docsDone = useMemo<boolean>(() => {
+    return supplierHasInlineDocuments(supplier) || hasFetchedDocuments(supplierDocuments);
+  }, [supplier, supplierDocuments]);
+
+  const documentsLocked = useMemo<boolean>(() => docsDone, [docsDone]);
+
   const setRegisteredField =
     (key: keyof AddressState) =>
     (
       e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
     ): void => {
+      if (documentsLocked) return;
+
       const nextValue = e.target.value;
 
       setRegistered((s) => {
@@ -862,6 +909,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     (
       e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
     ): void => {
+      if (documentsLocked) return;
+
       const nextValue = e.target.value;
 
       setPickup((s) => {
@@ -897,6 +946,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     (
       e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
     ): void => {
+      if (documentsLocked) return;
+
       const value: string | boolean =
         e.target instanceof HTMLInputElement && e.target.type === "checkbox"
           ? e.target.checked
@@ -945,8 +996,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         options?.preserveSameAsRegisteredChoice
       );
 
-      const savedRegistered = normalizeAddressDto(s.registeredAddress, countries);
-      const rawSavedPickup = normalizeAddressDto(s.pickupAddress, countries);
+      const savedRegistered = normalizeAddressDto(s.registeredAddress);
+      const rawSavedPickup = normalizeAddressDto(s.pickupAddress);
       const pickupExists = isAddressMeaningfullyPresent(s.pickupAddress);
       const inferredSameAsRegistered =
         !pickupExists || addressesEqual(savedRegistered, rawSavedPickup);
@@ -1019,7 +1070,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         setSameAsRegistered((prev) => (replace ? inferredSameAsRegistered : prev));
       }
     },
-    [countries]
+    []
   );
 
   const load = useCallback(async (): Promise<void> => {
@@ -1028,30 +1079,58 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       setErr(null);
       setLastSaveError(null);
 
-      const { data } = await api.get("/api/supplier/me", {
-        withCredentials: true,
-      });
+      const [supplierRes, docsRes] = await Promise.allSettled([
+        api.get("/api/supplier/me", {
+          withCredentials: true,
+        }),
+        api.get("/api/supplier/documents", {
+          withCredentials: true,
+        }),
+      ]);
 
-      const s = (data?.data || data) as SupplierMe;
-      setSupplier(s);
+      if (supplierRes.status !== "fulfilled") {
+        throw supplierRes.reason;
+      }
+
+      const supplierData = (supplierRes.value.data?.data || supplierRes.value.data) as SupplierMe;
+      setSupplier(supplierData);
+
+      if (docsRes.status === "fulfilled") {
+        setSupplierDocuments(normalizeDocumentsPayload(docsRes.value.data));
+      } else {
+        setSupplierDocuments([]);
+      }
 
       const draft = safeReadAddressDraft();
-      if (draft) {
+      const shouldUseDraft =
+        draft &&
+        !(
+          supplierHasInlineDocuments(supplierData) ||
+          (docsRes.status === "fulfilled" &&
+            hasFetchedDocuments(normalizeDocumentsPayload(docsRes.value.data)))
+        );
+
+      if (shouldUseDraft) {
         setRegistered({
           ...draft.registered,
           state: getCanonicalStateName(draft.registered.state),
           lga: pickString(draft.registered.lga),
+          country: pickString(draft.registered.country) || "Nigeria",
         });
         setPickup({
           ...draft.pickup,
           state: getCanonicalStateName(draft.pickup.state),
           lga: pickString(draft.pickup.lga),
+          country: pickString(draft.pickup.country) || "Nigeria",
         });
         setPickupMeta(draft.pickupMeta);
         setSameAsRegistered(Boolean(draft.sameAsRegistered));
         setDraftRestored(true);
       } else {
-        hydrateFromSupplier(s, { replace: true, preserveSameAsRegisteredChoice: false });
+        hydrateFromSupplier(supplierData, {
+          replace: true,
+          preserveSameAsRegisteredChoice: false,
+        });
         setDraftRestored(false);
       }
 
@@ -1088,6 +1167,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
   useEffect(() => {
     if (loading) return;
+    if (documentsLocked) return;
 
     try {
       const draft: AddressDraft = {
@@ -1098,41 +1178,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       };
       sessionStorage.setItem(ADDRESS_DRAFT_KEY, JSON.stringify(draft));
     } catch {}
-  }, [loading, registered, pickup, pickupMeta, sameAsRegistered]);
-
-  useEffect(() => {
-    if (!countries.length) return;
-
-    setRegistered((prev) => {
-      const nextCountry = resolveCountryName(prev.country, countries);
-      const nigeria = isNigeriaCountry(nextCountry);
-      const nextState = nigeria ? getCanonicalStateName(prev.state) : prev.state;
-      const nextLgas = nigeria ? getLgaOptionsForState(nextState) : [];
-      const nextLga = nigeria && prev.lga && !nextLgas.includes(prev.lga) ? "" : prev.lga;
-
-      return {
-        ...prev,
-        country: nextCountry,
-        state: nextState,
-        lga: nextLga,
-      };
-    });
-
-    setPickup((prev) => {
-      const nextCountry = resolveCountryName(prev.country, countries);
-      const nigeria = isNigeriaCountry(nextCountry);
-      const nextState = nigeria ? getCanonicalStateName(prev.state) : prev.state;
-      const nextLgas = nigeria ? getLgaOptionsForState(nextState) : [];
-      const nextLga = nigeria && prev.lga && !nextLgas.includes(prev.lga) ? "" : prev.lga;
-
-      return {
-        ...prev,
-        country: nextCountry,
-        state: nextState,
-        lga: nextLga,
-      };
-    });
-  }, [countries]);
+  }, [loading, registered, pickup, pickupMeta, sameAsRegistered, documentsLocked]);
 
   useEffect(() => {
     if (!isNigeriaCountry(registered.country)) return;
@@ -1158,13 +1204,13 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   );
 
   const savedRegistered = useMemo<AddressState>(
-    () => normalizeAddressDto(supplier?.registeredAddress, countries),
-    [supplier, countries]
+    () => normalizeAddressDto(supplier?.registeredAddress),
+    [supplier]
   );
 
   const rawSavedPickup = useMemo<AddressState>(
-    () => normalizeAddressDto(supplier?.pickupAddress, countries),
-    [supplier, countries]
+    () => normalizeAddressDto(supplier?.pickupAddress),
+    [supplier]
   );
 
   const savedSameAsRegistered = useMemo<boolean>(() => {
@@ -1262,14 +1308,18 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     return items;
   }, [savedPickup, savedSameAsRegistered]);
 
-  const liveRegisteredComplete = draftRegisteredComplete;
-  const livePickupComplete = draftPickupComplete;
+  const liveRegisteredComplete = documentsLocked
+    ? savedRegisteredComplete || draftRegisteredComplete
+    : draftRegisteredComplete;
 
-  const docsDone = useMemo<boolean>(() => supplierHasDocuments(supplier), [supplier]);
+  const livePickupComplete = documentsLocked
+    ? savedPickupComplete || draftPickupComplete
+    : draftPickupComplete;
 
   const canProceedToDocuments = useMemo<boolean>(() => {
+    if (documentsLocked) return true;
     return verifiedSupplier || (draftAddressDone && !loading);
-  }, [verifiedSupplier, draftAddressDone, loading]);
+  }, [documentsLocked, verifiedSupplier, draftAddressDone, loading]);
 
   const progress = useMemo<{
     items: { key: string; label: string; done: boolean }[];
@@ -1293,6 +1343,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   }, [liveRegisteredComplete, livePickupComplete, sameAsRegistered]);
 
   const save = useCallback(async (): Promise<boolean> => {
+    if (documentsLocked) return true;
     if (savePromiseRef.current) return savePromiseRef.current;
 
     const request = (async (): Promise<boolean> => {
@@ -1364,6 +1415,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
         const s = (data?.data || data) as SupplierMe;
         setSupplier(s);
+        hydrateFromSupplier(s, { replace: true, preserveSameAsRegisteredChoice: false });
         setSaveState("saved");
         setLastSaveError(null);
 
@@ -1391,15 +1443,17 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
     savePromiseRef.current = request;
     return request;
-  }, [registered, countries, sameAsRegistered, pickup, pickupMeta]);
+  }, [registered, countries, sameAsRegistered, pickup, pickupMeta, hydrateFromSupplier, documentsLocked]);
 
   useEffect(() => {
     if (!hasHydratedRef.current) return;
     if (loading) return;
     if (verifiedSupplier) return;
+    if (documentsLocked) return;
     if (!hasUnsavedChanges) return;
     if (saveState === "saving") return;
     if (isContinuing) return;
+    if (!currentValidation.valid) return;
 
     if (autosaveTimerRef.current) {
       window.clearTimeout(autosaveTimerRef.current);
@@ -1407,7 +1461,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
     autosaveTimerRef.current = window.setTimeout(() => {
       void save();
-    }, 1800);
+    }, 2600);
 
     return () => {
       if (autosaveTimerRef.current) {
@@ -1417,10 +1471,12 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   }, [
     loading,
     verifiedSupplier,
+    documentsLocked,
     hasUnsavedChanges,
     saveState,
     save,
     isContinuing,
+    currentValidation.valid,
   ]);
 
   useEffect(() => {
@@ -1432,6 +1488,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   }, []);
 
   const runValidationAndShowErrors = useCallback((): boolean => {
+    if (documentsLocked) return true;
+
     const result = validateForm();
     setFieldErrors(result.errors);
 
@@ -1444,14 +1502,14 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     }
 
     return true;
-  }, [buildSpecificErrorSummary, scrollToField, scrollToTop, validateForm]);
+  }, [documentsLocked, buildSpecificErrorSummary, scrollToField, scrollToTop, validateForm]);
 
   const saveAndNext = async (): Promise<void> => {
     setErr(null);
     setIsContinuing(true);
 
     try {
-      if (verifiedSupplier) {
+      if (documentsLocked || verifiedSupplier) {
         nav("/supplier/onboarding/documents");
         return;
       }
@@ -1492,17 +1550,21 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   };
 
   const autosaveStatusText =
-    isContinuing
+    documentsLocked
+      ? "Address details locked after document submission"
+      : isContinuing
       ? "Validating and saving…"
       : saveState === "saving"
-        ? "Saving changes…"
-        : saveState === "saved"
-          ? "All changes saved"
-          : saveState === "error"
-            ? "Save failed"
-            : hasUnsavedChanges
-              ? "Unsaved changes"
-              : "Up to date";
+      ? "Saving changes…"
+      : saveState === "saved" && !hasUnsavedChanges
+      ? "All changes saved"
+      : saveState === "error"
+      ? "Save failed"
+      : hasUnsavedChanges
+      ? currentValidation.valid
+        ? "Unsaved changes"
+        : "Complete required fields"
+      : "Up to date";
 
   const stepBase =
     "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
@@ -1517,19 +1579,14 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       fieldErrors[`pickupMeta.${field}`]
         ? "border-rose-300 focus:border-rose-400 focus:ring-rose-200"
         : "border-slate-300"
+    } ${
+      documentsLocked
+        ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
+        : ""
     }`;
 
-  const showFormCompleteButNotSaved =
-    !loading &&
-    draftAddressDone &&
-    saveState !== "saved" &&
-    !verifiedSupplier;
-
-  const showSaveFailedBanner =
-    saveState === "error" && !!lastSaveError;
-
   const canClickPreviousTab = true;
-  const canClickNextTab = canProceedToDocuments || docsDone || verifiedSupplier;
+  const canClickNextTab = true;
 
   return (
     <SiteLayout>
@@ -1544,7 +1601,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                 <p className="mt-2 text-sm text-zinc-600">
                   Set your registered and pickup address details before continuing to documents.
                 </p>
-                {draftRestored && (
+                {draftRestored && !documentsLocked && (
                   <p className="mt-2 text-xs text-emerald-700">
                     Restored your unsaved address draft.
                   </p>
@@ -1589,11 +1646,13 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
                 <button
                   type="button"
-                  onClick={canClickNextTab ? () => void goToDocumentsTab() : undefined}
-                  disabled={!canClickNextTab || isContinuing}
+                  onClick={() => void goToDocumentsTab()}
+                  disabled={isContinuing}
                   className={`${stepButtonBase} ${stepBase} ${
-                    canClickNextTab ? stepDone : stepLocked
-                  } ${canClickNextTab ? stepClickable : "cursor-not-allowed"}`}
+                    canProceedToDocuments || docsDone || verifiedSupplier
+                      ? stepDone
+                      : stepLocked
+                  } ${stepClickable}`}
                 >
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
                     5
@@ -1610,15 +1669,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
               </div>
             </div>
 
-            {showFormCompleteButNotSaved && (
+            {documentsLocked && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Your address form is complete locally. You can only continue after it saves successfully to the server.
-              </div>
-            )}
-
-            {showSaveFailedBanner && (
-              <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                Address form looks complete, but saving to the server failed: {lastSaveError}
+                Documents have already been submitted. Address and shipping fields are now read-only on this page.
               </div>
             )}
 
@@ -1628,20 +1681,14 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
               </div>
             )}
 
-            {hasUnsavedChanges && !verifiedSupplier && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Changes are being saved automatically. Continuing will validate the form first, then
-                save before moving on.
-              </div>
-            )}
-
-            {addressDirty && draftAddressDone && !savedAddressDone && !verifiedSupplier && (
-              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Address details look complete. Continuing will save them immediately.
+            {!documentsLocked && saveState === "error" && lastSaveError && (
+              <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                Save failed: {lastSaveError}
               </div>
             )}
 
             {!verifiedSupplier &&
+              !documentsLocked &&
               !savedRegisteredComplete &&
               missingSavedRegisteredFields.length > 0 && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
@@ -1650,6 +1697,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
               )}
 
             {!verifiedSupplier &&
+              !documentsLocked &&
               !savedSameAsRegistered &&
               !savedPickupComplete &&
               missingSavedPickupFields.length > 0 && (
@@ -1668,8 +1716,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                     icon={<Building2Fallback />}
                     value={registered}
                     countries={countries}
-                    fieldRefs={fieldRefs.registered}
+                    fieldRefs={fieldRefs.current.registered}
                     errors={fieldErrors}
+                    isReadOnly={documentsLocked}
                     onFieldChange={setRegisteredField}
                   />
 
@@ -1692,10 +1741,13 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       <input
                         type="checkbox"
                         checked={sameAsRegistered}
+                        disabled={documentsLocked}
                         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                          if (documentsLocked) return;
+
                           const checked = e.target.checked;
                           setSameAsRegistered(checked);
-                          setSaveState("idle");
+                          if (saveState !== "saving") setSaveState("idle");
                           if (err) setErr(null);
                           if (lastSaveError) setLastSaveError(null);
 
@@ -1720,7 +1772,11 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                             return next;
                           });
 
-                          if (!checked && !isAddressMeaningfullyPresent(pickup)) {
+                          if (
+                            !checked &&
+                            !isAddressMeaningfullyPresent(supplier?.pickupAddress) &&
+                            !isAddressMeaningfullyPresent({ ...pickup })
+                          ) {
                             setPickup({
                               ...EMPTY_ADDRESS,
                               country: registered.country || "Nigeria",
@@ -1742,8 +1798,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                         icon={<Truck className="h-5 w-5 text-zinc-700" />}
                         value={pickup}
                         countries={countries}
-                        fieldRefs={fieldRefs.pickup}
+                        fieldRefs={fieldRefs.current.pickup}
                         errors={fieldErrors}
+                        isReadOnly={documentsLocked}
                         onFieldChange={setPickupField}
                       />
                     )}
@@ -1770,13 +1827,15 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                           Pickup contact name
                         </label>
                         <input
-                          ref={fieldRefs.pickupMeta.pickupContactName}
+                          ref={fieldRefs.current.pickupMeta.pickupContactName}
                           value={pickupMeta.pickupContactName}
                           onChange={setPickupMetaField("pickupContactName")}
+                          disabled={documentsLocked}
+                          readOnly={documentsLocked}
                           className={metaFieldClass("pickupContactName")}
                           placeholder="Pickup contact name"
                         />
-                        {fieldErrors["pickupMeta.pickupContactName"] && (
+                        {!documentsLocked && fieldErrors["pickupMeta.pickupContactName"] && (
                           <p className="mt-1.5 text-xs text-rose-600">
                             {fieldErrors["pickupMeta.pickupContactName"]}
                           </p>
@@ -1788,13 +1847,15 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                           Pickup contact phone
                         </label>
                         <input
-                          ref={fieldRefs.pickupMeta.pickupContactPhone}
+                          ref={fieldRefs.current.pickupMeta.pickupContactPhone}
                           value={pickupMeta.pickupContactPhone}
                           onChange={setPickupMetaField("pickupContactPhone")}
+                          disabled={documentsLocked}
+                          readOnly={documentsLocked}
                           className={metaFieldClass("pickupContactPhone")}
                           placeholder="Pickup contact phone"
                         />
-                        {fieldErrors["pickupMeta.pickupContactPhone"] && (
+                        {!documentsLocked && fieldErrors["pickupMeta.pickupContactPhone"] && (
                           <p className="mt-1.5 text-xs text-rose-600">
                             {fieldErrors["pickupMeta.pickupContactPhone"]}
                           </p>
@@ -1803,16 +1864,19 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
                       <div className="md:col-span-2">
                         <label className="mb-1.5 block text-sm font-semibold text-slate-800">
-                          Pickup instructions <span className="text-zinc-400 font-normal">(optional)</span>
+                          Pickup instructions{" "}
+                          <span className="text-zinc-400 font-normal">(optional)</span>
                         </label>
                         <textarea
-                          ref={fieldRefs.pickupMeta.pickupInstructions}
+                          ref={fieldRefs.current.pickupMeta.pickupInstructions}
                           value={pickupMeta.pickupInstructions}
                           onChange={setPickupMetaField("pickupInstructions")}
+                          disabled={documentsLocked}
+                          readOnly={documentsLocked}
                           className={`${metaFieldClass("pickupInstructions")} min-h-[100px] resize-y`}
                           placeholder="Extra pickup notes for riders or logistics teams"
                         />
-                        {fieldErrors["pickupMeta.pickupInstructions"] && (
+                        {!documentsLocked && fieldErrors["pickupMeta.pickupInstructions"] && (
                           <p className="mt-1.5 text-xs text-rose-600">
                             {fieldErrors["pickupMeta.pickupInstructions"]}
                           </p>
@@ -1823,10 +1887,11 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                     <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <label className="flex items-center gap-3 rounded-2xl border border-zinc-200 px-4 py-3">
                         <input
-                          ref={fieldRefs.pickupMeta.shippingEnabled}
+                          ref={fieldRefs.current.pickupMeta.shippingEnabled}
                           type="checkbox"
                           checked={pickupMeta.shippingEnabled}
                           onChange={setPickupMetaField("shippingEnabled")}
+                          disabled={documentsLocked}
                           className="h-4 w-4 rounded border-zinc-300"
                         />
                         <span className="text-sm text-zinc-700">Shipping enabled</span>
@@ -1834,10 +1899,11 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
                       <label className="flex items-center gap-3 rounded-2xl border border-zinc-200 px-4 py-3">
                         <input
-                          ref={fieldRefs.pickupMeta.shipsNationwide}
+                          ref={fieldRefs.current.pickupMeta.shipsNationwide}
                           type="checkbox"
                           checked={pickupMeta.shipsNationwide}
                           onChange={setPickupMetaField("shipsNationwide")}
+                          disabled={documentsLocked}
                           className="h-4 w-4 rounded border-zinc-300"
                         />
                         <span className="text-sm text-zinc-700">Ships nationwide</span>
@@ -1845,10 +1911,11 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
                       <label className="flex items-center gap-3 rounded-2xl border border-zinc-200 px-4 py-3">
                         <input
-                          ref={fieldRefs.pickupMeta.supportsDoorDelivery}
+                          ref={fieldRefs.current.pickupMeta.supportsDoorDelivery}
                           type="checkbox"
                           checked={pickupMeta.supportsDoorDelivery}
                           onChange={setPickupMetaField("supportsDoorDelivery")}
+                          disabled={documentsLocked}
                           className="h-4 w-4 rounded border-zinc-300"
                         />
                         <span className="text-sm text-zinc-700">Supports door delivery</span>
@@ -1856,10 +1923,11 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
                       <label className="flex items-center gap-3 rounded-2xl border border-zinc-200 px-4 py-3">
                         <input
-                          ref={fieldRefs.pickupMeta.supportsPickupPoint}
+                          ref={fieldRefs.current.pickupMeta.supportsPickupPoint}
                           type="checkbox"
                           checked={pickupMeta.supportsPickupPoint}
                           onChange={setPickupMetaField("supportsPickupPoint")}
+                          disabled={documentsLocked}
                           className="h-4 w-4 rounded border-zinc-300"
                         />
                         <span className="text-sm text-zinc-700">Supports pickup point</span>
@@ -1912,21 +1980,29 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       <div className="flex items-center justify-between gap-3">
                         <span>Form validation</span>
                         <span className="font-medium">
-                          {draftAddressDone ? "Complete" : "Incomplete"}
+                          {documentsLocked
+                            ? savedAddressDone || draftAddressDone
+                              ? "Complete"
+                              : "Incomplete"
+                            : currentValidation.valid
+                            ? "Complete"
+                            : "Incomplete"}
                         </span>
                       </div>
                       <div className="mt-2 flex items-center justify-between gap-3">
                         <span>Server save</span>
                         <span className="font-medium">
-                          {saveState === "saved"
+                          {documentsLocked
+                            ? "Locked"
+                            : saveState === "saved" && !hasUnsavedChanges
                             ? "Saved"
                             : saveState === "saving"
-                              ? "Saving…"
-                              : saveState === "error"
-                                ? "Failed"
-                                : hasUnsavedChanges
-                                  ? "Not saved yet"
-                                  : "Unknown"}
+                            ? "Saving…"
+                            : saveState === "error"
+                            ? "Failed"
+                            : hasUnsavedChanges
+                            ? "Pending"
+                            : "Up to date"}
                         </span>
                       </div>
                     </div>
@@ -1976,7 +2052,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                 </div>
               </div>
 
-              <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <button
                   type="button"
                   onClick={goBack}
@@ -1992,8 +2068,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       saveState === "error"
                         ? "text-rose-600"
                         : saveState === "saving" || isContinuing
-                          ? "text-amber-700"
-                          : "text-zinc-600"
+                        ? "text-amber-700"
+                        : "text-zinc-600"
                     }`}
                   >
                     {autosaveStatusText}

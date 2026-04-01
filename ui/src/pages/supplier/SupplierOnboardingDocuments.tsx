@@ -670,6 +670,11 @@ export default function SupplierOnboardingDocuments() {
     const goBack = () => nav("/supplier/onboarding/address");
     const goToAddressDetails = () => nav("/supplier/onboarding/address");
 
+    const hardGoToSupplierHome = useCallback(() => {
+        if (typeof window === "undefined") return;
+        window.location.href = "/supplier";
+    }, []);
+
     const goToSupplierHome = () =>
         nav("/supplier", {
             state: buildSupplierHomeState(),
@@ -682,12 +687,12 @@ export default function SupplierOnboardingDocuments() {
 
     const goToNextStep = () => {
         if (canGoToDashboard) {
-            nav("/supplier", { state: buildSupplierHomeState() });
+            hardGoToSupplierHome();
             return;
         }
 
         if (canGoToSupplierHome) {
-            nav("/supplier", { state: buildSupplierHomeState() });
+            hardGoToSupplierHome();
         }
     };
 
@@ -709,9 +714,7 @@ export default function SupplierOnboardingDocuments() {
             });
         }
 
-        nav("/supplier", {
-            state: buildSupplierHomeState(),
-        });
+        hardGoToSupplierHome();
     };
 
     const stepBase =

@@ -179,14 +179,18 @@ function isTruthyVerificationFlag(value: unknown) {
   return false;
 }
 
-function isAuthEmailVerified(source?: Pick<AuthMeLite, "emailVerified" | "emailVerifiedAt"> | null) {
+function isAuthEmailVerified(
+  source?: Pick<AuthMeLite, "emailVerified" | "emailVerifiedAt"> | null
+) {
   return (
     isTruthyVerificationFlag(source?.emailVerified) ||
     isTruthyVerificationFlag(source?.emailVerifiedAt)
   );
 }
 
-function isAuthPhoneVerified(source?: Pick<AuthMeLite, "phoneVerified" | "phoneVerifiedAt"> | null) {
+function isAuthPhoneVerified(
+  source?: Pick<AuthMeLite, "phoneVerified" | "phoneVerifiedAt"> | null
+) {
   return (
     isTruthyVerificationFlag(source?.phoneVerified) ||
     isTruthyVerificationFlag(source?.phoneVerifiedAt)
@@ -209,12 +213,12 @@ function hasAddress(addr?: AddressLite | null) {
   if (!addr) return false;
   return Boolean(
     addr.streetName ||
-    addr.houseNumber ||
-    addr.city ||
-    addr.state ||
-    addr.country ||
-    addr.postCode ||
-    addr.town
+      addr.houseNumber ||
+      addr.city ||
+      addr.state ||
+      addr.country ||
+      addr.postCode ||
+      addr.town
   );
 }
 
@@ -222,16 +226,19 @@ function hasDocuments(s?: SupplierMeLite | null) {
   if (!s) return false;
   return Boolean(
     (Array.isArray(s.documents) && s.documents.length > 0) ||
-    (Array.isArray(s.verificationDocuments) && s.verificationDocuments.length > 0) ||
-    s.identityDocumentUrl ||
-    s.proofOfAddressUrl ||
-    s.cacDocumentUrl
+      (Array.isArray(s.verificationDocuments) &&
+        s.verificationDocuments.length > 0) ||
+      s.identityDocumentUrl ||
+      s.proofOfAddressUrl ||
+      s.cacDocumentUrl
   );
 }
 
 function hasMeaningfulBusinessDetails(s?: SupplierMeLite | null) {
   if (!s) return false;
-  const registeredBusinessRequired = isRegisteredBusinessType(s.registrationType);
+  const registeredBusinessRequired = isRegisteredBusinessType(
+    s.registrationType
+  );
 
   return (
     hasValue(s.legalName) &&
@@ -342,8 +349,8 @@ export default function SupplierVerifyContact() {
 
     const explicitAdminMode = Boolean(
       state.adminReview ||
-      state.allowReview ||
-      location.pathname.startsWith("/admin/")
+        state.allowReview ||
+        location.pathname.startsWith("/admin/")
     );
 
     if (!explicitAdminMode) return "";
@@ -365,8 +372,8 @@ export default function SupplierVerifyContact() {
   const isAdminReviewMode = useMemo(() => {
     return Boolean(
       state.adminReview ||
-      state.allowReview ||
-      location.pathname.startsWith("/admin/")
+        state.allowReview ||
+        location.pathname.startsWith("/admin/")
     );
   }, [location.pathname, state.adminReview, state.allowReview]);
 
@@ -395,7 +402,9 @@ export default function SupplierVerifyContact() {
         adminReview: isAdminReviewMode,
         allowReview: isAdminReviewMode,
         skipAutoFinalize: true,
-        supplierId: isAdminReviewMode ? adminSupplierId || state.supplierId || "" : "",
+        supplierId: isAdminReviewMode
+          ? adminSupplierId || state.supplierId || ""
+          : "",
         fromOnboardingTab: true,
 
         returnTo: targetPath,
@@ -428,7 +437,9 @@ export default function SupplierVerifyContact() {
   }, [buildStepUrl, makeStepState, nav]);
 
   const journeyKey = useMemo(() => {
-    const keyId = pickString(adminSupplierId || state.supplierId || searchParams.get("supplierId"));
+    const keyId = pickString(
+      adminSupplierId || state.supplierId || searchParams.get("supplierId")
+    );
     return keyId ? `supplier:verify-contact:journey:${keyId}` : "";
   }, [adminSupplierId, searchParams, state.supplierId]);
 
@@ -437,7 +448,9 @@ export default function SupplierVerifyContact() {
   }, [state.nextAfterVerify, state.returnTo]);
 
   const cameFromBusinessStep = useMemo(() => {
-    return Boolean(state.fromBusinessDetails || stepHint.includes("/business-details"));
+    return Boolean(
+      state.fromBusinessDetails || stepHint.includes("/business-details")
+    );
   }, [state.fromBusinessDetails, stepHint]);
 
   const cameFromAddressStep = useMemo(() => {
@@ -480,11 +493,14 @@ export default function SupplierVerifyContact() {
       : null
   );
 
-  const [supplierSnapshot, setSupplierSnapshot] = useState<SupplierMeLite | null>(null);
+  const [supplierSnapshot, setSupplierSnapshot] =
+    useState<SupplierMeLite | null>(null);
 
   const [email, setEmail] = useState(state.email || "");
   const [phone, setPhone] = useState(state.phone || "");
-  const [dialCode, setDialCode] = useState(normalizeDialCode(state.dialCode || ""));
+  const [dialCode, setDialCode] = useState(
+    normalizeDialCode(state.dialCode || "")
+  );
 
   const [emailSent, setEmailSent] = useState(!!state.emailSent);
   const [phoneOtpSent, setPhoneOtpSent] = useState(!!state.phoneOtpSent);
@@ -586,7 +602,9 @@ export default function SupplierVerifyContact() {
             pickString(supplierData?.businessName) ||
             pickString(supplierData?.name),
           legalName: pickString(supplierData?.legalName),
-          registeredBusinessName: pickString(supplierData?.registeredBusinessName),
+          registeredBusinessName: pickString(
+            supplierData?.registeredBusinessName
+          ),
           registrationType: pickString(supplierData?.registrationType),
           registrationCountryCode: pickString(
             supplierData?.registrationCountryCode
@@ -615,8 +633,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not load supplier registration details."
+          e?.response?.data?.message ||
+          "Could not load supplier registration details."
       );
     } finally {
       setLoadingSummary(false);
@@ -687,8 +705,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not load verification status."
+          e?.response?.data?.message ||
+          "Could not load verification status."
       );
     } finally {
       setChecking(false);
@@ -707,14 +725,8 @@ export default function SupplierVerifyContact() {
   };
 
   const contactVerifiedByJourney = useMemo(() => {
-    return Boolean(
-      journeyState.contactVerified ||
-      journeyState.reachedBusiness ||
-      journeyState.reachedAddress ||
-      journeyState.reachedDocuments ||
-      journeyState.reachedDashboard
-    );
-  }, [journeyState]);
+    return Boolean(journeyState.contactVerified);
+  }, [journeyState.contactVerified]);
 
   const reachedBusinessEffective = useMemo(() => {
     return Boolean(journeyState.reachedBusiness);
@@ -734,11 +746,18 @@ export default function SupplierVerifyContact() {
 
   useEffect(() => {
     if (!journeyKey) return;
-    if (!emailVerifiedEffective || !phoneVerifiedEffective) return;
 
-    writeJourneyState(journeyKey, { contactVerified: true });
-    setJourneyState(readJourneyState(journeyKey));
-  }, [emailVerifiedEffective, journeyKey, phoneVerifiedEffective]);
+    if (emailVerified && phoneVerified) {
+      writeJourneyState(journeyKey, { contactVerified: true });
+      setJourneyState(readJourneyState(journeyKey));
+      return;
+    }
+
+    if (!emailVerified && !phoneVerified && journeyState.contactVerified) {
+      writeJourneyState(journeyKey, { contactVerified: false });
+      setJourneyState(readJourneyState(journeyKey));
+    }
+  }, [emailVerified, phoneVerified, journeyKey, journeyState.contactVerified]);
 
   const canContinue = useMemo(
     () => emailVerifiedEffective && phoneVerifiedEffective,
@@ -791,13 +810,13 @@ export default function SupplierVerifyContact() {
   const openedFromOnboardingTab = useMemo(() => {
     return Boolean(
       state.fromOnboardingTab ||
-      state.returnTo ||
-      state.nextAfterVerify ||
-      cameFromBusinessStep ||
-      cameFromAddressStep ||
-      cameFromDocumentsStep ||
-      cameFromDashboardStep ||
-      cameFromOnboardingRoot
+        state.returnTo ||
+        state.nextAfterVerify ||
+        cameFromBusinessStep ||
+        cameFromAddressStep ||
+        cameFromDocumentsStep ||
+        cameFromDashboardStep ||
+        cameFromOnboardingRoot
     );
   }, [
     cameFromAddressStep,
@@ -817,16 +836,31 @@ export default function SupplierVerifyContact() {
       canContinue &&
       !openedFromOnboardingTab
     );
-  }, [canContinue, isAdminReviewMode, openedFromOnboardingTab, state.skipAutoFinalize]);
+  }, [
+    canContinue,
+    isAdminReviewMode,
+    openedFromOnboardingTab,
+    state.skipAutoFinalize,
+  ]);
 
-  const finalizeVerifiedSession = async () => {
+  const finalizeVerifiedSession = async (opts?: { replace?: boolean }) => {
+    const replace = opts?.replace ?? true;
     const targetPath = buildStepUrl("/supplier/onboarding");
+
+    if (journeyKey) {
+      writeJourneyState(journeyKey, {
+        contactVerified: canContinue,
+        reachedBusiness: true,
+      });
+      setJourneyState(readJourneyState(journeyKey));
+    }
 
     if (isAdminReviewMode) {
       nav(targetPath, {
-        replace: true,
+        replace,
         state: makeStepState(targetPath, {
           fromVerifyContact: true,
+          fromBusinessDetails: true,
         }),
       });
       return;
@@ -844,9 +878,10 @@ export default function SupplierVerifyContact() {
         await hydrateAuthStoreFromSession();
         clearTempToken();
         nav(targetPath, {
-          replace: true,
+          replace,
           state: makeStepState(targetPath, {
             fromVerifyContact: true,
+            fromBusinessDetails: true,
           }),
         });
         return;
@@ -877,17 +912,18 @@ export default function SupplierVerifyContact() {
       await hydrateAuthStoreFromSession();
 
       nav(targetPath, {
-        replace: true,
+        replace,
         state: makeStepState(targetPath, {
           fromVerifyContact: true,
+          fromBusinessDetails: true,
         }),
       });
     } catch (e: any) {
       hasAutoFinalizedRef.current = false;
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Your details were verified, but we could not finish signing you in automatically. Please try again."
+          e?.response?.data?.message ||
+          "Your details were verified, but we could not finish signing you in automatically. Please try again."
       );
     } finally {
       setFinalizingSession(false);
@@ -908,7 +944,7 @@ export default function SupplierVerifyContact() {
 
   useEffect(() => {
     if (shouldAutoFinalize) {
-      void finalizeVerifiedSession();
+      void finalizeVerifiedSession({ replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldAutoFinalize]);
@@ -936,8 +972,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not resend email verification."
+          e?.response?.data?.message ||
+          "Could not resend email verification."
       );
     } finally {
       setBusyEmail(false);
@@ -973,8 +1009,8 @@ export default function SupplierVerifyContact() {
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not send phone verification code."
+          e?.response?.data?.message ||
+          "Could not send phone verification code."
       );
     } finally {
       setBusyPhone(false);
@@ -1056,17 +1092,17 @@ export default function SupplierVerifyContact() {
 
   const continueToOnboarding = async () => {
     if (!canContinue) return;
-    await finalizeVerifiedSession();
+    await finalizeVerifiedSession({ replace: true });
   };
 
-  const goToBusinessDetails = () => {
-    if (!businessDetailsAccessible) return;
-    if (journeyKey) {
-      writeJourneyState(journeyKey, {
-        contactVerified: canContinue,
-        reachedBusiness: true,
-      });
+  const goToBusinessDetails = async () => {
+    if (!businessDetailsAccessible || finalizingSession) return;
+
+    if (canContinue) {
+      await finalizeVerifiedSession({ replace: true });
+      return;
     }
+
     pushStep("/supplier/onboarding", {
       fromVerifyContact: true,
       fromBusinessDetails: true,
@@ -1119,7 +1155,9 @@ export default function SupplierVerifyContact() {
       active: false,
       done: businessDetailsDone || reachedBusinessEffective,
       accessible: businessDetailsAccessible,
-      onClick: goToBusinessDetails,
+      onClick: () => {
+        void goToBusinessDetails();
+      },
     },
     {
       step: 4,
@@ -1175,16 +1213,19 @@ export default function SupplierVerifyContact() {
                     : stepLocked;
 
                   const clickable =
-                    item.step === 3 && !item.active && !!item.onClick && item.accessible;
+                    item.step === 3 &&
+                    !item.active &&
+                    !!item.onClick &&
+                    item.accessible;
 
                   return (
                     <button
                       key={item.step}
                       type="button"
                       onClick={clickable ? item.onClick : undefined}
-                      disabled={!clickable}
+                      disabled={!clickable || finalizingSession}
                       className={`${stepBase} ${stateClass} ${
-                        clickable
+                        clickable && !finalizingSession
                           ? "cursor-pointer"
                           : item.active
                           ? "cursor-default"
@@ -1203,7 +1244,8 @@ export default function SupplierVerifyContact() {
 
             {isAdminReviewMode && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Admin review mode is active. This page will not send codes or auto-complete login.
+                Admin review mode is active. This page will not send codes or
+                auto-complete login.
               </div>
             )}
 
@@ -1356,7 +1398,9 @@ export default function SupplierVerifyContact() {
                                 inputMode="numeric"
                               />
                               {otpError && (
-                                <p className="text-xs text-rose-600">{otpError}</p>
+                                <p className="text-xs text-rose-600">
+                                  {otpError}
+                                </p>
                               )}
                             </>
                           )}
@@ -1413,7 +1457,7 @@ export default function SupplierVerifyContact() {
                     <p className="mt-1 text-sm text-zinc-600">
                       {isAdminReviewMode
                         ? "Move to the next onboarding step for this supplier once both contact methods are verified."
-                        : "Once verified, continue to the next immediate step: Business details."}
+                        : "Once verified, sign in the supplier and continue to onboarding."}
                     </p>
                   </div>
 

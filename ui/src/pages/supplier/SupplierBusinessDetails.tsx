@@ -32,6 +32,14 @@ const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 
 type BankVerificationStatus = "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
 
+type SupplierDocument = {
+  id?: string;
+  kind?: string | null;
+  status?: string | null;
+  storageKey?: string | null;
+  originalFilename?: string | null;
+};
+
 type SupplierMe = {
   id: string;
   supplierId?: string;
@@ -114,27 +122,49 @@ const EMPTY_FORM = {
   accountNumber: "",
 };
 
-function hasAddress(addr: SupplierMe["registeredAddress"] | SupplierMe["pickupAddress"]) {
+function hasAddress(
+  addr: SupplierMe["registeredAddress"] | SupplierMe["pickupAddress"]
+) {
   if (!addr) return false;
   return Boolean(
     addr.streetName ||
-    addr.houseNumber ||
-    addr.city ||
-    addr.state ||
-    addr.country ||
-    addr.postCode
+      addr.houseNumber ||
+      addr.city ||
+      addr.state ||
+      addr.country ||
+      addr.postCode
   );
 }
 
-function hasDocuments(s: SupplierMe | null) {
+function hasInlineDocuments(s: SupplierMe | null) {
   if (!s) return false;
   return Boolean(
     (Array.isArray(s.documents) && s.documents.length > 0) ||
-    (Array.isArray(s.verificationDocuments) && s.verificationDocuments.length > 0) ||
-    s.identityDocumentUrl ||
-    s.proofOfAddressUrl ||
-    s.cacDocumentUrl
+      (Array.isArray(s.verificationDocuments) && s.verificationDocuments.length > 0) ||
+      s.identityDocumentUrl ||
+      s.proofOfAddressUrl ||
+      s.cacDocumentUrl
   );
+}
+
+function normalizeDocumentsPayload(raw: any): SupplierDocument[] {
+  const candidates = [
+    raw?.data?.data,
+    raw?.data?.documents,
+    raw?.data,
+    raw?.documents,
+    raw,
+  ];
+
+  for (const item of candidates) {
+    if (Array.isArray(item)) return item as SupplierDocument[];
+  }
+
+  return [];
+}
+
+function hasFetchedDocuments(docs: SupplierDocument[]) {
+  return Array.isArray(docs) && docs.length > 0;
 }
 
 const norm = (v: any) => String(v ?? "").trim();
@@ -215,12 +245,12 @@ function isZeroOnly(value: unknown) {
 function hasMeaningfulBankDetails(
   source:
     | {
-      bankCountry?: string | null;
-      bankCode?: string | null;
-      bankName?: string | null;
-      accountName?: string | null;
-      accountNumber?: string | null;
-    }
+        bankCountry?: string | null;
+        bankCode?: string | null;
+        bankName?: string | null;
+        accountName?: string | null;
+        accountNumber?: string | null;
+      }
     | null
     | undefined
 ) {
@@ -255,12 +285,12 @@ function getEffectiveBankStatus(
   rawStatus: string | null | undefined,
   source:
     | {
-      bankCountry?: string | null;
-      bankCode?: string | null;
-      bankName?: string | null;
-      accountName?: string | null;
-      accountNumber?: string | null;
-    }
+        bankCountry?: string | null;
+        bankCode?: string | null;
+        bankName?: string | null;
+        accountName?: string | null;
+        accountNumber?: string | null;
+      }
     | null
     | undefined
 ): BankVerificationStatus {
@@ -289,6 +319,7 @@ export default function SupplierBusinessDetails() {
   const [form, setForm] = useState(EMPTY_FORM);
 
   const [supplier, setSupplier] = useState<SupplierMe | null>(null);
+  const [supplierDocuments, setSupplierDocuments] = useState<SupplierDocument[]>([]);
   const [countries, setCountries] = useState<any[]>([]);
   const [banks, setBanks] = useState<BankOption[]>(FALLBACK_BANKS);
   const [bankEditUnlocked, setBankEditUnlocked] = useState(false);
@@ -305,8 +336,8 @@ export default function SupplierBusinessDetails() {
   const isAdminReviewMode = useMemo(() => {
     return Boolean(
       locationState?.adminReview ||
-      locationState?.allowReview ||
-      location.pathname.startsWith("/admin/")
+        locationState?.allowReview ||
+        location.pathname.startsWith("/admin/")
     );
   }, [location.pathname, locationState]);
 
@@ -320,9 +351,14 @@ export default function SupplierBusinessDetails() {
     let fromStorage = "";
     try {
       fromStorage = localStorage.getItem(ADMIN_SUPPLIER_KEY) || "";
-    } catch { }
+    } catch {}
 
-    return pickFirst(fromQuery, fromStateSupplierId, fromStateAdminSupplierId, fromStorage);
+    return pickFirst(
+      fromQuery,
+      fromStateSupplierId,
+      fromStateAdminSupplierId,
+      fromStorage
+    );
   }, [isAdminReviewMode, locationState, searchParams]);
 
   useEffect(() => {
@@ -332,7 +368,7 @@ export default function SupplierBusinessDetails() {
       } else {
         localStorage.removeItem(ADMIN_SUPPLIER_KEY);
       }
-    } catch { }
+    } catch {}
   }, [adminSupplierId, isAdminReviewMode]);
 
   const buildStepUrl = useCallback(
@@ -393,7 +429,7 @@ export default function SupplierBusinessDetails() {
             ...patch,
           })
         );
-      } catch { }
+      } catch {}
     },
     [adminSupplierId, isAdminReviewMode]
   );
@@ -449,7 +485,7 @@ export default function SupplierBusinessDetails() {
         window.setTimeout(() => {
           try {
             el.focus();
-          } catch { }
+          } catch {}
         }, 180);
       } else {
         scrollToTop();
@@ -484,7 +520,9 @@ export default function SupplierBusinessDetails() {
 
   const showBusinessValidationError = useCallback(
     (missingBusiness: string[]) => {
-      setErr(`Please complete all required business details first: ${missingBusiness.join(", ")}.`);
+      setErr(
+        `Please complete all required business details first: ${missingBusiness.join(", ")}.`
+      );
       const firstField = businessFieldMap[missingBusiness[0]];
       if (firstField) scrollToField(firstField);
       else scrollToTop();
@@ -493,7 +531,10 @@ export default function SupplierBusinessDetails() {
   );
 
   const showBankValidationError = useCallback(
-    (missingBank: string[], prefix = "Please complete all required bank details first") => {
+    (
+      missingBank: string[],
+      prefix = "Please complete all required bank details first"
+    ) => {
       const message = `${prefix}: ${missingBank.join(", ")}.`;
       setErr(message);
       setBankFormError(message);
@@ -506,42 +547,53 @@ export default function SupplierBusinessDetails() {
 
   const setField =
     (key: keyof typeof form) =>
-      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-        const value = e.target.value;
+    (
+      e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+    ) => {
+      if (documentsLocked) return;
 
-        setForm((f) => {
-          const next = { ...f, [key]: value };
+      const value = e.target.value;
 
-          if (key === "registrationType" && String(value).trim().toUpperCase() === "INDIVIDUAL") {
-            next.registeredBusinessName = "";
-          }
-
-          return next;
-        });
+      setForm((f) => {
+        const next = { ...f, [key]: value };
 
         if (
-          key === "legalName" ||
-          key === "registeredBusinessName" ||
-          key === "registrationNumber" ||
-          key === "registrationType" ||
-          key === "registrationDate" ||
-          key === "registrationCountryCode" ||
-          key === "registryAuthorityId" ||
-          key === "natureOfBusiness"
+          key === "registrationType" &&
+          String(value).trim().toUpperCase() === "INDIVIDUAL"
         ) {
-          if (businessSaveState !== "saving") setBusinessSaveState("idle");
-        } else {
-          if (bankSaveState !== "saving") setBankSaveState("idle");
-          if (bankFormError) setBankFormError(null);
+          next.registeredBusinessName = "";
         }
 
-        if (err) setErr(null);
-      };
+        return next;
+      });
+
+      if (
+        key === "legalName" ||
+        key === "registeredBusinessName" ||
+        key === "registrationNumber" ||
+        key === "registrationType" ||
+        key === "registrationDate" ||
+        key === "registrationCountryCode" ||
+        key === "registryAuthorityId" ||
+        key === "natureOfBusiness"
+      ) {
+        if (businessSaveState !== "saving") setBusinessSaveState("idle");
+      } else {
+        if (bankSaveState !== "saving") setBankSaveState("idle");
+        if (bankFormError) setBankFormError(null);
+      }
+
+      if (err) setErr(null);
+    };
 
   const hydrateFormFromSupplier = useCallback((s: SupplierMe, replace = false) => {
     setForm((prev) => {
-      const nextRegistrationType = pickFirst(s.registrationType, replace ? "" : prev.registrationType);
-      const nextIsRegisteredBusiness = isRegisteredBusinessType(nextRegistrationType);
+      const nextRegistrationType = pickFirst(
+        s.registrationType,
+        replace ? "" : prev.registrationType
+      );
+      const nextIsRegisteredBusiness =
+        isRegisteredBusinessType(nextRegistrationType);
 
       if (replace) {
         return {
@@ -593,7 +645,9 @@ export default function SupplierBusinessDetails() {
   }, []);
 
   const savedBusinessFieldsComplete = useMemo(() => {
-    const registeredBusinessRequired = isRegisteredBusinessType(supplier?.registrationType);
+    const registeredBusinessRequired = isRegisteredBusinessType(
+      supplier?.registrationType
+    );
     return {
       legalName: hasValue(supplier?.legalName),
       registeredBusinessName: registeredBusinessRequired
@@ -628,7 +682,9 @@ export default function SupplierBusinessDetails() {
   const draftBusinessFieldsComplete = useMemo(() => {
     return {
       legalName: hasValue(form.legalName),
-      registeredBusinessName: isRegisteredBusiness ? hasValue(form.registeredBusinessName) : true,
+      registeredBusinessName: isRegisteredBusiness
+        ? hasValue(form.registeredBusinessName)
+        : true,
       registrationNumber: hasValue(form.registrationNumber),
       registrationType: hasValue(form.registrationType),
       registrationDate: hasValue(form.registrationDate),
@@ -664,11 +720,15 @@ export default function SupplierBusinessDetails() {
     ) {
       items.push("Registered business name");
     }
-    if (!savedBusinessFieldsComplete.registrationNumber) items.push("Registration number");
-    if (!savedBusinessFieldsComplete.registrationType) items.push("Registration type");
-    if (!savedBusinessFieldsComplete.registrationDate) items.push("Registration date");
+    if (!savedBusinessFieldsComplete.registrationNumber)
+      items.push("Registration number");
+    if (!savedBusinessFieldsComplete.registrationType)
+      items.push("Registration type");
+    if (!savedBusinessFieldsComplete.registrationDate)
+      items.push("Registration date");
     if (!savedBusinessFieldsComplete.registrationCountryCode) items.push("Country");
-    if (!savedBusinessFieldsComplete.natureOfBusiness) items.push("Nature of business");
+    if (!savedBusinessFieldsComplete.natureOfBusiness)
+      items.push("Nature of business");
     return items;
   }, [savedBusinessFieldsComplete, supplier]);
 
@@ -683,8 +743,12 @@ export default function SupplierBusinessDetails() {
   }, [savedBankFieldsComplete]);
 
   const businessDirty = useMemo(() => {
-    const supplierRegisteredBusinessRequired = isRegisteredBusinessType(supplier?.registrationType);
-    const currentRegisteredBusinessName = isRegisteredBusiness ? form.registeredBusinessName : "";
+    const supplierRegisteredBusinessRequired = isRegisteredBusinessType(
+      supplier?.registrationType
+    );
+    const currentRegisteredBusinessName = isRegisteredBusiness
+      ? form.registeredBusinessName
+      : "";
     const savedRegisteredBusinessName = supplierRegisteredBusinessRequired
       ? supplier?.registeredBusinessName
       : "";
@@ -695,8 +759,9 @@ export default function SupplierBusinessDetails() {
       norm(form.registrationNumber) !== norm(supplier?.registrationNumber) ||
       norm(form.registrationType) !== norm(supplier?.registrationType) ||
       norm(normalizeDateInputValue(form.registrationDate)) !==
-      norm(normalizeDateInputValue(supplier?.registrationDate)) ||
-      norm(form.registrationCountryCode) !== norm(supplier?.registrationCountryCode || "NG") ||
+        norm(normalizeDateInputValue(supplier?.registrationDate)) ||
+      norm(form.registrationCountryCode) !==
+        norm(supplier?.registrationCountryCode || "NG") ||
       norm(form.registryAuthorityId) !== norm(supplier?.registryAuthorityId) ||
       norm(form.natureOfBusiness) !== norm(supplier?.natureOfBusiness)
     );
@@ -712,18 +777,25 @@ export default function SupplierBusinessDetails() {
     );
   }, [form, supplier]);
 
-  const hasUnsavedChanges = businessDirty || bankDirty;
-
   const addressDone = useMemo(() => {
-    return hasAddress(supplier?.registeredAddress) || hasAddress(supplier?.pickupAddress);
+    return (
+      hasAddress(supplier?.registeredAddress) || hasAddress(supplier?.pickupAddress)
+    );
   }, [supplier]);
 
   const docsDone = useMemo(() => {
-    return hasDocuments(supplier);
-  }, [supplier]);
+    return hasInlineDocuments(supplier) || hasFetchedDocuments(supplierDocuments);
+  }, [supplier, supplierDocuments]);
 
-  const businessReadyLive = draftBusinessDone;
-  const bankReadyLive = draftBankDone;
+  const documentsLocked = useMemo(() => docsDone, [docsDone]);
+
+  const businessReadyLive = useMemo(() => {
+    return documentsLocked ? savedBusinessDone || draftBusinessDone : draftBusinessDone;
+  }, [documentsLocked, savedBusinessDone, draftBusinessDone]);
+
+  const bankReadyLive = useMemo(() => {
+    return documentsLocked ? savedBankDone || draftBankDone : draftBankDone;
+  }, [documentsLocked, savedBankDone, draftBankDone]);
 
   const savedBankIsMeaningful = useMemo(() => {
     return hasMeaningfulBankDetails(supplier);
@@ -738,14 +810,17 @@ export default function SupplierBusinessDetails() {
   }, [effectiveBankStatus]);
 
   const bankEditable = useMemo(() => {
+    if (documentsLocked) return false;
     if (!savedBankIsMeaningful) return true;
     if (!bankLockedByStatus) return true;
     return bankEditUnlocked;
-  }, [savedBankIsMeaningful, bankLockedByStatus, bankEditUnlocked]);
+  }, [documentsLocked, savedBankIsMeaningful, bankLockedByStatus, bankEditUnlocked]);
 
-  const bankFieldsDisabled = !bankEditable || loading || isBankSaving;
+  const bankFieldsDisabled = documentsLocked || !bankEditable || loading || isBankSaving;
+  const businessFieldsDisabled = documentsLocked || loading || isBusinessAutosaving;
 
   const canProceedToAddress = useMemo(() => {
+    if (documentsLocked) return true;
     return (
       businessReadyLive &&
       bankReadyLive &&
@@ -754,7 +829,15 @@ export default function SupplierBusinessDetails() {
       !isBusinessAutosaving &&
       !isBankSaving
     );
-  }, [businessReadyLive, bankReadyLive, businessDirty, bankDirty, isBusinessAutosaving, isBankSaving]);
+  }, [
+    documentsLocked,
+    businessReadyLive,
+    bankReadyLive,
+    businessDirty,
+    bankDirty,
+    isBusinessAutosaving,
+    isBankSaving,
+  ]);
 
   const load = useCallback(async () => {
     try {
@@ -764,44 +847,62 @@ export default function SupplierBusinessDetails() {
       const params =
         isAdminReviewMode && adminSupplierId ? { supplierId: adminSupplierId } : undefined;
 
-      const { data } = await api.get("/api/supplier/me", {
-        withCredentials: true,
-        params,
-      });
+      const [supplierRes, docsRes] = await Promise.allSettled([
+        api.get("/api/supplier/me", {
+          withCredentials: true,
+          params,
+        }),
+        api.get("/api/supplier/documents", {
+          withCredentials: true,
+          params,
+        }),
+      ]);
 
-      const s = normalizeSupplierPayload(data);
-      setSupplier(s);
-      hydrateFormFromSupplier(s, false);
+      if (supplierRes.status === "fulfilled") {
+        const s = normalizeSupplierPayload(supplierRes.value.data);
+        setSupplier(s);
+        hydrateFormFromSupplier(s, false);
 
-      const storageKey = s.id ? `supplier:onboarding:business-step-saved:${s.id}` : "";
+        const storageKey = s.id
+          ? `supplier:onboarding:business-step-saved:${s.id}`
+          : "";
 
-      if (storageKey) {
-        if (cameFromVerifyContact) {
-          try {
-            sessionStorage.removeItem(storageKey);
-          } catch { }
-          setBusinessStepSaved(false);
-        } else {
-          try {
-            setBusinessStepSaved(sessionStorage.getItem(storageKey) === "true");
-          } catch {
+        if (storageKey) {
+          if (cameFromVerifyContact) {
+            try {
+              sessionStorage.removeItem(storageKey);
+            } catch {}
             setBusinessStepSaved(false);
+          } else {
+            try {
+              setBusinessStepSaved(sessionStorage.getItem(storageKey) === "true");
+            } catch {
+              setBusinessStepSaved(false);
+            }
           }
+        } else {
+          setBusinessStepSaved(false);
+        }
+
+        if (getEffectiveBankStatus(s.bankVerificationStatus, s) !== "VERIFIED") {
+          setBankEditUnlocked(false);
         }
       } else {
-        setBusinessStepSaved(false);
+        throw supplierRes.reason;
       }
 
-      if (getEffectiveBankStatus(s.bankVerificationStatus, s) !== "VERIFIED") {
-        setBankEditUnlocked(false);
+      if (docsRes.status === "fulfilled") {
+        setSupplierDocuments(normalizeDocumentsPayload(docsRes.value.data));
+      } else {
+        setSupplierDocuments([]);
       }
 
       hasHydratedRef.current = true;
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not load supplier onboarding."
+          e?.response?.data?.message ||
+          "Could not load supplier onboarding."
       );
       scrollToTop();
     } finally {
@@ -848,6 +949,7 @@ export default function SupplierBusinessDetails() {
 
   useEffect(() => {
     if (!countryBanks.length) return;
+    if (documentsLocked) return;
 
     setForm((f) => {
       const currentCode = normCode(f.bankCode);
@@ -881,9 +983,10 @@ export default function SupplierBusinessDetails() {
 
       return f;
     });
-  }, [countryBanks]);
+  }, [countryBanks, documentsLocked]);
 
   function setBankByName(name: string) {
+    if (documentsLocked) return;
     const match = countryBanks.find((b) => b.name === name);
     setForm((f) => ({
       ...f,
@@ -896,6 +999,7 @@ export default function SupplierBusinessDetails() {
   }
 
   function setBankByCode(code: string) {
+    if (documentsLocked) return;
     const c = normCode(code);
     const match = countryBanks.find((b) => normCode(b.code) === c);
     setForm((f) => ({
@@ -910,6 +1014,8 @@ export default function SupplierBusinessDetails() {
 
   const saveBusinessOnly = useCallback(async () => {
     try {
+      if (documentsLocked) return;
+
       setBusinessSaveState("saving");
       setErr(null);
 
@@ -937,7 +1043,9 @@ export default function SupplierBusinessDetails() {
       const s = normalizeSupplierPayload(data);
       setSupplier(s);
 
-      const isSavedRegisteredBusinessRequired = isRegisteredBusinessType(s.registrationType);
+      const isSavedRegisteredBusinessRequired = isRegisteredBusinessType(
+        s.registrationType
+      );
 
       const isBusinessComplete =
         hasValue(s.legalName) &&
@@ -953,11 +1061,16 @@ export default function SupplierBusinessDetails() {
       if (s.id) {
         try {
           if (isBusinessComplete) {
-            sessionStorage.setItem(`supplier:onboarding:business-step-saved:${s.id}`, "true");
+            sessionStorage.setItem(
+              `supplier:onboarding:business-step-saved:${s.id}`,
+              "true"
+            );
           } else {
-            sessionStorage.removeItem(`supplier:onboarding:business-step-saved:${s.id}`);
+            sessionStorage.removeItem(
+              `supplier:onboarding:business-step-saved:${s.id}`
+            );
           }
-        } catch { }
+        } catch {}
       }
 
       setBusinessSaveState("saved");
@@ -965,16 +1078,23 @@ export default function SupplierBusinessDetails() {
       setBusinessSaveState("error");
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not save business details."
+          e?.response?.data?.message ||
+          "Could not save business details."
       );
       scrollToTop();
     }
-  }, [adminSupplierId, form, isAdminReviewMode, isRegisteredBusiness, scrollToTop]);
+  }, [
+    adminSupplierId,
+    documentsLocked,
+    form,
+    isAdminReviewMode,
+    isRegisteredBusiness,
+    scrollToTop,
+  ]);
 
   const saveBankDetails = useCallback(async () => {
     try {
-      if (!bankEditable) return;
+      if (!bankEditable || documentsLocked) return;
 
       const missingBank = getMissingDraftBankFields();
       if (missingBank.length > 0) {
@@ -1017,19 +1137,20 @@ export default function SupplierBusinessDetails() {
       setBankSaveState("error");
       setErr(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not save bank details."
+          e?.response?.data?.message ||
+          "Could not save bank details."
       );
       setBankFormError(
         e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        "Could not save bank details."
+          e?.response?.data?.message ||
+          "Could not save bank details."
       );
       scrollToTop();
     }
   }, [
     adminSupplierId,
     bankEditable,
+    documentsLocked,
     form,
     getMissingDraftBankFields,
     hydrateFormFromSupplier,
@@ -1041,6 +1162,7 @@ export default function SupplierBusinessDetails() {
   useEffect(() => {
     if (!hasHydratedRef.current) return;
     if (loading) return;
+    if (documentsLocked) return;
     if (!businessDirty) return;
     if (isBusinessAutosaving) return;
 
@@ -1057,7 +1179,7 @@ export default function SupplierBusinessDetails() {
         window.clearTimeout(autosaveTimerRef.current);
       }
     };
-  }, [businessDirty, isBusinessAutosaving, loading, saveBusinessOnly]);
+  }, [businessDirty, documentsLocked, isBusinessAutosaving, loading, saveBusinessOnly]);
 
   useEffect(() => {
     return () => {
@@ -1069,6 +1191,14 @@ export default function SupplierBusinessDetails() {
 
   const goToAddressStep = useCallback(() => {
     setErr(null);
+    setBankFormError(null);
+
+    if (documentsLocked) {
+      pushOnboardingStep("/supplier/onboarding/address", {
+        fromBusinessDetails: true,
+      });
+      return;
+    }
 
     const missingBusiness = getMissingDraftBusinessFields();
     if (missingBusiness.length > 0) {
@@ -1086,15 +1216,53 @@ export default function SupplierBusinessDetails() {
     }
 
     if (isBusinessAutosaving || businessDirty) {
-      setErr("Please wait for your business details to finish saving before continuing to Address.");
-      scrollToTop();
+      const firstDirtyBusinessField =
+        !hasValue(form.legalName)
+          ? "legalName"
+          : isRegisteredBusiness && !hasValue(form.registeredBusinessName)
+          ? "registeredBusinessName"
+          : !hasValue(form.registrationNumber)
+          ? "registrationNumber"
+          : !hasValue(form.registrationType)
+          ? "registrationType"
+          : !hasValue(form.registrationDate)
+          ? "registrationDate"
+          : !hasValue(form.registrationCountryCode)
+          ? "registrationCountryCode"
+          : !hasValue(form.natureOfBusiness)
+          ? "natureOfBusiness"
+          : "legalName";
+
+      setErr(
+        isBusinessAutosaving
+          ? "Business details are still saving. Please wait a moment, then try again."
+          : "Business details have changed but are not saved yet. Please wait for autosave to finish."
+      );
+      scrollToField(firstDirtyBusinessField as keyof typeof fieldRefs);
       return;
     }
 
     if (isBankSaving || bankDirty) {
-      setErr("Please save your bank details before continuing to Address.");
-      setBankFormError("Please save your bank details before continuing to Address.");
-      scrollToTop();
+      const firstBankField =
+        !hasValue(form.bankCountry)
+          ? "bankCountry"
+          : !hasValue(form.bankName)
+          ? "bankName"
+          : !hasValue(form.bankCode)
+          ? "bankCode"
+          : !hasValue(form.accountName)
+          ? "accountName"
+          : !hasValue(form.accountNumber)
+          ? "accountNumber"
+          : "bankName";
+
+      const message = isBankSaving
+        ? "Bank details are still saving. Please wait a moment, then try again."
+        : "You have unsaved bank details. Please save them before continuing to Address.";
+
+      setErr(message);
+      setBankFormError(message);
+      scrollToField(firstBankField as keyof typeof fieldRefs);
       return;
     }
 
@@ -1104,12 +1272,15 @@ export default function SupplierBusinessDetails() {
   }, [
     bankDirty,
     businessDirty,
+    documentsLocked,
+    form,
     getMissingDraftBankFields,
     getMissingDraftBusinessFields,
     isBankSaving,
     isBusinessAutosaving,
+    isRegisteredBusiness,
     pushOnboardingStep,
-    scrollToTop,
+    scrollToField,
     showBankValidationError,
     showBusinessValidationError,
   ]);
@@ -1150,26 +1321,30 @@ export default function SupplierBusinessDetails() {
   ]);
 
   const businessAutosaveStatusText =
-    businessSaveState === "saving"
+    documentsLocked
+      ? "Business details locked after document submission"
+      : businessSaveState === "saving"
       ? "Saving business details…"
       : businessSaveState === "saved"
-        ? "Business details saved"
-        : businessSaveState === "error"
-          ? "Business autosave failed"
-          : businessDirty
-            ? "Unsaved business changes"
-            : "Business details up to date";
+      ? "Business details saved"
+      : businessSaveState === "error"
+      ? "Business autosave failed"
+      : businessDirty
+      ? "Unsaved business changes"
+      : "Business details up to date";
 
   const bankSaveStatusText =
-    bankSaveState === "saving"
+    documentsLocked
+      ? "Bank details locked after document submission"
+      : bankSaveState === "saving"
       ? "Saving bank details…"
       : bankSaveState === "saved"
-        ? "Bank details saved"
-        : bankSaveState === "error"
-          ? "Bank save failed"
-          : bankDirty
-            ? "Unsaved bank changes"
-            : "Bank details up to date";
+      ? "Bank details saved"
+      : bankSaveState === "error"
+      ? "Bank save failed"
+      : bankDirty
+      ? "Unsaved bank changes"
+      : "Bank details up to date";
 
   const stepBase =
     "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
@@ -1180,6 +1355,8 @@ export default function SupplierBusinessDetails() {
 
   const input =
     "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-[border-color,box-shadow] duration-150 ease-out focus:border-violet-400 focus:ring-4 focus:ring-violet-200 shadow-sm";
+  const inputDisabled =
+    "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0";
   const label = "mb-1.5 block text-sm font-semibold text-slate-800";
   const card =
     "rounded-[28px] border border-white/70 bg-white/95 p-4 shadow-[0_16px_50px_rgba(15,23,42,0.08)] backdrop-blur sm:p-6 md:p-8";
@@ -1243,7 +1420,6 @@ export default function SupplierBusinessDetails() {
   }, [addressDone]);
 
   const canClickPreviousTab = true;
-  const canClickNextTab = canProceedToAddress;
 
   return (
     <SiteLayout>
@@ -1273,8 +1449,9 @@ export default function SupplierBusinessDetails() {
                   type="button"
                   onClick={canClickPreviousTab ? goToVerifyContact : undefined}
                   disabled={!canClickPreviousTab}
-                  className={`${stepBase} ${stepDone} ${canClickPreviousTab ? stepClickable : "cursor-not-allowed"
-                    }`}
+                  className={`${stepBase} ${stepDone} ${
+                    canClickPreviousTab ? stepClickable : "cursor-not-allowed"
+                  }`}
                 >
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
                     2
@@ -1291,10 +1468,10 @@ export default function SupplierBusinessDetails() {
 
                 <button
                   type="button"
-                  onClick={canClickNextTab ? goToAddressStep : undefined}
-                  disabled={!canClickNextTab}
-                  className={`${stepBase} ${canClickNextTab ? stepDone : stepLocked
-                    } ${canClickNextTab ? stepClickable : "cursor-not-allowed"}`}
+                  onClick={goToAddressStep}
+                  className={`${stepBase} ${
+                    canProceedToAddress || documentsLocked ? stepDone : stepLocked
+                  } ${stepClickable}`}
                 >
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
                     4
@@ -1303,8 +1480,9 @@ export default function SupplierBusinessDetails() {
                 </button>
 
                 <div
-                  className={`${stepBase} ${docsDone || documentsAccessible ? stepDone : stepLocked
-                    }`}
+                  className={`${stepBase} ${
+                    docsDone || documentsAccessible ? stepDone : stepLocked
+                  }`}
                 >
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
                     5
@@ -1321,38 +1499,45 @@ export default function SupplierBusinessDetails() {
               </div>
             </div>
 
-            {businessDirty && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Business changes are being saved automatically. Please wait before moving to the next
-                step.
+            {documentsLocked && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                Documents have already been submitted. Business and bank details are now read-only on this page.
               </div>
             )}
 
-            {bankDirty && (
+            {!documentsLocked && businessDirty && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                You have unsaved bank changes. Use the bank save button before continuing.
+                Business changes are being saved automatically. You can still click Next, and we’ll
+                guide you to what needs attention.
               </div>
             )}
 
-            {draftBusinessDone && !savedBusinessDone && (
+            {!documentsLocked && bankDirty && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                You have unsaved bank changes. Click Next and you’ll be taken to the bank field that
+                still needs saving.
+              </div>
+            )}
+
+            {!documentsLocked && draftBusinessDone && !savedBusinessDone && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
                 Business details look complete. Autosave will store them shortly.
               </div>
             )}
 
-            {draftBankDone && !savedBankDone && (
+            {!documentsLocked && draftBankDone && !savedBankDone && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
                 Bank details look complete, but they are not saved yet.
               </div>
             )}
 
-            {!savedBusinessDone && missingSavedBusinessFields.length > 0 && (
+            {!documentsLocked && !savedBusinessDone && missingSavedBusinessFields.length > 0 && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 Complete all required business details: {missingSavedBusinessFields.join(", ")}.
               </div>
             )}
 
-            {!savedBankDone && missingSavedBankFields.length > 0 && (
+            {!documentsLocked && !savedBankDone && missingSavedBankFields.length > 0 && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 Bank details still missing: {missingSavedBankFields.join(", ")}.
               </div>
@@ -1387,7 +1572,9 @@ export default function SupplierBusinessDetails() {
                           ref={fieldRefs.legalName}
                           value={form.legalName}
                           onChange={setField("legalName")}
-                          className={input}
+                          disabled={businessFieldsDisabled}
+                          readOnly={documentsLocked}
+                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
                           placeholder="Legal business name"
                         />
                       </div>
@@ -1399,7 +1586,9 @@ export default function SupplierBusinessDetails() {
                             ref={fieldRefs.registeredBusinessName}
                             value={form.registeredBusinessName}
                             onChange={setField("registeredBusinessName")}
-                            className={input}
+                            disabled={businessFieldsDisabled}
+                            readOnly={documentsLocked}
+                            className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
                             placeholder="Registered business name"
                           />
                         </div>
@@ -1411,7 +1600,9 @@ export default function SupplierBusinessDetails() {
                           ref={fieldRefs.registrationNumber}
                           value={form.registrationNumber}
                           onChange={setField("registrationNumber")}
-                          className={input}
+                          disabled={businessFieldsDisabled}
+                          readOnly={documentsLocked}
+                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
                           placeholder="Registration number"
                         />
                       </div>
@@ -1422,7 +1613,8 @@ export default function SupplierBusinessDetails() {
                           ref={fieldRefs.registrationType}
                           value={form.registrationType}
                           onChange={setField("registrationType")}
-                          className={input}
+                          disabled={businessFieldsDisabled}
+                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
                         >
                           <option value="">Select registration type</option>
                           <option value="INDIVIDUAL">Individual</option>
@@ -1437,7 +1629,9 @@ export default function SupplierBusinessDetails() {
                           type="date"
                           value={form.registrationDate}
                           onChange={setField("registrationDate")}
-                          className={input}
+                          disabled={businessFieldsDisabled}
+                          readOnly={documentsLocked}
+                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
                         />
                       </div>
 
@@ -1447,7 +1641,8 @@ export default function SupplierBusinessDetails() {
                           ref={fieldRefs.registrationCountryCode}
                           value={form.registrationCountryCode}
                           onChange={setField("registrationCountryCode")}
-                          className={input}
+                          disabled={businessFieldsDisabled}
+                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
                         >
                           {countries.length === 0 && <option>Loading countries...</option>}
                           {countries.map((c) => (
@@ -1464,7 +1659,11 @@ export default function SupplierBusinessDetails() {
                           ref={fieldRefs.natureOfBusiness}
                           value={form.natureOfBusiness}
                           onChange={setField("natureOfBusiness")}
-                          className={`${input} min-h-[110px] resize-y`}
+                          disabled={businessFieldsDisabled}
+                          readOnly={documentsLocked}
+                          className={`${input} min-h-[110px] resize-y ${
+                            businessFieldsDisabled ? inputDisabled : ""
+                          }`}
                           placeholder="Describe the products or services your business provides"
                         />
                       </div>
@@ -1487,16 +1686,18 @@ export default function SupplierBusinessDetails() {
 
                       <div className="flex flex-wrap items-center gap-2">
                         {bankStatusChip}
-                        {effectiveBankStatus === "VERIFIED" && !bankEditUnlocked && (
-                          <button
-                            type="button"
-                            onClick={() => setBankEditUnlocked(true)}
-                            className="rounded-full border bg-white px-3 py-1.5 text-[11px] hover:bg-black/5"
-                          >
-                            Request change
-                          </button>
-                        )}
-                        {bankEditUnlocked && (
+                        {effectiveBankStatus === "VERIFIED" &&
+                          !bankEditUnlocked &&
+                          !documentsLocked && (
+                            <button
+                              type="button"
+                              onClick={() => setBankEditUnlocked(true)}
+                              className="rounded-full border bg-white px-3 py-1.5 text-[11px] hover:bg-black/5"
+                            >
+                              Request change
+                            </button>
+                          )}
+                        {bankEditUnlocked && !documentsLocked && (
                           <button
                             type="button"
                             onClick={() => setBankEditUnlocked(false)}
@@ -1522,18 +1723,26 @@ export default function SupplierBusinessDetails() {
                       </div>
                     )}
 
-                    {effectiveBankStatus === "VERIFIED" && !bankEditUnlocked && (
+                    {effectiveBankStatus === "VERIFIED" && !bankEditUnlocked && !documentsLocked && (
                       <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800">
                         Your bank details are verified and locked. Use{" "}
                         <span className="font-semibold">Request change</span> to update them.
                       </div>
                     )}
 
-                    {bankEditUnlocked && effectiveBankStatus !== "PENDING" && (
-                      <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
-                        When you save new bank details, they will be submitted for verification.
+                    {documentsLocked && (
+                      <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-800">
+                        Bank details are locked because documents have already been submitted.
                       </div>
                     )}
+
+                    {bankEditUnlocked &&
+                      effectiveBankStatus !== "PENDING" &&
+                      !documentsLocked && (
+                        <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+                          When you save new bank details, they will be submitted for verification.
+                        </div>
+                      )}
 
                     {bankFormError && (
                       <div className="mb-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
@@ -1548,6 +1757,7 @@ export default function SupplierBusinessDetails() {
                           ref={fieldRefs.bankCountry}
                           value={form.bankCountry}
                           onChange={(e) => {
+                            if (documentsLocked) return;
                             setForm((f) => ({
                               ...f,
                               bankCountry: e.target.value || "NG",
@@ -1559,10 +1769,7 @@ export default function SupplierBusinessDetails() {
                             if (err) setErr(null);
                           }}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
-                            ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                            : ""
-                            }`}
+                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
                         >
                           {countries.length === 0 && <option>Loading countries...</option>}
                           {countries.map((c) => (
@@ -1580,10 +1787,7 @@ export default function SupplierBusinessDetails() {
                           value={form.bankName}
                           onChange={(e) => setBankByName(e.target.value)}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
-                            ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                            : ""
-                            }`}
+                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
                         >
                           <option value="">Select bank…</option>
                           {countryBanks.map((b) => (
@@ -1601,10 +1805,7 @@ export default function SupplierBusinessDetails() {
                           value={normCode(form.bankCode)}
                           onChange={(e) => setBankByCode(e.target.value)}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
-                            ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                            : ""
-                            }`}
+                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
                         >
                           <option value="">Select bank…</option>
                           {countryBanks.map((b) => (
@@ -1622,10 +1823,8 @@ export default function SupplierBusinessDetails() {
                           value={form.accountName}
                           onChange={setField("accountName")}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
-                            ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                            : ""
-                            }`}
+                          readOnly={documentsLocked}
+                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
                           placeholder="Account name"
                         />
                       </div>
@@ -1636,6 +1835,7 @@ export default function SupplierBusinessDetails() {
                           ref={fieldRefs.accountNumber}
                           value={form.accountNumber}
                           onChange={(e) => {
+                            if (documentsLocked) return;
                             setForm((f) => ({
                               ...f,
                               accountNumber: e.target.value.replace(/\D/g, "").slice(0, 16),
@@ -1645,10 +1845,8 @@ export default function SupplierBusinessDetails() {
                             if (err) setErr(null);
                           }}
                           disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled
-                            ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                            : ""
-                            }`}
+                          readOnly={documentsLocked}
+                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
                           placeholder="Account number"
                         />
                       </div>
@@ -1656,12 +1854,13 @@ export default function SupplierBusinessDetails() {
 
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                       <span
-                        className={`text-sm ${bankSaveState === "error"
-                          ? "text-rose-600"
-                          : bankSaveState === "saving"
+                        className={`text-sm ${
+                          bankSaveState === "error"
+                            ? "text-rose-600"
+                            : bankSaveState === "saving"
                             ? "text-amber-700"
                             : "text-zinc-600"
-                          }`}
+                        }`}
                       >
                         {bankSaveStatusText}
                       </span>
@@ -1669,14 +1868,16 @@ export default function SupplierBusinessDetails() {
                       <button
                         type="button"
                         onClick={() => void saveBankDetails()}
-                        disabled={!bankEditable || isBankSaving}
+                        disabled={documentsLocked || !bankEditable || isBankSaving}
                         className={secondaryBtn}
                       >
-                        {bankSaveState === "saving"
+                        {documentsLocked
+                          ? "Locked"
+                          : bankSaveState === "saving"
                           ? "Saving bank details…"
                           : bankSaveState === "saved" && !bankDirty
-                            ? "Bank details saved"
-                            : "Save bank details"}
+                          ? "Bank details saved"
+                          : "Save bank details"}
                       </button>
                     </div>
                   </div>
@@ -1708,10 +1909,11 @@ export default function SupplierBusinessDetails() {
                         >
                           <span className="text-sm text-zinc-700">{item.label}</span>
                           <span
-                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.done
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-amber-100 text-amber-700"
-                              }`}
+                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              item.done
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-amber-100 text-amber-700"
+                            }`}
                           >
                             {item.done ? "Done" : "Pending"}
                           </span>
@@ -1737,7 +1939,6 @@ export default function SupplierBusinessDetails() {
                       type="button"
                       onClick={goToAddressStep}
                       className={`${secondaryBtn} mt-4 w-full`}
-                      disabled={!canProceedToAddress}
                     >
                       Continue to address
                     </button>
@@ -1758,14 +1959,14 @@ export default function SupplierBusinessDetails() {
                       </div>
                     </div>
 
-
                     <button
                       type="button"
                       disabled
-                      className={`mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed ${docsDone || documentsAccessible
-                        ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                        : "border border-zinc-300 bg-white text-zinc-400"
-                        }`}
+                      className={`mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed ${
+                        docsDone || documentsAccessible
+                          ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : "border border-zinc-300 bg-white text-zinc-400"
+                      }`}
                     >
                       Continue to documents
                     </button>
@@ -1792,22 +1993,18 @@ export default function SupplierBusinessDetails() {
 
                 <div className="flex items-center gap-3">
                   <span
-                    className={`text-sm ${businessSaveState === "error"
-                      ? "text-rose-600"
-                      : businessSaveState === "saving"
+                    className={`text-sm ${
+                      businessSaveState === "error"
+                        ? "text-rose-600"
+                        : businessSaveState === "saving"
                         ? "text-amber-700"
                         : "text-zinc-600"
-                      }`}
+                    }`}
                   >
                     {businessAutosaveStatusText}
                   </span>
 
-                  <button
-                    type="button"
-                    onClick={goToAddressStep}
-                    className={primaryBtn}
-                    disabled={!canProceedToAddress}
-                  >
+                  <button type="button" onClick={goToAddressStep} className={primaryBtn}>
                     Next step
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </button>
