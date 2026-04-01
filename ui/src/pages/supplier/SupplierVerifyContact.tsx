@@ -527,6 +527,10 @@ export default function SupplierVerifyContact() {
   const hasAutoFinalizedRef = useRef(false);
   const hasAutoRequestedOtpRef = useRef(false);
 
+  const hasVerifySession = useMemo(() => {
+    return Boolean(getTempToken());
+  }, [emailVerified, phoneVerified, loadingSummary]);
+
   useEffect(() => {
     setJourneyState(readJourneyState(journeyKey));
   }, [journeyKey]);
@@ -559,22 +563,31 @@ export default function SupplierVerifyContact() {
       setErr(null);
 
       const cfg = getVerifyConfig();
+      const tempToken = getTempToken();
 
       let supplierData: SupplierMeLite | null = null;
       let authData: AuthMeLite | null = null;
 
-      try {
-        const supplierRes = await api.get("/api/supplier/me", {
-          ...cfg,
-          params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
-        });
-        supplierData = ((supplierRes.data as any)?.data ??
-          supplierRes.data ??
-          {}) as SupplierMeLite;
-        setSupplierSnapshot(supplierData);
-      } catch {}
+      if (isAdminReviewMode) {
+        try {
+          const supplierRes = await api.get("/api/supplier/me", {
+            ...cfg,
+            params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+          });
+          supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+          setSupplierSnapshot(supplierData);
+        } catch {}
+      } else if (tempToken) {
+        try {
+          const supplierRes = await api.get("/api/supplier/me", cfg);
+          supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+          setSupplierSnapshot(supplierData);
+        } catch {}
 
-      if (!isAdminReviewMode) {
         try {
           const authRes = await api.get("/api/auth/me", cfg);
           authData = normalizeAuthMePayload(authRes.data);
@@ -651,88 +664,94 @@ export default function SupplierVerifyContact() {
       ? "Company legal name"
       : "Full legal name";
 
-  const loadStatus = useCallback(async (): Promise<VerificationSnapshot | null> => {
-    try {
-      setErr(null);
-      setChecking(true);
+  const loadStatus = useCallback(
+    async (): Promise<VerificationSnapshot | null> => {
+      try {
+        setErr(null);
+        setChecking(true);
 
-      if (isAdminReviewMode) {
-        const supplierRes = await api.get("/api/supplier/me", {
-          ...getVerifyConfig(),
-          params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+        if (isAdminReviewMode) {
+          const supplierRes = await api.get("/api/supplier/me", {
+            ...getVerifyConfig(),
+            params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+          });
+
+          const supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+
+          const nextEmailVerified = Boolean(supplierData?.user?.emailVerifiedAt);
+          const nextPhoneVerified = Boolean(supplierData?.user?.phoneVerifiedAt);
+
+          setSupplierSnapshot(supplierData);
+          setEmailVerified(nextEmailVerified);
+          setPhoneVerified(nextPhoneVerified);
+
+          return {
+            emailVerified: nextEmailVerified,
+            phoneVerified: nextPhoneVerified,
+          };
+        }
+
+        const activeEmail = email || summary?.contactEmail || "";
+        if (!activeEmail) {
+          setErr("No supplier email found for verification.");
+          return null;
+        }
+
+        const emailRes = await api.get("/api/auth/email-status", {
+          params: { email: activeEmail },
+          withCredentials: true,
         });
 
-        const supplierData = ((supplierRes.data as any)?.data ??
-          supplierRes.data ??
-          {}) as SupplierMeLite;
+        const nextEmailVerified =
+          !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified;
 
-        const nextEmailVerified = Boolean(supplierData?.user?.emailVerifiedAt);
-        const nextPhoneVerified = Boolean(supplierData?.user?.phoneVerifiedAt);
-
-        setSupplierSnapshot(supplierData);
         setEmailVerified(nextEmailVerified);
-        setPhoneVerified(nextPhoneVerified);
+
+        let nextPhoneVerified = false;
+        const tempToken = getTempToken();
+
+        if (tempToken) {
+          const cfg = getVerifyConfig();
+
+          try {
+            const supplierRes = await api.get("/api/supplier/me", cfg);
+            const supplierData = ((supplierRes.data as any)?.data ??
+              supplierRes.data ??
+              {}) as SupplierMeLite;
+            setSupplierSnapshot(supplierData);
+          } catch {
+            // ignore
+          }
+
+          try {
+            const meRes = await api.get("/api/auth/me", cfg);
+            const me = normalizeAuthMePayload(meRes.data);
+            nextPhoneVerified = isAuthPhoneVerified(me);
+            setPhoneVerified(nextPhoneVerified);
+          } catch {
+            // ignore
+          }
+        }
 
         return {
           emailVerified: nextEmailVerified,
           phoneVerified: nextPhoneVerified,
         };
-      }
-
-      const cfg = getVerifyConfig();
-      const activeEmail = email || summary?.contactEmail || "";
-
-      if (!activeEmail) {
-        setErr("No supplier email found for verification.");
+      } catch (e: any) {
+        setErr(
+          e?.response?.data?.error ||
+            e?.response?.data?.message ||
+            "Could not load verification status."
+        );
         return null;
+      } finally {
+        setChecking(false);
       }
-
-      const emailRes = await api.get("/api/auth/email-status", {
-        params: { email: activeEmail },
-        withCredentials: true,
-      });
-
-      const nextEmailVerified =
-        !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified;
-
-      setEmailVerified(nextEmailVerified);
-
-      try {
-        const supplierRes = await api.get("/api/supplier/me", cfg);
-        const supplierData = ((supplierRes.data as any)?.data ??
-          supplierRes.data ??
-          {}) as SupplierMeLite;
-        setSupplierSnapshot(supplierData);
-      } catch {
-        // ignore
-      }
-
-      let nextPhoneVerified = false;
-
-      try {
-        const meRes = await api.get("/api/auth/me", cfg);
-        const me = normalizeAuthMePayload(meRes.data);
-        nextPhoneVerified = isAuthPhoneVerified(me);
-        setPhoneVerified(nextPhoneVerified);
-      } catch {
-        // ignore
-      }
-
-      return {
-        emailVerified: nextEmailVerified,
-        phoneVerified: nextPhoneVerified,
-      };
-    } catch (e: any) {
-      setErr(
-        e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not load verification status."
-      );
-      return null;
-    } finally {
-      setChecking(false);
-    }
-  }, [adminSupplierId, email, isAdminReviewMode, summary?.contactEmail]);
+    },
+    [adminSupplierId, email, isAdminReviewMode, summary?.contactEmail]
+  );
 
   const hydrateAuthStoreFromSession = async () => {
     await useAuthStore.getState().bootstrap();
@@ -888,7 +907,6 @@ export default function SupplierVerifyContact() {
     }
 
     if (hasAutoFinalizedRef.current) return;
-
     hasAutoFinalizedRef.current = true;
 
     try {
@@ -1022,6 +1040,20 @@ export default function SupplierVerifyContact() {
     if (isAdminReviewMode) return;
     if (phoneVerifiedEffective || canContinue || finalizingSession) return;
 
+    const tempToken = getTempToken();
+    if (!tempToken) {
+      const snapshot = await loadStatus();
+
+      if (snapshot?.phoneVerified) {
+        setPhoneVerified(true);
+        setErr(null);
+        return;
+      }
+
+      setErr("Your verification session expired. Please sign in again to resend the code.");
+      return;
+    }
+
     try {
       setErr(null);
       setOtpError(null);
@@ -1041,16 +1073,36 @@ export default function SupplierVerifyContact() {
           dialCode: activeDialCode,
           contactDialCode: activeDialCode,
         },
-        getVerifyConfig()
+        {
+          withCredentials: true,
+          headers: {
+            Authorization: `Bearer ${tempToken}`,
+          },
+        }
       );
 
       setPhoneOtpSent(true);
     } catch (e: any) {
-      setErr(
+      const status = e?.response?.status;
+      const msg =
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not send phone verification code."
-      );
+        e?.response?.data?.message ||
+        "Could not send phone verification code.";
+
+      if (status === 401) {
+        const snapshot = await loadStatus();
+
+        if (snapshot?.phoneVerified) {
+          setPhoneVerified(true);
+          setErr(null);
+          return;
+        }
+
+        setErr("Your verification session expired. Please sign in again to resend the code.");
+        return;
+      }
+
+      setErr(msg);
     } finally {
       setBusyPhone(false);
     }
@@ -1064,7 +1116,8 @@ export default function SupplierVerifyContact() {
       phoneVerifiedEffective ||
       phoneOtpSent ||
       finalizingSession ||
-      !(phone || summary?.contactPhone)
+      !(phone || summary?.contactPhone) ||
+      !hasVerifySession
     ) {
       return;
     }
@@ -1079,6 +1132,7 @@ export default function SupplierVerifyContact() {
     phone,
     summary?.contactPhone,
     finalizingSession,
+    hasVerifySession,
   ]);
 
   const verifyPhoneOtp = async (e: React.FormEvent) => {
@@ -1093,6 +1147,23 @@ export default function SupplierVerifyContact() {
       return;
     }
 
+    const tempToken = getTempToken();
+    if (!tempToken) {
+      const snapshot = await loadStatus();
+
+      if (snapshot?.phoneVerified) {
+        setPhoneVerified(true);
+        setOtp("");
+        setOtpError(null);
+        setErr(null);
+        return;
+      }
+
+      setOtpError("Your verification session expired. Please sign in again.");
+      setErr(null);
+      return;
+    }
+
     try {
       setErr(null);
       setOtpError(null);
@@ -1103,7 +1174,12 @@ export default function SupplierVerifyContact() {
         {
           otp: otp.trim(),
         },
-        getVerifyConfig()
+        {
+          withCredentials: true,
+          headers: {
+            Authorization: `Bearer ${tempToken}`,
+          },
+        }
       );
 
       setPhoneVerified(true);
@@ -1314,6 +1390,12 @@ export default function SupplierVerifyContact() {
               </div>
             )}
 
+            {!isAdminReviewMode && !hasVerifySession && !canContinue && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Your verification session expired. Please sign in again to continue.
+              </div>
+            )}
+
             {err && (
               <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                 {err}
@@ -1368,7 +1450,7 @@ export default function SupplierVerifyContact() {
                           <button
                             type="button"
                             onClick={resendEmail}
-                            disabled={busyEmail}
+                            disabled={busyEmail || !hasVerifySession}
                             className={secondaryBtn}
                           >
                             {busyEmail
@@ -1461,6 +1543,7 @@ export default function SupplierVerifyContact() {
                                 className={otpInputClass}
                                 placeholder="Enter verification code"
                                 inputMode="numeric"
+                                disabled={!hasVerifySession}
                               />
                               {otpError && (
                                 <p className="text-xs text-rose-600">
@@ -1474,7 +1557,7 @@ export default function SupplierVerifyContact() {
                             <div className="flex flex-wrap gap-2">
                               <button
                                 type="submit"
-                                disabled={busyVerifyOtp}
+                                disabled={busyVerifyOtp || !hasVerifySession}
                                 className={primaryBtn}
                               >
                                 {busyVerifyOtp ? "Verifying…" : "Verify phone"}
@@ -1483,7 +1566,7 @@ export default function SupplierVerifyContact() {
                               <button
                                 type="button"
                                 onClick={() => void resendPhoneOtp()}
-                                disabled={busyPhone}
+                                disabled={busyPhone || !hasVerifySession}
                                 className={secondaryBtn}
                               >
                                 {busyPhone
