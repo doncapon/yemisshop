@@ -288,7 +288,7 @@ function registrationTypeLabel(v?: string | null) {
   return "—";
 }
 
-function normalizeAuthMePayload(payload: any) {
+function normalizeAuthMePayload(payload: any): AuthMeLite | null {
   const data = payload?.data ?? payload?.user ?? payload ?? {};
 
   const id = String(data?.id ?? "").trim();
@@ -527,9 +527,8 @@ export default function SupplierVerifyContact() {
   const hasAutoFinalizedRef = useRef(false);
   const hasAutoRequestedOtpRef = useRef(false);
 
-  const hasVerifySession = useMemo(() => {
-    return Boolean(getTempToken());
-  }, [emailVerified, phoneVerified, loadingSummary]);
+  const verifySessionToken = getTempToken();
+  const hasVerifySession = Boolean(verifySessionToken);
 
   useEffect(() => {
     setJourneyState(readJourneyState(journeyKey));
@@ -557,7 +556,7 @@ export default function SupplierVerifyContact() {
     journeyKey,
   ]);
 
-  const loadSummary = async () => {
+  const loadSummary = useCallback(async () => {
     try {
       setLoadingSummary(true);
       setErr(null);
@@ -578,7 +577,9 @@ export default function SupplierVerifyContact() {
             supplierRes.data ??
             {}) as SupplierMeLite;
           setSupplierSnapshot(supplierData);
-        } catch {}
+        } catch {
+          // ignore
+        }
       } else if (tempToken) {
         try {
           const supplierRes = await api.get("/api/supplier/me", cfg);
@@ -586,12 +587,16 @@ export default function SupplierVerifyContact() {
             supplierRes.data ??
             {}) as SupplierMeLite;
           setSupplierSnapshot(supplierData);
-        } catch {}
+        } catch {
+          // ignore
+        }
 
         try {
           const authRes = await api.get("/api/auth/me", cfg);
           authData = normalizeAuthMePayload(authRes.data);
-        } catch {}
+        } catch {
+          // ignore
+        }
       }
 
       const resolvedEmail =
@@ -614,39 +619,37 @@ export default function SupplierVerifyContact() {
       setPhone(resolvedPhone);
       setDialCode(resolvedDialCode);
 
-      if (supplierData || authData) {
-        setSummary({
-          businessName:
-            pickString(supplierData?.businessName) ||
-            pickString(supplierData?.name),
-          legalName: pickString(supplierData?.legalName),
-          registeredBusinessName: pickString(
-            supplierData?.registeredBusinessName
-          ),
-          registrationType: pickString(supplierData?.registrationType),
-          registrationCountryCode: pickString(
-            supplierData?.registrationCountryCode
-          ),
-          contactFirstName:
-            pickString(supplierData?.contactFirstName) ||
-            pickString(supplierData?.user?.firstName) ||
-            pickString(authData?.firstName),
-          contactLastName:
-            pickString(supplierData?.contactLastName) ||
-            pickString(supplierData?.user?.lastName) ||
-            pickString(authData?.lastName),
-          contactEmail: resolvedEmail,
-          contactPhone: resolvedPhone,
-          contactDialCode: resolvedDialCode,
-        });
+      setSummary({
+        businessName:
+          pickString(supplierData?.businessName) ||
+          pickString(supplierData?.name),
+        legalName: pickString(supplierData?.legalName),
+        registeredBusinessName: pickString(
+          supplierData?.registeredBusinessName
+        ),
+        registrationType: pickString(supplierData?.registrationType),
+        registrationCountryCode: pickString(
+          supplierData?.registrationCountryCode
+        ),
+        contactFirstName:
+          pickString(supplierData?.contactFirstName) ||
+          pickString(supplierData?.user?.firstName) ||
+          pickString(authData?.firstName),
+        contactLastName:
+          pickString(supplierData?.contactLastName) ||
+          pickString(supplierData?.user?.lastName) ||
+          pickString(authData?.lastName),
+        contactEmail: resolvedEmail,
+        contactPhone: resolvedPhone,
+        contactDialCode: resolvedDialCode,
+      });
 
-        if (isAdminReviewMode) {
-          setEmailVerified(isSupplierUserEmailVerified(supplierData));
-          setPhoneVerified(isSupplierUserPhoneVerified(supplierData));
-        } else {
-          setEmailVerified(isAuthEmailVerified(authData));
-          setPhoneVerified(isAuthPhoneVerified(authData));
-        }
+      if (isAdminReviewMode) {
+        setEmailVerified(isSupplierUserEmailVerified(supplierData));
+        setPhoneVerified(isSupplierUserPhoneVerified(supplierData));
+      } else if (authData) {
+        setEmailVerified(isAuthEmailVerified(authData));
+        setPhoneVerified(isAuthPhoneVerified(authData));
       }
     } catch (e: any) {
       setErr(
@@ -657,101 +660,104 @@ export default function SupplierVerifyContact() {
     } finally {
       setLoadingSummary(false);
     }
-  };
+  }, [
+    adminSupplierId,
+    isAdminReviewMode,
+    state.dialCode,
+    state.email,
+    state.phone,
+  ]);
 
   const legalEntityLabel =
     summary?.registrationType === "REGISTERED_BUSINESS"
       ? "Company legal name"
       : "Full legal name";
 
-  const loadStatus = useCallback(
-    async (): Promise<VerificationSnapshot | null> => {
-      try {
-        setErr(null);
-        setChecking(true);
+  const loadStatus = useCallback(async (): Promise<VerificationSnapshot | null> => {
+    try {
+      setErr(null);
+      setChecking(true);
 
-        if (isAdminReviewMode) {
-          const supplierRes = await api.get("/api/supplier/me", {
-            ...getVerifyConfig(),
-            params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
-          });
-
-          const supplierData = ((supplierRes.data as any)?.data ??
-            supplierRes.data ??
-            {}) as SupplierMeLite;
-
-          const nextEmailVerified = Boolean(supplierData?.user?.emailVerifiedAt);
-          const nextPhoneVerified = Boolean(supplierData?.user?.phoneVerifiedAt);
-
-          setSupplierSnapshot(supplierData);
-          setEmailVerified(nextEmailVerified);
-          setPhoneVerified(nextPhoneVerified);
-
-          return {
-            emailVerified: nextEmailVerified,
-            phoneVerified: nextPhoneVerified,
-          };
-        }
-
-        const activeEmail = email || summary?.contactEmail || "";
-        if (!activeEmail) {
-          setErr("No supplier email found for verification.");
-          return null;
-        }
-
-        const emailRes = await api.get("/api/auth/email-status", {
-          params: { email: activeEmail },
-          withCredentials: true,
+      if (isAdminReviewMode) {
+        const supplierRes = await api.get("/api/supplier/me", {
+          ...getVerifyConfig(),
+          params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
         });
 
-        const nextEmailVerified =
-          !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified;
+        const supplierData = ((supplierRes.data as any)?.data ??
+          supplierRes.data ??
+          {}) as SupplierMeLite;
 
+        const nextEmailVerified = Boolean(supplierData?.user?.emailVerifiedAt);
+        const nextPhoneVerified = Boolean(supplierData?.user?.phoneVerifiedAt);
+
+        setSupplierSnapshot(supplierData);
         setEmailVerified(nextEmailVerified);
-
-        let nextPhoneVerified = false;
-        const tempToken = getTempToken();
-
-        if (tempToken) {
-          const cfg = getVerifyConfig();
-
-          try {
-            const supplierRes = await api.get("/api/supplier/me", cfg);
-            const supplierData = ((supplierRes.data as any)?.data ??
-              supplierRes.data ??
-              {}) as SupplierMeLite;
-            setSupplierSnapshot(supplierData);
-          } catch {
-            // ignore
-          }
-
-          try {
-            const meRes = await api.get("/api/auth/me", cfg);
-            const me = normalizeAuthMePayload(meRes.data);
-            nextPhoneVerified = isAuthPhoneVerified(me);
-            setPhoneVerified(nextPhoneVerified);
-          } catch {
-            // ignore
-          }
-        }
+        setPhoneVerified(nextPhoneVerified);
 
         return {
           emailVerified: nextEmailVerified,
           phoneVerified: nextPhoneVerified,
         };
-      } catch (e: any) {
-        setErr(
-          e?.response?.data?.error ||
-            e?.response?.data?.message ||
-            "Could not load verification status."
-        );
-        return null;
-      } finally {
-        setChecking(false);
       }
-    },
-    [adminSupplierId, email, isAdminReviewMode, summary?.contactEmail]
-  );
+
+      const activeEmail = email || summary?.contactEmail || "";
+      if (!activeEmail) {
+        setErr("No supplier email found for verification.");
+        return null;
+      }
+
+      const emailRes = await api.get("/api/auth/email-status", {
+        params: { email: activeEmail },
+        withCredentials: true,
+      });
+
+      const nextEmailVerified =
+        !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified;
+
+      setEmailVerified(nextEmailVerified);
+
+      let nextPhoneVerified = false;
+      const tempToken = getTempToken();
+
+      if (tempToken) {
+        const cfg = getVerifyConfig();
+
+        try {
+          const supplierRes = await api.get("/api/supplier/me", cfg);
+          const supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+          setSupplierSnapshot(supplierData);
+        } catch {
+          // ignore
+        }
+
+        try {
+          const meRes = await api.get("/api/auth/me", cfg);
+          const me = normalizeAuthMePayload(meRes.data);
+          nextPhoneVerified = isAuthPhoneVerified(me);
+          setPhoneVerified(nextPhoneVerified);
+        } catch {
+          // ignore
+        }
+      }
+
+      return {
+        emailVerified: nextEmailVerified,
+        phoneVerified: nextPhoneVerified,
+      };
+    } catch (e: any) {
+      setErr(
+        e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          "Could not load verification status."
+      );
+      return null;
+    } finally {
+      setChecking(false);
+    }
+  }, [adminSupplierId, email, isAdminReviewMode, summary?.contactEmail]);
 
   const hydrateAuthStoreFromSession = async () => {
     await useAuthStore.getState().bootstrap();
@@ -989,24 +995,26 @@ export default function SupplierVerifyContact() {
 
   useEffect(() => {
     void loadSummary();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadSummary]);
 
   useEffect(() => {
     if (!loadingSummary) {
       void loadStatus();
     }
-  }, [loadingSummary, email, isAdminReviewMode, adminSupplierId, loadStatus]);
+  }, [loadingSummary, loadStatus]);
 
   useEffect(() => {
     if (shouldAutoFinalize) {
       void finalizeVerifiedSession({ replace: true });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldAutoFinalize]);
 
   const resendEmail = async () => {
     if (isAdminReviewMode) return;
+    if (!hasVerifySession) {
+      setErr("Your verification session expired. Please sign in again to continue.");
+      return;
+    }
 
     try {
       setErr(null);
@@ -1026,11 +1034,18 @@ export default function SupplierVerifyContact() {
 
       setEmailSent(true);
     } catch (e: any) {
-      setErr(
+      const status = e?.response?.status;
+      const msg =
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not resend email verification."
-      );
+        e?.response?.data?.message ||
+        "Could not resend email verification.";
+
+      if (status === 401) {
+        setErr("Your verification session expired. Please sign in again to continue.");
+        return;
+      }
+
+      setErr(msg);
     } finally {
       setBusyEmail(false);
     }
@@ -1064,6 +1079,11 @@ export default function SupplierVerifyContact() {
         normalizeDialCode(dialCode) ||
         normalizeDialCode(summary?.contactDialCode) ||
         normalizeDialCode(state.dialCode);
+
+      if (!activePhone) {
+        setErr("No phone number found for verification.");
+        return;
+      }
 
       await api.post(
         "/api/auth/resend-otp",
@@ -1385,8 +1405,7 @@ export default function SupplierVerifyContact() {
 
             {isAdminReviewMode && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Admin review mode is active. This page will not send codes or
-                auto-complete login.
+                Admin review mode is active. This page will not send codes or auto-complete login.
               </div>
             )}
 
@@ -1434,8 +1453,8 @@ export default function SupplierVerifyContact() {
 
                       {!emailVerifiedEffective && !isAdminReviewMode && (
                         <p className="mt-4 text-sm text-zinc-600">
-                          Open the verification link sent to your inbox, then
-                          return here and refresh your status.
+                          Open the verification link sent to your inbox, then return here and
+                          refresh your status.
                         </p>
                       )}
 
@@ -1546,9 +1565,7 @@ export default function SupplierVerifyContact() {
                                 disabled={!hasVerifySession}
                               />
                               {otpError && (
-                                <p className="text-xs text-rose-600">
-                                  {otpError}
-                                </p>
+                                <p className="text-xs text-rose-600">{otpError}</p>
                               )}
                             </>
                           )}
