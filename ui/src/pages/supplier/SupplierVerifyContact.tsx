@@ -133,6 +133,11 @@ type VerificationSnapshot = {
   phoneVerified: boolean;
 };
 
+type NormalSessionSnapshot = {
+  authData: AuthMeLite | null;
+  supplierData: SupplierMeLite | null;
+};
+
 function maskEmail(v: string) {
   const [name, domain] = String(v || "").split("@");
   if (!name || !domain) return v;
@@ -523,12 +528,46 @@ export default function SupplierVerifyContact() {
   const [loadingSummary, setLoadingSummary] = useState(true);
   const [finalizingSession, setFinalizingSession] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [hasAuthenticatedSession, setHasAuthenticatedSession] =
+    useState<boolean>(false);
 
   const hasAutoFinalizedRef = useRef(false);
   const hasAutoRequestedOtpRef = useRef(false);
 
-  const verifySessionToken = getTempToken();
-  const hasVerifySession = Boolean(verifySessionToken);
+  const hasVerifySession = useMemo(() => {
+    return Boolean(getTempToken());
+  }, [emailVerified, phoneVerified, loadingSummary]);
+
+  const tryLoadNormalSession = useCallback(async (): Promise<NormalSessionSnapshot | null> => {
+    try {
+      const authRes = await api.get("/api/auth/me", {
+        withCredentials: true,
+      });
+
+      const authData = normalizeAuthMePayload(authRes.data);
+      if (!authData) return null;
+
+      let supplierData: SupplierMeLite | null = null;
+
+      try {
+        const supplierRes = await api.get("/api/supplier/me", {
+          withCredentials: true,
+        });
+        supplierData = ((supplierRes.data as any)?.data ??
+          supplierRes.data ??
+          {}) as SupplierMeLite;
+      } catch {
+        supplierData = null;
+      }
+
+      return {
+        authData,
+        supplierData,
+      };
+    } catch {
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
     setJourneyState(readJourneyState(journeyKey));
@@ -577,25 +616,38 @@ export default function SupplierVerifyContact() {
             supplierRes.data ??
             {}) as SupplierMeLite;
           setSupplierSnapshot(supplierData);
+          setHasAuthenticatedSession(true);
         } catch {
-          // ignore
+          setHasAuthenticatedSession(false);
         }
       } else if (tempToken) {
+        setHasAuthenticatedSession(true);
+
         try {
           const supplierRes = await api.get("/api/supplier/me", cfg);
           supplierData = ((supplierRes.data as any)?.data ??
             supplierRes.data ??
             {}) as SupplierMeLite;
           setSupplierSnapshot(supplierData);
-        } catch {
-          // ignore
-        }
+        } catch {}
 
         try {
           const authRes = await api.get("/api/auth/me", cfg);
           authData = normalizeAuthMePayload(authRes.data);
-        } catch {
-          // ignore
+        } catch {}
+      } else {
+        const normalSession = await tryLoadNormalSession();
+
+        if (normalSession) {
+          setHasAuthenticatedSession(true);
+          authData = normalSession.authData;
+          supplierData = normalSession.supplierData;
+
+          if (supplierData) {
+            setSupplierSnapshot(supplierData);
+          }
+        } else {
+          setHasAuthenticatedSession(false);
         }
       }
 
@@ -619,37 +671,39 @@ export default function SupplierVerifyContact() {
       setPhone(resolvedPhone);
       setDialCode(resolvedDialCode);
 
-      setSummary({
-        businessName:
-          pickString(supplierData?.businessName) ||
-          pickString(supplierData?.name),
-        legalName: pickString(supplierData?.legalName),
-        registeredBusinessName: pickString(
-          supplierData?.registeredBusinessName
-        ),
-        registrationType: pickString(supplierData?.registrationType),
-        registrationCountryCode: pickString(
-          supplierData?.registrationCountryCode
-        ),
-        contactFirstName:
-          pickString(supplierData?.contactFirstName) ||
-          pickString(supplierData?.user?.firstName) ||
-          pickString(authData?.firstName),
-        contactLastName:
-          pickString(supplierData?.contactLastName) ||
-          pickString(supplierData?.user?.lastName) ||
-          pickString(authData?.lastName),
-        contactEmail: resolvedEmail,
-        contactPhone: resolvedPhone,
-        contactDialCode: resolvedDialCode,
-      });
+      if (supplierData || authData) {
+        setSummary({
+          businessName:
+            pickString(supplierData?.businessName) ||
+            pickString(supplierData?.name),
+          legalName: pickString(supplierData?.legalName),
+          registeredBusinessName: pickString(
+            supplierData?.registeredBusinessName
+          ),
+          registrationType: pickString(supplierData?.registrationType),
+          registrationCountryCode: pickString(
+            supplierData?.registrationCountryCode
+          ),
+          contactFirstName:
+            pickString(supplierData?.contactFirstName) ||
+            pickString(supplierData?.user?.firstName) ||
+            pickString(authData?.firstName),
+          contactLastName:
+            pickString(supplierData?.contactLastName) ||
+            pickString(supplierData?.user?.lastName) ||
+            pickString(authData?.lastName),
+          contactEmail: resolvedEmail,
+          contactPhone: resolvedPhone,
+          contactDialCode: resolvedDialCode,
+        });
 
-      if (isAdminReviewMode) {
-        setEmailVerified(isSupplierUserEmailVerified(supplierData));
-        setPhoneVerified(isSupplierUserPhoneVerified(supplierData));
-      } else if (authData) {
-        setEmailVerified(isAuthEmailVerified(authData));
-        setPhoneVerified(isAuthPhoneVerified(authData));
+        if (isAdminReviewMode) {
+          setEmailVerified(isSupplierUserEmailVerified(supplierData));
+          setPhoneVerified(isSupplierUserPhoneVerified(supplierData));
+        } else {
+          setEmailVerified(isAuthEmailVerified(authData));
+          setPhoneVerified(isAuthPhoneVerified(authData));
+        }
       }
     } catch (e: any) {
       setErr(
@@ -657,107 +711,167 @@ export default function SupplierVerifyContact() {
           e?.response?.data?.message ||
           "Could not load supplier registration details."
       );
+      setHasAuthenticatedSession(false);
     } finally {
       setLoadingSummary(false);
     }
-  }, [
-    adminSupplierId,
-    isAdminReviewMode,
-    state.dialCode,
-    state.email,
-    state.phone,
-  ]);
+  }, [adminSupplierId, isAdminReviewMode, state.dialCode, state.email, state.phone, tryLoadNormalSession]);
 
   const legalEntityLabel =
     summary?.registrationType === "REGISTERED_BUSINESS"
       ? "Company legal name"
       : "Full legal name";
 
-  const loadStatus = useCallback(async (): Promise<VerificationSnapshot | null> => {
-    try {
-      setErr(null);
-      setChecking(true);
+  const loadStatus = useCallback(
+    async (): Promise<VerificationSnapshot | null> => {
+      try {
+        setErr(null);
+        setChecking(true);
 
-      if (isAdminReviewMode) {
-        const supplierRes = await api.get("/api/supplier/me", {
-          ...getVerifyConfig(),
-          params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+        if (isAdminReviewMode) {
+          const supplierRes = await api.get("/api/supplier/me", {
+            ...getVerifyConfig(),
+            params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+          });
+
+          const supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+
+          const nextEmailVerified = Boolean(supplierData?.user?.emailVerifiedAt);
+          const nextPhoneVerified = Boolean(supplierData?.user?.phoneVerifiedAt);
+
+          setSupplierSnapshot(supplierData);
+          setEmailVerified(nextEmailVerified);
+          setPhoneVerified(nextPhoneVerified);
+          setHasAuthenticatedSession(true);
+
+          return {
+            emailVerified: nextEmailVerified,
+            phoneVerified: nextPhoneVerified,
+          };
+        }
+
+        const activeEmail = email || summary?.contactEmail || "";
+        if (!activeEmail) {
+          const normalSession = await tryLoadNormalSession();
+
+          if (normalSession?.authData) {
+            const nextEmailVerified = isAuthEmailVerified(normalSession.authData);
+            const nextPhoneVerified = isAuthPhoneVerified(normalSession.authData);
+
+            setHasAuthenticatedSession(true);
+            setEmail(normalSession.authData.email || "");
+            setPhone(pickString(normalSession.authData.phone));
+            setEmailVerified(nextEmailVerified);
+            setPhoneVerified(nextPhoneVerified);
+
+            if (normalSession.supplierData) {
+              setSupplierSnapshot(normalSession.supplierData);
+              setEmail(
+                pickString(normalSession.supplierData.contactEmail) ||
+                  pickString(normalSession.supplierData.user?.email) ||
+                  normalSession.authData.email ||
+                  ""
+              );
+              setPhone(
+                pickString(normalSession.supplierData.contactPhone) ||
+                  pickString(normalSession.supplierData.user?.phone) ||
+                  pickString(normalSession.authData.phone)
+              );
+              setDialCode(
+                normalizeDialCode(normalSession.supplierData.contactDialCode) ||
+                  dialCode
+              );
+            }
+
+            return {
+              emailVerified: nextEmailVerified,
+              phoneVerified: nextPhoneVerified,
+            };
+          }
+
+          setHasAuthenticatedSession(false);
+          setErr("No supplier email found for verification.");
+          return null;
+        }
+
+        const emailRes = await api.get("/api/auth/email-status", {
+          params: { email: activeEmail },
+          withCredentials: true,
         });
 
-        const supplierData = ((supplierRes.data as any)?.data ??
-          supplierRes.data ??
-          {}) as SupplierMeLite;
+        const nextEmailVerified =
+          !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified;
 
-        const nextEmailVerified = Boolean(supplierData?.user?.emailVerifiedAt);
-        const nextPhoneVerified = Boolean(supplierData?.user?.phoneVerifiedAt);
-
-        setSupplierSnapshot(supplierData);
         setEmailVerified(nextEmailVerified);
-        setPhoneVerified(nextPhoneVerified);
+
+        let nextPhoneVerified = false;
+        const tempToken = getTempToken();
+
+        if (tempToken) {
+          setHasAuthenticatedSession(true);
+          const cfg = getVerifyConfig();
+
+          try {
+            const supplierRes = await api.get("/api/supplier/me", cfg);
+            const supplierData = ((supplierRes.data as any)?.data ??
+              supplierRes.data ??
+              {}) as SupplierMeLite;
+            setSupplierSnapshot(supplierData);
+          } catch {
+            // ignore
+          }
+
+          try {
+            const meRes = await api.get("/api/auth/me", cfg);
+            const me = normalizeAuthMePayload(meRes.data);
+            nextPhoneVerified = isAuthPhoneVerified(me);
+            setPhoneVerified(nextPhoneVerified);
+          } catch {
+            // ignore
+          }
+        } else {
+          const normalSession = await tryLoadNormalSession();
+
+          if (normalSession) {
+            setHasAuthenticatedSession(true);
+
+            if (normalSession.supplierData) {
+              setSupplierSnapshot(normalSession.supplierData);
+            }
+
+            nextPhoneVerified = isAuthPhoneVerified(normalSession.authData);
+            setPhoneVerified(nextPhoneVerified);
+
+            if (normalSession.authData?.email) {
+              setEmail(normalSession.authData.email);
+            }
+            if (normalSession.authData?.phone) {
+              setPhone(pickString(normalSession.authData.phone));
+            }
+          } else {
+            setHasAuthenticatedSession(false);
+          }
+        }
 
         return {
           emailVerified: nextEmailVerified,
           phoneVerified: nextPhoneVerified,
         };
-      }
-
-      const activeEmail = email || summary?.contactEmail || "";
-      if (!activeEmail) {
-        setErr("No supplier email found for verification.");
+      } catch (e: any) {
+        setErr(
+          e?.response?.data?.error ||
+            e?.response?.data?.message ||
+            "Could not load verification status."
+        );
         return null;
+      } finally {
+        setChecking(false);
       }
-
-      const emailRes = await api.get("/api/auth/email-status", {
-        params: { email: activeEmail },
-        withCredentials: true,
-      });
-
-      const nextEmailVerified =
-        !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified;
-
-      setEmailVerified(nextEmailVerified);
-
-      let nextPhoneVerified = false;
-      const tempToken = getTempToken();
-
-      if (tempToken) {
-        const cfg = getVerifyConfig();
-
-        try {
-          const supplierRes = await api.get("/api/supplier/me", cfg);
-          const supplierData = ((supplierRes.data as any)?.data ??
-            supplierRes.data ??
-            {}) as SupplierMeLite;
-          setSupplierSnapshot(supplierData);
-        } catch {
-          // ignore
-        }
-
-        try {
-          const meRes = await api.get("/api/auth/me", cfg);
-          const me = normalizeAuthMePayload(meRes.data);
-          nextPhoneVerified = isAuthPhoneVerified(me);
-          setPhoneVerified(nextPhoneVerified);
-        } catch {
-          // ignore
-        }
-      }
-
-      return {
-        emailVerified: nextEmailVerified,
-        phoneVerified: nextPhoneVerified,
-      };
-    } catch (e: any) {
-      setErr(
-        e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not load verification status."
-      );
-      return null;
-    } finally {
-      setChecking(false);
-    }
-  }, [adminSupplierId, email, isAdminReviewMode, summary?.contactEmail]);
+    },
+    [adminSupplierId, dialCode, email, isAdminReviewMode, summary?.contactEmail, tryLoadNormalSession]
+  );
 
   const hydrateAuthStoreFromSession = async () => {
     await useAuthStore.getState().bootstrap();
@@ -1001,7 +1115,7 @@ export default function SupplierVerifyContact() {
     if (!loadingSummary) {
       void loadStatus();
     }
-  }, [loadingSummary, loadStatus]);
+  }, [loadingSummary, email, isAdminReviewMode, adminSupplierId, loadStatus]);
 
   useEffect(() => {
     if (shouldAutoFinalize) {
@@ -1011,10 +1125,6 @@ export default function SupplierVerifyContact() {
 
   const resendEmail = async () => {
     if (isAdminReviewMode) return;
-    if (!hasVerifySession) {
-      setErr("Your verification session expired. Please sign in again to continue.");
-      return;
-    }
 
     try {
       setErr(null);
@@ -1026,10 +1136,29 @@ export default function SupplierVerifyContact() {
         return;
       }
 
+      const tempToken = getTempToken();
+      if (!tempToken) {
+        const normalSession = await tryLoadNormalSession();
+        if (normalSession?.authData) {
+          setErr(
+            "You are signed in, but the temporary verification session has expired. Please log in again from the verification flow to resend email verification."
+          );
+          return;
+        }
+
+        setErr("Your verification session expired. Please sign in again to continue.");
+        return;
+      }
+
       await api.post(
         "/api/auth/resend-verification",
         { email: activeEmail },
-        getVerifyConfig()
+        {
+          withCredentials: true,
+          headers: {
+            Authorization: `Bearer ${tempToken}`,
+          },
+        }
       );
 
       setEmailSent(true);
@@ -1041,7 +1170,9 @@ export default function SupplierVerifyContact() {
         "Could not resend email verification.";
 
       if (status === 401) {
-        setErr("Your verification session expired. Please sign in again to continue.");
+        setErr(
+          "Your verification session expired. Please log in again from the verification flow to resend email verification."
+        );
         return;
       }
 
@@ -1065,6 +1196,14 @@ export default function SupplierVerifyContact() {
         return;
       }
 
+      const normalSession = await tryLoadNormalSession();
+      if (normalSession?.authData) {
+        setErr(
+          "You are signed in, but the temporary verification session has expired. Please log in again from the verification flow to resend the code."
+        );
+        return;
+      }
+
       setErr("Your verification session expired. Please sign in again to resend the code.");
       return;
     }
@@ -1079,11 +1218,6 @@ export default function SupplierVerifyContact() {
         normalizeDialCode(dialCode) ||
         normalizeDialCode(summary?.contactDialCode) ||
         normalizeDialCode(state.dialCode);
-
-      if (!activePhone) {
-        setErr("No phone number found for verification.");
-        return;
-      }
 
       await api.post(
         "/api/auth/resend-otp",
@@ -1118,7 +1252,9 @@ export default function SupplierVerifyContact() {
           return;
         }
 
-        setErr("Your verification session expired. Please sign in again to resend the code.");
+        setErr(
+          "Your verification session expired. Please log in again from the verification flow to resend the code."
+        );
         return;
       }
 
@@ -1175,6 +1311,15 @@ export default function SupplierVerifyContact() {
         setPhoneVerified(true);
         setOtp("");
         setOtpError(null);
+        setErr(null);
+        return;
+      }
+
+      const normalSession = await tryLoadNormalSession();
+      if (normalSession?.authData) {
+        setOtpError(
+          "You are signed in, but the temporary OTP verification session has expired. Please log in again from the verification flow."
+        );
         setErr(null);
         return;
       }
@@ -1238,7 +1383,7 @@ export default function SupplierVerifyContact() {
         }
 
         setOtpError(
-          "Your verification session expired. Refresh status or sign in again if needed."
+          "Your verification session expired. Refresh status or sign in again from the verification flow."
         );
         setErr(null);
         return;
@@ -1405,15 +1550,25 @@ export default function SupplierVerifyContact() {
 
             {isAdminReviewMode && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Admin review mode is active. This page will not send codes or auto-complete login.
+                Admin review mode is active. This page will not send codes or
+                auto-complete login.
               </div>
             )}
 
-            {!isAdminReviewMode && !hasVerifySession && !canContinue && (
+            {!isAdminReviewMode && !hasAuthenticatedSession && !canContinue && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 Your verification session expired. Please sign in again to continue.
               </div>
             )}
+
+            {!isAdminReviewMode &&
+              hasAuthenticatedSession &&
+              !hasVerifySession &&
+              !phoneVerifiedEffective && (
+                <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                  You are signed in, but the temporary OTP verification session has expired. You can still refresh status here. To request a new OTP, start the verification flow again from login or registration.
+                </div>
+              )}
 
             {err && (
               <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
@@ -1453,8 +1608,8 @@ export default function SupplierVerifyContact() {
 
                       {!emailVerifiedEffective && !isAdminReviewMode && (
                         <p className="mt-4 text-sm text-zinc-600">
-                          Open the verification link sent to your inbox, then return here and
-                          refresh your status.
+                          Open the verification link sent to your inbox, then
+                          return here and refresh your status.
                         </p>
                       )}
 
@@ -1565,7 +1720,9 @@ export default function SupplierVerifyContact() {
                                 disabled={!hasVerifySession}
                               />
                               {otpError && (
-                                <p className="text-xs text-rose-600">{otpError}</p>
+                                <p className="text-xs text-rose-600">
+                                  {otpError}
+                                </p>
                               )}
                             </>
                           )}
