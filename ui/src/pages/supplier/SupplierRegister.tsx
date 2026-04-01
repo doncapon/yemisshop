@@ -16,6 +16,30 @@ type RegisterSupplierResponse = {
   phoneOtpSent?: boolean | string | number | null;
 };
 
+type LoginResponse = {
+  message?: string;
+  tempToken?: string;
+  needsVerification?: boolean;
+  emailSent?: boolean | string | number | null;
+  phoneOtpSent?: boolean | string | number | null;
+  user?: {
+    id?: string;
+    email?: string;
+    phone?: string;
+  } | null;
+  profile?: {
+    id?: string;
+    email?: string;
+    phone?: string;
+  } | null;
+  data?: {
+    tempToken?: string;
+    needsVerification?: boolean;
+    emailSent?: boolean | string | number | null;
+    phoneOtpSent?: boolean | string | number | null;
+  } | null;
+};
+
 type CountryOption = {
   code: string;
   name: string;
@@ -82,6 +106,30 @@ function buildInputClass(base: string, hasError: boolean) {
   return hasError
     ? `${base} border-rose-400 focus:border-rose-500 focus:ring-rose-200 bg-rose-50/40`
     : base;
+}
+
+function getTempTokenFromLoginResponse(payload: LoginResponse | null | undefined): string {
+  return String(
+    payload?.tempToken ||
+      payload?.data?.tempToken ||
+      ""
+  ).trim();
+}
+
+function getNeedsVerificationFromLoginResponse(payload: LoginResponse | null | undefined): boolean {
+  return Boolean(
+    payload?.needsVerification ??
+      payload?.data?.needsVerification ??
+      false
+  );
+}
+
+function getEmailSentFromLoginResponse(payload: LoginResponse | null | undefined): boolean {
+  return asSentFlag(payload?.emailSent ?? payload?.data?.emailSent);
+}
+
+function getPhoneOtpSentFromLoginResponse(payload: LoginResponse | null | undefined): boolean {
+  return asSentFlag(payload?.phoneOtpSent ?? payload?.data?.phoneOtpSent);
 }
 
 export default function SupplierRegister() {
@@ -464,7 +512,32 @@ export default function SupplierRegister() {
         payload
       );
 
-      const tempToken = String(data?.tempToken || "").trim();
+      const registeredSupplierId = data?.supplierId ?? null;
+
+      let loginData: LoginResponse | null = null;
+      try {
+        const loginRes = await api.post<LoginResponse>(
+          "/api/auth/login",
+          {
+            email,
+            password: form.password,
+          },
+          {
+            withCredentials: true,
+          }
+        );
+        loginData = loginRes?.data ?? null;
+      } catch (loginError: any) {
+        throw new Error(
+          loginError?.response?.data?.error ||
+            loginError?.response?.data?.message ||
+            "Account was created, but automatic sign-in failed."
+        );
+      }
+
+      const tempToken =
+        getTempTokenFromLoginResponse(loginData) ||
+        String(data?.tempToken || "").trim();
 
       try {
         if (tempToken) {
@@ -472,15 +545,25 @@ export default function SupplierRegister() {
         }
       } catch {}
 
-      let emailSent = asSentFlag(data?.emailSent);
-      let phoneOtpSent = asSentFlag(data?.phoneOtpSent);
+      const needsVerification = getNeedsVerificationFromLoginResponse(loginData);
+
+      let emailSent =
+        getEmailSentFromLoginResponse(loginData) || asSentFlag(data?.emailSent);
+      let phoneOtpSent =
+        getPhoneOtpSentFromLoginResponse(loginData) || asSentFlag(data?.phoneOtpSent);
 
       const verifyCfg = {
         withCredentials: true,
         headers: tempToken ? { Authorization: `Bearer ${tempToken}` } : {},
       };
 
-      if (!emailSent) {
+      if (!tempToken && needsVerification) {
+        throw new Error(
+          "Account was created and signed in, but the temporary verification session could not be started."
+        );
+      }
+
+      if (tempToken && !emailSent) {
         try {
           await api.post(
             "/api/auth/resend-verification",
@@ -491,7 +574,7 @@ export default function SupplierRegister() {
         } catch {}
       }
 
-      if (!phoneOtpSent) {
+      if (tempToken && !phoneOtpSent) {
         try {
           await api.post(
             "/api/auth/resend-otp",
@@ -507,30 +590,27 @@ export default function SupplierRegister() {
         } catch {}
       }
 
-      if (!tempToken) {
-        throw new Error(
-          "Account was created, but the temporary verification session could not be started."
-        );
+      if (needsVerification) {
+        nav(VERIFY_ROUTE, {
+          replace: true,
+          state: {
+            supplierId: registeredSupplierId,
+            email,
+            phone,
+            dialCode,
+            emailSent,
+            phoneOtpSent,
+            nextAfterVerify: "/supplier/onboarding",
+            flow: "supplier-register",
+          },
+        });
+        return;
       }
 
-      if (!emailSent && !phoneOtpSent) {
-        throw new Error(
-          data?.message ||
-            "Account was created, but email verification and phone OTP could not be sent."
-        );
-      }
-
-      nav(VERIFY_ROUTE, {
+      nav("/supplier/onboarding", {
         replace: true,
         state: {
-          supplierId: data?.supplierId ?? null,
-          email,
-          phone,
-          dialCode,
-          emailSent,
-          phoneOtpSent,
-          nextAfterVerify: "/supplier/onboarding",
-          flow: "supplier-register",
+          fromRegister: true,
         },
       });
     } catch (e: any) {
