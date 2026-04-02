@@ -440,20 +440,33 @@ export default function SupplierBusinessDetails() {
     [form.registrationType]
   );
 
-  const fieldRefs = {
-    legalName: useRef<HTMLInputElement | null>(null),
-    registeredBusinessName: useRef<HTMLInputElement | null>(null),
-    registrationNumber: useRef<HTMLInputElement | null>(null),
-    registrationType: useRef<HTMLSelectElement | null>(null),
-    registrationDate: useRef<HTMLInputElement | null>(null),
-    registrationCountryCode: useRef<HTMLSelectElement | null>(null),
-    natureOfBusiness: useRef<HTMLTextAreaElement | null>(null),
+  const legalNameRef = useRef<HTMLInputElement | null>(null);
+  const registeredBusinessNameRef = useRef<HTMLInputElement | null>(null);
+  const registrationNumberRef = useRef<HTMLInputElement | null>(null);
+  const registrationTypeRef = useRef<HTMLSelectElement | null>(null);
+  const registrationDateRef = useRef<HTMLInputElement | null>(null);
+  const registrationCountryCodeRef = useRef<HTMLSelectElement | null>(null);
+  const natureOfBusinessRef = useRef<HTMLTextAreaElement | null>(null);
 
-    bankCountry: useRef<HTMLSelectElement | null>(null),
-    bankName: useRef<HTMLSelectElement | null>(null),
-    bankCode: useRef<HTMLSelectElement | null>(null),
-    accountName: useRef<HTMLInputElement | null>(null),
-    accountNumber: useRef<HTMLInputElement | null>(null),
+  const bankCountryRef = useRef<HTMLSelectElement | null>(null);
+  const bankNameRef = useRef<HTMLSelectElement | null>(null);
+  const bankCodeRef = useRef<HTMLSelectElement | null>(null);
+  const accountNameRef = useRef<HTMLInputElement | null>(null);
+  const accountNumberRef = useRef<HTMLInputElement | null>(null);
+
+  const fieldRefs = {
+    legalName: legalNameRef,
+    registeredBusinessName: registeredBusinessNameRef,
+    registrationNumber: registrationNumberRef,
+    registrationType: registrationTypeRef,
+    registrationDate: registrationDateRef,
+    registrationCountryCode: registrationCountryCodeRef,
+    natureOfBusiness: natureOfBusinessRef,
+    bankCountry: bankCountryRef,
+    bankName: bankNameRef,
+    bankCode: bankCodeRef,
+    accountName: accountNameRef,
+    accountNumber: accountNumberRef,
   };
 
   const businessFieldMap: Record<string, keyof typeof fieldRefs> = {
@@ -545,6 +558,8 @@ export default function SupplierBusinessDetails() {
     },
     [bankFieldMap, scrollToField, scrollToTop]
   );
+
+  const documentsLocked = documentsLockedOnLoad;
 
   const setField =
     (key: keyof typeof form) =>
@@ -788,8 +803,6 @@ export default function SupplierBusinessDetails() {
     return hasInlineDocuments(supplier) || hasFetchedDocuments(supplierDocuments);
   }, [supplier, supplierDocuments]);
 
-  const documentsLocked = documentsLockedOnLoad;
-
   const businessReadyLive = useMemo(() => {
     return documentsLocked ? savedBusinessDone || draftBusinessDone : draftBusinessDone;
   }, [documentsLocked, savedBusinessDone, draftBusinessDone]);
@@ -817,8 +830,10 @@ export default function SupplierBusinessDetails() {
     return bankEditUnlocked;
   }, [documentsLocked, savedBankIsMeaningful, bankLockedByStatus, bankEditUnlocked]);
 
-  const bankFieldsDisabled = documentsLocked || !bankEditable || loading;
-  const businessFieldsDisabled = documentsLocked || loading;
+  const businessTextLocked = documentsLocked;
+  const businessSelectLocked = documentsLocked;
+  const bankTextLocked = documentsLocked || !bankEditable;
+  const bankSelectLocked = documentsLocked || !bankEditable;
 
   const canProceedToAddress = useMemo(() => {
     if (documentsLocked) return true;
@@ -1360,8 +1375,8 @@ export default function SupplierBusinessDetails() {
   const stepClickable = "cursor-pointer hover:bg-zinc-50";
 
   const input =
-    "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-[border-color,box-shadow] duration-150 ease-out focus:border-violet-400 focus:ring-4 focus:ring-violet-200 shadow-sm";
-  const inputDisabled =
+    "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-[border-color,box-shadow,background-color] duration-150 ease-out focus:border-violet-400 focus:ring-4 focus:ring-violet-200 shadow-sm";
+  const inputLocked =
     "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0";
   const label = "mb-1.5 block text-sm font-semibold text-slate-800";
   const card =
@@ -1575,12 +1590,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Legal entity name</label>
                         <input
-                          ref={fieldRefs.legalName}
+                          ref={legalNameRef}
                           value={form.legalName}
                           onChange={setField("legalName")}
-                          disabled={businessFieldsDisabled}
-                          readOnly={documentsLocked}
-                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
+                          readOnly={businessTextLocked}
+                          className={`${input} ${businessTextLocked ? inputLocked : ""}`}
                           placeholder="Legal business name"
                         />
                       </div>
@@ -1589,12 +1603,11 @@ export default function SupplierBusinessDetails() {
                         <div>
                           <label className={label}>Registered business name</label>
                           <input
-                            ref={fieldRefs.registeredBusinessName}
+                            ref={registeredBusinessNameRef}
                             value={form.registeredBusinessName}
                             onChange={setField("registeredBusinessName")}
-                            disabled={businessFieldsDisabled}
-                            readOnly={documentsLocked}
-                            className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
+                            readOnly={businessTextLocked}
+                            className={`${input} ${businessTextLocked ? inputLocked : ""}`}
                             placeholder="Registered business name"
                           />
                         </div>
@@ -1603,12 +1616,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Registration number</label>
                         <input
-                          ref={fieldRefs.registrationNumber}
+                          ref={registrationNumberRef}
                           value={form.registrationNumber}
                           onChange={setField("registrationNumber")}
-                          disabled={businessFieldsDisabled}
-                          readOnly={documentsLocked}
-                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
+                          readOnly={businessTextLocked}
+                          className={`${input} ${businessTextLocked ? inputLocked : ""}`}
                           placeholder="Registration number"
                         />
                       </div>
@@ -1616,11 +1628,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Registration type</label>
                         <select
-                          ref={fieldRefs.registrationType}
+                          ref={registrationTypeRef}
                           value={form.registrationType}
                           onChange={setField("registrationType")}
-                          disabled={businessFieldsDisabled}
-                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
+                          disabled={businessSelectLocked}
+                          className={`${input} ${businessSelectLocked ? inputLocked : ""}`}
                         >
                           <option value="">Select registration type</option>
                           <option value="INDIVIDUAL">Individual</option>
@@ -1631,24 +1643,23 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Registration date</label>
                         <input
-                          ref={fieldRefs.registrationDate}
+                          ref={registrationDateRef}
                           type="date"
                           value={form.registrationDate}
                           onChange={setField("registrationDate")}
-                          disabled={businessFieldsDisabled}
-                          readOnly={documentsLocked}
-                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
+                          readOnly={businessTextLocked}
+                          className={`${input} ${businessTextLocked ? inputLocked : ""}`}
                         />
                       </div>
 
                       <div>
                         <label className={label}>Country</label>
                         <select
-                          ref={fieldRefs.registrationCountryCode}
+                          ref={registrationCountryCodeRef}
                           value={form.registrationCountryCode}
                           onChange={setField("registrationCountryCode")}
-                          disabled={businessFieldsDisabled}
-                          className={`${input} ${businessFieldsDisabled ? inputDisabled : ""}`}
+                          disabled={businessSelectLocked}
+                          className={`${input} ${businessSelectLocked ? inputLocked : ""}`}
                         >
                           {countries.length === 0 && <option>Loading countries...</option>}
                           {countries.map((c) => (
@@ -1662,13 +1673,12 @@ export default function SupplierBusinessDetails() {
                       <div className="md:col-span-2">
                         <label className={label}>Nature of business</label>
                         <textarea
-                          ref={fieldRefs.natureOfBusiness}
+                          ref={natureOfBusinessRef}
                           value={form.natureOfBusiness}
                           onChange={setField("natureOfBusiness")}
-                          disabled={businessFieldsDisabled}
-                          readOnly={documentsLocked}
+                          readOnly={businessTextLocked}
                           className={`${input} min-h-[110px] resize-y ${
-                            businessFieldsDisabled ? inputDisabled : ""
+                            businessTextLocked ? inputLocked : ""
                           }`}
                           placeholder="Describe the products or services your business provides"
                         />
@@ -1760,7 +1770,7 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Bank country</label>
                         <select
-                          ref={fieldRefs.bankCountry}
+                          ref={bankCountryRef}
                           value={form.bankCountry}
                           onChange={(e) => {
                             if (documentsLocked) return;
@@ -1774,8 +1784,8 @@ export default function SupplierBusinessDetails() {
                             if (bankFormError) setBankFormError(null);
                             if (err) setErr(null);
                           }}
-                          disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
+                          disabled={bankSelectLocked}
+                          className={`${input} ${bankSelectLocked ? inputLocked : ""}`}
                         >
                           {countries.length === 0 && <option>Loading countries...</option>}
                           {countries.map((c) => (
@@ -1789,11 +1799,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Bank name</label>
                         <select
-                          ref={fieldRefs.bankName}
+                          ref={bankNameRef}
                           value={form.bankName}
                           onChange={(e) => setBankByName(e.target.value)}
-                          disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
+                          disabled={bankSelectLocked}
+                          className={`${input} ${bankSelectLocked ? inputLocked : ""}`}
                         >
                           <option value="">Select bank…</option>
                           {countryBanks.map((b) => (
@@ -1807,11 +1817,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Bank code</label>
                         <select
-                          ref={fieldRefs.bankCode}
+                          ref={bankCodeRef}
                           value={normCode(form.bankCode)}
                           onChange={(e) => setBankByCode(e.target.value)}
-                          disabled={bankFieldsDisabled}
-                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
+                          disabled={bankSelectLocked}
+                          className={`${input} ${bankSelectLocked ? inputLocked : ""}`}
                         >
                           <option value="">Select bank…</option>
                           {countryBanks.map((b) => (
@@ -1825,12 +1835,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Account name</label>
                         <input
-                          ref={fieldRefs.accountName}
+                          ref={accountNameRef}
                           value={form.accountName}
                           onChange={setField("accountName")}
-                          disabled={bankFieldsDisabled}
-                          readOnly={documentsLocked}
-                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
+                          readOnly={bankTextLocked}
+                          className={`${input} ${bankTextLocked ? inputLocked : ""}`}
                           placeholder="Account name"
                         />
                       </div>
@@ -1838,7 +1847,7 @@ export default function SupplierBusinessDetails() {
                       <div className="md:col-span-2">
                         <label className={label}>Account number</label>
                         <input
-                          ref={fieldRefs.accountNumber}
+                          ref={accountNumberRef}
                           value={form.accountNumber}
                           onChange={(e) => {
                             if (documentsLocked) return;
@@ -1850,9 +1859,8 @@ export default function SupplierBusinessDetails() {
                             if (bankFormError) setBankFormError(null);
                             if (err) setErr(null);
                           }}
-                          disabled={bankFieldsDisabled}
-                          readOnly={documentsLocked}
-                          className={`${input} ${bankFieldsDisabled ? inputDisabled : ""}`}
+                          readOnly={bankTextLocked}
+                          className={`${input} ${bankTextLocked ? inputLocked : ""}`}
                           placeholder="Account number"
                         />
                       </div>
