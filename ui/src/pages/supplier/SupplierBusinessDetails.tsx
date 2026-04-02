@@ -192,8 +192,20 @@ function normalizeDateInputValue(value: any) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function extractSupplierRecord(raw: any): any {
+  return (
+    raw?.data?.data?.supplier ||
+    raw?.data?.data ||
+    raw?.data?.supplier ||
+    raw?.supplier ||
+    raw?.data ||
+    raw ||
+    {}
+  );
+}
+
 function normalizeSupplierPayload(raw: any): SupplierMe {
-  const s = raw?.data ?? raw?.supplier ?? raw ?? {};
+  const s = extractSupplierRecord(raw);
 
   return {
     ...s,
@@ -211,6 +223,16 @@ function normalizeSupplierPayload(raw: any): SupplierMe {
     bankName: pickFirst(s.bankName),
     accountName: pickFirst(s.accountName),
     accountNumber: pickFirst(s.accountNumber),
+
+    registeredAddress: s.registeredAddress ?? null,
+    pickupAddress: s.pickupAddress ?? null,
+    documents: Array.isArray(s.documents) ? s.documents : null,
+    verificationDocuments: Array.isArray(s.verificationDocuments)
+      ? s.verificationDocuments
+      : null,
+    identityDocumentUrl: s.identityDocumentUrl ?? null,
+    proofOfAddressUrl: s.proofOfAddressUrl ?? null,
+    cacDocumentUrl: s.cacDocumentUrl ?? null,
   };
 }
 
@@ -836,6 +858,7 @@ export default function SupplierBusinessDetails() {
   const bankSelectLocked = documentsLocked || !bankEditable;
 
   const canProceedToAddress = useMemo(() => {
+    if (loading) return false;
     if (documentsLocked) return true;
     return (
       businessReadyLive &&
@@ -846,6 +869,7 @@ export default function SupplierBusinessDetails() {
       !isBankSaving
     );
   }, [
+    loading,
     documentsLocked,
     businessReadyLive,
     bankReadyLive,
@@ -1063,6 +1087,7 @@ export default function SupplierBusinessDetails() {
 
       const s = normalizeSupplierPayload(data);
       setSupplier(s);
+      hydrateFormFromSupplier(s, true);
 
       const isSavedRegisteredBusinessRequired = isRegisteredBusinessType(
         s.registrationType
@@ -1108,6 +1133,7 @@ export default function SupplierBusinessDetails() {
     adminSupplierId,
     documentsLocked,
     form,
+    hydrateFormFromSupplier,
     isAdminReviewMode,
     isRegisteredBusiness,
     scrollToTop,
@@ -1211,6 +1237,9 @@ export default function SupplierBusinessDetails() {
   }, []);
 
   const goToAddressStep = useCallback(() => {
+    if (loading) return;
+    if (!canProceedToAddress && !documentsLocked) return;
+
     setErr(null);
     setBankFormError(null);
 
@@ -1221,92 +1250,14 @@ export default function SupplierBusinessDetails() {
       return;
     }
 
-    const missingBusiness = getMissingDraftBusinessFields();
-    if (missingBusiness.length > 0) {
-      showBusinessValidationError(missingBusiness);
-      return;
-    }
-
-    const missingBank = getMissingDraftBankFields();
-    if (missingBank.length > 0) {
-      showBankValidationError(
-        missingBank,
-        "Bank details are required before continuing to Address"
-      );
-      return;
-    }
-
-    if (isBusinessAutosaving || businessDirty) {
-      const firstDirtyBusinessField =
-        !hasValue(form.legalName)
-          ? "legalName"
-          : isRegisteredBusiness && !hasValue(form.registeredBusinessName)
-          ? "registeredBusinessName"
-          : !hasValue(form.registrationNumber)
-          ? "registrationNumber"
-          : !hasValue(form.registrationType)
-          ? "registrationType"
-          : !hasValue(form.registrationDate)
-          ? "registrationDate"
-          : !hasValue(form.registrationCountryCode)
-          ? "registrationCountryCode"
-          : !hasValue(form.natureOfBusiness)
-          ? "natureOfBusiness"
-          : "legalName";
-
-      setErr(
-        isBusinessAutosaving
-          ? "Business details are still saving. Please wait a moment, then try again."
-          : "Business details have changed but are not saved yet. Please wait for autosave to finish."
-      );
-      scrollToField(firstDirtyBusinessField as keyof typeof fieldRefs);
-      return;
-    }
-
-    if (isBankSaving || bankDirty) {
-      const firstBankField =
-        !hasValue(form.bankCountry)
-          ? "bankCountry"
-          : !hasValue(form.bankName)
-          ? "bankName"
-          : !hasValue(form.bankCode)
-          ? "bankCode"
-          : !hasValue(form.accountName)
-          ? "accountName"
-          : !hasValue(form.accountNumber)
-          ? "accountNumber"
-          : "bankName";
-
-      const message = isBankSaving
-        ? "Bank details are still saving. Please wait a moment, then try again."
-        : "You have unsaved bank details. Please save them before continuing to Address.";
-
-      setErr(message);
-      setBankFormError(message);
-      scrollToField(firstBankField as keyof typeof fieldRefs);
-      return;
-    }
-
     pushOnboardingStep("/supplier/onboarding/address", {
       fromBusinessDetails: true,
     });
-  }, [
-    bankDirty,
-    businessDirty,
-    documentsLocked,
-    form,
-    getMissingDraftBankFields,
-    getMissingDraftBusinessFields,
-    isBankSaving,
-    isBusinessAutosaving,
-    isRegisteredBusiness,
-    pushOnboardingStep,
-    scrollToField,
-    showBankValidationError,
-    showBusinessValidationError,
-  ]);
+  }, [loading, canProceedToAddress, documentsLocked, pushOnboardingStep]);
 
   const goToVerifyContact = useCallback(() => {
+    if (loading) return;
+
     setErr(null);
 
     persistVerifyContactJourney({
@@ -1332,6 +1283,7 @@ export default function SupplierBusinessDetails() {
       },
     });
   }, [
+    loading,
     addressDone,
     adminSupplierId,
     buildStepUrl,
@@ -1373,6 +1325,10 @@ export default function SupplierBusinessDetails() {
   const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
   const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
   const stepClickable = "cursor-pointer hover:bg-zinc-50";
+  const stepDisabledLoading =
+    "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-400 pointer-events-none";
+  const stepDisabledBlocked =
+    "cursor-not-allowed border-zinc-100 bg-zinc-50 text-zinc-400 pointer-events-none";
 
   const input =
     "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-[border-color,box-shadow,background-color] duration-150 ease-out focus:border-violet-400 focus:ring-4 focus:ring-violet-200 shadow-sm";
@@ -1440,7 +1396,12 @@ export default function SupplierBusinessDetails() {
     return addressDone;
   }, [addressDone]);
 
-  const canClickPreviousTab = true;
+  const addressTabAccessible = canProceedToAddress || documentsLocked;
+  const documentsTabAccessible = docsDone || documentsAccessible;
+
+  const canClickPreviousTab = !loading;
+  const canClickAddressTab = !loading && addressTabAccessible;
+  const tabsBlockedByLoading = loading;
 
   return (
     <SiteLayout>
@@ -1470,8 +1431,12 @@ export default function SupplierBusinessDetails() {
                   type="button"
                   onClick={canClickPreviousTab ? goToVerifyContact : undefined}
                   disabled={!canClickPreviousTab}
-                  className={`${stepBase} ${stepDone} ${
-                    canClickPreviousTab ? stepClickable : "cursor-not-allowed"
+                  className={`${stepBase} ${
+                    tabsBlockedByLoading ? stepDisabledLoading : stepDone
+                  } ${
+                    canClickPreviousTab && !tabsBlockedByLoading
+                      ? stepClickable
+                      : "cursor-not-allowed"
                   }`}
                 >
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
@@ -1489,10 +1454,19 @@ export default function SupplierBusinessDetails() {
 
                 <button
                   type="button"
-                  onClick={goToAddressStep}
+                  onClick={canClickAddressTab ? goToAddressStep : undefined}
+                  disabled={!canClickAddressTab}
                   className={`${stepBase} ${
-                    canProceedToAddress || documentsLocked ? stepDone : stepLocked
-                  } ${stepClickable}`}
+                    tabsBlockedByLoading
+                      ? stepDisabledLoading
+                      : addressTabAccessible
+                      ? stepDone
+                      : stepDisabledBlocked
+                  } ${
+                    canClickAddressTab && !tabsBlockedByLoading
+                      ? stepClickable
+                      : "cursor-not-allowed"
+                  }`}
                 >
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
                     4
@@ -1502,7 +1476,11 @@ export default function SupplierBusinessDetails() {
 
                 <div
                   className={`${stepBase} ${
-                    docsDone || documentsAccessible ? stepDone : stepLocked
+                    tabsBlockedByLoading
+                      ? stepDisabledLoading
+                      : documentsTabAccessible
+                      ? stepDone
+                      : stepDisabledBlocked
                   }`}
                 >
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
@@ -1511,13 +1489,23 @@ export default function SupplierBusinessDetails() {
                   <span>Documents</span>
                 </div>
 
-                <div className={`${stepBase} ${stepLocked}`}>
+                <div
+                  className={`${stepBase} ${
+                    tabsBlockedByLoading ? stepDisabledLoading : stepDisabledBlocked
+                  }`}
+                >
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
                     6
                   </span>
                   <span>Dashboard access</span>
                 </div>
               </div>
+
+              {loading && (
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+                  Loading onboarding details. Tabs are temporarily locked until the page is fully ready.
+                </div>
+              )}
             </div>
 
             {documentsLocked && (
@@ -1882,7 +1870,7 @@ export default function SupplierBusinessDetails() {
                       <button
                         type="button"
                         onClick={() => void saveBankDetails()}
-                        disabled={documentsLocked || !bankEditable || isBankSaving}
+                        disabled={documentsLocked || !bankEditable || isBankSaving || loading}
                         className={secondaryBtn}
                       >
                         {documentsLocked
@@ -1952,6 +1940,7 @@ export default function SupplierBusinessDetails() {
                     <button
                       type="button"
                       onClick={goToAddressStep}
+                      disabled={loading || !addressTabAccessible}
                       className={`${secondaryBtn} mt-4 w-full`}
                     >
                       Continue to address
@@ -1977,7 +1966,7 @@ export default function SupplierBusinessDetails() {
                       type="button"
                       disabled
                       className={`mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed ${
-                        docsDone || documentsAccessible
+                        documentsTabAccessible
                           ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
                           : "border border-zinc-300 bg-white text-zinc-400"
                       }`}
@@ -2000,7 +1989,12 @@ export default function SupplierBusinessDetails() {
               </div>
 
               <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <button type="button" onClick={goToVerifyContact} className={secondaryBtn}>
+                <button
+                  type="button"
+                  onClick={goToVerifyContact}
+                  disabled={loading}
+                  className={secondaryBtn}
+                >
                   <ArrowLeft className="mr-2 h-4 w-4" />
                   Back
                 </button>
@@ -2018,7 +2012,12 @@ export default function SupplierBusinessDetails() {
                     {businessAutosaveStatusText}
                   </span>
 
-                  <button type="button" onClick={goToAddressStep} className={primaryBtn}>
+                  <button
+                    type="button"
+                    onClick={goToAddressStep}
+                    disabled={loading || !addressTabAccessible}
+                    className={primaryBtn}
+                  >
                     Next step
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </button>

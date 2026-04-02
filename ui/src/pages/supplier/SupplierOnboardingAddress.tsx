@@ -1338,8 +1338,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     : draftPickupComplete;
 
   const canProceedToDocuments = useMemo<boolean>(() => {
+    if (loading) return false;
     if (documentsLocked) return true;
-    return verifiedSupplier || (currentValidation.valid && !loading);
+    return verifiedSupplier || currentValidation.valid;
   }, [documentsLocked, verifiedSupplier, currentValidation.valid, loading]);
 
   const progress = useMemo<{
@@ -1541,6 +1542,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   }, [nav]);
 
   const saveAndNext = async (): Promise<void> => {
+    if (loading) return;
+
     setErr(null);
     setIsContinuing(true);
 
@@ -1574,14 +1577,17 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   };
 
   const goBack = (): void => {
+    if (loading) return;
     nav("/supplier/onboarding");
   };
 
   const goToBusinessTab = (): void => {
+    if (loading) return;
     nav("/supplier/onboarding");
   };
 
   const goToDocumentsTab = async (): Promise<void> => {
+    if (loading) return;
     await saveAndNext();
   };
 
@@ -1609,6 +1615,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
   const stepClickable = "cursor-pointer hover:bg-zinc-50";
   const stepButtonBase = "w-full text-left";
+  const stepDisabledLoading =
+    "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-400 pointer-events-none";
 
   const metaFieldClass = (field: PickupMetaFieldKey) =>
     `w-full rounded-2xl border bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm ${
@@ -1621,7 +1629,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         : ""
     }`;
 
-  const canClickPreviousTab = true;
+  const canClickPreviousTab = !loading;
+  const canClickDocumentsTab = !loading && !isContinuing;
 
   return (
     <SiteLayout>
@@ -1663,8 +1672,10 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                   type="button"
                   onClick={canClickPreviousTab ? goToBusinessTab : undefined}
                   disabled={!canClickPreviousTab}
-                  className={`${stepButtonBase} ${stepBase} ${stepDone} ${
-                    canClickPreviousTab ? stepClickable : "cursor-not-allowed"
+                  className={`${stepButtonBase} ${stepBase} ${
+                    loading ? stepDisabledLoading : stepDone
+                  } ${
+                    canClickPreviousTab && !loading ? stepClickable : "cursor-not-allowed"
                   }`}
                 >
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
@@ -1682,13 +1693,17 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
                 <button
                   type="button"
-                  onClick={() => void goToDocumentsTab()}
-                  disabled={isContinuing}
+                  onClick={canClickDocumentsTab ? () => void goToDocumentsTab() : undefined}
+                  disabled={!canClickDocumentsTab}
                   className={`${stepButtonBase} ${stepBase} ${
-                    canProceedToDocuments || docsDone || verifiedSupplier
+                    loading
+                      ? stepDisabledLoading
+                      : canProceedToDocuments || docsDone || verifiedSupplier
                       ? stepDone
                       : stepLocked
-                  } ${stepClickable}`}
+                  } ${
+                    canClickDocumentsTab && !loading ? stepClickable : "cursor-not-allowed"
+                  }`}
                 >
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
                     5
@@ -1696,13 +1711,19 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                   <span>Documents</span>
                 </button>
 
-                <div className={`${stepBase} ${stepLocked}`}>
+                <div className={`${stepBase} ${loading ? stepDisabledLoading : stepLocked}`}>
                   <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
                     6
                   </span>
                   <span>Dashboard access</span>
                 </div>
               </div>
+
+              {loading && (
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+                  Loading address details. Navigation tabs are temporarily locked until the page is fully ready.
+                </div>
+              )}
             </div>
 
             {documentsLocked && (
@@ -2059,10 +2080,14 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       onClick={() => {
                         void saveAndNext();
                       }}
-                      disabled={isContinuing}
+                      disabled={isContinuing || loading}
                       className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {isContinuing ? "Validating and saving…" : "Continue to documents"}
+                      {loading
+                        ? "Loading address details…"
+                        : isContinuing
+                        ? "Validating and saving…"
+                        : "Continue to documents"}
                     </button>
                   </div>
 
@@ -2094,7 +2119,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                 <button
                   type="button"
                   onClick={goBack}
-                  className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50"
+                  disabled={loading}
+                  className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <ArrowLeft className="mr-2 h-4 w-4" />
                   Back
@@ -2118,11 +2144,15 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                     onClick={() => {
                       void saveAndNext();
                     }}
-                    disabled={isContinuing}
+                    disabled={isContinuing || loading}
                     className="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {isContinuing ? "Please wait…" : "Next step"}
-                    {!isContinuing && <ArrowRight className="ml-2 h-4 w-4" />}
+                    {loading
+                      ? "Loading…"
+                      : isContinuing
+                      ? "Please wait…"
+                      : "Next step"}
+                    {!isContinuing && !loading && <ArrowRight className="ml-2 h-4 w-4" />}
                   </button>
                 </div>
               </div>
