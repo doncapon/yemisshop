@@ -174,6 +174,18 @@ function boolOrDefault(v: unknown, fallback: boolean): boolean {
   return typeof v === "boolean" ? v : fallback;
 }
 
+function normalizeCountryDisplay(value: string): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (lower === "ng" || lower === "nigeria") return "Nigeria";
+  return raw;
+}
+
+function countriesEqual(a: string, b: string): boolean {
+  return normalizeCountryDisplay(a).toLowerCase() === normalizeCountryDisplay(b).toLowerCase();
+}
+
 function addressHasMinimum(addr: {
   houseNumber: string;
   streetName: string;
@@ -186,7 +198,7 @@ function addressHasMinimum(addr: {
       addr.streetName.trim() &&
       addr.city.trim() &&
       addr.state.trim() &&
-      addr.country.trim()
+      normalizeCountryDisplay(addr.country).trim()
   );
 }
 
@@ -226,7 +238,7 @@ function normalizeAddressDto(addr: AddressDto | null | undefined): AddressState 
     town: pickString(addr?.town),
     city: pickString(addr?.city),
     state: pickString(addr?.state),
-    country: pickString(addr?.country) || "Nigeria",
+    country: normalizeCountryDisplay(pickString(addr?.country)) || "Nigeria",
     lga: pickString(addr?.lga),
     landmark: pickString(addr?.landmark),
     directionsNote: pickString(addr?.directionsNote),
@@ -253,7 +265,7 @@ function addressesEqual(a: AddressState, b: AddressState): boolean {
     pickString(a.town) === pickString(b.town) &&
     pickString(a.city) === pickString(b.city) &&
     pickString(a.state) === pickString(b.state) &&
-    pickString(a.country).toLowerCase() === pickString(b.country).toLowerCase() &&
+    countriesEqual(a.country, b.country) &&
     pickString(a.lga) === pickString(b.lga) &&
     pickString(a.landmark) === pickString(b.landmark) &&
     pickString(a.directionsNote) === pickString(b.directionsNote)
@@ -513,7 +525,7 @@ function AddressFieldsSection({
           </label>
           <select
             ref={fieldRefs.country}
-            value={value.country}
+            value={normalizeCountryDisplay(value.country) || "Nigeria"}
             onChange={onFieldChange("country")}
             disabled={isReadOnly}
             className={fieldClass("country")}
@@ -778,7 +790,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         errors[`${section}.state`] = "State cannot be numbers only.";
       }
 
-      if (!pickString(value.country)) {
+      if (!normalizeCountryDisplay(value.country)) {
         errors[`${section}.country`] = "Country is required.";
       }
 
@@ -888,11 +900,10 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         const next = { ...s, [key]: nextValue };
 
         if (key === "country") {
-          if (!isNigeriaCountry(nextValue)) {
+          next.country = normalizeCountryDisplay(nextValue) || "Nigeria";
+          if (!isNigeriaCountry(next.country)) {
             next.state = "";
             next.lga = "";
-          } else {
-            next.country = "Nigeria";
           }
         }
 
@@ -925,11 +936,10 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         const next = { ...s, [key]: nextValue };
 
         if (key === "country") {
-          if (!isNigeriaCountry(nextValue)) {
+          next.country = normalizeCountryDisplay(nextValue) || "Nigeria";
+          if (!isNigeriaCountry(next.country)) {
             next.state = "";
             next.lga = "";
-          } else {
-            next.country = "Nigeria";
           }
         }
 
@@ -1017,6 +1027,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
           ? {
               ...savedRegistered,
               state: getCanonicalStateName(savedRegistered.state),
+              country: normalizeCountryDisplay(savedRegistered.country) || "Nigeria",
             }
           : {
               houseNumber: pickString(savedRegistered.houseNumber || prev.houseNumber),
@@ -1025,7 +1036,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
               town: pickString(savedRegistered.town || prev.town),
               city: pickString(savedRegistered.city || prev.city),
               state: getCanonicalStateName(savedRegistered.state || prev.state),
-              country: pickString(savedRegistered.country || prev.country || "Nigeria"),
+              country:
+                normalizeCountryDisplay(savedRegistered.country || prev.country) || "Nigeria",
               lga: pickString(savedRegistered.lga || prev.lga),
               landmark: pickString(savedRegistered.landmark || prev.landmark),
               directionsNote: pickString(
@@ -1039,6 +1051,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
           ? {
               ...savedPickup,
               state: getCanonicalStateName(savedPickup.state),
+              country: normalizeCountryDisplay(savedPickup.country) || "Nigeria",
             }
           : {
               houseNumber: pickString(savedPickup.houseNumber || prev.houseNumber),
@@ -1047,7 +1060,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
               town: pickString(savedPickup.town || prev.town),
               city: pickString(savedPickup.city || prev.city),
               state: getCanonicalStateName(savedPickup.state || prev.state),
-              country: pickString(savedPickup.country || prev.country || "Nigeria"),
+              country:
+                normalizeCountryDisplay(savedPickup.country || prev.country) || "Nigeria",
               lga: pickString(savedPickup.lga || prev.lga),
               landmark: pickString(savedPickup.landmark || prev.landmark),
               directionsNote: pickString(savedPickup.directionsNote || prev.directionsNote),
@@ -1122,13 +1136,13 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
           ...draft.registered,
           state: getCanonicalStateName(draft.registered.state),
           lga: pickString(draft.registered.lga),
-          country: pickString(draft.registered.country) || "Nigeria",
+          country: normalizeCountryDisplay(draft.registered.country) || "Nigeria",
         });
         setPickup({
           ...draft.pickup,
           state: getCanonicalStateName(draft.pickup.state),
           lga: pickString(draft.pickup.lga),
-          country: pickString(draft.pickup.country) || "Nigeria",
+          country: normalizeCountryDisplay(draft.pickup.country) || "Nigeria",
         });
         setPickupMeta(draft.pickupMeta);
         setSameAsRegistered(Boolean(draft.sameAsRegistered));
@@ -1300,7 +1314,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     if (!pickString(savedRegistered.streetName)) items.push("Registered street name");
     if (!pickString(savedRegistered.city)) items.push("Registered city");
     if (!pickString(savedRegistered.state)) items.push("Registered state");
-    if (!pickString(savedRegistered.country)) items.push("Registered country");
+    if (!normalizeCountryDisplay(savedRegistered.country)) items.push("Registered country");
     return items;
   }, [savedRegistered]);
 
@@ -1311,7 +1325,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     if (!pickString(savedPickup.streetName)) items.push("Pickup street name");
     if (!pickString(savedPickup.city)) items.push("Pickup city");
     if (!pickString(savedPickup.state)) items.push("Pickup state");
-    if (!pickString(savedPickup.country)) items.push("Pickup country");
+    if (!normalizeCountryDisplay(savedPickup.country)) items.push("Pickup country");
     return items;
   }, [savedPickup, savedSameAsRegistered]);
 
@@ -1325,8 +1339,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
   const canProceedToDocuments = useMemo<boolean>(() => {
     if (documentsLocked) return true;
-    return verifiedSupplier || (draftAddressDone && !loading);
-  }, [documentsLocked, verifiedSupplier, draftAddressDone, loading]);
+    return verifiedSupplier || (currentValidation.valid && !loading);
+  }, [documentsLocked, verifiedSupplier, currentValidation.valid, loading]);
 
   const progress = useMemo<{
     items: { key: string; label: string; done: boolean }[];
@@ -1367,8 +1381,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
             city: registered.city.trim() || null,
             state: registered.state.trim() || null,
             country:
-              countryValueToCodeOrName(registered.country, countries) ||
-              registered.country.trim() ||
+              countryValueToCodeOrName(normalizeCountryDisplay(registered.country), countries) ||
+              normalizeCountryDisplay(registered.country) ||
               null,
             lga: registered.lga.trim() || null,
             landmark: registered.landmark.trim() || null,
@@ -1383,8 +1397,11 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                 city: registered.city.trim() || null,
                 state: registered.state.trim() || null,
                 country:
-                  countryValueToCodeOrName(registered.country, countries) ||
-                  registered.country.trim() ||
+                  countryValueToCodeOrName(
+                    normalizeCountryDisplay(registered.country),
+                    countries
+                  ) ||
+                  normalizeCountryDisplay(registered.country) ||
                   null,
                 lga: registered.lga.trim() || null,
                 landmark: registered.landmark.trim() || null,
@@ -1398,8 +1415,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                 city: pickup.city.trim() || null,
                 state: pickup.state.trim() || null,
                 country:
-                  countryValueToCodeOrName(pickup.country, countries) ||
-                  pickup.country.trim() ||
+                  countryValueToCodeOrName(normalizeCountryDisplay(pickup.country), countries) ||
+                  normalizeCountryDisplay(pickup.country) ||
                   null,
                 lga: pickup.lga.trim() || null,
                 landmark: pickup.landmark.trim() || null,
@@ -1519,13 +1536,17 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     return true;
   }, [documentsLocked, buildSpecificErrorSummary, scrollToField, scrollToTop, validateForm]);
 
+  const navigateToDocuments = useCallback((): void => {
+    nav("/supplier/onboarding/documents");
+  }, [nav]);
+
   const saveAndNext = async (): Promise<void> => {
     setErr(null);
     setIsContinuing(true);
 
     try {
       if (documentsLocked || verifiedSupplier) {
-        nav("/supplier/onboarding/documents");
+        navigateToDocuments();
         return;
       }
 
@@ -1546,7 +1567,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
         }
       }
 
-      nav("/supplier/onboarding/documents");
+      navigateToDocuments();
     } finally {
       setIsContinuing(false);
     }
@@ -1795,7 +1816,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                           ) {
                             setPickup({
                               ...EMPTY_ADDRESS,
-                              country: registered.country || "Nigeria",
+                              country: normalizeCountryDisplay(registered.country) || "Nigeria",
                             });
                           }
                         }}
