@@ -538,6 +538,14 @@ export default function SupplierVerifyContact() {
     return Boolean(getTempToken());
   }, [emailVerified, phoneVerified, loadingSummary]);
 
+  const hasAnyVerificationSession = useMemo(() => {
+    return hasVerifySession || hasAuthenticatedSession;
+  }, [hasAuthenticatedSession, hasVerifySession]);
+
+  const verificationActionConfig = useCallback(() => {
+    return getVerifyConfig();
+  }, []);
+
   const tryLoadNormalSession = useCallback(async (): Promise<NormalSessionSnapshot | null> => {
     try {
       const authRes = await api.get("/api/auth/me", {
@@ -1070,7 +1078,7 @@ export default function SupplierVerifyContact() {
         }
 
         hasAutoFinalizedRef.current = false;
-        setErr("Verification session expired. Please log in to continue.");
+        setErr("Please verify both email and phone before continuing.");
         return;
       }
 
@@ -1136,29 +1144,19 @@ export default function SupplierVerifyContact() {
         return;
       }
 
-      const tempToken = getTempToken();
-      if (!tempToken) {
+      if (!hasAnyVerificationSession) {
         const normalSession = await tryLoadNormalSession();
-        if (normalSession?.authData) {
-          setErr(
-            "You are signed in, but the temporary verification session has expired. Please log in again from the verification flow to resend email verification."
-          );
+        if (!normalSession?.authData) {
+          setErr("Your session expired. Please sign in again to continue.");
           return;
         }
-
-        setErr("Your verification session expired. Please sign in again to continue.");
-        return;
+        setHasAuthenticatedSession(true);
       }
 
       await api.post(
         "/api/auth/resend-verification",
         { email: activeEmail },
-        {
-          withCredentials: true,
-          headers: {
-            Authorization: `Bearer ${tempToken}`,
-          },
-        }
+        verificationActionConfig()
       );
 
       setEmailSent(true);
@@ -1170,9 +1168,8 @@ export default function SupplierVerifyContact() {
         "Could not resend email verification.";
 
       if (status === 401) {
-        setErr(
-          "Your verification session expired. Please log in again from the verification flow to resend email verification."
-        );
+        setHasAuthenticatedSession(false);
+        setErr("Your session expired. Please sign in again to resend email verification.");
         return;
       }
 
@@ -1186,26 +1183,16 @@ export default function SupplierVerifyContact() {
     if (isAdminReviewMode) return;
     if (phoneVerifiedEffective || canContinue || finalizingSession) return;
 
-    const tempToken = getTempToken();
-    if (!tempToken) {
-      const snapshot = await loadStatus();
-
-      if (snapshot?.phoneVerified) {
-        setPhoneVerified(true);
-        setErr(null);
-        return;
-      }
-
+    if (!hasAnyVerificationSession) {
       const normalSession = await tryLoadNormalSession();
-      if (normalSession?.authData) {
-        setErr(
-          "You are signed in, but the temporary verification session has expired. Please log in again from the verification flow to resend the code."
-        );
+
+      if (!normalSession?.authData) {
+        setHasAuthenticatedSession(false);
+        setErr("Your session expired. Please sign in again to resend the code.");
         return;
       }
 
-      setErr("Your verification session expired. Please sign in again to resend the code.");
-      return;
+      setHasAuthenticatedSession(true);
     }
 
     try {
@@ -1219,6 +1206,11 @@ export default function SupplierVerifyContact() {
         normalizeDialCode(summary?.contactDialCode) ||
         normalizeDialCode(state.dialCode);
 
+      if (!activePhone) {
+        setErr("No phone number found for verification.");
+        return;
+      }
+
       await api.post(
         "/api/auth/resend-otp",
         {
@@ -1227,12 +1219,7 @@ export default function SupplierVerifyContact() {
           dialCode: activeDialCode,
           contactDialCode: activeDialCode,
         },
-        {
-          withCredentials: true,
-          headers: {
-            Authorization: `Bearer ${tempToken}`,
-          },
-        }
+        verificationActionConfig()
       );
 
       setPhoneOtpSent(true);
@@ -1244,6 +1231,7 @@ export default function SupplierVerifyContact() {
         "Could not send phone verification code.";
 
       if (status === 401) {
+        setHasAuthenticatedSession(false);
         const snapshot = await loadStatus();
 
         if (snapshot?.phoneVerified) {
@@ -1252,9 +1240,7 @@ export default function SupplierVerifyContact() {
           return;
         }
 
-        setErr(
-          "Your verification session expired. Please log in again from the verification flow to resend the code."
-        );
+        setErr("Your session expired. Please sign in again to resend the code.");
         return;
       }
 
@@ -1273,7 +1259,7 @@ export default function SupplierVerifyContact() {
       phoneOtpSent ||
       finalizingSession ||
       !(phone || summary?.contactPhone) ||
-      !hasVerifySession
+      !hasAnyVerificationSession
     ) {
       return;
     }
@@ -1288,7 +1274,7 @@ export default function SupplierVerifyContact() {
     phone,
     summary?.contactPhone,
     finalizingSession,
-    hasVerifySession,
+    hasAnyVerificationSession,
   ]);
 
   const verifyPhoneOtp = async (e: React.FormEvent) => {
@@ -1303,8 +1289,7 @@ export default function SupplierVerifyContact() {
       return;
     }
 
-    const tempToken = getTempToken();
-    if (!tempToken) {
+    if (!hasAnyVerificationSession) {
       const snapshot = await loadStatus();
 
       if (snapshot?.phoneVerified) {
@@ -1317,16 +1302,13 @@ export default function SupplierVerifyContact() {
 
       const normalSession = await tryLoadNormalSession();
       if (normalSession?.authData) {
-        setOtpError(
-          "You are signed in, but the temporary OTP verification session has expired. Please log in again from the verification flow."
-        );
+        setHasAuthenticatedSession(true);
+      } else {
+        setHasAuthenticatedSession(false);
+        setOtpError("Your session expired. Please sign in again.");
         setErr(null);
         return;
       }
-
-      setOtpError("Your verification session expired. Please sign in again.");
-      setErr(null);
-      return;
     }
 
     try {
@@ -1339,12 +1321,7 @@ export default function SupplierVerifyContact() {
         {
           otp: otp.trim(),
         },
-        {
-          withCredentials: true,
-          headers: {
-            Authorization: `Bearer ${tempToken}`,
-          },
-        }
+        verificationActionConfig()
       );
 
       setPhoneVerified(true);
@@ -1372,6 +1349,7 @@ export default function SupplierVerifyContact() {
       }
 
       if (status === 401) {
+        setHasAuthenticatedSession(false);
         const snapshot = await loadStatus();
 
         if (snapshot?.phoneVerified) {
@@ -1382,9 +1360,7 @@ export default function SupplierVerifyContact() {
           return;
         }
 
-        setOtpError(
-          "Your verification session expired. Refresh status or sign in again from the verification flow."
-        );
+        setOtpError("Your session expired. Please sign in again.");
         setErr(null);
         return;
       }
@@ -1557,7 +1533,7 @@ export default function SupplierVerifyContact() {
 
             {!isAdminReviewMode && !hasAuthenticatedSession && !canContinue && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Your verification session expired. Please sign in again to continue.
+                Your session expired. Please sign in again to continue.
               </div>
             )}
 
@@ -1566,7 +1542,9 @@ export default function SupplierVerifyContact() {
               !hasVerifySession &&
               !phoneVerifiedEffective && (
                 <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                  You are signed in, but the temporary OTP verification session has expired. You can still refresh status here. To request a new OTP, start the verification flow again from login or registration.
+                  You are signed in with a normal session. You can still resend
+                  email verification, request a fresh OTP, verify your phone,
+                  and refresh your status here.
                 </div>
               )}
 
@@ -1624,7 +1602,7 @@ export default function SupplierVerifyContact() {
                           <button
                             type="button"
                             onClick={resendEmail}
-                            disabled={busyEmail || !hasVerifySession}
+                            disabled={busyEmail || !hasAnyVerificationSession}
                             className={secondaryBtn}
                           >
                             {busyEmail
@@ -1717,7 +1695,7 @@ export default function SupplierVerifyContact() {
                                 className={otpInputClass}
                                 placeholder="Enter verification code"
                                 inputMode="numeric"
-                                disabled={!hasVerifySession}
+                                disabled={!hasAnyVerificationSession}
                               />
                               {otpError && (
                                 <p className="text-xs text-rose-600">
@@ -1731,7 +1709,7 @@ export default function SupplierVerifyContact() {
                             <div className="flex flex-wrap gap-2">
                               <button
                                 type="submit"
-                                disabled={busyVerifyOtp || !hasVerifySession}
+                                disabled={busyVerifyOtp || !hasAnyVerificationSession}
                                 className={primaryBtn}
                               >
                                 {busyVerifyOtp ? "Verifying…" : "Verify phone"}
@@ -1740,7 +1718,7 @@ export default function SupplierVerifyContact() {
                               <button
                                 type="button"
                                 onClick={() => void resendPhoneOtp()}
-                                disabled={busyPhone || !hasVerifySession}
+                                disabled={busyPhone || !hasAnyVerificationSession}
                                 className={secondaryBtn}
                               >
                                 {busyPhone
