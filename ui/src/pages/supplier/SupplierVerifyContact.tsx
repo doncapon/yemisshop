@@ -186,10 +186,12 @@ function getVerifyConfig(): {
   };
 }
 
-function getNormalSessionConfig() {
+function getNormalSessionConfig(): {
+  withCredentials: boolean;
+  headers?: Record<string, string>;
+} {
   return {
     withCredentials: true,
-    headers: {},
   };
 }
 
