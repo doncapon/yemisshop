@@ -817,8 +817,8 @@ export default function SupplierBusinessDetails() {
     return bankEditUnlocked;
   }, [documentsLocked, savedBankIsMeaningful, bankLockedByStatus, bankEditUnlocked]);
 
-  const bankFieldsDisabled = documentsLocked || !bankEditable || loading || isBankSaving;
-  const businessFieldsDisabled = documentsLocked || loading || isBusinessAutosaving;
+  const bankFieldsDisabled = documentsLocked || !bankEditable || loading;
+  const businessFieldsDisabled = documentsLocked || loading;
 
   const canProceedToAddress = useMemo(() => {
     if (documentsLocked) return true;
@@ -905,12 +905,12 @@ export default function SupplierBusinessDetails() {
 
       hasHydratedRef.current = true;
     } catch (e: any) {
-        setErr(
-          e?.response?.data?.error ||
-            e?.response?.data?.message ||
-            "Could not load supplier onboarding."
-        );
-        scrollToTop();
+      setErr(
+        e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          "Could not load supplier onboarding."
+      );
+      scrollToTop();
     } finally {
       setLoading(false);
     }
