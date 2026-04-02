@@ -1,7 +1,14 @@
 // src/pages/supplier/SupplierOnboardingAddress.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, ArrowRight, MapPin, Store, Truck } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  MapPin,
+  Store,
+  Truck,
+  Building2,
+} from "lucide-react";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
 import { NIGERIAN_STATES, STATE_TO_LGAS } from "../../constants/nigeriaLocations";
@@ -654,6 +661,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [isContinuing, setIsContinuing] = useState<boolean>(false);
   const [lastSaveError, setLastSaveError] = useState<string | null>(null);
+  const [documentsLockedOnLoad, setDocumentsLockedOnLoad] = useState<boolean>(false);
 
   const [sameAsRegistered, setSameAsRegistered] = useState<boolean>(true);
   const [registered, setRegistered] = useState<AddressState>(EMPTY_ADDRESS);
@@ -865,7 +873,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     return supplierHasInlineDocuments(supplier) || hasFetchedDocuments(supplierDocuments);
   }, [supplier, supplierDocuments]);
 
-  const documentsLocked = useMemo<boolean>(() => docsDone, [docsDone]);
+  const documentsLocked = documentsLockedOnLoad;
 
   const setRegisteredField =
     (key: keyof AddressState) =>
@@ -1095,20 +1103,19 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       const supplierData = (supplierRes.value.data?.data || supplierRes.value.data) as SupplierMe;
       setSupplier(supplierData);
 
-      if (docsRes.status === "fulfilled") {
-        setSupplierDocuments(normalizeDocumentsPayload(docsRes.value.data));
-      } else {
-        setSupplierDocuments([]);
-      }
+      const fetchedDocs =
+        docsRes.status === "fulfilled"
+          ? normalizeDocumentsPayload(docsRes.value.data)
+          : [];
+
+      setSupplierDocuments(fetchedDocs);
+
+      const lockedFromInitialLoad =
+        supplierHasInlineDocuments(supplierData) || hasFetchedDocuments(fetchedDocs);
+      setDocumentsLockedOnLoad(lockedFromInitialLoad);
 
       const draft = safeReadAddressDraft();
-      const shouldUseDraft =
-        draft &&
-        !(
-          supplierHasInlineDocuments(supplierData) ||
-          (docsRes.status === "fulfilled" &&
-            hasFetchedDocuments(normalizeDocumentsPayload(docsRes.value.data)))
-        );
+      const shouldUseDraft = draft && !lockedFromInitialLoad;
 
       if (shouldUseDraft) {
         setRegistered({
@@ -1443,7 +1450,15 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
     savePromiseRef.current = request;
     return request;
-  }, [registered, countries, sameAsRegistered, pickup, pickupMeta, hydrateFromSupplier, documentsLocked]);
+  }, [
+    registered,
+    countries,
+    sameAsRegistered,
+    pickup,
+    pickupMeta,
+    hydrateFromSupplier,
+    documentsLocked,
+  ]);
 
   useEffect(() => {
     if (!hasHydratedRef.current) return;
@@ -1586,7 +1601,6 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     }`;
 
   const canClickPreviousTab = true;
-  const canClickNextTab = true;
 
   return (
     <SiteLayout>
@@ -1599,7 +1613,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                   Add your supplier addresses
                 </h1>
                 <p className="mt-2 text-sm text-zinc-600">
-                  Set your registered and pickup address details before continuing to documents.
+                  Set your registered and pickup address details before continuing to
+                  documents.
                 </p>
                 {draftRestored && !documentsLocked && (
                   <p className="mt-2 text-xs text-emerald-700">
@@ -1671,7 +1686,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
             {documentsLocked && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Documents have already been submitted. Address and shipping fields are now read-only on this page.
+                Documents had already been submitted when this page loaded. Address and
+                shipping fields are read-only on this visit.
               </div>
             )}
 
@@ -2013,7 +2029,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       What happens next
                     </h3>
                     <p className="mt-1 text-sm text-zinc-600">
-                      After your address changes are valid and saved, continue to upload required supplier documents.
+                      After your address changes are valid and saved, continue to upload
+                      required supplier documents.
                     </p>
 
                     <button

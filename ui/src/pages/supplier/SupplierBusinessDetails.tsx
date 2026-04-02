@@ -324,6 +324,7 @@ export default function SupplierBusinessDetails() {
   const [banks, setBanks] = useState<BankOption[]>(FALLBACK_BANKS);
   const [bankEditUnlocked, setBankEditUnlocked] = useState(false);
   const [businessStepSaved, setBusinessStepSaved] = useState(false);
+  const [documentsLockedOnLoad, setDocumentsLockedOnLoad] = useState(false);
 
   const cameFromVerifyContact = Boolean(locationState?.fromVerifyContact);
 
@@ -787,7 +788,7 @@ export default function SupplierBusinessDetails() {
     return hasInlineDocuments(supplier) || hasFetchedDocuments(supplierDocuments);
   }, [supplier, supplierDocuments]);
 
-  const documentsLocked = useMemo(() => docsDone, [docsDone]);
+  const documentsLocked = documentsLockedOnLoad;
 
   const businessReadyLive = useMemo(() => {
     return documentsLocked ? savedBusinessDone || draftBusinessDone : draftBusinessDone;
@@ -863,6 +864,17 @@ export default function SupplierBusinessDetails() {
         setSupplier(s);
         hydrateFormFromSupplier(s, false);
 
+        const fetchedDocs =
+          docsRes.status === "fulfilled"
+            ? normalizeDocumentsPayload(docsRes.value.data)
+            : [];
+
+        setSupplierDocuments(fetchedDocs);
+
+        const lockedFromInitialLoad =
+          hasInlineDocuments(s) || hasFetchedDocuments(fetchedDocs);
+        setDocumentsLockedOnLoad(lockedFromInitialLoad);
+
         const storageKey = s.id
           ? `supplier:onboarding:business-step-saved:${s.id}`
           : "";
@@ -891,20 +903,14 @@ export default function SupplierBusinessDetails() {
         throw supplierRes.reason;
       }
 
-      if (docsRes.status === "fulfilled") {
-        setSupplierDocuments(normalizeDocumentsPayload(docsRes.value.data));
-      } else {
-        setSupplierDocuments([]);
-      }
-
       hasHydratedRef.current = true;
     } catch (e: any) {
-      setErr(
-        e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not load supplier onboarding."
-      );
-      scrollToTop();
+        setErr(
+          e?.response?.data?.error ||
+            e?.response?.data?.message ||
+            "Could not load supplier onboarding."
+        );
+        scrollToTop();
     } finally {
       setLoading(false);
     }
@@ -1501,7 +1507,7 @@ export default function SupplierBusinessDetails() {
 
             {documentsLocked && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Documents have already been submitted. Business and bank details are now read-only on this page.
+                Documents had already been submitted when this page loaded. Business and bank details are read-only on this visit.
               </div>
             )}
 
@@ -1732,7 +1738,7 @@ export default function SupplierBusinessDetails() {
 
                     {documentsLocked && (
                       <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-800">
-                        Bank details are locked because documents have already been submitted.
+                        Bank details are locked because documents had already been submitted when this page loaded.
                       </div>
                     )}
 
