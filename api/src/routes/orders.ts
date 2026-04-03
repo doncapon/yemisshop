@@ -1476,10 +1476,12 @@ async function fetchActiveOffersTx(
 
 /* ---------------- Stock decrement (atomic) ---------------- */
 async function flushTouchedProductsTx(tx: any, touchedProductIds: Set<string>) {
-  for (const productId of touchedProductIds) {
-    await recomputeProductStockTx(tx, productId);
-    await syncProductInStockCacheTx(tx, productId);
-  }
+  await Promise.all(
+    Array.from(touchedProductIds).map(async (productId) => {
+      await recomputeProductStockTx(tx, productId);
+      await syncProductInStockCacheTx(tx, productId);
+    })
+  );
 }
 
 async function attachShippingQuotesToOrderTx(
@@ -2216,6 +2218,78 @@ function normalizeRequestedKind(line: any): "BASE" | "VARIANT" {
   }
 
   return "BASE";
+}
+
+function fireAndForgetOrderPostCommit(args: {
+  orderId: string;
+  total: number;
+  userId: string;
+}) {
+  void (async () => {
+    try {
+      await notifyUser(
+        args.userId,
+        {
+          type: NotificationType.ORDER_PLACED,
+          title: "Order placed",
+          body: `Your order ${args.orderId} has been created.`,
+          data: {
+            orderId: args.orderId,
+            total: args.total,
+          },
+        },
+        prisma as any
+      );
+    } catch (notifyErr) {
+      console.error("Failed to notify user after order create:", notifyErr);
+    }
+
+    try {
+      await notifySuppliersForOrderTx(prisma as any, args.orderId, {
+        type: NotificationType.PURCHASE_ORDER_CREATED,
+        title: "New order received",
+        body: `You have received a new purchase order for order ${args.orderId}.`,
+        data: { total: args.total },
+      });
+    } catch (notifyErr) {
+      console.error("Failed to notify suppliers after order create:", notifyErr);
+    }
+
+    try {
+      await prisma.$transaction(async (tx: any) => {
+        await emailSuppliersForOrderTx(tx, {
+          orderId: args.orderId,
+        });
+      });
+    } catch (emailErr) {
+      console.error("Failed to email suppliers after order create:", emailErr);
+    }
+
+    try {
+      await notifyAdmins(
+        {
+          type: NotificationType.ORDER_PLACED,
+          title: "New order created",
+          body: `Order ${args.orderId} was created with total ₦${args.total}.`,
+          data: {
+            orderId: args.orderId,
+            total: args.total,
+          },
+        },
+        prisma as any
+      );
+    } catch (notifyErr) {
+      console.error("Failed to notify admins after order create:", notifyErr);
+    }
+
+    try {
+      await prisma.$transaction(async (tx: any) => {
+        await clearActiveCartForUserTx(tx, args.userId);
+      });
+    } catch (cartErr) {
+      console.error("Failed to clear active cart after order create:", cartErr);
+    }
+  })();
 }
 
 
@@ -2963,78 +3037,22 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       },
       {
         isolationLevel: "ReadCommitted" as any,
-        maxWait: 5_000,
-        timeout: 20_000,
+        maxWait: 10_000,
+        timeout: 45_000,
       }
     );
 
-    const created = txResult.response;
+        const created = txResult.response;
 
-    try {
-      await notifyUser(
-        txResult.postCommit.userId,
-        {
-          type: NotificationType.ORDER_PLACED,
-          title: "Order placed",
-          body: `Your order ${txResult.postCommit.orderId} has been created.`,
-          data: {
-            orderId: txResult.postCommit.orderId,
-            total: txResult.postCommit.total,
-          },
-        },
-        prisma as any
-      );
-    } catch (notifyErr) {
-      console.error("Failed to notify user after order create:", notifyErr);
-    }
+    res.status(201).json({ data: created });
 
-    try {
-      await notifySuppliersForOrderTx(prisma as any, txResult.postCommit.orderId, {
-        type: NotificationType.PURCHASE_ORDER_CREATED,
-        title: "New order received",
-        body: `You have received a new purchase order for order ${txResult.postCommit.orderId}.`,
-        data: { total: txResult.postCommit.total },
-      });
-    } catch (notifyErr) {
-      console.error("Failed to notify suppliers after order create:", notifyErr);
-    }
+    fireAndForgetOrderPostCommit({
+      orderId: txResult.postCommit.orderId,
+      total: txResult.postCommit.total,
+      userId: txResult.postCommit.userId,
+    });
 
-    try {
-      await prisma.$transaction(async (tx: any) => {
-        await emailSuppliersForOrderTx(tx, {
-          orderId: txResult.postCommit.orderId,
-        });
-      });
-    } catch (emailErr) {
-      console.error("Failed to email suppliers after order create:", emailErr);
-    }
-
-    try {
-      await notifyAdmins(
-        {
-          type: NotificationType.ORDER_PLACED,
-          title: "New order created",
-          body: `Order ${txResult.postCommit.orderId} was created with total ₦${txResult.postCommit.total}.`,
-          data: {
-            orderId: txResult.postCommit.orderId,
-            total: txResult.postCommit.total,
-          },
-        },
-        prisma as any
-      );
-    } catch (notifyErr) {
-      console.error("Failed to notify admins after order create:", notifyErr);
-    }
-
-    try {
-      await prisma.$transaction(async (tx: any) => {
-        await clearActiveCartForUserTx(tx, txResult.postCommit.userId);
-      });
-    } catch (cartErr) {
-      console.error("Failed to clear active cart after order create:", cartErr);
-    }
-
-    return res.status(201).json({ data: created });
+    return;
   } catch (e: any) {
     console.error("create order failed:", e);
     return res.status(400).json({ error: e?.message || "Could not create order" });

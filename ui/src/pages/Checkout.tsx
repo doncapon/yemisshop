@@ -2660,7 +2660,10 @@ export default function Checkout() {
       });
 
       try {
-        const res = await api.post("/api/orders", payload, AXIOS_COOKIE_CFG);
+        const res = await api.post("/api/orders", payload, {
+          ...AXIOS_COOKIE_CFG,
+          timeout: 45000,
+        });
         return res.data as { data: { id: string } };
       } catch (e: any) {
         const status = e?.response?.status;
@@ -2709,7 +2712,7 @@ export default function Checkout() {
           },
           {
             ...AXIOS_COOKIE_CFG,
-            timeout: 20_000,
+            timeout: 30_000,
           }
         );
 

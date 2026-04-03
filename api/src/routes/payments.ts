@@ -643,7 +643,7 @@ async function finalizePaidFlow(paymentId: string) {
     },
     {
       maxWait: 10_000,
-      timeout: 20_000,
+      timeout: 30_000,
     }
   );
 
