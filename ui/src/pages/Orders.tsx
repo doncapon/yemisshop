@@ -3867,28 +3867,43 @@ export default function OrdersPage() {
     return <Navigate to="/supplier/orders" replace />;
   }
 
-  function canShowCancelButtonForUser(
-    order: OrderRow,
-    latestPayment: any,
-    isAdmin: boolean
-  ) {
-    const allowedByOrderState = canCancel(order, latestPayment);
-    if (!allowedByOrderState) return false;
 
-    // Admins can see cancel whenever the order state allows it
-    if (isAdmin) return true;
+function canShowCancelButtonForUser(
+  order: OrderRow,
+  latestPayment: any,
+  isAdmin: boolean
+) {
+  const allowedByOrderState = canCancel(order, latestPayment);
+  if (!allowedByOrderState) return false;
 
-    // Non-admins (customers) should only see cancel for very early unpaid orders
-    const orderStatus = String(order?.status ?? "").toUpperCase();
-    const paymentStatus = String(latestPayment?.status ?? "").toUpperCase();
+  if (isAdmin) return true;
 
-    const isPaidEffective =
-      isPaidStatus(orderStatus) || isPaidStatus(paymentStatus);
+  const orderStatus = String(order?.status ?? "").toUpperCase();
+  const paymentStatus = String(latestPayment?.status ?? "").toUpperCase();
 
-    if (isPaidEffective) return false;
+  const isPaidEffective =
+    isPaidStatus(orderStatus) || isPaidStatus(paymentStatus);
 
-    return ["PENDING", "CREATED"].includes(orderStatus);
+  if (isPaidEffective) return false;
+
+  const allowedCustomerOrderStatuses = ["PENDING", "CREATED"];
+  const allowedCustomerPaymentStatuses = ["", "PENDING", "CREATED", "INITIATED"];
+
+  if (!allowedCustomerOrderStatuses.includes(orderStatus)) return false;
+  if (!allowedCustomerPaymentStatuses.includes(paymentStatus)) return false;
+
+  const purchaseOrders = Array.isArray(order?.purchaseOrders) ? order.purchaseOrders : [];
+  if (purchaseOrders.length > 0) {
+    const hasStartedSupplierFlow = purchaseOrders.some((po) => {
+      const poStatus = String(po?.status ?? "").toUpperCase();
+      return !["CREATED", "PENDING", "CANCELED", "CANCELLED"].includes(poStatus);
+    });
+
+    if (hasStartedSupplierFlow) return false;
   }
+
+  return true;
+}
 
   /* ---------------- Render ---------------- */
   return (
