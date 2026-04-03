@@ -2245,27 +2245,6 @@ function fireAndForgetOrderPostCommit(args: {
     }
 
     try {
-      await notifySuppliersForOrderTx(prisma as any, args.orderId, {
-        type: NotificationType.PURCHASE_ORDER_CREATED,
-        title: "New order received",
-        body: `You have received a new purchase order for order ${args.orderId}.`,
-        data: { total: args.total },
-      });
-    } catch (notifyErr) {
-      console.error("Failed to notify suppliers after order create:", notifyErr);
-    }
-
-    try {
-      await prisma.$transaction(async (tx: any) => {
-        await emailSuppliersForOrderTx(tx, {
-          orderId: args.orderId,
-        });
-      });
-    } catch (emailErr) {
-      console.error("Failed to email suppliers after order create:", emailErr);
-    }
-
-    try {
       await notifyAdmins(
         {
           type: NotificationType.ORDER_PLACED,

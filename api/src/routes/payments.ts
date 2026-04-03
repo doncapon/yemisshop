@@ -6,7 +6,6 @@ import crypto from "crypto";
 
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { logOrderActivity } from "../services/activity.service.js";
 import { ps, toKobo, PAYSTACK_SECRET_KEY } from "../lib/paystack.js";
 
 import { generateRef8, isFresh, toNumber } from "../lib/payments.js";
@@ -21,6 +20,8 @@ import { computePaystackSplitForOrder } from "../lib/splits.js";
 // enums
 import { SupplierPaymentStatus, PurchaseOrderStatus } from "@prisma/client";
 import { trackPurchaseIfNeeded } from "../services/tracking.service.js";
+import { logOrderActivity, logOrderActivityTx } from "../services/activity.service.js";
+import { sendSupplierPurchaseOrderEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -633,6 +634,21 @@ async function finalizePaidFlow(paymentId: string) {
       await ensurePurchaseOrdersForOrderTx(tx, payment.orderId);
       await recordSupplierAllocationsOnPaidTx(tx, payment.id, payment.orderId);
 
+      await tx.purchaseOrder.updateMany({
+        where: {
+          orderId: payment.orderId,
+          status: {
+            in: [
+              PurchaseOrderStatus.CREATED as any,
+              PurchaseOrderStatus.FUNDED as any,
+            ],
+          },
+        },
+        data: {
+          status: PurchaseOrderStatus.AWAITING_FULFILLMENT as any,
+        },
+      });
+
       trackPaymentId = payment.id;
 
       return {
@@ -673,6 +689,24 @@ async function finalizePaidFlow(paymentId: string) {
     console.error("notifySuppliersForOrder failed", e);
   }
 
+
+  try {
+    await prisma.$transaction(async (tx: any) => {
+      await emailSuppliersForPaidOrderTx(tx, { orderId });
+    });
+
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId: finalized.paymentId,
+        type: "SUPPLIER_PO_EMAIL_SENT",
+        data: { orderId },
+      },
+    });
+  } catch (e) {
+    console.error("emailSuppliersForPaidOrderTx failed", e);
+  }
+
+
   try {
     await prisma.paymentEvent.create({
       data: {
@@ -711,6 +745,135 @@ async function finalizePaidFlow(paymentId: string) {
   }
 
   console.log("[finalizePaidFlow] done", finalized);
+}
+
+async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) {
+  const pos = await tx.purchaseOrder.findMany({
+    where: { orderId: args.orderId },
+    select: {
+      id: true,
+      orderId: true,
+      supplierId: true,
+      subtotal: true,
+      supplierAmount: true,
+      shippingFeeChargedToCustomer: true,
+      shippingCurrency: true,
+      status: true,
+      createdAt: true,
+
+      // idempotency marker
+      supplierNotifiedAt: true,
+
+      supplier: {
+        select: {
+          id: true,
+          name: true,
+          userId: true,
+          user: {
+            select: {
+              email: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      },
+
+      items: {
+        select: {
+          orderItem: {
+            select: {
+              id: true,
+              title: true,
+              quantity: true,
+              unitPrice: true,
+              lineTotal: true,
+              selectedOptions: true,
+              variantId: true,
+              productId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  for (const po of pos) {
+    try {
+      // skip if already emailed
+      if (po.supplierNotifiedAt) continue;
+
+      const supplierEmail = String(po.supplier?.user?.email ?? "").trim();
+      if (!supplierEmail) continue;
+
+      const supplierName =
+        String(po.supplier?.name ?? "").trim() ||
+        [
+          String(po.supplier?.user?.firstName ?? "").trim(),
+          String(po.supplier?.user?.lastName ?? "").trim(),
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        "Supplier";
+
+      const items = (po.items || [])
+        .map((x: any) => x?.orderItem)
+        .filter(Boolean)
+        .map((item: any) => ({
+          title: item.title ?? "Item",
+          quantity: Number(item.quantity ?? 0),
+          unitPrice: Number(item.unitPrice ?? 0),
+          lineTotal:
+            item.lineTotal != null
+              ? Number(item.lineTotal)
+              : Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0),
+          selectedOptions: item.selectedOptions ?? null,
+          variantId: item.variantId ? String(item.variantId) : null,
+          productId: item.productId ? String(item.productId) : null,
+        }));
+
+      await sendSupplierPurchaseOrderEmail({
+        to: supplierEmail,
+        supplierName,
+        orderId: String(po.orderId),
+        purchaseOrderId: String(po.id),
+        status: String(po.status ?? "FUNDED"),
+        subtotal: Number(po.subtotal ?? 0),
+        supplierAmount: Number(po.supplierAmount ?? 0),
+        shippingFeeChargedToCustomer: Number(po.shippingFeeChargedToCustomer ?? 0),
+        shippingCurrency: String(po.shippingCurrency ?? "NGN"),
+        createdAt: po.createdAt ?? null,
+        items,
+      });
+
+      await tx.purchaseOrder.update({
+        where: { id: po.id },
+        data: {
+          supplierNotifiedAt: new Date(),
+        },
+      });
+
+      await tx.orderActivity.create({
+        data: {
+          orderId: String(po.orderId),
+          supplierId: String(po.supplierId),
+          type: "SUPPLIER_PO_EMAIL_SENT",
+          message: `Supplier purchase order email sent for PO ${po.id}`,
+          meta: {
+            purchaseOrderId: String(po.id),
+            supplierEmail,
+          },
+        },
+      });
+    } catch (err: any) {
+      console.error("[supplier-paid-order-email] failed", {
+        orderId: args.orderId,
+        purchaseOrderId: po?.id,
+        supplierId: po?.supplierId,
+        message: err?.message,
+      });
+    }
+  }
 }
 
 
