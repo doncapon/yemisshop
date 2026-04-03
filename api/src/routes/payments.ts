@@ -691,45 +691,45 @@ async function finalizePaidFlow(paymentId: string) {
     console.error("notifySuppliersForOrder failed", e);
   }
 
-try {
-  const emailResults = await emailSuppliersForPaidOrder({ orderId });
+  try {
+    const emailResults = await emailSuppliersForPaidOrder({ orderId });
 
-  const sent = emailResults.filter((x) => x.ok).length;
-  const failed = emailResults.filter((x) => !x.ok).length;
+    const sent = emailResults.filter((x) => x.ok).length;
+    const failed = emailResults.filter((x) => !x.ok).length;
 
-  await prisma.paymentEvent.create({
-    data: {
-      paymentId: finalized.paymentId,
-      type: sent > 0 ? "SUPPLIER_PO_EMAIL_SENT" : "SUPPLIER_PO_EMAIL_FAILED",
+    await prisma.paymentEvent.create({
       data: {
-        orderId,
-        sent,
-        failed,
-        results: emailResults,
+        paymentId: finalized.paymentId,
+        type: sent > 0 ? "SUPPLIER_PO_EMAIL_SENT" : "SUPPLIER_PO_EMAIL_FAILED",
+        data: {
+          orderId,
+          sent,
+          failed,
+          results: emailResults,
+        },
       },
-    },
-  });
+    });
 
-  console.log("[finalizePaidFlow] supplier email summary", {
-    orderId,
-    sent,
-    failed,
-    results: emailResults,
-  });
-} catch (e) {
-  console.error("emailSuppliersForPaidOrder failed", e);
+    console.log("[finalizePaidFlow] supplier email summary", {
+      orderId,
+      sent,
+      failed,
+      results: emailResults,
+    });
+  } catch (e) {
+    console.error("emailSuppliersForPaidOrder failed", e);
 
-  await prisma.paymentEvent.create({
-    data: {
-      paymentId: finalized.paymentId,
-      type: "SUPPLIER_PO_EMAIL_FAILED",
+    await prisma.paymentEvent.create({
       data: {
-        orderId,
-        error: (e as any)?.message ?? "Unknown supplier email failure",
+        paymentId: finalized.paymentId,
+        type: "SUPPLIER_PO_EMAIL_FAILED",
+        data: {
+          orderId,
+          error: (e as any)?.message ?? "Unknown supplier email failure",
+        },
       },
-    },
-  });
-}
+    });
+  }
 
   try {
     await prisma.paymentEvent.create({
@@ -771,156 +771,6 @@ try {
   console.log("[finalizePaidFlow] done", finalized);
 }
 
-async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) {
-  const pos = await tx.purchaseOrder.findMany({
-    where: { orderId: args.orderId },
-    select: {
-      id: true,
-      orderId: true,
-      supplierId: true,
-      subtotal: true,
-      supplierAmount: true,
-      shippingFeeChargedToCustomer: true,
-      shippingCurrency: true,
-      status: true,
-      createdAt: true,
-
-      supplier: {
-        select: {
-          id: true,
-          name: true,
-          contactEmail: true,
-          userId: true,
-          user: {
-            select: {
-              email: true,
-              firstName: true,
-              lastName: true,
-            },
-          },
-        },
-      },
-
-      items: {
-        select: {
-          orderItem: {
-            select: {
-              id: true,
-              title: true,
-              quantity: true,
-              unitPrice: true,
-              lineTotal: true,
-              selectedOptions: true,
-              variantId: true,
-              productId: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  for (const po of pos) {
-    try {
-      const purchaseOrderId = String(po.id);
-      const supplierId = String(po.supplierId);
-
-      const supplierEmail = String(
-        po.supplier?.contactEmail ??
-        po.supplier?.user?.email ??
-        ""
-      ).trim();
-
-      if (!supplierEmail) {
-        console.warn("[supplier-paid-order-email] supplier email missing", {
-          orderId: args.orderId,
-          purchaseOrderId,
-          supplierId,
-          supplierContactEmail: po.supplier?.contactEmail ?? null,
-          supplierUserId: po.supplier?.userId ?? null,
-          linkedUserEmail: po.supplier?.user?.email ?? null,
-        });
-        continue;
-      }
-
-      const supplierName =
-        String(po.supplier?.name ?? "").trim() ||
-        [
-          String(po.supplier?.user?.firstName ?? "").trim(),
-          String(po.supplier?.user?.lastName ?? "").trim(),
-        ]
-          .filter(Boolean)
-          .join(" ") ||
-        "Supplier";
-
-      const items = (po.items || [])
-        .map((x: any) => x?.orderItem)
-        .filter(Boolean)
-        .map((item: any) => ({
-          title: item.title ?? "Item",
-          quantity: Number(item.quantity ?? 0),
-          unitPrice: Number(item.unitPrice ?? 0),
-          lineTotal:
-            item.lineTotal != null
-              ? Number(item.lineTotal)
-              : Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0),
-          selectedOptions: item.selectedOptions ?? null,
-          variantId: item.variantId ? String(item.variantId) : null,
-          productId: item.productId ? String(item.productId) : null,
-        }));
-
-      console.log("[supplier-paid-order-email] sending", {
-        orderId: args.orderId,
-        purchaseOrderId,
-        supplierId,
-        supplierEmail,
-        itemsCount: items.length,
-      });
-
-      await sendSupplierPurchaseOrderEmail({
-        to: supplierEmail,
-        supplierName,
-        orderId: String(po.orderId),
-        purchaseOrderId,
-        status: String(po.status ?? "FUNDED"),
-        subtotal: Number(po.subtotal ?? 0),
-        supplierAmount: Number(po.supplierAmount ?? 0),
-        shippingFeeChargedToCustomer: Number(po.shippingFeeChargedToCustomer ?? 0),
-        shippingCurrency: String(po.shippingCurrency ?? "NGN"),
-        createdAt: po.createdAt ?? null,
-        items,
-      });
-
-      await tx.orderActivity.create({
-        data: {
-          orderId: String(po.orderId),
-          supplierId,
-          type: "SUPPLIER_PO_EMAIL_SENT",
-          message: `Supplier purchase order email sent for PO ${purchaseOrderId}`,
-          meta: {
-            purchaseOrderId,
-            supplierEmail,
-          },
-        },
-      });
-
-      console.log("[supplier-paid-order-email] sent successfully", {
-        orderId: args.orderId,
-        purchaseOrderId,
-        supplierId,
-        supplierEmail,
-      });
-    } catch (err: any) {
-      console.error("[supplier-paid-order-email] failed", {
-        orderId: args.orderId,
-        purchaseOrderId: po?.id,
-        supplierId: po?.supplierId,
-        message: err?.message,
-      });
-    }
-  }
-}
-
 async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: string }) {
   const pos = await tx.purchaseOrder.findMany({
     where: { orderId: args.orderId },
@@ -959,6 +809,7 @@ async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: stri
               title: true,
               quantity: true,
               unitPrice: true,
+              chosenSupplierUnitPrice: true,
               lineTotal: true,
               selectedOptions: true,
               variantId: true,
@@ -990,18 +841,21 @@ async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: stri
     const items = (po.items || [])
       .map((x: any) => x?.orderItem)
       .filter(Boolean)
-      .map((item: any) => ({
-        title: item.title ?? "Item",
-        quantity: Number(item.quantity ?? 0),
-        unitPrice: Number(item.unitPrice ?? 0),
-        lineTotal:
-          item.lineTotal != null
-            ? Number(item.lineTotal)
-            : Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0),
-        selectedOptions: item.selectedOptions ?? null,
-        variantId: item.variantId ? String(item.variantId) : null,
-        productId: item.productId ? String(item.productId) : null,
-      }));
+      .map((item: any) => {
+        const quantity = Number(item.quantity ?? 0);
+        const supplierUnitPrice = Number(item.chosenSupplierUnitPrice ?? 0);
+        const supplierLineTotal = supplierUnitPrice * quantity;
+
+        return {
+          title: item.title ?? "Item",
+          quantity,
+          unitPrice: supplierUnitPrice,
+          lineTotal: supplierLineTotal,
+          selectedOptions: item.selectedOptions ?? null,
+          variantId: item.variantId ? String(item.variantId) : null,
+          productId: item.productId ? String(item.productId) : null,
+        };
+      });
 
     return {
       purchaseOrderId: String(po.id),
