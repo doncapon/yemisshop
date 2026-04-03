@@ -570,13 +570,14 @@ async function finalizePaidFlow(paymentId: string) {
       }
 
       if (payment.purchaseEventSentAt) {
-        console.log("[finalizePaidFlow] already finalized, skipping", {
+        console.log("[finalizePaidFlow] already finalized, continuing post-finalize checks", {
           paymentId,
           purchaseEventSentAt: payment.purchaseEventSentAt,
         });
 
         return {
-          skipped: true as const,
+          skipped: false as const,
+          alreadyFinalized: true as const,
           orderId: payment.orderId,
           paymentId: payment.id,
         };
@@ -653,6 +654,7 @@ async function finalizePaidFlow(paymentId: string) {
 
       return {
         skipped: false as const,
+        alreadyFinalized: false as const,
         orderId: payment.orderId,
         paymentId: payment.id,
       };
@@ -664,7 +666,6 @@ async function finalizePaidFlow(paymentId: string) {
   );
 
   if (!claimed) return;
-  if (claimed.skipped) return;
 
   const finalized = claimed;
   const { orderId } = finalized;
@@ -689,7 +690,6 @@ async function finalizePaidFlow(paymentId: string) {
     console.error("notifySuppliersForOrder failed", e);
   }
 
-
   try {
     await prisma.$transaction(async (tx: any) => {
       await emailSuppliersForPaidOrderTx(tx, { orderId });
@@ -705,7 +705,6 @@ async function finalizePaidFlow(paymentId: string) {
   } catch (e) {
     console.error("emailSuppliersForPaidOrderTx failed", e);
   }
-
 
   try {
     await prisma.paymentEvent.create({
@@ -760,10 +759,7 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
       shippingCurrency: true,
       status: true,
       createdAt: true,
-
-      // idempotency marker
       supplierNotifiedAt: true,
-
       supplier: {
         select: {
           id: true,
@@ -778,7 +774,6 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
           },
         },
       },
-
       items: {
         select: {
           orderItem: {
@@ -798,13 +793,35 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
     },
   });
 
+  console.log("[supplier-paid-order-email] purchase orders loaded", {
+    orderId: args.orderId,
+    count: pos.length,
+    purchaseOrderIds: pos.map((po: any) => String(po.id)),
+  });
+
   for (const po of pos) {
     try {
-      // skip if already emailed
-      if (po.supplierNotifiedAt) continue;
+      if (po.supplierNotifiedAt) {
+        console.log("[supplier-paid-order-email] skip already notified", {
+          orderId: args.orderId,
+          purchaseOrderId: po.id,
+          supplierId: po.supplierId,
+          supplierNotifiedAt: po.supplierNotifiedAt,
+        });
+        continue;
+      }
 
       const supplierEmail = String(po.supplier?.user?.email ?? "").trim();
-      if (!supplierEmail) continue;
+
+      if (!supplierEmail) {
+        console.warn("[supplier-paid-order-email] supplier email missing", {
+          orderId: args.orderId,
+          purchaseOrderId: po.id,
+          supplierId: po.supplierId,
+          supplierUserId: po.supplier?.userId ?? null,
+        });
+        continue;
+      }
 
       const supplierName =
         String(po.supplier?.name ?? "").trim() ||
@@ -832,12 +849,20 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
           productId: item.productId ? String(item.productId) : null,
         }));
 
+      console.log("[supplier-paid-order-email] sending", {
+        orderId: args.orderId,
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+        to: supplierEmail,
+        itemsCount: items.length,
+      });
+
       await sendSupplierPurchaseOrderEmail({
         to: supplierEmail,
         supplierName,
         orderId: String(po.orderId),
         purchaseOrderId: String(po.id),
-        status: String(po.status ?? "FUNDED"),
+        status: String(po.status ?? "AWAITING_FULFILLMENT"),
         subtotal: Number(po.subtotal ?? 0),
         supplierAmount: Number(po.supplierAmount ?? 0),
         shippingFeeChargedToCustomer: Number(po.shippingFeeChargedToCustomer ?? 0),
@@ -865,17 +890,24 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
           },
         },
       });
+
+      console.log("[supplier-paid-order-email] sent successfully", {
+        orderId: args.orderId,
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+        to: supplierEmail,
+      });
     } catch (err: any) {
       console.error("[supplier-paid-order-email] failed", {
         orderId: args.orderId,
         purchaseOrderId: po?.id,
         supplierId: po?.supplierId,
         message: err?.message,
+        stack: err?.stack,
       });
     }
   }
 }
-
 
 /* ----------------------------- Public endpoints ----------------------------- */
 
