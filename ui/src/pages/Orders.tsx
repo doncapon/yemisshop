@@ -3867,6 +3867,29 @@ export default function OrdersPage() {
     return <Navigate to="/supplier/orders" replace />;
   }
 
+  function canShowCancelButtonForUser(
+    order: OrderRow,
+    latestPayment: any,
+    isAdmin: boolean
+  ) {
+    const allowedByOrderState = canCancel(order, latestPayment);
+    if (!allowedByOrderState) return false;
+
+    // Admins can see cancel whenever the order state allows it
+    if (isAdmin) return true;
+
+    // Non-admins (customers) should only see cancel for very early unpaid orders
+    const orderStatus = String(order?.status ?? "").toUpperCase();
+    const paymentStatus = String(latestPayment?.status ?? "").toUpperCase();
+
+    const isPaidEffective =
+      isPaidStatus(orderStatus) || isPaidStatus(paymentStatus);
+
+    if (isPaidEffective) return false;
+
+    return ["PENDING", "CREATED"].includes(orderStatus);
+  }
+
   /* ---------------- Render ---------------- */
   return (
     <SiteLayout>
@@ -4107,6 +4130,7 @@ export default function OrdersPage() {
 
                     const canShowReceipt = !!receiptKey && isPaidEffective;
                     const canCancelThis = canCancel(details, latestPayment);
+                    const canShowCancelThis = canShowCancelButtonForUser(details, latestPayment, isAdmin);
 
                     return (
                       <React.Fragment key={o.id}>
@@ -4249,7 +4273,7 @@ export default function OrdersPage() {
                                       </button>
                                     )}
 
-                                    {canCancelThis && (
+                                    {canShowCancelThis && (
                                       <button
                                         className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-rose-600 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                                         onClick={(e) => {
@@ -4578,6 +4602,7 @@ export default function OrdersPage() {
                 !isPaidEffective && ["PENDING", "CREATED"].includes(String(details.status || "").toUpperCase());
 
               const firstItemTitle = details.items?.[0]?.title || details.items?.[0]?.product?.title || "";
+              const canShowCancelThis = canShowCancelButtonForUser(details, latestPayment, isAdmin);
 
               return (
                 <div
@@ -4642,6 +4667,18 @@ export default function OrdersPage() {
                           }}
                         >
                           Pay
+                        </button>
+                      )}
+
+                      {canShowCancelThis && (
+                        <button
+                          className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-medium text-rose-700"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onCancel(details.id);
+                          }}
+                        >
+                          Cancel
                         </button>
                       )}
 
