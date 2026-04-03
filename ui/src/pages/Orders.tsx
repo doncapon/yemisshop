@@ -3064,12 +3064,23 @@ export default function OrdersPage() {
 
   const canCancel = (details: OrderRow, latestPayment: PaymentRow | null) => {
     const st = String(details.status || "").toUpperCase();
-    const isPaidEffective = isPaidStatus(details.status) || isPaidStatus(latestPayment?.status);
+    const paymentStatus = String(latestPayment?.status || "").toUpperCase();
+    const isPaidEffective =
+      isPaidStatus(details.status) || isPaidStatus(latestPayment?.status);
 
     if (isPaidEffective) return false;
     if (["CANCELED", "CANCELLED", "REFUNDED"].includes(st)) return false;
 
-    return ["PENDING", "CREATED"].includes(st);
+    if (!["PENDING", "CREATED"].includes(st)) return false;
+
+    if (
+      paymentStatus &&
+      !["PENDING", "CREATED", "INITIATED"].includes(paymentStatus)
+    ) {
+      return false;
+    }
+
+    return true;
   };
 
   const onCancel = async (orderId: string) => {
@@ -3868,42 +3879,32 @@ export default function OrdersPage() {
   }
 
 
-function canShowCancelButtonForUser(
-  order: OrderRow,
-  latestPayment: any,
-  isAdmin: boolean
-) {
-  const allowedByOrderState = canCancel(order, latestPayment);
-  if (!allowedByOrderState) return false;
+  function canShowCancelButtonForUser(
+    order: OrderRow,
+    latestPayment: PaymentRow | null,
+    isAdmin: boolean
+  ) {
+    if (!canCancel(order, latestPayment)) return false;
 
-  if (isAdmin) return true;
+    if (isAdmin) return true;
 
-  const orderStatus = String(order?.status ?? "").toUpperCase();
-  const paymentStatus = String(latestPayment?.status ?? "").toUpperCase();
+    const purchaseOrders = Array.isArray(order?.purchaseOrders)
+      ? order.purchaseOrders
+      : [];
 
-  const isPaidEffective =
-    isPaidStatus(orderStatus) || isPaidStatus(paymentStatus);
+    if (!purchaseOrders.length) {
+      return true;
+    }
 
-  if (isPaidEffective) return false;
-
-  const allowedCustomerOrderStatuses = ["PENDING", "CREATED"];
-  const allowedCustomerPaymentStatuses = ["", "PENDING", "CREATED", "INITIATED"];
-
-  if (!allowedCustomerOrderStatuses.includes(orderStatus)) return false;
-  if (!allowedCustomerPaymentStatuses.includes(paymentStatus)) return false;
-
-  const purchaseOrders = Array.isArray(order?.purchaseOrders) ? order.purchaseOrders : [];
-  if (purchaseOrders.length > 0) {
-    const hasStartedSupplierFlow = purchaseOrders.some((po) => {
+    const hasAdvancedPo = purchaseOrders.some((po) => {
       const poStatus = String(po?.status ?? "").toUpperCase();
-      return !["CREATED", "PENDING", "CANCELED", "CANCELLED"].includes(poStatus);
+      return !["PENDING", "CREATED", "CANCELED", "CANCELLED"].includes(poStatus);
     });
 
-    if (hasStartedSupplierFlow) return false;
-  }
+    if (hasAdvancedPo) return false;
 
-  return true;
-}
+    return true;
+  }
 
   /* ---------------- Render ---------------- */
   return (
