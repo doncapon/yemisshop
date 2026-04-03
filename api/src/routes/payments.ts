@@ -691,21 +691,45 @@ async function finalizePaidFlow(paymentId: string) {
     console.error("notifySuppliersForOrder failed", e);
   }
 
-  try {
-    await prisma.$transaction(async (tx: any) => {
-      await emailSuppliersForPaidOrderTx(tx, { orderId });
-    });
+try {
+  const emailResults = await emailSuppliersForPaidOrder({ orderId });
 
-    await prisma.paymentEvent.create({
+  const sent = emailResults.filter((x) => x.ok).length;
+  const failed = emailResults.filter((x) => !x.ok).length;
+
+  await prisma.paymentEvent.create({
+    data: {
+      paymentId: finalized.paymentId,
+      type: sent > 0 ? "SUPPLIER_PO_EMAIL_SENT" : "SUPPLIER_PO_EMAIL_FAILED",
       data: {
-        paymentId: finalized.paymentId,
-        type: "SUPPLIER_PO_EMAIL_ATTEMPTED",
-        data: { orderId },
+        orderId,
+        sent,
+        failed,
+        results: emailResults,
       },
-    });
-  } catch (e) {
-    console.error("emailSuppliersForPaidOrderTx failed", e);
-  }
+    },
+  });
+
+  console.log("[finalizePaidFlow] supplier email summary", {
+    orderId,
+    sent,
+    failed,
+    results: emailResults,
+  });
+} catch (e) {
+  console.error("emailSuppliersForPaidOrder failed", e);
+
+  await prisma.paymentEvent.create({
+    data: {
+      paymentId: finalized.paymentId,
+      type: "SUPPLIER_PO_EMAIL_FAILED",
+      data: {
+        orderId,
+        error: (e as any)?.message ?? "Unknown supplier email failure",
+      },
+    },
+  });
+}
 
   try {
     await prisma.paymentEvent.create({
@@ -895,6 +919,228 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
       });
     }
   }
+}
+
+async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: string }) {
+  const pos = await tx.purchaseOrder.findMany({
+    where: { orderId: args.orderId },
+    select: {
+      id: true,
+      orderId: true,
+      supplierId: true,
+      subtotal: true,
+      supplierAmount: true,
+      shippingFeeChargedToCustomer: true,
+      shippingCurrency: true,
+      status: true,
+      createdAt: true,
+
+      supplier: {
+        select: {
+          id: true,
+          name: true,
+          contactEmail: true,
+          userId: true,
+          user: {
+            select: {
+              email: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      },
+
+      items: {
+        select: {
+          orderItem: {
+            select: {
+              id: true,
+              title: true,
+              quantity: true,
+              unitPrice: true,
+              lineTotal: true,
+              selectedOptions: true,
+              variantId: true,
+              productId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  return pos.map((po: any) => {
+    const supplierEmail = String(
+      po.supplier?.contactEmail ??
+      po.supplier?.user?.email ??
+      ""
+    ).trim();
+
+    const supplierName =
+      String(po.supplier?.name ?? "").trim() ||
+      [
+        String(po.supplier?.user?.firstName ?? "").trim(),
+        String(po.supplier?.user?.lastName ?? "").trim(),
+      ]
+        .filter(Boolean)
+        .join(" ") ||
+      "Supplier";
+
+    const items = (po.items || [])
+      .map((x: any) => x?.orderItem)
+      .filter(Boolean)
+      .map((item: any) => ({
+        title: item.title ?? "Item",
+        quantity: Number(item.quantity ?? 0),
+        unitPrice: Number(item.unitPrice ?? 0),
+        lineTotal:
+          item.lineTotal != null
+            ? Number(item.lineTotal)
+            : Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0),
+        selectedOptions: item.selectedOptions ?? null,
+        variantId: item.variantId ? String(item.variantId) : null,
+        productId: item.productId ? String(item.productId) : null,
+      }));
+
+    return {
+      purchaseOrderId: String(po.id),
+      orderId: String(po.orderId),
+      supplierId: String(po.supplierId),
+      supplierEmail,
+      supplierName,
+      status: String(po.status ?? "FUNDED"),
+      subtotal: Number(po.subtotal ?? 0),
+      supplierAmount: Number(po.supplierAmount ?? 0),
+      shippingFeeChargedToCustomer: Number(po.shippingFeeChargedToCustomer ?? 0),
+      shippingCurrency: String(po.shippingCurrency ?? "NGN"),
+      createdAt: po.createdAt ?? null,
+      items,
+      debug: {
+        supplierContactEmail: po.supplier?.contactEmail ?? null,
+        supplierUserId: po.supplier?.userId ?? null,
+        linkedUserEmail: po.supplier?.user?.email ?? null,
+      },
+    };
+  });
+}
+
+async function emailSuppliersForPaidOrder(args: { orderId: string }) {
+  const jobs = await prisma.$transaction(async (tx: any) => {
+    return getSupplierEmailJobsForPaidOrderTx(tx, { orderId: args.orderId });
+  });
+
+  const results: Array<{
+    purchaseOrderId: string;
+    supplierId: string;
+    supplierEmail: string | null;
+    ok: boolean;
+    error?: string;
+  }> = [];
+
+  for (const job of jobs) {
+    if (!job.supplierEmail) {
+      console.warn("[supplier-paid-order-email] supplier email missing", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        ...job.debug,
+      });
+
+      results.push({
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: null,
+        ok: false,
+        error: "Missing supplier email",
+      });
+      continue;
+    }
+
+    try {
+      console.log("[supplier-paid-order-email] sending", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        itemsCount: job.items.length,
+      });
+
+      await sendSupplierPurchaseOrderEmail({
+        to: job.supplierEmail,
+        supplierName: job.supplierName,
+        orderId: job.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        status: job.status,
+        subtotal: job.subtotal,
+        supplierAmount: job.supplierAmount,
+        shippingFeeChargedToCustomer: job.shippingFeeChargedToCustomer,
+        shippingCurrency: job.shippingCurrency,
+        createdAt: job.createdAt,
+        items: job.items,
+      });
+
+      await prisma.orderActivity.create({
+        data: {
+          orderId: job.orderId,
+          supplierId: job.supplierId,
+          type: "SUPPLIER_PO_EMAIL_SENT",
+          message: `Supplier purchase order email sent for PO ${job.purchaseOrderId}`,
+          meta: {
+            purchaseOrderId: job.purchaseOrderId,
+            supplierEmail: job.supplierEmail,
+          },
+        },
+      });
+
+      console.log("[supplier-paid-order-email] sent successfully", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+      });
+
+      results.push({
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        ok: true,
+      });
+    } catch (err: any) {
+      console.error("[supplier-paid-order-email] failed", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        message: err?.message,
+        stack: err?.stack,
+      });
+
+      await prisma.orderActivity.create({
+        data: {
+          orderId: job.orderId,
+          supplierId: job.supplierId,
+          type: "SUPPLIER_PO_EMAIL_FAILED",
+          message: `Supplier purchase order email failed for PO ${job.purchaseOrderId}`,
+          meta: {
+            purchaseOrderId: job.purchaseOrderId,
+            supplierEmail: job.supplierEmail,
+            error: err?.message ?? "Unknown email error",
+          },
+        },
+      });
+
+      results.push({
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        ok: false,
+        error: err?.message ?? "Unknown email error",
+      });
+    }
+  }
+
+  return results;
 }
 
 /* ----------------------------- Public endpoints ----------------------------- */
