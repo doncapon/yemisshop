@@ -3042,7 +3042,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       }
     );
 
-        const created = txResult.response;
+    const created = txResult.response;
 
     res.status(201).json({ data: created });
 
@@ -3763,6 +3763,101 @@ function makePaginatedResponse<T>(args: {
     pageSize: args.pageSize,
     totalPages,
   };
+}
+
+function fireAndForgetCancelPostCommit(args: {
+  mode: "ORDER_ONLY" | "SUPPLIER_PO" | "ORDER_ALL";
+  orderId: string;
+  orderUserId: string;
+  actorRole: string;
+  supplierId?: string | null;
+  canceledPurchaseOrderIds?: string[];
+  allCanceled?: boolean;
+}) {
+  void (async () => {
+    try {
+      if (args.mode === "SUPPLIER_PO") {
+        await notifyUser(
+          String(args.orderUserId),
+          {
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+            title: "Order update",
+            body: `A supplier canceled part of your order ${args.orderId}.`,
+            data: {
+              orderId: args.orderId,
+              supplierId: args.supplierId ?? null,
+              purchaseOrderIds: args.canceledPurchaseOrderIds ?? [],
+              allCanceled: !!args.allCanceled,
+            },
+          },
+          prisma as any
+        );
+
+        await notifyAdmins(
+          {
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+            title: "Supplier canceled PO",
+            body: `A supplier canceled a purchase order for order ${args.orderId}.`,
+            data: {
+              orderId: args.orderId,
+              supplierId: args.supplierId ?? null,
+              purchaseOrderIds: args.canceledPurchaseOrderIds ?? [],
+              allCanceled: !!args.allCanceled,
+            },
+          },
+          prisma as any
+        );
+
+        return;
+      }
+
+      if (args.mode === "ORDER_ONLY" || args.mode === "ORDER_ALL") {
+        try {
+          await notifyUser(
+            String(args.orderUserId),
+            {
+              type: NotificationType.ORDER_CANCELED,
+              title: "Order canceled",
+              body: `Your order ${args.orderId} has been canceled.`,
+              data: { orderId: args.orderId },
+            },
+            prisma as any
+          );
+        } catch (e) {
+          console.error("cancel post-commit user notify failed:", e);
+        }
+
+        try {
+          await notifyAdmins(
+            {
+              type: NotificationType.ORDER_CANCELED,
+              title: "Order canceled",
+              body: `Order ${args.orderId} was canceled.`,
+              data: { orderId: args.orderId },
+            },
+            prisma as any
+          );
+        } catch (e) {
+          console.error("cancel post-commit admin notify failed:", e);
+        }
+
+        if (args.mode === "ORDER_ALL") {
+          try {
+            await notifySuppliersForOrderTx(prisma as any, args.orderId, {
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+              title: "Order canceled",
+              body: `Order ${args.orderId} was canceled.`,
+              data: { orderId: args.orderId },
+            });
+          } catch (e) {
+            console.error("cancel post-commit supplier notify failed:", e);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("fireAndForgetCancelPostCommit failed:", e);
+    }
+  })();
 }
 
 async function emailSuppliersForOrderTx(
@@ -5404,117 +5499,46 @@ router.post(
       const role = String(req.user?.role ?? "");
       const orderId = String(req.params.orderId);
 
-      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      if (!userId) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
 
       const adminOk = isAdmin(role);
       const supplierOk = isSupplier(role);
 
-      const out = await prisma.$transaction(async (tx) => {
-        const order = await tx.order.findUnique({
-          where: { id: orderId },
-          select: {
-            id: true,
-            userId: true,
-            status: true,
-            total: true,
-            user: { select: { id: true, email: true } },
-          },
-        });
-        if (!order) throw new Error("Order not found");
-
-        if (!adminOk && !supplierOk && String(order.userId) !== String(userId)) {
-          throw new Error("Forbidden");
-        }
-
-        const pos = await tx.purchaseOrder.findMany({
-          where: { orderId },
-          select: { id: true, supplierId: true, status: true },
-        });
-
-        const hasPaid = await hasSuccessfulPaymentForOrderTx(tx, orderId);
-
-        if (!pos.length) {
-          if (!hasPaid) {
-            await restoreOrderInventoryTx(tx, orderId);
-            await markPendingPaymentsCanceledTx(tx, orderId, "Order canceled before payment");
-          }
-
-          await tx.order.update({
+      const out = await prisma.$transaction(
+        async (tx) => {
+          const order = await tx.order.findUnique({
             where: { id: orderId },
-            data: { status: "CANCELED" as any },
+            select: {
+              id: true,
+              userId: true,
+              status: true,
+              total: true,
+              user: { select: { id: true, email: true } },
+            },
           });
 
-          await logOrderActivityTx(
-            tx,
-            orderId,
-            ACT.STATUS_CHANGE as any,
-            "Order canceled"
-          );
+          if (!order) throw new Error("Order not found");
 
-          return {
-            mode: "ORDER_ONLY",
-            orderId,
-            canceled: true,
-            purchaseOrdersCANCELED: 0,
-          };
-        }
-
-        if (supplierOk && !adminOk) {
-          const supplier = await tx.supplier.findFirst({
-            where: { userId },
-            select: { id: true, name: true },
-          });
-          if (!supplier?.id) throw new Error("Supplier access required");
-
-          const myPos = pos.filter(
-            (po: any) => String(po.supplierId) === String(supplier.id)
-          );
-          if (!myPos.length) throw new Error("No purchase order for this supplier");
-
-          for (const po of myPos) {
-            await tx.purchaseOrder.update({
-              where: { id: po.id },
-              data: {
-                status: "CANCELED" as any,
-                canceledAt: new Date(),
-                cancelReason: "SUPPLIER_CANCELED",
-              },
-            });
-
-            await logOrderActivityTx(
-              tx,
-              orderId,
-              ACT.STATUS_CHANGE as any,
-              `Purchase order ${po.id} canceled by supplier`
-            );
-
-            await notifyOneSupplierForPoTx(
-              tx,
-              { orderId, purchaseOrderId: po.id, supplierId: supplier.id },
-              {
-                type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-                title: "Purchase order canceled",
-                body: `Purchase order ${po.id} for order ${orderId} was canceled.`,
-              }
-            );
+          if (!adminOk && !supplierOk && String(order.userId) !== String(userId)) {
+            throw new Error("Forbidden");
           }
 
-          const refreshed = await tx.purchaseOrder.findMany({
+          const pos = await tx.purchaseOrder.findMany({
             where: { orderId },
-            select: { status: true },
+            select: { id: true, supplierId: true, status: true },
           });
 
-          const allCanceled = refreshed.every(
-            (x: any) => String(x.status).toUpperCase() === "CANCELED"
-          );
+          const hasPaid = await hasSuccessfulPaymentForOrderTx(tx, orderId);
 
-          if (allCanceled) {
+          if (!pos.length) {
             if (!hasPaid) {
               await restoreOrderInventoryTx(tx, orderId);
               await markPendingPaymentsCanceledTx(
                 tx,
                 orderId,
-                "All supplier POs canceled before payment"
+                "Order canceled before payment"
               );
             }
 
@@ -5527,114 +5551,180 @@ router.post(
               tx,
               orderId,
               ACT.STATUS_CHANGE as any,
-              "Order canceled (all POs canceled)"
+              "Order canceled"
+            );
+
+            return {
+              mode: "ORDER_ONLY" as const,
+              orderId,
+              canceled: true,
+              purchaseOrdersCANCELED: 0,
+              postCommit: {
+                mode: "ORDER_ONLY" as const,
+                orderId,
+                orderUserId: String(order.userId),
+                actorRole: String(role || "").toUpperCase(),
+                canceledPurchaseOrderIds: [] as string[],
+                allCanceled: true,
+              },
+            };
+          }
+
+          if (supplierOk && !adminOk) {
+            const supplier = await tx.supplier.findFirst({
+              where: { userId },
+              select: { id: true, name: true },
+            });
+
+            if (!supplier?.id) throw new Error("Supplier access required");
+
+            const myPos = pos.filter(
+              (po: any) => String(po.supplierId) === String(supplier.id)
+            );
+
+            if (!myPos.length) throw new Error("No purchase order for this supplier");
+
+            const canceledPurchaseOrderIds: string[] = [];
+
+            for (const po of myPos) {
+              await tx.purchaseOrder.update({
+                where: { id: po.id },
+                data: {
+                  status: "CANCELED" as any,
+                  canceledAt: new Date(),
+                  cancelReason: "SUPPLIER_CANCELED",
+                },
+              });
+
+              canceledPurchaseOrderIds.push(String(po.id));
+
+              await logOrderActivityTx(
+                tx,
+                orderId,
+                ACT.STATUS_CHANGE as any,
+                `Purchase order ${po.id} canceled by supplier`
+              );
+            }
+
+            const refreshed = await tx.purchaseOrder.findMany({
+              where: { orderId },
+              select: { status: true },
+            });
+
+            const allCanceled = refreshed.every(
+              (x: any) => String(x.status).toUpperCase() === "CANCELED"
+            );
+
+            if (allCanceled) {
+              if (!hasPaid) {
+                await restoreOrderInventoryTx(tx, orderId);
+                await markPendingPaymentsCanceledTx(
+                  tx,
+                  orderId,
+                  "All supplier POs canceled before payment"
+                );
+              }
+
+              await tx.order.update({
+                where: { id: orderId },
+                data: { status: "CANCELED" as any },
+              });
+
+              await logOrderActivityTx(
+                tx,
+                orderId,
+                ACT.STATUS_CHANGE as any,
+                "Order canceled (all POs canceled)"
+              );
+            }
+
+            return {
+              mode: "SUPPLIER_PO" as const,
+              orderId,
+              canceled: true,
+              purchaseOrdersCANCELED: myPos.length,
+              postCommit: {
+                mode: "SUPPLIER_PO" as const,
+                orderId,
+                orderUserId: String(order.userId),
+                actorRole: String(role || "").toUpperCase(),
+                supplierId: String(supplier.id),
+                canceledPurchaseOrderIds,
+                allCanceled,
+              },
+            };
+          }
+
+          if (!hasPaid) {
+            await restoreOrderInventoryTx(tx, orderId);
+            await markPendingPaymentsCanceledTx(
+              tx,
+              orderId,
+              "Order canceled before payment"
             );
           }
 
-          try {
-            await notifyUser(
-              String(order.userId),
-              {
-                type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-                title: "Order update",
-                body: `A supplier canceled part of your order ${orderId}.`,
-                data: { orderId },
-              },
-              tx
-            );
+          await tx.order.update({
+            where: { id: orderId },
+            data: { status: "CANCELED" as any },
+          });
 
-            await notifyAdmins(
-              {
-                type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-                title: "Supplier canceled PO",
-                body: `A supplier canceled a purchase order for order ${orderId}.`,
-                data: { orderId },
-              },
-              tx
-            );
-          } catch (e) {
-            console.error("cancel notify (supplier) failed:", e);
-          }
+          await tx.purchaseOrder.updateMany({
+            where: { orderId },
+            data: {
+              status: "CANCELED" as any,
+              canceledAt: new Date(),
+              cancelReason: hasPaid
+                ? "ORDER_CANCELED_AFTER_PAYMENT"
+                : "ORDER_CANCELED_BEFORE_PAYMENT",
+            },
+          });
+
+          await logOrderActivityTx(
+            tx,
+            orderId,
+            ACT.STATUS_CHANGE as any,
+            "Order canceled"
+          );
 
           return {
-            mode: "SUPPLIER_PO",
+            mode: "ORDER_ALL" as const,
             orderId,
             canceled: true,
-            purchaseOrdersCANCELED: myPos.length,
+            purchaseOrdersCANCELED: pos.length,
+            postCommit: {
+              mode: "ORDER_ALL" as const,
+              orderId,
+              orderUserId: String(order.userId),
+              actorRole: String(role || "").toUpperCase(),
+              canceledPurchaseOrderIds: pos.map((po: any) => String(po.id)),
+              allCanceled: true,
+            },
           };
+        },
+        {
+          isolationLevel: "ReadCommitted" as any,
+          maxWait: 10_000,
+          timeout: 45_000,
         }
+      );
 
-        if (!hasPaid) {
-          await restoreOrderInventoryTx(tx, orderId);
-          await markPendingPaymentsCanceledTx(tx, orderId, "Order canceled before payment");
-        }
-
-        await tx.order.update({
-          where: { id: orderId },
-          data: { status: "CANCELED" as any },
-        });
-
-        await tx.purchaseOrder.updateMany({
-          where: { orderId },
-          data: {
-            status: "CANCELED" as any,
-            canceledAt: new Date(),
-            cancelReason: hasPaid ? "ORDER_CANCELED_AFTER_PAYMENT" : "ORDER_CANCELED_BEFORE_PAYMENT",
-          },
-        });
-
-        await logOrderActivityTx(
-          tx,
-          orderId,
-          ACT.STATUS_CHANGE as any,
-          "Order canceled"
-        );
-
-        await notifySuppliersForOrderTx(tx, orderId, {
-          type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-          title: "Order canceled",
-          body: `Order ${orderId} was canceled.`,
-        });
-
-        try {
-          await notifyUser(
-            String(order.userId),
-            {
-              type: NotificationType.ORDER_CANCELED,
-              title: "Order canceled",
-              body: `Your order ${orderId} has been canceled.`,
-              data: { orderId },
-            },
-            tx
-          );
-
-          await notifyAdmins(
-            {
-              type: NotificationType.ORDER_CANCELED,
-              title: "Order canceled",
-              body: `Order ${orderId} was canceled.`,
-              data: { orderId },
-            },
-            tx
-          );
-        } catch (e) {
-          console.error("cancel notify failed:", e);
-        }
-
-        return {
-          mode: "ORDER_ALL",
-          orderId,
-          canceled: true,
-          purchaseOrdersCANCELED: pos.length,
-        };
+      res.json({
+        ok: true,
+        mode: out.mode,
+        orderId: out.orderId,
+        canceled: out.canceled,
+        purchaseOrdersCANCELED: out.purchaseOrdersCANCELED,
       });
 
-      return res.json({ ok: true, ...out });
+      fireAndForgetCancelPostCommit(out.postCommit);
+      return;
     } catch (e: any) {
       console.error("cancel order failed:", e);
-      return res
-        .status(400)
-        .json({ ok: false, error: e?.message || "Failed to cancel order" });
+      return res.status(400).json({
+        ok: false,
+        error: e?.message || "Failed to cancel order",
+      });
     }
   }
 );
