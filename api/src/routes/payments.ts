@@ -771,7 +771,29 @@ async function finalizePaidFlow(paymentId: string) {
   console.log("[finalizePaidFlow] done", finalized);
 }
 
+async function getSupplierEmailMarginPercent(): Promise<number> {
+  const marginRaw =
+    (await readSetting("marginPercent")) ??
+    (await readSetting("pricingMarkupPercent")) ??
+    (await readSetting("markupPercent")) ??
+    (await readSetting("platformMarginPercent")) ??
+    "0";
+
+  const marginPercent = Number(marginRaw);
+  return Number.isFinite(marginPercent) && marginPercent > 0 ? marginPercent : 0;
+}
+
+function removeMarginFromRetailUnitPrice(retailUnitPrice: number, marginPercent: number): number {
+  const retail = Number(retailUnitPrice ?? 0);
+  if (!(retail > 0) || !(marginPercent > 0)) return round2(retail);
+
+  const supplierUnitPrice = retail / (1 + marginPercent / 100);
+  return round2(supplierUnitPrice);
+}
+
 async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: string }) {
+  const marginPercent = await getSupplierEmailMarginPercent();
+
   const pos = await tx.purchaseOrder.findMany({
     where: { orderId: args.orderId },
     select: {
@@ -843,8 +865,18 @@ async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: stri
       .filter(Boolean)
       .map((item: any) => {
         const quantity = Number(item.quantity ?? 0);
-        const supplierUnitPrice = Number(item.chosenSupplierUnitPrice ?? 0);
-        const supplierLineTotal = supplierUnitPrice * quantity;
+
+        // Prefer stored supplier price if present.
+        // Otherwise fall back to retail unitPrice with margin removed.
+        const supplierUnitPriceRaw = Number(item.chosenSupplierUnitPrice ?? 0);
+        const retailUnitPrice = Number(item.unitPrice ?? 0);
+
+        const supplierUnitPrice =
+          supplierUnitPriceRaw > 0
+            ? round2(supplierUnitPriceRaw)
+            : removeMarginFromRetailUnitPrice(retailUnitPrice, marginPercent);
+
+        const supplierLineTotal = round2(supplierUnitPrice * quantity);
 
         return {
           title: item.title ?? "Item",
@@ -874,6 +906,7 @@ async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: stri
         supplierContactEmail: po.supplier?.contactEmail ?? null,
         supplierUserId: po.supplier?.userId ?? null,
         linkedUserEmail: po.supplier?.user?.email ?? null,
+        marginPercentUsed: marginPercent,
       },
     };
   });
@@ -918,6 +951,12 @@ async function emailSuppliersForPaidOrder(args: { orderId: string }) {
         supplierId: job.supplierId,
         supplierEmail: job.supplierEmail,
         itemsCount: job.items.length,
+        items: job.items.map((it: any) => ({
+          title: it.title,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          lineTotal: it.lineTotal,
+        })),
       });
 
       await sendSupplierPurchaseOrderEmail({
@@ -943,6 +982,12 @@ async function emailSuppliersForPaidOrder(args: { orderId: string }) {
           meta: {
             purchaseOrderId: job.purchaseOrderId,
             supplierEmail: job.supplierEmail,
+            items: job.items.map((it: any) => ({
+              title: it.title,
+              quantity: it.quantity,
+              unitPrice: it.unitPrice,
+              lineTotal: it.lineTotal,
+            })),
           },
         },
       });

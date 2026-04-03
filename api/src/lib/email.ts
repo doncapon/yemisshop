@@ -449,7 +449,11 @@ export async function sendSupplierPurchaseOrderEmail(
         <tr>
           <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;vertical-align:top;">
             <div style="font-weight:600;color:#111">${escapeHtml(item?.title ?? "Item")}</div>
-            ${options ? `<div style="margin-top:4px;font-size:12px;color:#6b7280">${escapeHtml(options)}</div>` : ""}
+            ${
+              options
+                ? `<div style="margin-top:4px;font-size:12px;color:#6b7280">${escapeHtml(options)}</div>`
+                : ""
+            }
           </td>
           <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:center;vertical-align:top;">${qty}</td>
           <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
@@ -473,8 +477,8 @@ export async function sendSupplierPurchaseOrderEmail(
       `- ${String(item?.title ?? "Item")}`,
       options ? `  Options: ${options}` : null,
       `  Qty: ${qty}`,
-      `  Unit price: ${formatMoney(unitPrice, currency)}`,
-      `  Line total: ${formatMoney(lineTotal, currency)}`,
+      `  Supplier unit price: ${formatMoney(unitPrice, currency)}`,
+      `  Supplier line total: ${formatMoney(lineTotal, currency)}`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -529,8 +533,8 @@ export async function sendSupplierPurchaseOrderEmail(
           <tr style="background:#f9fafb">
             <th style="padding:10px 12px;text-align:left;border-bottom:1px solid #e5e7eb">Item</th>
             <th style="padding:10px 12px;text-align:center;border-bottom:1px solid #e5e7eb">Qty</th>
-            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Unit price</th>
-            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Line total</th>
+            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Supplier unit price</th>
+            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Supplier line total</th>
           </tr>
         </thead>
         <tbody>
