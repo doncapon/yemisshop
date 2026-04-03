@@ -771,29 +771,7 @@ async function finalizePaidFlow(paymentId: string) {
   console.log("[finalizePaidFlow] done", finalized);
 }
 
-async function getSupplierEmailMarginPercent(): Promise<number> {
-  const marginRaw =
-    (await readSetting("marginPercent")) ??
-    (await readSetting("pricingMarkupPercent")) ??
-    (await readSetting("markupPercent")) ??
-    (await readSetting("platformMarginPercent")) ??
-    "0";
-
-  const marginPercent = Number(marginRaw);
-  return Number.isFinite(marginPercent) && marginPercent > 0 ? marginPercent : 0;
-}
-
-function removeMarginFromRetailUnitPrice(retailUnitPrice: number, marginPercent: number): number {
-  const retail = Number(retailUnitPrice ?? 0);
-  if (!(retail > 0) || !(marginPercent > 0)) return round2(retail);
-
-  const supplierUnitPrice = retail / (1 + marginPercent / 100);
-  return round2(supplierUnitPrice);
-}
-
 async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: string }) {
-  const marginPercent = await getSupplierEmailMarginPercent();
-
   const pos = await tx.purchaseOrder.findMany({
     where: { orderId: args.orderId },
     select: {
@@ -806,6 +784,15 @@ async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: stri
       shippingCurrency: true,
       status: true,
       createdAt: true,
+
+      order: {
+        select: {
+          id: true,
+          subtotal: true,
+          tax: true,
+          total: true,
+        },
+      },
 
       supplier: {
         select: {
@@ -865,18 +852,8 @@ async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: stri
       .filter(Boolean)
       .map((item: any) => {
         const quantity = Number(item.quantity ?? 0);
-
-        // Prefer stored supplier price if present.
-        // Otherwise fall back to retail unitPrice with margin removed.
-        const supplierUnitPriceRaw = Number(item.chosenSupplierUnitPrice ?? 0);
-        const retailUnitPrice = Number(item.unitPrice ?? 0);
-
-        const supplierUnitPrice =
-          supplierUnitPriceRaw > 0
-            ? round2(supplierUnitPriceRaw)
-            : removeMarginFromRetailUnitPrice(retailUnitPrice, marginPercent);
-
-        const supplierLineTotal = round2(supplierUnitPrice * quantity);
+        const supplierUnitPrice = Number(item.chosenSupplierUnitPrice ?? 0);
+        const supplierLineTotal = supplierUnitPrice * quantity;
 
         return {
           title: item.title ?? "Item",
@@ -900,13 +877,15 @@ async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: stri
       supplierAmount: Number(po.supplierAmount ?? 0),
       shippingFeeChargedToCustomer: Number(po.shippingFeeChargedToCustomer ?? 0),
       shippingCurrency: String(po.shippingCurrency ?? "NGN"),
+      orderSubtotal: Number(po.order?.subtotal ?? 0),
+      orderTax: Number(po.order?.tax ?? 0),
+      orderTotal: Number(po.order?.total ?? 0),
       createdAt: po.createdAt ?? null,
       items,
       debug: {
         supplierContactEmail: po.supplier?.contactEmail ?? null,
         supplierUserId: po.supplier?.userId ?? null,
         linkedUserEmail: po.supplier?.user?.email ?? null,
-        marginPercentUsed: marginPercent,
       },
     };
   });
@@ -969,6 +948,9 @@ async function emailSuppliersForPaidOrder(args: { orderId: string }) {
         supplierAmount: job.supplierAmount,
         shippingFeeChargedToCustomer: job.shippingFeeChargedToCustomer,
         shippingCurrency: job.shippingCurrency,
+        orderSubtotal: job.orderSubtotal,
+        orderTax: job.orderTax,
+        orderTotal: job.orderTotal,
         createdAt: job.createdAt,
         items: job.items,
       });
