@@ -24,6 +24,7 @@ import {
 } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
 import { hasSuccessfulPaymentForOrderTx, markPendingPaymentsCanceledTx, restoreOrderInventoryTx } from "../services/orderInventory.service.js";
+import { sendSupplierPurchaseOrderEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -2999,6 +3000,16 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     }
 
     try {
+      await prisma.$transaction(async (tx: any) => {
+        await emailSuppliersForOrderTx(tx, {
+          orderId: txResult.postCommit.orderId,
+        });
+      });
+    } catch (emailErr) {
+      console.error("Failed to email suppliers after order create:", emailErr);
+    }
+
+    try {
       await notifyAdmins(
         {
           type: NotificationType.ORDER_PLACED,
@@ -3736,6 +3747,112 @@ function makePaginatedResponse<T>(args: {
   };
 }
 
+async function emailSuppliersForOrderTx(
+  tx: any,
+  args: {
+    orderId: string;
+  }
+) {
+  const pos = await tx.purchaseOrder.findMany({
+    where: { orderId: args.orderId },
+    select: {
+      id: true,
+      orderId: true,
+      supplierId: true,
+      subtotal: true,
+      supplierAmount: true,
+      shippingFeeChargedToCustomer: true,
+      shippingCurrency: true,
+      status: true,
+      createdAt: true,
+      supplier: {
+        select: {
+          id: true,
+          name: true,
+          userId: true,
+          user: {
+            select: {
+              email: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      },
+      items: {
+        select: {
+          orderItem: {
+            select: {
+              id: true,
+              title: true,
+              quantity: true,
+              unitPrice: true,
+              lineTotal: true,
+              selectedOptions: true,
+              variantId: true,
+              productId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  for (const po of pos) {
+    try {
+      const supplierEmail = String(po.supplier?.user?.email ?? "").trim();
+      if (!supplierEmail) continue;
+
+      const supplierName =
+        String(po.supplier?.name ?? "").trim() ||
+        [
+          String(po.supplier?.user?.firstName ?? "").trim(),
+          String(po.supplier?.user?.lastName ?? "").trim(),
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        "Supplier";
+
+      const items = (po.items || [])
+        .map((x: any) => x?.orderItem)
+        .filter(Boolean)
+        .map((item: any) => ({
+          title: item.title ?? "Item",
+          quantity: Number(item.quantity ?? 0),
+          unitPrice: Number(item.unitPrice ?? 0),
+          lineTotal:
+            item.lineTotal != null
+              ? Number(item.lineTotal)
+              : Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0),
+          selectedOptions: item.selectedOptions ?? null,
+          variantId: item.variantId ? String(item.variantId) : null,
+          productId: item.productId ? String(item.productId) : null,
+        }));
+
+      await sendSupplierPurchaseOrderEmail({
+        to: supplierEmail,
+        supplierName,
+        orderId: String(po.orderId),
+        purchaseOrderId: String(po.id),
+        status: String(po.status ?? "CREATED"),
+        subtotal: Number(po.subtotal ?? 0),
+        supplierAmount: Number(po.supplierAmount ?? 0),
+        shippingFeeChargedToCustomer: Number(po.shippingFeeChargedToCustomer ?? 0),
+        shippingCurrency: String(po.shippingCurrency ?? "NGN"),
+        createdAt: po.createdAt ?? null,
+        items,
+      });
+    } catch (err: any) {
+      console.error("[supplier-order-email] failed", {
+        orderId: args.orderId,
+        purchaseOrderId: po?.id,
+        supplierId: po?.supplierId,
+        message: err?.message,
+      });
+    }
+  }
+}
+
 router.get("/", requireAuth, async (req, res) => {
   try {
     if (!isAdmin((req as any).user?.role)) {
@@ -3915,24 +4032,24 @@ router.get("/", requireAuth, async (req, res) => {
       const [products, variants] = await Promise.all([
         productIds.length
           ? prisma.product.findMany({
-              where: { id: { in: productIds } },
-              select: {
-                id: true,
-                title: true,
-                imagesJson: true,
-              },
-            })
+            where: { id: { in: productIds } },
+            select: {
+              id: true,
+              title: true,
+              imagesJson: true,
+            },
+          })
           : Promise.resolve([]),
         variantIds.length
           ? prisma.productVariant.findMany({
-              where: { id: { in: variantIds } },
-              select: {
-                id: true,
-                sku: true,
-                productId: true,
-                imagesJson: true,
-              },
-            })
+            where: { id: { in: variantIds } },
+            select: {
+              id: true,
+              sku: true,
+              productId: true,
+              imagesJson: true,
+            },
+          })
           : Promise.resolve([]),
       ]);
 
@@ -4011,19 +4128,19 @@ router.get("/", requireAuth, async (req, res) => {
 
           product: product
             ? {
-                id: String(product.id),
-                title: product.title ?? null,
-                imagesJson: productImages,
-              }
+              id: String(product.id),
+              title: product.title ?? null,
+              imagesJson: productImages,
+            }
             : null,
 
           variant: variant
             ? {
-                id: String(variant.id),
-                sku: variant.sku ?? null,
-                productId: variant.productId ?? null,
-                imagesJson: variantImages,
-              }
+              id: String(variant.id),
+              sku: variant.sku ?? null,
+              productId: variant.productId ?? null,
+              imagesJson: variantImages,
+            }
             : null,
 
           imageSnapshot: resolvedImage,
@@ -4252,24 +4369,24 @@ router.get("/mine", requireAuth, async (req, res) => {
     const [products, variants] = await Promise.all([
       productIds.length
         ? prisma.product.findMany({
-            where: { id: { in: productIds } },
-            select: {
-              id: true,
-              title: true,
-              imagesJson: true,
-            },
-          })
+          where: { id: { in: productIds } },
+          select: {
+            id: true,
+            title: true,
+            imagesJson: true,
+          },
+        })
         : Promise.resolve([]),
       variantIds.length
         ? prisma.productVariant.findMany({
-            where: { id: { in: variantIds } },
-            select: {
-              id: true,
-              sku: true,
-              productId: true,
-              imagesJson: true,
-            },
-          })
+          where: { id: { in: variantIds } },
+          select: {
+            id: true,
+            sku: true,
+            productId: true,
+            imagesJson: true,
+          },
+        })
         : Promise.resolve([]),
     ]);
 
@@ -4351,19 +4468,19 @@ router.get("/mine", requireAuth, async (req, res) => {
 
         product: product
           ? {
-              id: String(product.id),
-              title: product.title ?? null,
-              imagesJson: productImages,
-            }
+            id: String(product.id),
+            title: product.title ?? null,
+            imagesJson: productImages,
+          }
           : null,
 
         variant: variant
           ? {
-              id: String(variant.id),
-              sku: variant.sku ?? null,
-              productId: variant.productId ?? null,
-              imagesJson: variantImages,
-            }
+            id: String(variant.id),
+            sku: variant.sku ?? null,
+            productId: variant.productId ?? null,
+            imagesJson: variantImages,
+          }
           : null,
 
         imageSnapshot: resolvedImage,
@@ -4386,27 +4503,27 @@ router.get("/mine", requireAuth, async (req, res) => {
       serviceFeeTotal: asNumLocal(o.serviceFeeTotal, 0),
       payments: Array.isArray(o.payments)
         ? o.payments.map((p: any) => ({
-            id: String(p.id),
-            status: String(p.status ?? ""),
-            provider: p.provider ?? null,
-            reference: p.reference ?? null,
-            amount: p.amount != null ? asNumLocal(p.amount, 0) : null,
-            createdAt: p.createdAt?.toISOString?.() ?? p.createdAt ?? null,
-          }))
+          id: String(p.id),
+          status: String(p.status ?? ""),
+          provider: p.provider ?? null,
+          reference: p.reference ?? null,
+          amount: p.amount != null ? asNumLocal(p.amount, 0) : null,
+          createdAt: p.createdAt?.toISOString?.() ?? p.createdAt ?? null,
+        }))
         : [],
       purchaseOrders: Array.isArray(o.purchaseOrders)
         ? o.purchaseOrders.map((po: any) => ({
-            id: String(po.id),
-            supplierId: String(po.supplierId),
-            supplierName: po?.supplier?.name ?? null,
-            status: po?.status ?? null,
-            payoutStatus: po?.payoutStatus ?? null,
-            createdAt: po?.createdAt?.toISOString?.() ?? po?.createdAt ?? null,
-            shippedAt: po?.shippedAt?.toISOString?.() ?? po?.shippedAt ?? null,
-            deliveredAt: po?.deliveredAt?.toISOString?.() ?? po?.deliveredAt ?? null,
-            deliveryOtpVerifiedAt:
-              po?.deliveryOtpVerifiedAt?.toISOString?.() ?? po?.deliveryOtpVerifiedAt ?? null,
-          }))
+          id: String(po.id),
+          supplierId: String(po.supplierId),
+          supplierName: po?.supplier?.name ?? null,
+          status: po?.status ?? null,
+          payoutStatus: po?.payoutStatus ?? null,
+          createdAt: po?.createdAt?.toISOString?.() ?? po?.createdAt ?? null,
+          shippedAt: po?.shippedAt?.toISOString?.() ?? po?.shippedAt ?? null,
+          deliveredAt: po?.deliveredAt?.toISOString?.() ?? po?.deliveredAt ?? null,
+          deliveryOtpVerifiedAt:
+            po?.deliveryOtpVerifiedAt?.toISOString?.() ?? po?.deliveryOtpVerifiedAt ?? null,
+        }))
         : [],
     }));
 
@@ -4637,24 +4754,24 @@ router.get("/:id", requireAuth, async (req, res) => {
     const [products, variants] = await Promise.all([
       productIds.length
         ? prisma.product.findMany({
-            where: { id: { in: productIds } },
-            select: {
-              id: true,
-              title: true,
-              imagesJson: true,
-            },
-          })
+          where: { id: { in: productIds } },
+          select: {
+            id: true,
+            title: true,
+            imagesJson: true,
+          },
+        })
         : Promise.resolve([]),
       variantIds.length
         ? prisma.productVariant.findMany({
-            where: { id: { in: variantIds } },
-            select: {
-              id: true,
-              sku: true,
-              productId: true,
-              imagesJson: true,
-            },
-          })
+          where: { id: { in: variantIds } },
+          select: {
+            id: true,
+            sku: true,
+            productId: true,
+            imagesJson: true,
+          },
+        })
         : Promise.resolve([]),
     ]);
 
@@ -4758,19 +4875,19 @@ router.get("/:id", requireAuth, async (req, res) => {
 
           product: product
             ? {
-                id: String(product.id),
-                title: product.title ?? null,
-                imagesJson: productImages,
-              }
+              id: String(product.id),
+              title: product.title ?? null,
+              imagesJson: productImages,
+            }
             : null,
 
           variant: variant
             ? {
-                id: String(variant.id),
-                sku: variant.sku ?? null,
-                productId: variant.productId ?? null,
-                imagesJson: variantImages,
-              }
+              id: String(variant.id),
+              sku: variant.sku ?? null,
+              productId: variant.productId ?? null,
+              imagesJson: variantImages,
+            }
             : null,
 
           imageSnapshot: resolvedImage,
@@ -4779,48 +4896,48 @@ router.get("/:id", requireAuth, async (req, res) => {
 
       payments: Array.isArray((order as any).payments)
         ? ((order as any).payments as any[]).map((p: any) => ({
-            id: String(p.id),
-            status: String(p.status ?? ""),
-            provider: p.provider ?? null,
-            channel: p.channel ?? null,
-            reference: p.reference ?? null,
-            amount: p.amount != null ? asNumLocal(p.amount, 0) : null,
-            feeAmount: p.feeAmount != null ? asNumLocal(p.feeAmount, 0) : null,
-            createdAt: p.createdAt?.toISOString?.() ?? p.createdAt ?? null,
-            allocations: Array.isArray(p.allocations)
-              ? p.allocations.map((a: any) => ({
-                  id: String(a.id),
-                  supplierId: String(a.supplierId),
-                  supplierName:
-                    a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
-                  amount: a.amount != null ? asNumLocal(a.amount, 0) : null,
-                  status: a.status ?? null,
-                  purchaseOrderId: a.purchaseOrderId ?? null,
-                }))
-              : [],
-          }))
+          id: String(p.id),
+          status: String(p.status ?? ""),
+          provider: p.provider ?? null,
+          channel: p.channel ?? null,
+          reference: p.reference ?? null,
+          amount: p.amount != null ? asNumLocal(p.amount, 0) : null,
+          feeAmount: p.feeAmount != null ? asNumLocal(p.feeAmount, 0) : null,
+          createdAt: p.createdAt?.toISOString?.() ?? p.createdAt ?? null,
+          allocations: Array.isArray(p.allocations)
+            ? p.allocations.map((a: any) => ({
+              id: String(a.id),
+              supplierId: String(a.supplierId),
+              supplierName:
+                a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+              amount: a.amount != null ? asNumLocal(a.amount, 0) : null,
+              status: a.status ?? null,
+              purchaseOrderId: a.purchaseOrderId ?? null,
+            }))
+            : [],
+        }))
         : [],
 
       purchaseOrders: Array.isArray((order as any).purchaseOrders)
         ? ((order as any).purchaseOrders as any[]).map((po: any) => ({
-            id: String(po.id),
-            supplierId: String(po.supplierId),
-            supplierName: po?.supplier?.name ?? null,
-            status: po?.status ?? null,
-            subtotal: po?.subtotal != null ? asNumLocal(po.subtotal, 0) : null,
-            platformFee: po?.platformFee != null ? asNumLocal(po.platformFee, 0) : null,
-            supplierAmount:
-              po?.supplierAmount != null ? asNumLocal(po.supplierAmount, 0) : null,
-            createdAt: po?.createdAt?.toISOString?.() ?? po?.createdAt ?? null,
-            shippedAt: po?.shippedAt?.toISOString?.() ?? po?.shippedAt ?? null,
-            deliveredAt: po?.deliveredAt?.toISOString?.() ?? po?.deliveredAt ?? null,
-            deliveryOtpVerifiedAt:
-              po?.deliveryOtpVerifiedAt?.toISOString?.() ??
-              po?.deliveryOtpVerifiedAt ??
-              null,
-            payoutStatus: po?.payoutStatus ?? null,
-            paidOutAt: po?.paidOutAt?.toISOString?.() ?? po?.paidOutAt ?? null,
-          }))
+          id: String(po.id),
+          supplierId: String(po.supplierId),
+          supplierName: po?.supplier?.name ?? null,
+          status: po?.status ?? null,
+          subtotal: po?.subtotal != null ? asNumLocal(po.subtotal, 0) : null,
+          platformFee: po?.platformFee != null ? asNumLocal(po.platformFee, 0) : null,
+          supplierAmount:
+            po?.supplierAmount != null ? asNumLocal(po.supplierAmount, 0) : null,
+          createdAt: po?.createdAt?.toISOString?.() ?? po?.createdAt ?? null,
+          shippedAt: po?.shippedAt?.toISOString?.() ?? po?.shippedAt ?? null,
+          deliveredAt: po?.deliveredAt?.toISOString?.() ?? po?.deliveredAt ?? null,
+          deliveryOtpVerifiedAt:
+            po?.deliveryOtpVerifiedAt?.toISOString?.() ??
+            po?.deliveryOtpVerifiedAt ??
+            null,
+          payoutStatus: po?.payoutStatus ?? null,
+          paidOutAt: po?.paidOutAt?.toISOString?.() ?? po?.paidOutAt ?? null,
+        }))
         : [],
     };
 

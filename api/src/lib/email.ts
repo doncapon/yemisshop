@@ -339,3 +339,240 @@ export async function sendRiderInviteEmail(
     replyTo: meta.replyTo ?? DEFAULT_REPLY_TO,
   });
 }
+
+/* ===========================
+   Supplier purchase order email
+=========================== */
+
+type SupplierPurchaseOrderEmailItem = {
+  title?: string | null;
+  quantity?: number | null;
+  unitPrice?: number | null;
+  lineTotal?: number | null;
+  selectedOptions?: any;
+  variantId?: string | null;
+  productId?: string | null;
+};
+
+type SupplierPurchaseOrderEmailArgs = {
+  to: string;
+  supplierName?: string | null;
+  orderId: string;
+  purchaseOrderId: string;
+  status?: string | null;
+  subtotal?: number | null;
+  supplierAmount?: number | null;
+  shippingFeeChargedToCustomer?: number | null;
+  shippingCurrency?: string | null;
+  createdAt?: Date | string | null;
+  dashboardUrl?: string | null;
+  items: SupplierPurchaseOrderEmailItem[];
+};
+
+function formatMoney(amount: number | null | undefined, currency?: string | null) {
+  const code = String(currency || "NGN").toUpperCase();
+  const value = Number(amount ?? 0);
+
+  try {
+    return new Intl.NumberFormat("en-NG", {
+      style: "currency",
+      currency: code,
+      maximumFractionDigits: 2,
+    }).format(Number.isFinite(value) ? value : 0);
+  } catch {
+    return `${code} ${(Number.isFinite(value) ? value : 0).toFixed(2)}`;
+  }
+}
+
+function parseSelectedOptions(value: any): Array<{ attribute?: string; value?: string }> {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+function formatSelectedOptionsInline(value: any) {
+  const arr = parseSelectedOptions(value);
+
+  return arr
+    .map((o: any) => {
+      const a = String(o?.attribute ?? "").trim();
+      const v = String(o?.value ?? "").trim();
+      if (a && v) return `${a}: ${v}`;
+      return v || a || "";
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+function escapeHtml(input: any) {
+  return String(input ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+export async function sendSupplierPurchaseOrderEmail(
+  args: SupplierPurchaseOrderEmailArgs
+) {
+  const supplierName = String(args.supplierName ?? "").trim() || "Supplier";
+  const currency = String(args.shippingCurrency ?? "NGN").trim() || "NGN";
+  const dashboardUrl =
+    String(
+      args.dashboardUrl ??
+        process.env.SUPPLIER_DASHBOARD_URL ??
+        process.env.APP_URL ??
+        ""
+    ).trim() || null;
+
+  const items = Array.isArray(args.items) ? args.items : [];
+
+  const itemRowsHtml = items
+    .map((item) => {
+      const qty = Number(item?.quantity ?? 0);
+      const unitPrice = Number(item?.unitPrice ?? 0);
+      const lineTotal = Number(item?.lineTotal ?? unitPrice * qty);
+      const options = formatSelectedOptionsInline(item?.selectedOptions);
+
+      return `
+        <tr>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;vertical-align:top;">
+            <div style="font-weight:600;color:#111">${escapeHtml(item?.title ?? "Item")}</div>
+            ${options ? `<div style="margin-top:4px;font-size:12px;color:#6b7280">${escapeHtml(options)}</div>` : ""}
+          </td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:center;vertical-align:top;">${qty}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
+            formatMoney(unitPrice, currency)
+          )}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
+            formatMoney(lineTotal, currency)
+          )}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  const itemRowsText = items.map((item) => {
+    const qty = Number(item?.quantity ?? 0);
+    const unitPrice = Number(item?.unitPrice ?? 0);
+    const lineTotal = Number(item?.lineTotal ?? unitPrice * qty);
+    const options = formatSelectedOptionsInline(item?.selectedOptions);
+
+    return [
+      `- ${String(item?.title ?? "Item")}`,
+      options ? `  Options: ${options}` : null,
+      `  Qty: ${qty}`,
+      `  Unit price: ${formatMoney(unitPrice, currency)}`,
+      `  Line total: ${formatMoney(lineTotal, currency)}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+
+  const ctaHtml = dashboardUrl
+    ? `
+      <p style="margin:20px 0 0 0">
+        <a
+          href="${escapeHtml(dashboardUrl)}"
+          style="display:inline-block;background:#111;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none"
+        >
+          Open supplier dashboard
+        </a>
+      </p>
+    `
+    : "";
+
+  const ctaText = dashboardUrl ? `Supplier dashboard: ${dashboardUrl}\n\n` : "";
+
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
+      <h2 style="margin:0 0 6px 0">New purchase order received</h2>
+      <p style="margin:0 0 12px 0">Hello ${escapeHtml(supplierName)},</p>
+      <p style="margin:0 0 16px 0">
+        You have received a new purchase order on <strong>DaySpring</strong>.
+      </p>
+
+      <div style="margin:0 0 16px 0;padding:14px 16px;border:1px solid #e5e7eb;border-radius:12px;background:#fafafa">
+        <div><strong>Order ID:</strong> <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">${escapeHtml(
+          args.orderId
+        )}</span></div>
+        <div><strong>Purchase Order ID:</strong> <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">${escapeHtml(
+          args.purchaseOrderId
+        )}</span></div>
+        <div><strong>Status:</strong> ${escapeHtml(args.status ?? "CREATED")}</div>
+        <div><strong>Customer subtotal:</strong> ${escapeHtml(
+          formatMoney(args.subtotal, currency)
+        )}</div>
+        <div><strong>Your amount:</strong> ${escapeHtml(
+          formatMoney(args.supplierAmount, currency)
+        )}</div>
+        <div><strong>Shipping charged to customer:</strong> ${escapeHtml(
+          formatMoney(args.shippingFeeChargedToCustomer, currency)
+        )}</div>
+      </div>
+
+      <h3 style="margin:0 0 10px 0">Items</h3>
+
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
+        <thead>
+          <tr style="background:#f9fafb">
+            <th style="padding:10px 12px;text-align:left;border-bottom:1px solid #e5e7eb">Item</th>
+            <th style="padding:10px 12px;text-align:center;border-bottom:1px solid #e5e7eb">Qty</th>
+            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Unit price</th>
+            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Line total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${itemRowsHtml || `<tr><td colspan="4" style="padding:12px">No items found.</td></tr>`}
+        </tbody>
+      </table>
+
+      ${ctaHtml}
+
+      <p style="margin:18px 0 0 0;color:#444">
+        Please log in to your supplier dashboard to process this order.
+      </p>
+
+      <p style="margin:14px 0 0 0;color:#6b7280;font-size:12px">— DaySpring</p>
+    </div>
+  `;
+
+  const text = [
+    `Hello ${supplierName},`,
+    "",
+    "You have received a new purchase order on DaySpring.",
+    "",
+    `Order ID: ${args.orderId}`,
+    `Purchase Order ID: ${args.purchaseOrderId}`,
+    `Status: ${String(args.status ?? "CREATED")}`,
+    `Customer subtotal: ${formatMoney(args.subtotal, currency)}`,
+    `Your amount: ${formatMoney(args.supplierAmount, currency)}`,
+    `Shipping charged to customer: ${formatMoney(args.shippingFeeChargedToCustomer, currency)}`,
+    "",
+    "Items:",
+    ...(itemRowsText.length ? itemRowsText : ["- No items found."]),
+    "",
+    ctaText,
+    "Please log in to your supplier dashboard to process this order.",
+    "",
+    "DaySpring",
+  ].join("\n");
+
+  return safeSend({
+    to: args.to,
+    subject: `New purchase order ${args.purchaseOrderId} for order ${args.orderId}`,
+    html,
+    text,
+  });
+}
