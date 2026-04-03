@@ -569,15 +569,17 @@ async function finalizePaidFlow(paymentId: string) {
         return null;
       }
 
+      // IMPORTANT:
+      // Even if already finalized before, still continue post-finalization checks
+      // like supplier email, customer email, receipt, etc.
       if (payment.purchaseEventSentAt) {
-        console.log("[finalizePaidFlow] already finalized, continuing post-finalize checks", {
+        console.log("[finalizePaidFlow] already finalized, continuing follow-up work", {
           paymentId,
           purchaseEventSentAt: payment.purchaseEventSentAt,
         });
 
         return {
-          skipped: false as const,
-          alreadyFinalized: true as const,
+          skippedCoreFinalize: true as const,
           orderId: payment.orderId,
           paymentId: payment.id,
         };
@@ -653,8 +655,7 @@ async function finalizePaidFlow(paymentId: string) {
       trackPaymentId = payment.id;
 
       return {
-        skipped: false as const,
-        alreadyFinalized: false as const,
+        skippedCoreFinalize: false as const,
         orderId: payment.orderId,
         paymentId: payment.id,
       };
@@ -698,7 +699,7 @@ async function finalizePaidFlow(paymentId: string) {
     await prisma.paymentEvent.create({
       data: {
         paymentId: finalized.paymentId,
-        type: "SUPPLIER_PO_EMAIL_SENT",
+        type: "SUPPLIER_PO_EMAIL_ATTEMPTED",
         data: { orderId },
       },
     });
@@ -759,7 +760,6 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
       shippingCurrency: true,
       status: true,
       createdAt: true,
-      supplierNotifiedAt: true,
       supplier: {
         select: {
           id: true,
@@ -801,12 +801,33 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
 
   for (const po of pos) {
     try {
-      if (po.supplierNotifiedAt) {
-        console.log("[supplier-paid-order-email] skip already notified", {
+      const purchaseOrderId = String(po.id);
+      const supplierId = String(po.supplierId);
+
+      // Idempotency without schema change:
+      // If we already logged this exact PO email event, skip.
+      const alreadyLogged = await tx.orderActivity.findFirst({
+        where: {
+          orderId: String(po.orderId),
+          supplierId,
+          type: "SUPPLIER_PO_EMAIL_SENT",
+        },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          meta: true,
+        },
+      });
+
+      const alreadySentForThisPo =
+        alreadyLogged &&
+        String((alreadyLogged.meta as any)?.purchaseOrderId ?? "") === purchaseOrderId;
+
+      if (alreadySentForThisPo) {
+        console.log("[supplier-paid-order-email] skip already sent", {
           orderId: args.orderId,
-          purchaseOrderId: po.id,
-          supplierId: po.supplierId,
-          supplierNotifiedAt: po.supplierNotifiedAt,
+          purchaseOrderId,
+          supplierId,
         });
         continue;
       }
@@ -816,10 +837,25 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
       if (!supplierEmail) {
         console.warn("[supplier-paid-order-email] supplier email missing", {
           orderId: args.orderId,
-          purchaseOrderId: po.id,
-          supplierId: po.supplierId,
+          purchaseOrderId,
+          supplierId,
           supplierUserId: po.supplier?.userId ?? null,
         });
+
+        await tx.orderActivity.create({
+          data: {
+            orderId: String(po.orderId),
+            supplierId,
+            type: "SUPPLIER_PO_EMAIL_SKIPPED",
+            message: `Supplier PO email skipped for PO ${purchaseOrderId} because supplier email is missing`,
+            meta: {
+              purchaseOrderId,
+              reason: "SUPPLIER_EMAIL_MISSING",
+              supplierUserId: po.supplier?.userId ?? null,
+            },
+          },
+        });
+
         continue;
       }
 
@@ -851,8 +887,8 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
 
       console.log("[supplier-paid-order-email] sending", {
         orderId: args.orderId,
-        purchaseOrderId: po.id,
-        supplierId: po.supplierId,
+        purchaseOrderId,
+        supplierId,
         to: supplierEmail,
         itemsCount: items.length,
       });
@@ -861,7 +897,7 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
         to: supplierEmail,
         supplierName,
         orderId: String(po.orderId),
-        purchaseOrderId: String(po.id),
+        purchaseOrderId,
         status: String(po.status ?? "AWAITING_FULFILLMENT"),
         subtotal: Number(po.subtotal ?? 0),
         supplierAmount: Number(po.supplierAmount ?? 0),
@@ -871,21 +907,14 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
         items,
       });
 
-      await tx.purchaseOrder.update({
-        where: { id: po.id },
-        data: {
-          supplierNotifiedAt: new Date(),
-        },
-      });
-
       await tx.orderActivity.create({
         data: {
           orderId: String(po.orderId),
-          supplierId: String(po.supplierId),
+          supplierId,
           type: "SUPPLIER_PO_EMAIL_SENT",
-          message: `Supplier purchase order email sent for PO ${po.id}`,
+          message: `Supplier purchase order email sent for PO ${purchaseOrderId}`,
           meta: {
-            purchaseOrderId: String(po.id),
+            purchaseOrderId,
             supplierEmail,
           },
         },
@@ -893,8 +922,8 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
 
       console.log("[supplier-paid-order-email] sent successfully", {
         orderId: args.orderId,
-        purchaseOrderId: po.id,
-        supplierId: po.supplierId,
+        purchaseOrderId,
+        supplierId,
         to: supplierEmail,
       });
     } catch (err: any) {
@@ -905,6 +934,23 @@ async function emailSuppliersForPaidOrderTx(tx: any, args: { orderId: string }) 
         message: err?.message,
         stack: err?.stack,
       });
+
+      try {
+        await tx.orderActivity.create({
+          data: {
+            orderId: String(po.orderId),
+            supplierId: String(po.supplierId),
+            type: "SUPPLIER_PO_EMAIL_FAILED",
+            message: `Supplier purchase order email failed for PO ${po.id}`,
+            meta: {
+              purchaseOrderId: String(po.id),
+              error: err?.message ?? "Unknown error",
+            },
+          },
+        });
+      } catch {
+        //
+      }
     }
   }
 }
