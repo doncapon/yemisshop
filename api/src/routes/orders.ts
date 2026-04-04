@@ -24,6 +24,7 @@ import {
 } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
 import { hasSuccessfulPaymentForOrderTx, markPendingPaymentsCanceledTx, restoreOrderInventoryTx } from "../services/orderInventory.service.js";
+import { sendSupplierPurchaseOrderEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -153,6 +154,10 @@ function truthySetting(v: any) {
 }
 
 type SelectedShippingQuoteMap = Record<string, SelectedShippingQuote>;
+
+function productCheckoutReadyRelationFilter() {
+  return { is: { status: "LIVE", isDeleted: false } } as const;
+}
 
 async function getSelectedShippingQuotesTx(
   tx: any,
@@ -1083,15 +1088,11 @@ async function fetchActiveBaseOffersTx(
       where: {
         productId: where.productId,
         isActive: true,
+        inStock: true,
         availableQty: { gt: 0 },
         basePrice: { gt: 0 },
-        product: {
-          status: "LIVE",
-          isDeleted: false,
-        },
-        supplier: {
-          ...checkoutReadySupplierWhere(),
-        },
+        product: productCheckoutReadyRelationFilter(),
+        supplier: supplierCheckoutReadyRelationFilter(),
       },
       select: {
         id: true,
@@ -1146,6 +1147,7 @@ async function fetchActiveBaseOffersTx(
         productId: where.productId,
         variantId: null,
         isActive: true,
+        inStock: true,
         availableQty: { gt: 0 },
         unitPrice: { gt: 0 },
       },
@@ -1471,6 +1473,254 @@ async function fetchActiveOffersTx(
     .filter(Boolean) as CandidateOffer[];
 
   return sortOffersCheapestFirst(legacyOut);
+}
+
+async function explainUnavailableLineTx(
+  tx: any,
+  args: {
+    productId: string;
+    variantId: string | null;
+    explicitOfferId?: string | null;
+    productTitle: string;
+    optionsLabel?: string;
+  }
+): Promise<string> {
+  const suffix = `${args.productTitle}${args.optionsLabel ?? ""}`;
+
+  const explainBaseRow = (row: any) => {
+    if (!row) return null;
+
+    if (String(row.productId ?? "") !== String(args.productId)) {
+      return `Selected offer for ${suffix} belongs to a different product.`;
+    }
+    if (row.product?.isDeleted) {
+      return `${suffix} is deleted and cannot be purchased.`;
+    }
+    if (String(row.product?.status ?? "").toUpperCase() !== "LIVE") {
+      return `${suffix} is not LIVE for checkout.`;
+    }
+    if (row.isActive !== true) {
+      return `The selected base offer for ${suffix} is inactive.`;
+    }
+    if (row.inStock !== true) {
+      return `The selected base offer for ${suffix} is marked out of stock.`;
+    }
+    if (!(Number(row.availableQty ?? 0) > 0)) {
+      return `The selected base offer for ${suffix} has no available quantity.`;
+    }
+    if (!(Number(row.basePrice ?? 0) > 0)) {
+      return `The selected base offer for ${suffix} has no valid price.`;
+    }
+    if (String(row.supplier?.status ?? "").toUpperCase() !== "ACTIVE") {
+      return `Supplier "${row.supplier?.name ?? "Unknown supplier"}" is not ACTIVE for checkout.`;
+    }
+    return `The selected base offer for ${suffix} is not checkout-eligible.`;
+  };
+
+  const explainVariantRow = (row: any) => {
+    if (!row) return null;
+
+    const rowProductId = String(
+      row.variant?.productId ?? row.productId ?? ""
+    );
+
+    if (rowProductId !== String(args.productId)) {
+      return `Selected offer for ${suffix} belongs to a different product.`;
+    }
+    if (args.variantId && String(row.variantId ?? "") !== String(args.variantId)) {
+      return `Selected offer for ${suffix} belongs to a different variant.`;
+    }
+    if (row.product?.isDeleted) {
+      return `${suffix} is deleted and cannot be purchased.`;
+    }
+    if (String(row.product?.status ?? "").toUpperCase() !== "LIVE") {
+      return `${suffix} is not LIVE for checkout.`;
+    }
+    if (row.isActive !== true) {
+      return `The selected variant offer for ${suffix} is inactive.`;
+    }
+    if (row.inStock !== true) {
+      return `The selected variant offer for ${suffix} is marked out of stock.`;
+    }
+    if (!(Number(row.availableQty ?? 0) > 0)) {
+      return `The selected variant offer for ${suffix} has no available quantity.`;
+    }
+    if (!(Number(row.unitPrice ?? 0) > 0)) {
+      return `The selected variant offer for ${suffix} has no valid price.`;
+    }
+    if (String(row.supplier?.status ?? "").toUpperCase() !== "ACTIVE") {
+      return `Supplier "${row.supplier?.name ?? "Unknown supplier"}" is not ACTIVE for checkout.`;
+    }
+    return `The selected variant offer for ${suffix} is not checkout-eligible.`;
+  };
+
+  if (args.explicitOfferId) {
+    const [explicitVariant, explicitBase, explicitLegacy] = await Promise.all([
+      tx.supplierVariantOffer.findUnique({
+        where: { id: String(args.explicitOfferId) },
+        select: {
+          id: true,
+          productId: true,
+          variantId: true,
+          isActive: true,
+          inStock: true,
+          availableQty: true,
+          unitPrice: true,
+          supplier: { select: { id: true, name: true, status: true } },
+          variant: { select: { productId: true } },
+          product: { select: { status: true, isDeleted: true } },
+        } as any,
+      }).catch(() => null),
+
+      tx.supplierProductOffer.findUnique({
+        where: { id: String(args.explicitOfferId) },
+        select: {
+          id: true,
+          productId: true,
+          isActive: true,
+          inStock: true,
+          availableQty: true,
+          basePrice: true,
+          supplier: { select: { id: true, name: true, status: true } },
+          product: { select: { status: true, isDeleted: true } },
+        } as any,
+      }).catch(() => null),
+
+      (tx.supplierOffer?.findFirst?.({
+        where: { id: String(args.explicitOfferId) },
+        select: {
+          id: true,
+          productId: true,
+          variantId: true,
+          isActive: true,
+          inStock: true,
+          availableQty: true,
+          unitPrice: true,
+          supplierId: true,
+        } as any,
+      }) ?? Promise.resolve(null)).catch(() => null),
+    ]);
+
+    if (explicitVariant) {
+      return explainVariantRow(explicitVariant) ?? `Selected offer for ${suffix} is not available.`;
+    }
+
+    if (explicitBase) {
+      return explainBaseRow(explicitBase) ?? `Selected offer for ${suffix} is not available.`;
+    }
+
+    if (explicitLegacy) {
+      if (String(explicitLegacy.productId ?? "") !== String(args.productId)) {
+        return `Selected offer for ${suffix} belongs to a different product.`;
+      }
+      if (args.variantId && String(explicitLegacy.variantId ?? "") !== String(args.variantId)) {
+        return `Selected offer for ${suffix} belongs to a different variant.`;
+      }
+      if (explicitLegacy.isActive !== true) {
+        return `The selected legacy offer for ${suffix} is inactive.`;
+      }
+      if (explicitLegacy.inStock !== true) {
+        return `The selected legacy offer for ${suffix} is marked out of stock.`;
+      }
+      if (!(Number(explicitLegacy.availableQty ?? 0) > 0)) {
+        return `The selected legacy offer for ${suffix} has no available quantity.`;
+      }
+      if (!(Number(explicitLegacy.unitPrice ?? 0) > 0)) {
+        return `The selected legacy offer for ${suffix} has no valid price.`;
+      }
+    }
+  }
+
+  if (args.variantId) {
+    const rawVariantOffers = await tx.supplierVariantOffer.findMany({
+      where: {
+        productId: String(args.productId),
+        variantId: String(args.variantId),
+      } as any,
+      select: {
+        id: true,
+        productId: true,
+        variantId: true,
+        isActive: true,
+        inStock: true,
+        availableQty: true,
+        unitPrice: true,
+        supplier: { select: { id: true, name: true, status: true } },
+        product: { select: { status: true, isDeleted: true } },
+      } as any,
+      take: 10,
+    }).catch(() => []);
+
+    if (rawVariantOffers.length) {
+      const firstReason =
+        rawVariantOffers.map(explainVariantRow).find(Boolean) ?? null;
+      if (firstReason) return firstReason;
+      return `Variant offers exist for ${suffix}, but none are checkout-eligible.`;
+    }
+
+    return `No persisted variant offer exists for ${suffix}.`;
+  }
+
+  const rawBaseOffers = await tx.supplierProductOffer.findMany({
+    where: {
+      productId: String(args.productId),
+    } as any,
+    select: {
+      id: true,
+      productId: true,
+      isActive: true,
+      inStock: true,
+      availableQty: true,
+      basePrice: true,
+      supplier: { select: { id: true, name: true, status: true } },
+      product: { select: { status: true, isDeleted: true } },
+    } as any,
+    take: 10,
+  }).catch(() => []);
+
+  if (rawBaseOffers.length) {
+    const firstReason =
+      rawBaseOffers.map(explainBaseRow).find(Boolean) ?? null;
+    if (firstReason) return firstReason;
+    return `Base offers exist for ${suffix}, but none are checkout-eligible.`;
+  }
+
+  const rawLegacyBase =
+    (await (tx.supplierOffer?.findMany?.({
+      where: {
+        productId: String(args.productId),
+        variantId: null,
+      },
+      select: {
+        id: true,
+        productId: true,
+        variantId: true,
+        isActive: true,
+        inStock: true,
+        availableQty: true,
+        unitPrice: true,
+        supplierId: true,
+      } as any,
+      take: 10,
+    }) ?? Promise.resolve([])).catch(() => [])) ?? [];
+
+  if (rawLegacyBase.length) {
+    const first = rawLegacyBase[0];
+    if (first.isActive !== true) {
+      return `Legacy base offer for ${suffix} is inactive.`;
+    }
+    if (first.inStock !== true) {
+      return `Legacy base offer for ${suffix} is marked out of stock.`;
+    }
+    if (!(Number(first.availableQty ?? 0) > 0)) {
+      return `Legacy base offer for ${suffix} has no available quantity.`;
+    }
+    if (!(Number(first.unitPrice ?? 0) > 0)) {
+      return `Legacy base offer for ${suffix} has no valid price.`;
+    }
+  }
+
+  return `No persisted supplier offers exist for ${suffix}.`;
 }
 
 /* ---------------- Stock decrement (atomic) ---------------- */
@@ -1812,9 +2062,12 @@ async function ensurePurchaseOrdersForOrderTx(
     if (!sid) continue;
 
     const qty = Math.max(0, Number(it.quantity ?? 0));
+
+    // NET payable to supplier
     const supplierUnit = money(it.chosenSupplierUnitPrice);
     const supplierLine = round2(supplierUnit * qty);
 
+    // What customer paid for this line
     const customerUnit = money(it.unitPrice);
     const customerLine = round2(
       it.lineTotal != null ? money(it.lineTotal) : customerUnit * qty
@@ -1835,6 +2088,8 @@ async function ensurePurchaseOrdersForOrderTx(
   }
 
   const supplierIds = Array.from(bySupplier.keys());
+
+  if (!supplierIds.length) return [];
 
   const suppliers = await tx.supplier.findMany({
     where: { id: { in: supplierIds } },
@@ -1920,6 +2175,8 @@ async function ensurePurchaseOrdersForOrderTx(
 
     const supplierAmount = round2(g.supplierAmount);
     const customerSubtotal = round2(g.customerSubtotal);
+
+    // margin = customer paid - supplier payable
     const platformFee = round2(Math.max(0, customerSubtotal - supplierAmount));
 
     const directQuote = quotes[sid] ?? null;
@@ -2019,28 +2276,72 @@ async function ensurePurchaseOrdersForOrderTx(
   return createdPOs;
 }
 
-function resolveMarginPercentForItem(settings: CheckoutSettingsSnapshot): number {
+export function resolveMarginPercentForItem(settings: CheckoutSettingsSnapshot): number {
   const cfg = getMarginConfig(settings);
 
-  // default platform margin
-  let margin = cfg.defaultPercent;
+  let margin = Number(cfg.defaultPercent ?? 0);
+  if (!Number.isFinite(margin) || margin < 0) margin = 0;
 
-  // safety guard
-  if (!Number.isFinite(margin) || margin < 0) {
-    margin = 0;
-  }
-
-  // never exceed configured max
   margin = Math.min(margin, cfg.maxMarginPct);
-
   return margin;
 }
 
 function getMarginConfig(settings: CheckoutSettingsSnapshot) {
   return {
-    defaultPercent: Math.min(settings.marginPercent, settings.maxMarginPct),
-    minMarginNGN: settings.minMarginNGN,
-    maxMarginPct: settings.maxMarginPct,
+    defaultPercent: Math.min(
+      Math.max(0, Number(settings.marginPercent ?? 0)),
+      Math.max(0, Number(settings.maxMarginPct ?? 100))
+    ),
+    minMarginNGN: Math.max(0, Number(settings.minMarginNGN ?? 0)),
+    maxMarginPct: Math.max(0, Number(settings.maxMarginPct ?? 100)),
+  };
+}
+
+/**
+ * IMPORTANT:
+ * Margin deduction for supplier payout must be based on the supplier cost,
+ * NOT the retail/customer price.
+ *
+ * Example:
+ * supplier cost = 16500
+ * marginPercent = 10
+ * supplier net payable = 14850
+ */
+function computeSupplierNetPayableFromSupplierCost(
+  settings: CheckoutSettingsSnapshot,
+  args: {
+    supplierUnitCost: number;
+    productId: string;
+    variantId: string | null;
+  }
+) {
+  const supplierUnitCost = round2(Number(args.supplierUnitCost ?? 0));
+  if (!(supplierUnitCost > 0)) {
+    throw new Error(
+      `Invalid supplier unit cost for product ${args.productId}${args.variantId ? ` variant ${args.variantId}` : ""
+      }.`
+    );
+  }
+
+  const marginPercent = resolveMarginPercentForItem(settings);
+
+  // Your requested rule:
+  // amount payable = supplier cost - (marginPercent% of supplier cost)
+  const marginAmount = round2(supplierUnitCost * (marginPercent / 100));
+  const supplierNetUnitPayable = round2(supplierUnitCost - marginAmount);
+
+  if (supplierNetUnitPayable < 0) {
+    throw new Error(
+      `Computed supplier net payable is negative for product ${args.productId}${args.variantId ? ` variant ${args.variantId}` : ""
+      }.`
+    );
+  }
+
+  return {
+    marginPercent,
+    supplierGrossUnitCost: supplierUnitCost,
+    supplierMarginAmount: marginAmount,
+    supplierNetUnitPayable,
   };
 }
 
@@ -2764,7 +3065,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           });
 
           if (!candidates.length) {
-            throw new Error(`No active supplier offers for: ${productTitle}${optionsLabel}.`);
+            const exactReason = await explainUnavailableLineTx(tx, {
+              productId,
+              variantId,
+              explicitOfferId,
+              productTitle,
+              optionsLabel,
+            });
+
+            throw new Error(exactReason);
           }
 
           const totalAvailable = candidates.reduce(
@@ -2823,12 +3132,18 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           }
 
           const orderItemRows = allocations.map((alloc) => {
-            const supplierUnitCost = round2(Number(alloc.supplierUnitCost || 0));
-            if (!(supplierUnitCost > 0)) {
+            const supplierUnitCostGross = round2(Number(alloc.supplierUnitCost || 0));
+            if (!(supplierUnitCostGross > 0)) {
               throw new Error(
                 `Missing supplier unit cost for ${productTitle}${optionsLabel}.`
               );
             }
+
+            const pricing = computeSupplierNetPayableFromSupplierCost(settings, {
+              supplierUnitCost: supplierUnitCostGross,
+              productId,
+              variantId,
+            });
 
             return {
               orderId: order.id,
@@ -2837,12 +3152,37 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               chosenSupplierProductOfferId: alloc.supplierProductOfferId,
               chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
               chosenSupplierId: alloc.supplierId,
-              chosenSupplierUnitPrice: supplierUnitCost,
+
+              // IMPORTANT:
+              // Freeze NET payable here so all downstream PO/allocation/payout logic
+              // uses the already-deducted amount.
+              chosenSupplierUnitPrice: pricing.supplierNetUnitPayable,
+
               title: productTitle,
               unitPrice: round2(Number(checkoutUnit)),
               quantity: alloc.qty,
               lineTotal: round2(Number(checkoutUnit) * alloc.qty),
-              selectedOptions: variantId ? selectedOptions ?? null : null,
+
+              selectedOptions:
+                variantId
+                  ? {
+                    raw: selectedOptions ?? null,
+                    pricingSnapshot: {
+                      supplierGrossUnitCost: pricing.supplierGrossUnitCost,
+                      marginPercent: pricing.marginPercent,
+                      supplierMarginAmount: pricing.supplierMarginAmount,
+                      supplierNetUnitPayable: pricing.supplierNetUnitPayable,
+                    },
+                  }
+                  : {
+                    raw: null,
+                    pricingSnapshot: {
+                      supplierGrossUnitCost: pricing.supplierGrossUnitCost,
+                      marginPercent: pricing.marginPercent,
+                      supplierMarginAmount: pricing.supplierMarginAmount,
+                      supplierNetUnitPayable: pricing.supplierNetUnitPayable,
+                    },
+                  },
             };
           });
 
@@ -2866,13 +3206,19 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               variantId,
               productTitle,
               qtyNeeded,
-              allocations: orderItemRows.map((r) => ({
-                supplierId: r.chosenSupplierId,
-                qty: r.quantity,
-                supplierUnitCost: r.chosenSupplierUnitPrice,
-                finalCustomerUnit: r.unitPrice,
-                lineTotal: r.lineTotal,
-              })),
+              allocations: orderItemRows.map((r: any) => {
+                const snap = r?.selectedOptions?.pricingSnapshot ?? null;
+                return {
+                  supplierId: r.chosenSupplierId,
+                  qty: r.quantity,
+                  supplierGrossUnitCost: snap?.supplierGrossUnitCost ?? null,
+                  marginPercent: snap?.marginPercent ?? null,
+                  supplierMarginAmount: snap?.supplierMarginAmount ?? null,
+                  supplierNetUnitPayable: r.chosenSupplierUnitPrice,
+                  finalCustomerUnit: r.unitPrice,
+                  lineTotal: r.lineTotal,
+                };
+              }),
               pricingSource: "CHECKOUT_PRICE",
             }
           );

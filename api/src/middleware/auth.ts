@@ -82,8 +82,17 @@ function getSessionTtlDays(role: unknown) {
     : 30;
 }
 
+function getSessionTtlMs(role: unknown) {
+  return getSessionTtlDays(role) * 24 * 60 * 60 * 1000;
+}
+
 const LAST_SEEN_THROTTLE_MS = 60_000;
-const SESSION_REFRESH_THROTTLE_MS = 5 * 60_000;
+/**
+ * Refresh the browser cookie/JWT when we have observed real activity recently.
+ * Using the same cadence as lastSeen keeps the session truly sliding-from-activity
+ * without rewriting cookies on every single request.
+ */
+const TOKEN_ACTIVITY_REFRESH_THROTTLE_MS = 60_000;
 const TOKEN_REFRESH_WINDOW_MS = 24 * 60 * 60 * 1000; // refresh if < 24h left
 
 type SessionCheckResult = {
@@ -117,31 +126,53 @@ async function assertSessionIfPresent(decoded: JwtPayload): Promise<SessionCheck
     throw new Error("session-expired");
   }
 
-  const lastSeenMs = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0;
-  const shouldTouchLastSeen = now - lastSeenMs > LAST_SEEN_THROTTLE_MS;
-  const shouldSlideSession = now - lastSeenMs > SESSION_REFRESH_THROTTLE_MS;
+  const role = normRoleStr(decoded.role);
+  const ttlMs = getSessionTtlMs(role);
 
-  if (shouldTouchLastSeen || shouldSlideSession) {
-    const role = normRoleStr(decoded.role);
-    const ttlDays = getSessionTtlDays(role);
-    const nextExpiresAt = new Date(now + ttlDays * 24 * 60 * 60 * 1000);
+  const lastSeenMs = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0;
+
+  /**
+   * IMPORTANT:
+   * Do not base "should slide session" on lastSeenAt if you also update lastSeenAt
+   * more frequently than the slide threshold, otherwise the session may never slide.
+   *
+   * Instead, whenever we accept that the user is active enough to touch lastSeenAt,
+   * we also push expiresAt forward from *now*.
+   *
+   * This makes the session an actual idle-timeout session:
+   * active user => expiry keeps moving forward
+   * inactive user => countdown starts from their last activity
+   */
+  const shouldTouchLastSeen =
+    !lastSeenMs || now - lastSeenMs > LAST_SEEN_THROTTLE_MS;
+
+  if (shouldTouchLastSeen) {
+    const nextExpiresAt = new Date(now + ttlMs);
 
     sessionModel
       .update({
         where: { id: sid },
-        data: shouldSlideSession
-          ? { lastSeenAt: new Date(now), expiresAt: nextExpiresAt }
-          : { lastSeenAt: new Date(now) },
+        data: {
+          lastSeenAt: new Date(now),
+          expiresAt: nextExpiresAt,
+        },
       })
       .catch(() => null);
   }
 
   const tokenExpMs = decoded.exp ? decoded.exp * 1000 : 0;
+
+  /**
+   * Refresh access token/cookie when:
+   * 1) we observed real activity and updated lastSeen/expiresAt, or
+   * 2) token is nearing expiry
+   */
   const shouldRefreshToken =
-    !!tokenExpMs && tokenExpMs - now <= TOKEN_REFRESH_WINDOW_MS;
+    shouldTouchLastSeen ||
+    (!!tokenExpMs && tokenExpMs - now <= TOKEN_REFRESH_WINDOW_MS);
 
   return {
-    shouldRefresh: shouldRefreshToken || shouldSlideSession,
+    shouldRefresh: shouldRefreshToken,
   };
 }
 

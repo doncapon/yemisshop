@@ -672,7 +672,7 @@ model AnalyticsEvent {
 model Supplier {
   id            String       @id @default(cuid())
   name          String       @unique
-  contactEmail  String?
+  contactEmail  String       @unique
   whatsappPhone String?
   type          SupplierType
   status        String       @default("PENDING_VERIFICATION")

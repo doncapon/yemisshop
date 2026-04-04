@@ -24,7 +24,6 @@ type SupplierOfferLite = {
   qty?: number;
   stock?: number;
 
-  // pricing variants
   unitCost?: number | string | null;
   unitPrice?: number | string | null;
   cost?: number | string | null;
@@ -66,7 +65,6 @@ type AdminProduct = {
   owner?: { email?: string | null };
   description?: string | null;
 
-  // schema-backed shipping fields from Product
   freeShipping?: boolean | null;
   shippingCost?: number | string | null;
   shippingClass?: string | null;
@@ -79,17 +77,14 @@ type AdminProduct = {
   widthCm?: number | string | null;
   heightCm?: number | string | null;
 
-  // UI-friendly aliases used only in component state
   fragile?: boolean | null;
   oversized?: boolean | null;
   weightKg?: number | string | null;
 
-  // derived debug (optional)
   __baseQty?: number;
   __offerQty?: number;
   __offerCount?: number;
 
-  // derived pricing (optional)
   __bestBaseSupplierPrice?: number;
   __bestVariantSupplierPrice?: number;
   __computedRetailFrom?: number;
@@ -178,9 +173,7 @@ type AttrDef = { id: string; name?: string };
 
 const cookieOpts = { withCredentials: true as const };
 
-
 const SHIPPING_UI_NUMBER_KEYS = [
-  "shippingCost",
   "weightKg",
   "weightGrams",
   "lengthCm",
@@ -197,6 +190,36 @@ const SHIPPING_UI_BOOLEAN_KEYS = [
   "fragile",
   "oversized",
 ] as const;
+
+const SHIPPING_CLASS_OPTIONS = ["STANDARD", "FRAGILE", "BULKY"] as const;
+type ShippingParcelClass = (typeof SHIPPING_CLASS_OPTIONS)[number];
+
+type PendingState = {
+  title: string;
+  supplierPrice: string;
+  retailPrice: string;
+  status: string;
+  categoryId: string;
+  brandId: string;
+  supplierId: string;
+  supplierAvailableQty: string;
+  sku: string;
+  imageUrls: string;
+  description: string;
+
+  freeShipping: boolean;
+  fragile: boolean;
+  oversized: boolean;
+
+  shippingClass: ShippingParcelClass | "";
+
+  weightKg: string;
+  weightGrams: string;
+
+  lengthCm: string;
+  widthCm: string;
+  heightCm: string;
+};
 
 /* ============================
    Helpers
@@ -310,6 +333,11 @@ function shippingInputBool(v: any, fallback = false): boolean {
   return fallback;
 }
 
+function normalizeShippingClass(v: any): ShippingParcelClass | "" {
+  const s = String(v ?? "").trim().toUpperCase();
+  return SHIPPING_CLASS_OPTIONS.includes(s as ShippingParcelClass) ? (s as ShippingParcelClass) : "";
+}
+
 function pickShippingStateFromProduct(p: any) {
   const toNum = (v: any): number | null => {
     if (v == null || v === "") return null;
@@ -329,15 +357,13 @@ function pickShippingStateFromProduct(p: any) {
   const kg = grams != null ? grams / 1000 : toNum(p?.weightKg);
 
   return {
-    shippingCost: p?.shippingCost != null ? String(toNum(p.shippingCost) ?? "") : "",
-    shippingClass: p?.shippingClass != null ? String(p.shippingClass) : "",
+    shippingClass: normalizeShippingClass(p?.shippingClass),
 
     freeShipping:
       typeof p?.freeShipping === "boolean"
         ? p.freeShipping
         : false,
 
-    // 🔥 IMPORTANT mappings
     fragile:
       typeof p?.isFragile === "boolean"
         ? p.isFragile
@@ -352,7 +378,6 @@ function pickShippingStateFromProduct(p: any) {
           ? p.oversized
           : false,
 
-    // 🔥 numbers
     weightGrams: grams != null ? String(Math.round(grams)) : "",
     weightKg: kg != null ? String(kg) : "",
 
@@ -362,13 +387,8 @@ function pickShippingStateFromProduct(p: any) {
   };
 }
 
-function buildShippingPayloadFromPending(pending: Record<string, any>) {
+function buildShippingPayloadFromPending(pending: PendingState) {
   const out: Record<string, any> = {};
-
-  const shippingCost = Number(pending?.shippingCost);
-  if (Number.isFinite(shippingCost)) {
-    out.shippingCost = shippingCost;
-  }
 
   const lengthCm = Number(pending?.lengthCm);
   if (Number.isFinite(lengthCm)) {
@@ -394,7 +414,7 @@ function buildShippingPayloadFromPending(pending: Record<string, any>) {
     out.weightGrams = Math.round(weightKg * 1000);
   }
 
-  const shippingClass = String(pending?.shippingClass ?? "").trim();
+  const shippingClass = normalizeShippingClass(pending?.shippingClass);
   if (shippingClass) {
     out.shippingClass = shippingClass;
   }
@@ -403,7 +423,6 @@ function buildShippingPayloadFromPending(pending: Record<string, any>) {
     out.freeShipping = pending.freeShipping;
   }
 
-  // map UI booleans -> real schema fields
   if (typeof pending?.fragile === "boolean") {
     out.isFragile = pending.fragile;
   }
@@ -564,10 +583,6 @@ function findDuplicateCombos(rows: VariantRow[], attrs: AttrDef[]): Record<strin
   return errors;
 }
 
-/* ============================
-   Variants persistence (tries multiple endpoints)
-============================ */
-
 async function persistVariantsStrict(productId: string, variants: any[], opts?: { replace?: boolean }) {
   const replace = opts?.replace ?? true;
 
@@ -644,9 +659,11 @@ export function ManageProducts({
   focusId: string | null;
   onFocusedConsumed: () => void;
 }) {
-  const { openModal } = useModal();
+
   const isSuper = role === "SUPER_ADMIN";
   const isAdmin = role === "ADMIN";
+
+  const { openModal } = useModal();
   const qc = useQueryClient();
   const staleTimeInMs = 300_000;
 
@@ -655,16 +672,58 @@ export function ManageProducts({
 
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const [qInput, setQInput] = useState(search || "");
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  useEffect(() => {
-    const next = search || "";
-    setQInput((prev) => (prev === next ? prev : next));
-  }, [search]);
+  const initialSearchRef = useRef(search || "");
+  const [qInput, setQInput] = useState(initialSearchRef.current);
+
+  const [supplierFilterText, setSupplierFilterText] = useState("");
+  const [supplierFilterId, setSupplierFilterId] = useState(() => searchParams.get("supplierId") || "");
 
   const debouncedQ = useDebounced(qInput, 350);
+  const debouncedSupplierFilterText = useDebounced(supplierFilterText, 250);
 
-  /* ---------------- Pricing Markup Setting ---------------- */
+  const urlPreset = (searchParams.get("view") as FilterPreset) || "all";
+  const [preset, setPreset] = useState<FilterPreset>(urlPreset);
+
+  const lastSentSearchRef = useRef(initialSearchRef.current);
+
+  useEffect(() => {
+    console.log("ManageProducts mounted");
+  }, []);
+
+  useEffect(() => {
+    const nextPreset = (searchParams.get("view") as FilterPreset) || "all";
+    setPreset((prev) => (prev === nextPreset ? prev : nextPreset));
+
+    const nextSupplierId = searchParams.get("supplierId") || "";
+    setSupplierFilterId((prev) => (prev === nextSupplierId ? prev : nextSupplierId));
+  }, [searchParams]);
+
+  useEffect(() => {
+    try {
+      if (lastSentSearchRef.current === debouncedQ) return;
+      lastSentSearchRef.current = debouncedQ;
+      setSearch(debouncedQ);
+    } catch { }
+  }, [debouncedQ, setSearch]);
+
+  function setPresetAndUrl(next: FilterPreset) {
+    setPreset(next);
+    const sp = new URLSearchParams(searchParams);
+    if (next && next !== "all") sp.set("view", next);
+    else sp.delete("view");
+    setSearchParams(sp, { replace: true });
+  }
+
+  function setSupplierIdAndUrl(nextId: string) {
+    setSupplierFilterId(nextId);
+
+    const sp = new URLSearchParams(searchParams);
+    if (nextId) sp.set("supplierId", nextId);
+    else sp.delete("supplierId");
+    setSearchParams(sp, { replace: true });
+  }
 
   type PricingSettings = {
     baseServiceFeeNGN: number;
@@ -673,6 +732,7 @@ export function ManageProducts({
     gatewayFixedFeeNGN: number;
     gatewayFeeCapNGN: number;
   };
+
   const pricingSettingsQ = useQuery<PricingSettings>({
     queryKey: ["admin", "settings", "pricing-public"],
     enabled: role === "SUPER_ADMIN" || role === "ADMIN",
@@ -700,25 +760,7 @@ export function ManageProducts({
   const gatewayFixedFeeNGN = Number(pricingSettingsQ.data?.gatewayFixedFeeNGN ?? 100) || 100;
   const gatewayFeeCapNGN = Number(pricingSettingsQ.data?.gatewayFeeCapNGN ?? 2000) || 2000;
 
-  /* ---------------- Tabs / Filters ---------------- */
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  const urlPreset = (searchParams.get("view") as FilterPreset) || "all";
-  const [preset, setPreset] = useState<FilterPreset>(urlPreset);
-
-  useEffect(() => {
-    setPreset((searchParams.get("view") as FilterPreset) || "all");
-  }, [searchParams.toString()]);
-
-  function setPresetAndUrl(next: FilterPreset) {
-    setPreset(next);
-    const sp = new URLSearchParams(searchParams);
-    if (next && next !== "all") sp.set("view", next);
-    else sp.delete("view");
-    setSearchParams(sp, { replace: true });
-  }
-
-  type SortKey = "title" | "price" | "avail" | "stock" | "status" | "owner";
+  type SortKey = "title" | "price" | "avail" | "stock" | "status" | "owner" | "supplier";
   type SortDir = "asc" | "desc";
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: "title", dir: "asc" });
 
@@ -762,9 +804,26 @@ export function ManageProducts({
 
   const statusParam = statusFromPreset(preset);
 
+  const suppliersQ = useQuery<AdminSupplier[]>({
+    queryKey: ["admin", "products", "suppliers"],
+    enabled: !!role,
+    refetchOnWindowFocus: false,
+    staleTime: staleTimeInMs,
+    queryFn: async () => {
+      const attempts = ["/api/admin/suppliers"];
+      for (const url of attempts) {
+        try {
+          const { data } = await api.get(url, cookieOpts);
+          const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
+          if (Array.isArray(arr)) return arr;
+        } catch { }
+      }
+      return [];
+    },
+  });
+
   const getSupplierName = (p: any) => {
     const direct = p?.supplierName || p?.supplier?.name || p?.supplier?.supplierName || "";
-
     if (direct) return String(direct);
 
     const sid = String(p?.supplierId ?? "").trim();
@@ -774,10 +833,17 @@ export function ManageProducts({
     return found?.name || "";
   };
 
-  /* ---------------- Queries ---------------- */
-
   const listQ = useQuery<AdminProduct[]>({
-    queryKey: ["admin", "products", "manage", { q: debouncedQ, statusParam }],
+    queryKey: [
+      "admin",
+      "products",
+      "manage",
+      {
+        q: debouncedQ,
+        statusParam,
+        refreshKey,
+      },
+    ],
     enabled: !!role,
     queryFn: async () => {
       const { data } = await api.get(
@@ -787,9 +853,9 @@ export function ManageProducts({
           params: {
             status: statusParam,
             q: debouncedQ,
-            take: 50,
+            take: 100,
             skip: 0,
-            include: "owner,variants,supplierOffers",
+            include: "owner,variants,supplierOffers,supplier",
           },
         } as any
       );
@@ -803,11 +869,12 @@ export function ManageProducts({
   });
 
   useEffect(() => {
-    if (debouncedQ === search) return;
     try {
+      if (lastSentSearchRef.current === debouncedQ) return;
+      lastSentSearchRef.current = debouncedQ;
       setSearch(debouncedQ);
     } catch { }
-  }, [debouncedQ, search, setSearch]);
+  }, [debouncedQ, setSearch]);
 
   useEffect(() => {
     if (listQ.isError) {
@@ -1071,6 +1138,7 @@ export function ManageProducts({
 
       return {
         ...p,
+        supplierName: getSupplierName(p),
         availableQty: finalAvail,
         inStock,
         __baseQty: baseQty,
@@ -1089,9 +1157,8 @@ export function ManageProducts({
     gatewayFeePercent,
     gatewayFixedFeeNGN,
     gatewayFeeCapNGN,
+    suppliersQ.data,
   ]);
-
-  /* ---------------- Status helpers ---------------- */
 
   type EffectiveStatus = "PUBLISHED" | "PENDING" | "REJECTED" | "ARCHIVED" | "LIVE";
   const getStatus = (p: any): EffectiveStatus => (p?.isDelete || p?.isDeleted ? "ARCHIVED" : (p?.status ?? "PENDING"));
@@ -1131,8 +1198,6 @@ export function ManageProducts({
     return errors;
   }
 
-  /* ---------------- Lookups ---------------- */
-
   const catsQ = useQuery<AdminCategory[]>({
     queryKey: ["admin", "products", "cats"],
     enabled: !!role,
@@ -1169,24 +1234,6 @@ export function ManageProducts({
     refetchOnWindowFocus: false,
   });
 
-  const suppliersQ = useQuery<AdminSupplier[]>({
-    queryKey: ["admin", "products", "suppliers"],
-    enabled: !!role,
-    refetchOnWindowFocus: false,
-    staleTime: staleTimeInMs,
-    queryFn: async () => {
-      const attempts = ["/api/admin/suppliers"];
-      for (const url of attempts) {
-        try {
-          const { data } = await api.get(url, cookieOpts);
-          const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
-          if (Array.isArray(arr)) return arr;
-        } catch { }
-      }
-      return [];
-    },
-  });
-
   const attrsQ = useQuery<AdminAttribute[]>({
     queryKey: ["admin", "products", "attributes"],
     enabled: !!role,
@@ -1204,8 +1251,6 @@ export function ManageProducts({
     staleTime: staleTimeInMs,
     refetchOnWindowFocus: false,
   });
-
-  /* ---------------- Mutations ---------------- */
 
   const createM = useMutation({
     mutationFn: async (payload: any) => (await api.post("/api/admin/products", payload, cookieOpts)).data,
@@ -1281,7 +1326,7 @@ export function ManageProducts({
               typeof data === "boolean"
                 ? data
                 : typeof (data as any)?.hasOrders === "boolean"
-                  ? (data as any).hasOrders
+                  ? (data as any)?.hasOrders
                   : typeof (data as any)?.data?.hasOrders === "boolean"
                     ? (data as any).data.hasOrders
                     : typeof (data as any)?.has === "boolean"
@@ -1339,9 +1384,7 @@ export function ManageProducts({
     },
   });
 
-  /* ---------------- Editor state ---------------- */
-
-  const defaultPending = {
+  const defaultPending: PendingState = {
     title: "",
     supplierPrice: "",
     retailPrice: "",
@@ -1358,7 +1401,6 @@ export function ManageProducts({
     fragile: false,
     oversized: false,
 
-    shippingCost: "",
     shippingClass: "",
 
     weightKg: "",
@@ -1370,7 +1412,6 @@ export function ManageProducts({
   };
 
   const [offersProductId, setOffersProductId] = useState<string | null>(null);
-  const [pending, setPending] = useState(defaultPending);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
 
@@ -1378,6 +1419,8 @@ export function ManageProducts({
     () => (attrsQ.data || []).filter((a) => a.type === "SELECT" && a.isActive),
     [attrsQ.data]
   );
+
+  const [pending, setPending] = useState<PendingState>(defaultPending);
 
   const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
   const [offerVariants, setOfferVariants] = useState<any[]>([]);
@@ -1436,7 +1479,7 @@ export function ManageProducts({
 
   useEffect(() => {
     if (skipDraftLoadRef.current) return;
-    if (showEditor && editingId) return; // do not let draft override freshly loaded edit data
+    if (showEditor && editingId) return;
 
     const raw = localStorage.getItem(DRAFT_KEY);
     if (!raw) return;
@@ -1450,8 +1493,9 @@ export function ManageProducts({
   }, [DRAFT_KEY, showEditor, editingId]);
 
   useEffect(() => {
+    if (!showEditor) return;
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ pending, variantRows, selectedAttrs }));
-  }, [DRAFT_KEY, pending, variantRows, selectedAttrs]);
+  }, [DRAFT_KEY, pending, variantRows, selectedAttrs, showEditor]);
 
   const lockedVariantIdsQ = useQuery<string[]>({
     queryKey: ["admin", "products", "locked-variant-ids", { productId: editingId, supplierId: pending.supplierId }],
@@ -1737,10 +1781,6 @@ export function ManageProducts({
     return cands.filter(isUrlish);
   }
 
-  /* ============================
-     Image upload
-  ============================ */
-
   const filePickRef = useRef<HTMLInputElement | null>(null);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [uploadInfo, setUploadInfo] = useState<string>("");
@@ -1804,7 +1844,6 @@ export function ManageProducts({
       setOfferVariants(refreshed.variants || []);
       setOffersProductId(refreshed.id);
 
-      // rebuild selected attrs from refreshed payload too
       const attrTypeById = new Map<string, AdminAttribute["type"]>();
       for (const a of attrsQ.data || []) {
         attrTypeById.set(String(a.id), a.type);
@@ -1941,8 +1980,6 @@ export function ManageProducts({
       if (filePickRef.current) filePickRef.current.value = "";
     }
   }
-
-  /* ---------------- Variant row helpers ---------------- */
 
   function makeTempRowId() {
     return `tmp:${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -2096,8 +2133,6 @@ export function ManageProducts({
     return errors;
   }
 
-  /* ---------------- Full product loader ---------------- */
-
   async function fetchProductFull(id: string) {
     const { data } = await api.get(
       `/api/admin/products/${id}`,
@@ -2174,7 +2209,6 @@ export function ManageProducts({
         prod?.ProductAttribute
       ) || [];
 
-    // Fallback: derive enabled attributes from base option/text rows if explicit enabled rows are missing
     if (!enabledAttributeRows.length) {
       const byId = new Map<string, ProductAttributeEnabledRow>();
 
@@ -2400,7 +2434,6 @@ export function ManageProducts({
       const s = String(raw ?? "").trim();
       if (!s) return [];
 
-      // support accidental csv payloads
       return s
         .split(",")
         .map((v) => v.trim())
@@ -2444,7 +2477,6 @@ export function ManageProducts({
     return lines;
   }
 
-  /* ---------------- Payload builder (variants) ---------------- */
   function buildProductPayload({
     base,
     selectedAttrs,
@@ -2607,12 +2639,10 @@ export function ManageProducts({
     return payload;
   }
 
-  /* ---------------- Editor actions ---------------- */
-
   function startNewProduct() {
     setEditingId(null);
     setOffersProductId(null);
-    setPending(defaultPending);
+    setPending({ ...defaultPending });
     setShowEditor(true);
 
     setSelectedAttrs({});
@@ -2622,9 +2652,9 @@ export function ManageProducts({
     setVariantsDirty(false);
 
     setOfferVariants([]);
+    clearSaveUiErrors();
   }
 
-  /* ---------------- Save / Create ---------------- */
   const variantsForSave = useMemo(() => {
     return editingId ? (visibleVariantRows ?? []) : (variantRows ?? []);
   }, [editingId, visibleVariantRows, variantRows]);
@@ -2639,6 +2669,12 @@ export function ManageProducts({
     if (!title) nextFieldErrors.title = "Title is required.";
     if (!pending.supplierId) nextFieldErrors.supplierId = "Supplier is required.";
     if (!pending.brandId) nextFieldErrors.brandId = "Brand is required.";
+    if (!pending.categoryId) nextFieldErrors.categoryId = "Category is required.";
+
+    const normalizedShippingClass = normalizeShippingClass(pending.shippingClass);
+    if (pending.shippingClass && !normalizedShippingClass) {
+      nextFieldErrors.shippingClass = "Shipping class must be STANDARD, FRAGILE, or BULKY.";
+    }
 
     if (!editingId) {
       const supplierPriceNum = Number((pending as any).supplierPrice) || 0;
@@ -2649,11 +2685,6 @@ export function ManageProducts({
       setFieldErrors(nextFieldErrors);
       setSaveBanner("Please fix the highlighted fields.");
       restoreSnapshot();
-      return;
-    }
-
-    if (!editingId && !pending.supplierId) {
-      openModal({ title: "Products", message: "Supplier is required." });
       return;
     }
 
@@ -2737,14 +2768,17 @@ export function ManageProducts({
       return;
     }
 
-    const shippingPayload = buildShippingPayloadFromPending(pending);
+    const shippingPayload = buildShippingPayloadFromPending({
+      ...pending,
+      shippingClass: normalizedShippingClass,
+    });
 
     const base: any = {
       title,
       retailPrice: retailBase,
       status: pending.status,
       description: pending.description != null ? pending.description : undefined,
-      categoryId: pending.categoryId || undefined,
+      categoryId: pending.categoryId,
       brandId: pending.brandId,
       supplierId: pending.supplierId,
       ...shippingPayload,
@@ -2934,8 +2968,6 @@ export function ManageProducts({
     setRefreshKey((prev) => prev + 1);
   }
 
-  /* ---------------- Focus handoff ---------------- */
-
   useEffect(() => {
     if (!focusId || !rowsWithDerived?.length) return;
     const target = rowsWithDerived.find((r: any) => r.id === focusId);
@@ -2944,12 +2976,12 @@ export function ManageProducts({
     onFocusedConsumed();
   }, [focusId, rowsWithDerived]);
 
-  /* ---------------- Filters / sorting ---------------- */
-
   const getOwner = (p: any) => (p.owner?.email || p.ownerEmail || p.createdByEmail || p.createdBy?.email || "") as string;
 
   const filteredRows = useMemo(() => {
     const offers = (offersSummaryQ.data || {}) as any;
+    const supplierText = debouncedSupplierFilterText.trim().toLowerCase();
+    const supplierId = supplierFilterId.trim();
 
     const hasAnyOffer = (pId: string, p: any) => {
       const offerCount = toInt((p as any).__offerCount ?? 0, 0);
@@ -2972,7 +3004,20 @@ export function ManageProducts({
     const hasVariants = (p: any) => extractProductVariants(p).length > 0 || (p.variantCount ?? 0) > 0;
     const baseInStock = (p: any) => p.inStock === true;
 
+    const matchesSupplier = (p: any) => {
+      const rowSupplierId = String(p?.supplierId ?? "").trim();
+      const rowSupplierName = String(getSupplierName(p) || "").trim().toLowerCase();
+      const typed = supplierText;
+
+      if (supplierId && rowSupplierId !== supplierId) return false;
+      if (typed && !rowSupplierName.includes(typed)) return false;
+
+      return true;
+    };
+
     return rowsWithDerived.filter((p) => {
+      if (!matchesSupplier(p)) return false;
+
       switch (preset) {
         case "no-offer":
           return !hasAnyOffer(p.id, p);
@@ -3005,7 +3050,7 @@ export function ManageProducts({
           return true;
       }
     });
-  }, [rowsWithDerived, preset, offersSummaryQ.data]);
+  }, [rowsWithDerived, preset, offersSummaryQ.data, supplierFilterId, debouncedSupplierFilterText, suppliersQ.data]);
 
   const displayRows = useMemo(() => {
     const arr = [...filteredRows];
@@ -3041,16 +3086,19 @@ export function ManageProducts({
         case "owner":
           res = cmpStr(getOwner(a), getOwner(b));
           break;
+        case "supplier":
+          res = cmpStr(getSupplierName(a), getSupplierName(b));
+          break;
       }
       return sort.dir === "asc" ? res : -res;
     });
 
     return arr;
-  }, [filteredRows, sort, statusRank]);
+  }, [filteredRows, sort]);
 
   useEffect(() => {
     setPage(1);
-  }, [preset, debouncedQ, sort.key, sort.dir]);
+  }, [preset, debouncedQ, sort.key, sort.dir, supplierFilterId, debouncedSupplierFilterText]);
 
   const totalRows = displayRows.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
@@ -3117,8 +3165,6 @@ export function ManageProducts({
       })
       .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
   }, [variantRows, enabledSelectableAttrs, offerVariants]);
-
-  /* ---------------- Primary actions ---------------- */
 
   function submitStatusEdit(pId: string, intent: "approvePublished" | "movePending" | "reject") {
     const source = rowsWithDerived.find((r: any) => r.id === pId);
@@ -3192,8 +3238,6 @@ export function ManageProducts({
       : { label: "Delete", title: "Delete permanently", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" };
   }
 
-  /* ---------------- Attribute helpers ---------------- */
-
   const activeAttrs = useMemo(() => (attrsQ.data ?? []).filter((a) => a?.isActive), [attrsQ.data]);
 
   function setAttr(attrId: string, value: string | string[]) {
@@ -3259,7 +3303,7 @@ export function ManageProducts({
 
       const nextPending = {
         ...defaultPending,
-        ...shippingState, // 🔥 MUST COME BEFORE overrides
+        ...shippingState,
 
         title: full.title || "",
         supplierPrice: "",
@@ -3284,7 +3328,6 @@ export function ManageProducts({
 
       const nextSel: Record<string, string | string[]> = {};
 
-      // 1) Enable attributes first
       (full.enabledAttributeRows || []).forEach((row: any) => {
         const aid = String(
           row?.attributeId ??
@@ -3303,7 +3346,6 @@ export function ManageProducts({
         }
       });
 
-      // 2) Overlay option defaults
       (full.attributeValues || []).forEach((av: any) => {
         const aid = String(
           av?.attributeId ??
@@ -3337,13 +3379,11 @@ export function ManageProducts({
           return;
         }
 
-        // SELECT fallback
         if (!String(nextSel[aid] ?? "").trim()) {
           nextSel[aid] = vid;
         }
       });
 
-      // 3) Overlay text defaults
       (full.attributeTexts || []).forEach((at: any) => {
         const aid = String(
           at?.attributeId ??
@@ -3398,14 +3438,12 @@ export function ManageProducts({
     }
   }
 
-
-
-  /* ============================
-     Render
-  ============================ */
   const baseDefaultsSummary = useMemo(() => {
     return summarizeBaseProductDefaults(selectedAttrs, activeAttrs || []);
   }, [selectedAttrs, activeAttrs]);
+
+  //Render
+
 
   return (
     <div
@@ -3432,7 +3470,7 @@ export function ManageProducts({
               setShowEditor(false);
               setEditingId(null);
               setOffersProductId(null);
-              setPending(defaultPending);
+              setPending({ ...defaultPending });
               setVariantRows([]);
               setSelectedAttrs({});
               setOfferVariants([]);
@@ -3440,6 +3478,7 @@ export function ManageProducts({
               setClearAllVariantsIntent(false);
               setUploadInfo("");
               setIsUploadingImages(false);
+              clearSaveUiErrors();
             }}
             className="rounded-xl border border-slate-300 bg-rose-600 text-white px-3 py-2 text-sm hover:bg-rose-700 ml-auto"
           >
@@ -3512,7 +3551,9 @@ export function ManageProducts({
               <div className="space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="sm:col-span-2">
-                    <label className="text-sm font-medium text-slate-700">Title</label>
+                    <label className="text-sm font-medium text-slate-700">
+                      Title <span className="text-rose-600">*</span>
+                    </label>
                     <input
                       value={pending.title}
                       onChange={(e) => setPending((p) => ({ ...p, title: e.target.value }))}
@@ -3589,7 +3630,9 @@ export function ManageProducts({
                   </div>
 
                   <div>
-                    <label className="text-sm font-medium text-slate-700">Supplier</label>
+                    <label className="text-sm font-medium text-slate-700">
+                      Supplier <span className="text-rose-600">*</span>
+                    </label>
                     <select
                       value={pending.supplierId}
                       onChange={(e) => setPending((p) => ({ ...p, supplierId: e.target.value }))}
@@ -3606,11 +3649,13 @@ export function ManageProducts({
                   </div>
 
                   <div>
-                    <label className="text-sm font-medium text-slate-700">Category</label>
+                    <label className="text-sm font-medium text-slate-700">
+                      Category <span className="text-rose-600">*</span>
+                    </label>
                     <select
                       value={pending.categoryId}
                       onChange={(e) => setPending((p) => ({ ...p, categoryId: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                      className={`mt-1 w-full rounded-xl border px-3 py-2 ${fieldErrors.categoryId ? "border-rose-300" : ""}`}
                     >
                       <option value="">Select category…</option>
                       {(catsQ.data ?? []).map((c) => (
@@ -3619,6 +3664,7 @@ export function ManageProducts({
                         </option>
                       ))}
                     </select>
+                    {fieldErrors.categoryId && <div className="mt-1 text-[11px] text-rose-600">{fieldErrors.categoryId}</div>}
                   </div>
 
                   <div>
@@ -3747,24 +3793,26 @@ export function ManageProducts({
 
                   <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="text-xs font-medium text-slate-700">Shipping Cost</label>
-                      <input
-                        value={pending.shippingCost}
-                        onChange={(e) => setPending((p) => ({ ...p, shippingCost: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. 1500"
-                        inputMode="decimal"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-slate-700">Shipping Class</label>
-                      <input
+                      <label className="text-xs font-medium text-slate-700">
+                        Shipping Class <span className="text-rose-600">*</span>
+                      </label>
+                      <select
                         value={pending.shippingClass}
-                        onChange={(e) => setPending((p) => ({ ...p, shippingClass: e.target.value }))}
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        placeholder="e.g. STANDARD"
-                      />
+                        onChange={(e) => {
+                          const next = e.target.value as ShippingParcelClass | "";
+                          setPending((p) => ({ ...p, shippingClass: next }));
+                        }}
+                        className={`mt-1 w-full rounded-xl border px-3 py-2 text-sm ${fieldErrors.shippingClass ? "border-rose-300" : ""
+                          }`}
+                      >
+                        <option value="">Select shipping class…</option>
+                        <option value="STANDARD">STANDARD</option>
+                        <option value="FRAGILE">FRAGILE</option>
+                        <option value="BULKY">BULKY</option>
+                      </select>
+                      {fieldErrors.shippingClass && (
+                        <div className="mt-1 text-[11px] text-rose-600">{fieldErrors.shippingClass}</div>
+                      )}
                     </div>
 
                     <div>
@@ -4275,7 +4323,7 @@ export function ManageProducts({
 
       {/* ================= Toolbar ================= */}
       <div className="rounded-2xl border bg-white shadow-sm p-3">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:gap-2">
             {presetButtons.map((b) => (
               <button
@@ -4293,8 +4341,8 @@ export function ManageProducts({
             ))}
           </div>
 
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-            <div className="flex-1 min-w-0" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px_220px_auto] gap-2">
+            <div className="min-w-0" onMouseDown={(e) => e.stopPropagation()}>
               <input
                 value={qInput}
                 onChange={(e) => setQInput(e.target.value)}
@@ -4303,13 +4351,52 @@ export function ManageProducts({
               />
             </div>
 
-            <button
-              type="button"
-              onClick={startNewProduct}
-              className="w-full sm:w-auto shrink-0 whitespace-nowrap rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
-            >
-              + New product
-            </button>
+            <div className="min-w-0">
+              <input
+                value={supplierFilterText}
+                onChange={(e) => setSupplierFilterText(e.target.value)}
+                placeholder="Search supplier name…"
+                className="w-full rounded-xl border px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div className="min-w-0">
+              <select
+                value={supplierFilterId}
+                onChange={(e) => setSupplierIdAndUrl(e.target.value)}
+                className="w-full rounded-xl border px-3 py-2 text-sm"
+              >
+                <option value="">All suppliers</option>
+                {(suppliersQ.data ?? []).map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex gap-2">
+              {(supplierFilterId || supplierFilterText) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSupplierFilterText("");
+                    setSupplierIdAndUrl("");
+                  }}
+                  className="shrink-0 rounded-xl border px-3 py-2 text-sm hover:bg-slate-50"
+                >
+                  Clear
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={startNewProduct}
+                className="w-full sm:w-auto shrink-0 whitespace-nowrap rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+              >
+                + New product
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -4465,7 +4552,9 @@ export function ManageProducts({
                 <th className="p-3 cursor-pointer" onClick={() => toggleSort("status")}>
                   Status <SortIndicator k="status" />
                 </th>
-                <th className="p-3">Supplier</th>
+                <th className="p-3 cursor-pointer" onClick={() => toggleSort("supplier")}>
+                  Supplier <SortIndicator k="supplier" />
+                </th>
                 <th className="p-3 cursor-pointer" onClick={() => toggleSort("owner")}>
                   Owner <SortIndicator k="owner" />
                 </th>

@@ -1,4 +1,3 @@
-// src/pages/supplier/SupplierOrders.tsx
 import React, { useMemo, useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Link, useParams, useSearchParams } from "react-router-dom";
@@ -59,6 +58,13 @@ type AddressLike = {
   lga?: string | null;
   landmark?: string | null;
   directionsNote?: string | null;
+};
+
+type PricingSnapshot = {
+  supplierGrossUnitCost?: number | null;
+  marginPercent?: number | null;
+  supplierMarginAmount?: number | null;
+  supplierNetUnitPayable?: number | null;
 };
 
 type OrderItem = {
@@ -155,9 +161,16 @@ function badgeClass(status: string) {
     return "bg-emerald-50 text-emerald-700 border-emerald-200";
   }
   if (
-    ["CONFIRMED", "PACKED", "FUNDED", "CREATED", "PENDING", "PROCESSING"].includes(
-      s
-    )
+    [
+      "CONFIRMED",
+      "PACKED",
+      "FUNDED",
+      "CREATED",
+      "PENDING",
+      "PROCESSING",
+      "AWAITING_FULFILLMENT",
+      "AWAITING_FULFILMENT",
+    ].includes(s)
   ) {
     return "bg-amber-50 text-amber-700 border-amber-200";
   }
@@ -196,9 +209,50 @@ function formatAddress(a?: AddressLike | null) {
   return parts.length ? parts.join(", ") : "—";
 }
 
+function parseSelectedOptions(selectedOptions: any): any[] {
+  if (!selectedOptions) return [];
+  if (Array.isArray(selectedOptions)) return selectedOptions;
+  if (typeof selectedOptions === "object" && Array.isArray(selectedOptions?.raw)) {
+    return selectedOptions.raw;
+  }
+  if (typeof selectedOptions === "string") {
+    try {
+      const parsed = JSON.parse(selectedOptions);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.raw)) return parsed.raw;
+      return [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function getPricingSnapshot(selectedOptions: any): PricingSnapshot | null {
+  if (!selectedOptions) return null;
+
+  if (typeof selectedOptions === "object" && selectedOptions?.pricingSnapshot) {
+    return selectedOptions.pricingSnapshot as PricingSnapshot;
+  }
+
+  if (typeof selectedOptions === "string") {
+    try {
+      const parsed = JSON.parse(selectedOptions);
+      if (parsed && typeof parsed === "object" && parsed.pricingSnapshot) {
+        return parsed.pricingSnapshot as PricingSnapshot;
+      }
+    } catch {
+      //
+    }
+  }
+
+  return null;
+}
+
 function supplierOptionsLabel(selectedOptions: any) {
-  if (!Array.isArray(selectedOptions) || !selectedOptions.length) return "";
-  return selectedOptions
+  const arr = parseSelectedOptions(selectedOptions);
+  if (!Array.isArray(arr) || !arr.length) return "";
+  return arr
     .map((o) => {
       const a = o?.attribute || "Attribute";
       const v = o?.value || o?.name || "Value";
@@ -221,7 +275,13 @@ function normStatus(s?: string | null) {
 function toFlowBaseStatus(raw?: string | null) {
   const s = normStatus(raw);
   if (s === "CANCELLED") return "CANCELED";
-  if (["CREATED", "FUNDED", "PROCESSING"].includes(s)) return "PENDING";
+  if (
+    ["CREATED", "FUNDED", "PROCESSING", "AWAITING_FULFILLMENT", "AWAITING_FULFILMENT"].includes(
+      s
+    )
+  ) {
+    return "PENDING";
+  }
   if (s === "OUT_FOR_DELIVERY") return "SHIPPED";
   return s || "PENDING";
 }
@@ -294,9 +354,8 @@ export default function SupplierOrders() {
   const lockReason =
     onboardingBlocked
       ? verificationGate?.lockReason ||
-      "Your updated documents are currently under review. Payout and payout-related actions stay locked until re-verification is completed."
+        "Your updated documents are currently under review. Payout and payout-related actions stay locked until re-verification is completed."
       : undefined;
-
 
   const ridersLocked =
     onboardingBlocked &&
@@ -305,7 +364,7 @@ export default function SupplierOrders() {
   const ridersLockReason =
     ridersLocked
       ? verificationGate?.lockReason ||
-      "Your updated documents are under review. Rider management is locked until verification is completed."
+        "Your updated documents are under review. Rider management is locked until verification is completed."
       : undefined;
 
   const urlSupplierId = useMemo(() => {
@@ -417,6 +476,8 @@ export default function SupplierOrders() {
   const filterStatuses = [
     "CREATED",
     "FUNDED",
+    "AWAITING_FULFILLMENT",
+    "AWAITING_FULFILMENT",
     "CONFIRMED",
     "PACKED",
     "SHIPPED",
@@ -1085,8 +1146,9 @@ export default function SupplierOrders() {
                   {onboardingProgressItems.map((item: any) => (
                     <span
                       key={item.key}
-                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
-                        }`}
+                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
+                      }`}
                     >
                       {item.label}: {item.done ? "Done" : "Pending"}
                     </span>
@@ -1110,14 +1172,12 @@ export default function SupplierOrders() {
                 </Link>
               </div>
 
-
               {ridersLocked && (
                 <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                   <b>Rider management locked:</b> You cannot add or assign riders while your required
                   verification documents are pending review.
                 </div>
               )}
-
 
               <div className="shrink-0">
                 <Link
@@ -1304,11 +1364,24 @@ export default function SupplierOrders() {
                 const supplierStatusRaw = normStatus(o.supplierStatus || "PENDING");
                 const supplierFlowBase = toFlowBaseStatus(supplierStatusRaw);
 
-                const supplierTotal = items.reduce((sum, it) => {
-                  const unit = Number(it.chosenSupplierUnitPrice ?? 0);
+                const supplierTotal =
+                  o.supplierAmount != null
+                    ? Number(o.supplierAmount)
+                    : items.reduce((sum, it) => {
+                        const netUnit = Number(it.chosenSupplierUnitPrice ?? 0);
+                        const qty = Number(it.quantity ?? 0);
+                        return sum + netUnit * qty;
+                      }, 0);
+
+                const grossSupplierTotal = items.reduce((sum, it) => {
+                  const snap = getPricingSnapshot(it.selectedOptions);
+                  const grossUnit =
+                    Number(snap?.supplierGrossUnitCost ?? it.chosenSupplierUnitPrice ?? 0) || 0;
                   const qty = Number(it.quantity ?? 0);
-                  return sum + unit * qty;
+                  return sum + grossUnit * qty;
                 }, 0);
+
+                const deductedMarginTotal = Math.max(0, grossSupplierTotal - supplierTotal);
 
                 const allowed = allowedStatusOptions(supplierStatusRaw);
                 const isTerminal = ["DELIVERED", "CANCELED"].includes(supplierFlowBase);
@@ -1337,7 +1410,13 @@ export default function SupplierOrders() {
                   !isAdmin &&
                   !isRider &&
                   !isTerminal &&
-                  ["PENDING", "CONFIRMED", "PACKED"].includes(supplierFlowBase);
+                  [
+                    "PENDING",
+                    "AWAITING_FULFILLMENT",
+                    "AWAITING_FULFILMENT",
+                    "CONFIRMED",
+                    "PACKED",
+                  ].includes(supplierStatusRaw || supplierFlowBase);
 
                 const canConfirmDelivery =
                   !!poId &&
@@ -1408,10 +1487,11 @@ export default function SupplierOrders() {
 
                         {poId && (
                           <span
-                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${otpVerified
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : "bg-amber-50 text-amber-700 border-amber-200"
-                              }`}
+                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${
+                              otpVerified
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : "bg-amber-50 text-amber-700 border-amber-200"
+                            }`}
                           >
                             OTP: {otpVerified ? "VERIFIED" : "NOT VERIFIED"}
                           </span>
@@ -1420,8 +1500,12 @@ export default function SupplierOrders() {
 
                       {(isSupplierUser || isAdmin) && (
                         <div className="text-[12px] font-semibold text-zinc-900">
-                          Supplier total:{" "}
-                          <span className="text-zinc-900">{moneyNgn(supplierTotal)}</span>
+                          Amount payable: <span className="text-zinc-900">{moneyNgn(supplierTotal)}</span>
+                          {deductedMarginTotal > 0 ? (
+                            <span className="ml-2 text-zinc-500 font-normal">
+                              (gross {moneyNgn(grossSupplierTotal)} • margin deducted {moneyNgn(deductedMarginTotal)})
+                            </span>
+                          ) : null}
                         </div>
                       )}
 
@@ -1494,10 +1578,11 @@ export default function SupplierOrders() {
 
                       {poId && payoutMsg[String(o.purchaseOrderId)]?.text ? (
                         <div
-                          className={`text-[12px] ${payoutMsg[String(o.purchaseOrderId)]?.type === "error"
-                            ? "text-rose-700"
-                            : "text-emerald-700"
-                            }`}
+                          className={`text-[12px] ${
+                            payoutMsg[String(o.purchaseOrderId)]?.type === "error"
+                              ? "text-rose-700"
+                              : "text-emerald-700"
+                          }`}
                         >
                           {payoutMsg[String(o.purchaseOrderId)]?.text}
                         </div>
@@ -1515,7 +1600,7 @@ export default function SupplierOrders() {
                               </span>
                             </span>
                             <span>
-                              Supplier amount:{" "}
+                              Net payable subtotal:{" "}
                               <span className="text-zinc-700 font-semibold">
                                 {moneyNgn(o.supplierAmount ?? o.poSubtotal ?? null)}
                               </span>
@@ -1711,12 +1796,13 @@ export default function SupplierOrders() {
 
                         {cancelOtpMsg[o.id]?.text ? (
                           <div
-                            className={`mt-2 text-[12px] ${cancelOtpMsg[o.id].type === "warn"
-                              ? "text-amber-700"
-                              : cancelOtpMsg[o.id].type === "error"
-                                ? "text-rose-700"
-                                : "text-emerald-700"
-                              }`}
+                            className={`mt-2 text-[12px] ${
+                              cancelOtpMsg[o.id].type === "warn"
+                                ? "text-amber-700"
+                                : cancelOtpMsg[o.id].type === "error"
+                                  ? "text-rose-700"
+                                  : "text-emerald-700"
+                            }`}
                           >
                             {cancelOtpMsg[o.id].text}
                             {cancelOtpMsg[o.id].type === "warn" ? (
@@ -1786,12 +1872,13 @@ export default function SupplierOrders() {
 
                               {deliveryOtpMsg[poId]?.text ? (
                                 <div
-                                  className={`text-xs ${deliveryOtpMsg[poId]?.type === "error"
-                                    ? "text-rose-700"
-                                    : deliveryOtpMsg[poId]?.type === "warn"
-                                      ? "text-amber-700"
-                                      : "text-emerald-700"
-                                    }`}
+                                  className={`text-xs ${
+                                    deliveryOtpMsg[poId]?.type === "error"
+                                      ? "text-rose-700"
+                                      : deliveryOtpMsg[poId]?.type === "warn"
+                                        ? "text-amber-700"
+                                        : "text-emerald-700"
+                                  }`}
                                 >
                                   {deliveryOtpMsg[poId]?.text}
                                 </div>
@@ -1811,10 +1898,26 @@ export default function SupplierOrders() {
                           {items.map((it) => {
                             const qty = Number(it.quantity ?? 0);
                             const optLabel = supplierOptionsLabel(it.selectedOptions);
-                            const supplierCost =
-                              it.chosenSupplierUnitPrice != null
-                                ? Number(it.chosenSupplierUnitPrice) * qty
-                                : null;
+
+                            const snap = getPricingSnapshot(it.selectedOptions);
+                            const grossUnit =
+                              snap?.supplierGrossUnitCost != null
+                                ? Number(snap.supplierGrossUnitCost)
+                                : Number(it.chosenSupplierUnitPrice ?? 0);
+
+                            const netUnit = Number(it.chosenSupplierUnitPrice ?? 0);
+
+                            const grossLine = grossUnit * qty;
+                            const netLine =
+                              it.chosenSupplierUnitPrice != null ? netUnit * qty : null;
+
+                            const marginPercent =
+                              snap?.marginPercent != null ? Number(snap.marginPercent) : null;
+
+                            const marginAmount =
+                              snap?.supplierMarginAmount != null
+                                ? Number(snap.supplierMarginAmount) * qty
+                                : grossLine - (netLine ?? 0);
 
                             return (
                               <div key={it.id} className="rounded-xl border bg-zinc-50 p-3">
@@ -1827,15 +1930,35 @@ export default function SupplierOrders() {
                                 </div>
 
                                 {!isRider && (
-                                  <div className="text-[11px] text-zinc-500 mt-2">
-                                    Retail: <b>{moneyNgn(Number(it.unitPrice ?? 0))}</b> • Line:{" "}
-                                    <b>{moneyNgn(Number(it.lineTotal ?? 0))}</b>
-                                    {supplierCost != null ? (
-                                      <>
-                                        {" "}
-                                        • Your cost: <b>{moneyNgn(supplierCost)}</b>
-                                      </>
-                                    ) : null}
+                                  <div className="text-[11px] text-zinc-500 mt-2 space-y-1">
+                                    <div>
+                                      Retail: <b>{moneyNgn(Number(it.unitPrice ?? 0))}</b> • Retail line:{" "}
+                                      <b>{moneyNgn(Number(it.lineTotal ?? 0))}</b>
+                                    </div>
+
+                                    <div>
+                                      Gross supplier price: <b>{moneyNgn(grossUnit)}</b>
+                                      {" • "}
+                                      Gross line: <b>{moneyNgn(grossLine)}</b>
+                                    </div>
+
+                                    <div>
+                                      Margin deducted:
+                                      {" "}
+                                      <b>
+                                        {marginPercent != null
+                                          ? `${marginPercent}%`
+                                          : "—"}
+                                      </b>
+                                      {" • "}
+                                      Amount: <b>{moneyNgn(marginAmount)}</b>
+                                    </div>
+
+                                    <div className="text-zinc-700">
+                                      Net payable: <b>{moneyNgn(netUnit)}</b>
+                                      {" • "}
+                                      Net payable line: <b>{moneyNgn(netLine)}</b>
+                                    </div>
                                   </div>
                                 )}
                               </div>
@@ -1881,6 +2004,6 @@ export default function SupplierOrders() {
           </Card>
         </div>
       </SupplierLayout>
-    </SiteLayout >
+    </SiteLayout>
   );
 }

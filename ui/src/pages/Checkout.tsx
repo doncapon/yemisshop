@@ -2491,32 +2491,20 @@ export default function Checkout() {
 
       const quote = pricingQ.data as QuotePayload | null;
 
-      const invalidLine = cart.find((it) => {
-        const key = lineKeyFor(it);
-        const qLine = quote?.lines?.[key];
-        const firstAlloc = qLine?.allocations?.[0];
-        return !qLine || !firstAlloc || !firstAlloc.offerId;
-      });
-
-      if (invalidLine) {
-        const invalidKey = lineKeyFor(invalidLine);
-        const repaired = removeCartLineByKey(cart, invalidKey);
-        setCart(repaired);
-        writeCart(repaired);
-
-        throw new Error(
-          `"${invalidLine.title || "An item"}" is no longer available at checkout and has been removed from your cart. Please review your cart and try again.`
-        );
-      }
-
       const bad = cart.find((l) => {
         const key = lineKeyFor(l);
-        const supplierLine = quote?.lines?.[key];
-        const hasQuotedSupplierPrice = !!supplierLine && asMoney(supplierLine.lineTotal, 0) > 0;
+        const qLine = quote?.lines?.[key];
+
         const cachedUnit = num(l.unitPrice, num(l.price, 0));
         const explicitTotal = asMoney(l.totalPrice, 0);
-        return cachedUnit <= 0 && explicitTotal <= 0 && !hasQuotedSupplierPrice;
+        const quotedUnit =
+          qLine && qLine.qtyRequested > 0
+            ? round2(asMoney(qLine.lineTotal, 0) / Math.max(1, qLine.qtyRequested))
+            : 0;
+
+        return cachedUnit <= 0 && explicitTotal <= 0 && quotedUnit <= 0;
       });
+
       if (bad) {
         throw new Error("One or more items have no price. Please remove and re-add them to cart.");
       }
@@ -2525,6 +2513,20 @@ export default function Checkout() {
       if (vaHome) throw new Error(vaHome);
 
       const finalShip = savedShippingToQuoteAddress(selectedShippingAddress);
+
+      const invalidLine = cart.find((it) => {
+        const key = lineKeyFor(it);
+        const qLine = quote?.lines?.[key];
+        const firstAlloc = qLine?.allocations?.[0];
+
+        return !qLine || !firstAlloc || !firstAlloc.offerId;
+      });
+
+      if (invalidLine) {
+        throw new Error(
+          `"${invalidLine.title || "An item"}" is no longer available at the selected price. Please refresh your cart or remove and re-add that item.`
+        );
+      }
 
       const items = cart.map((it) => {
         const key = lineKeyFor(it);
@@ -2552,13 +2554,20 @@ export default function Checkout() {
           ? normalizeSelectedOptions(it.selectedOptions)
           : undefined;
 
-        const retailUnit = asMoney(
+        const cachedUnit = asMoney(
           it.unitPrice,
           asMoney(
             it.price,
             Math.max(0, asMoney(it.totalPrice, 0) / Math.max(1, num(it.qty, 1)))
           )
         );
+
+        const quotedUnit =
+          qLine && qLine.qtyRequested > 0
+            ? round2(asMoney(qLine.lineTotal, 0) / Math.max(1, qLine.qtyRequested))
+            : 0;
+
+        const retailUnit = cachedUnit > 0 ? cachedUnit : quotedUnit;
 
         return {
           key,
@@ -2568,7 +2577,7 @@ export default function Checkout() {
           kind,
           selectedOptions: kind === "VARIANT" ? normalizedOptions : undefined,
           supplierId: firstAlloc?.supplierId || it.supplierId || undefined,
-          offerId: firstAlloc?.offerId || undefined,
+          offerId: firstAlloc?.offerId || it.offerId || undefined,
           unitPrice: retailUnit,
           unitPriceCache: retailUnit,
         };
@@ -2671,6 +2680,12 @@ export default function Checkout() {
           nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
           throw new Error("Please login again.");
         }
+
+        console.error("[checkout/create-order error]", {
+          status: e?.response?.status,
+          data: e?.response?.data,
+          payload,
+        });
 
         throw new Error(
           safeServerMessage(

@@ -29,15 +29,26 @@ function getResend(): Resend {
   return resendClient;
 }
 
-
 type SupplierPurchaseOrderEmailItem = {
   title?: string | null;
   quantity?: number | null;
+
+  // NET supplier payable unit price (already after margin deduction)
   unitPrice?: number | null;
+
+  // NET line total (already after margin deduction)
   lineTotal?: number | null;
+
   selectedOptions?: any;
   variantId?: string | null;
   productId?: string | null;
+
+  // Optional gross values for display/debug
+  grossUnitPrice?: number | null;
+  grossLineTotal?: number | null;
+
+  marginPercent?: number | null;
+  marginAmount?: number | null;
 };
 
 type SupplierPurchaseOrderEmailArgs = {
@@ -47,221 +58,20 @@ type SupplierPurchaseOrderEmailArgs = {
   purchaseOrderId: string;
   status?: string | null;
 
-  // PO/customer-facing values for this supplier slice
-  subtotal?: number | null;
-  supplierAmount?: number | null;
+  // supplier PO values
+  subtotal?: number | null; // optional customer subtotal for PO
+  supplierAmount?: number | null; // NET supplier subtotal after margin deduction
   shippingFeeChargedToCustomer?: number | null;
   shippingCurrency?: string | null;
 
-  // NEW: overall order cumulative totals
-  orderSubtotal?: number | null;
+  // supplier-facing notes
+  marginPercent?: number | null;
   orderTax?: number | null;
-  orderTotal?: number | null;
 
   createdAt?: Date | string | null;
   dashboardUrl?: string | null;
   items: SupplierPurchaseOrderEmailItem[];
 };
-
-export async function sendSupplierPurchaseOrderEmail(
-  args: SupplierPurchaseOrderEmailArgs
-) {
-  const supplierName = String(args.supplierName ?? "").trim() || "Supplier";
-  const currency = String(args.shippingCurrency ?? "NGN").trim() || "NGN";
-  const dashboardUrl =
-    String(
-      args.dashboardUrl ??
-        process.env.SUPPLIER_DASHBOARD_URL ??
-        process.env.APP_URL ??
-        ""
-    ).trim() || null;
-
-  const items = Array.isArray(args.items) ? args.items : [];
-
-  const poCustomerSubtotal = Number(args.subtotal ?? 0);
-  const supplierExpectedPayout = Number(args.supplierAmount ?? 0);
-  const shippingChargedToCustomer = Number(args.shippingFeeChargedToCustomer ?? 0);
-
-  const orderSubtotal = Number(args.orderSubtotal ?? 0);
-  const orderTax = Number(args.orderTax ?? 0);
-  const orderTotal = Number(args.orderTotal ?? 0);
-
-  const itemRowsHtml = items
-    .map((item) => {
-      const qty = Number(item?.quantity ?? 0);
-      const supplierUnitPrice = Number(item?.unitPrice ?? 0);
-      const supplierLineTotal = Number(
-        item?.lineTotal ?? supplierUnitPrice * qty
-      );
-      const options = formatSelectedOptionsInline(item?.selectedOptions);
-
-      return `
-        <tr>
-          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;vertical-align:top;">
-            <div style="font-weight:600;color:#111">${escapeHtml(item?.title ?? "Item")}</div>
-            ${
-              options
-                ? `<div style="margin-top:4px;font-size:12px;color:#6b7280">${escapeHtml(options)}</div>`
-                : ""
-            }
-          </td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:center;vertical-align:top;">${qty}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
-            formatMoney(supplierUnitPrice, currency)
-          )}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
-            formatMoney(supplierLineTotal, currency)
-          )}</td>
-        </tr>
-      `;
-    })
-    .join("");
-
-  const itemRowsText = items.map((item) => {
-    const qty = Number(item?.quantity ?? 0);
-    const supplierUnitPrice = Number(item?.unitPrice ?? 0);
-    const supplierLineTotal = Number(
-      item?.lineTotal ?? supplierUnitPrice * qty
-    );
-    const options = formatSelectedOptionsInline(item?.selectedOptions);
-
-    return [
-      `- ${String(item?.title ?? "Item")}`,
-      options ? `  Options: ${options}` : null,
-      `  Qty: ${qty}`,
-      `  Supplier unit price: ${formatMoney(supplierUnitPrice, currency)}`,
-      `  Supplier line total: ${formatMoney(supplierLineTotal, currency)}`,
-    ]
-      .filter(Boolean)
-      .join("\n");
-  });
-
-  const ctaHtml = dashboardUrl
-    ? `
-      <p style="margin:20px 0 0 0">
-        <a
-          href="${escapeHtml(dashboardUrl)}"
-          style="display:inline-block;background:#111;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none"
-        >
-          Open supplier dashboard
-        </a>
-      </p>
-    `
-    : "";
-
-  const ctaText = dashboardUrl ? `Supplier dashboard: ${dashboardUrl}\n\n` : "";
-
-  const html = `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
-      <h2 style="margin:0 0 6px 0">New purchase order received</h2>
-      <p style="margin:0 0 12px 0">Hello ${escapeHtml(supplierName)},</p>
-      <p style="margin:0 0 16px 0">
-        You have received a new purchase order on <strong>DaySpring</strong>.
-      </p>
-
-      <div style="margin:0 0 16px 0;padding:14px 16px;border:1px solid #e5e7eb;border-radius:12px;background:#fafafa">
-        <div><strong>Order ID:</strong> <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">${escapeHtml(
-          args.orderId
-        )}</span></div>
-        <div><strong>Purchase Order ID:</strong> <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">${escapeHtml(
-          args.purchaseOrderId
-        )}</span></div>
-        <div><strong>Status:</strong> ${escapeHtml(args.status ?? "CREATED")}</div>
-      </div>
-
-      <div style="margin:0 0 16px 0;padding:14px 16px;border:1px solid #dbeafe;border-radius:12px;background:#eff6ff">
-        <div style="font-weight:700;color:#1d4ed8;margin-bottom:8px">Overall customer order totals</div>
-        <div><strong>Order subtotal:</strong> ${escapeHtml(
-          formatMoney(orderSubtotal, currency)
-        )}</div>
-        <div><strong>Order tax:</strong> ${escapeHtml(
-          formatMoney(orderTax, currency)
-        )}</div>
-        <div><strong>Order total:</strong> ${escapeHtml(
-          formatMoney(orderTotal, currency)
-        )}</div>
-      </div>
-
-      <div style="margin:0 0 16px 0;padding:14px 16px;border:1px solid #dcfce7;border-radius:12px;background:#f0fdf4">
-        <div style="font-weight:700;color:#166534;margin-bottom:8px">Your supplier payment summary</div>
-        <div><strong>Your item subtotal:</strong> ${escapeHtml(
-          formatMoney(poCustomerSubtotal, currency)
-        )}</div>
-        <div><strong>Shipping charged to customer:</strong> ${escapeHtml(
-          formatMoney(shippingChargedToCustomer, currency)
-        )}</div>
-        <div style="margin-top:6px;font-size:16px;">
-          <strong>Expected payout to you:</strong>
-          <span style="color:#166534">${escapeHtml(
-            formatMoney(supplierExpectedPayout, currency)
-          )}</span>
-        </div>
-      </div>
-
-      <h3 style="margin:0 0 10px 0">Items</h3>
-
-      <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
-        <thead>
-          <tr style="background:#f9fafb">
-            <th style="padding:10px 12px;text-align:left;border-bottom:1px solid #e5e7eb">Item</th>
-            <th style="padding:10px 12px;text-align:center;border-bottom:1px solid #e5e7eb">Qty</th>
-            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Supplier unit price</th>
-            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Supplier line total</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${itemRowsHtml || `<tr><td colspan="4" style="padding:12px">No items found.</td></tr>`}
-        </tbody>
-      </table>
-
-      ${ctaHtml}
-
-      <p style="margin:18px 0 0 0;color:#444">
-        Please log in to your supplier dashboard to process this order.
-      </p>
-
-      <p style="margin:14px 0 0 0;color:#6b7280;font-size:12px">— DaySpring</p>
-    </div>
-  `;
-
-  const text = [
-    `Hello ${supplierName},`,
-    "",
-    "You have received a new purchase order on DaySpring.",
-    "",
-    `Order ID: ${args.orderId}`,
-    `Purchase Order ID: ${args.purchaseOrderId}`,
-    `Status: ${String(args.status ?? "CREATED")}`,
-    "",
-    "Overall customer order totals:",
-    `Order subtotal: ${formatMoney(orderSubtotal, currency)}`,
-    `Order tax: ${formatMoney(orderTax, currency)}`,
-    `Order total: ${formatMoney(orderTotal, currency)}`,
-    "",
-    "Your supplier payment summary:",
-    `Your item subtotal: ${formatMoney(poCustomerSubtotal, currency)}`,
-    `Shipping charged to customer: ${formatMoney(shippingChargedToCustomer, currency)}`,
-    `Expected payout to you: ${formatMoney(supplierExpectedPayout, currency)}`,
-    "",
-    "Items:",
-    ...(itemRowsText.length ? itemRowsText : ["- No items found."]),
-    "",
-    ctaText,
-    "Please log in to your supplier dashboard to process this order.",
-    "",
-    "DaySpring",
-  ].join("\n");
-
-  return safeSend({
-    to: args.to,
-    subject: `New purchase order ${args.purchaseOrderId} for order ${args.orderId}`,
-    html,
-    text,
-  });
-}
-
-
-
 
 type MailAttachment = {
   filename: string;
@@ -277,6 +87,73 @@ type BasicMail = {
   replyTo?: string | string[];
   attachments?: MailAttachment[];
 };
+
+function formatMoney(amount: number | null | undefined, currency?: string | null) {
+  const code = String(currency || "NGN").toUpperCase();
+  const value = Number(amount ?? 0);
+
+  try {
+    return new Intl.NumberFormat("en-NG", {
+      style: "currency",
+      currency: code,
+      maximumFractionDigits: 2,
+    }).format(Number.isFinite(value) ? value : 0);
+  } catch {
+    return `${code} ${(Number.isFinite(value) ? value : 0).toFixed(2)}`;
+  }
+}
+
+function clampPercent(value: unknown): number {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, n));
+}
+
+function parseSelectedOptions(value: any): Array<{ attribute?: string; value?: string }> {
+  if (!value) return [];
+
+  if (Array.isArray(value)) return value;
+
+  if (typeof value === "object" && Array.isArray(value?.raw)) {
+    return value.raw;
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.raw)) return parsed.raw;
+      return [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+function formatSelectedOptionsInline(value: any) {
+  const arr = parseSelectedOptions(value);
+
+  return arr
+    .map((o: any) => {
+      const a = String(o?.attribute ?? "").trim();
+      const v = String(o?.value ?? "").trim();
+      if (a && v) return `${a}: ${v}`;
+      return v || a || "";
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+function escapeHtml(input: any) {
+  return String(input ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 function resolveRecipients(to: string | string[]) {
   const originalTo = Array.isArray(to) ? to : [to];
@@ -352,11 +229,8 @@ export async function safeSend({
       ].join("\n")
     : "";
 
-  const decoratedHtml =
-    shouldDecorate && html ? `${overrideBannerHtml}${html}` : html;
-
-  const decoratedText =
-    shouldDecorate && text ? `${overrideBannerText}${text}` : text;
+  const decoratedHtml = shouldDecorate && html ? `${overrideBannerHtml}${html}` : html;
+  const decoratedText = shouldDecorate && text ? `${overrideBannerText}${text}` : text;
 
   const effectiveSubject = shouldDecorate
     ? `[TEST→${originalTo.join(", ")}] ${subject}`
@@ -578,56 +452,259 @@ export async function sendRiderInviteEmail(
    Supplier purchase order email
 =========================== */
 
-function formatMoney(amount: number | null | undefined, currency?: string | null) {
-  const code = String(currency || "NGN").toUpperCase();
-  const value = Number(amount ?? 0);
+export async function sendSupplierPurchaseOrderEmail(
+  args: SupplierPurchaseOrderEmailArgs
+) {
+  const supplierName = String(args.supplierName ?? "").trim() || "Supplier";
+  const currency = String(args.shippingCurrency ?? "NGN").trim() || "NGN";
+  const dashboardUrl =
+    String(
+      args.dashboardUrl ??
+        process.env.SUPPLIER_DASHBOARD_URL ??
+        process.env.APP_URL ??
+        ""
+    ).trim() || null;
 
-  try {
-    return new Intl.NumberFormat("en-NG", {
-      style: "currency",
-      currency: code,
-      maximumFractionDigits: 2,
-    }).format(Number.isFinite(value) ? value : 0);
-  } catch {
-    return `${code} ${(Number.isFinite(value) ? value : 0).toFixed(2)}`;
-  }
-}
+  const items = Array.isArray(args.items) ? args.items : [];
+  const defaultMarginPercent = clampPercent(args.marginPercent);
 
-function parseSelectedOptions(value: any): Array<{ attribute?: string; value?: string }> {
-  if (!value) return [];
-  if (Array.isArray(value)) return value;
+  const normalizedItems = items.map((item) => {
+    const qty = Math.max(0, Number(item?.quantity ?? 0));
 
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
+    const netUnitPrice = round2(Number(item?.unitPrice ?? 0) || 0);
+    const netLineTotal = round2(
+      Number(item?.lineTotal ?? netUnitPrice * qty) || 0
+    );
+
+    const grossUnitPrice = round2(
+      Number(item?.grossUnitPrice ?? 0) || 0
+    );
+    const grossLineTotal = round2(
+      Number(item?.grossLineTotal ?? (grossUnitPrice > 0 ? grossUnitPrice * qty : 0)) || 0
+    );
+
+    const marginPercent = clampPercent(
+      item?.marginPercent != null ? item.marginPercent : defaultMarginPercent
+    );
+
+    let marginAmount = round2(Number(item?.marginAmount ?? 0) || 0);
+    if (!(marginAmount > 0) && grossLineTotal > 0 && netLineTotal >= 0) {
+      marginAmount = round2(Math.max(0, grossLineTotal - netLineTotal));
     }
-  }
 
-  return [];
-}
+    const options = formatSelectedOptionsInline(item?.selectedOptions);
 
-function formatSelectedOptionsInline(value: any) {
-  const arr = parseSelectedOptions(value);
+    return {
+      title: String(item?.title ?? "Item"),
+      quantity: qty,
+      netUnitPrice,
+      netLineTotal,
+      grossUnitPrice,
+      grossLineTotal,
+      marginPercent,
+      marginAmount,
+      options,
+      variantId: item?.variantId ? String(item.variantId) : null,
+      productId: item?.productId ? String(item.productId) : null,
+    };
+  });
 
-  return arr
-    .map((o: any) => {
-      const a = String(o?.attribute ?? "").trim();
-      const v = String(o?.value ?? "").trim();
-      if (a && v) return `${a}: ${v}`;
-      return v || a || "";
+  const grossSupplierSubtotal = round2(
+    normalizedItems.reduce((sum, item) => sum + item.grossLineTotal, 0)
+  );
+
+  const deductedMarginTotal = round2(
+    normalizedItems.reduce((sum, item) => sum + item.marginAmount, 0)
+  );
+
+  const fallbackNetSupplierAmount = round2(Number(args.supplierAmount ?? 0) || 0);
+
+  const netSupplierSubtotal = round2(
+    normalizedItems.length > 0
+      ? normalizedItems.reduce((sum, item) => sum + item.netLineTotal, 0)
+      : fallbackNetSupplierAmount
+  );
+
+  const shippingFee = round2(Number(args.shippingFeeChargedToCustomer ?? 0) || 0);
+
+  // per your rule:
+  // amount payable by business to supplier = subtotal - margin + shipping fee
+  const amountPayable = round2(netSupplierSubtotal + shippingFee);
+
+  const itemRowsHtml = normalizedItems
+    .map((item) => {
+      return `
+        <tr>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;vertical-align:top;">
+            <div style="font-weight:600;color:#111">${escapeHtml(item.title)}</div>
+            ${
+              item.options
+                ? `<div style="margin-top:4px;font-size:12px;color:#6b7280">${escapeHtml(item.options)}</div>`
+                : ""
+            }
+            ${
+              item.marginPercent > 0
+                ? `<div style="margin-top:4px;font-size:12px;color:#6b7280">Margin deducted: ${escapeHtml(
+                    item.marginPercent.toFixed(2).replace(/\.00$/, "")
+                  )}%</div>`
+                : ""
+            }
+          </td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:center;vertical-align:top;">${item.quantity}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
+            formatMoney(item.grossUnitPrice, currency)
+          )}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
+            formatMoney(item.marginAmount, currency)
+          )}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
+            formatMoney(item.netUnitPrice, currency)
+          )}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;vertical-align:top;">${escapeHtml(
+            formatMoney(item.netLineTotal, currency)
+          )}</td>
+        </tr>
+      `;
     })
-    .filter(Boolean)
-    .join(", ");
+    .join("");
+
+  const itemRowsText = normalizedItems.map((item) => {
+    return [
+      `- ${item.title}`,
+      item.options ? `  Options: ${item.options}` : null,
+      `  Qty: ${item.quantity}`,
+      `  Gross supplier unit price: ${formatMoney(item.grossUnitPrice, currency)}`,
+      item.marginPercent > 0
+        ? `  Margin deducted: ${item.marginPercent.toFixed(2).replace(/\.00$/, "")}%`
+        : null,
+      `  Margin amount: ${formatMoney(item.marginAmount, currency)}`,
+      `  Net supplier unit price: ${formatMoney(item.netUnitPrice, currency)}`,
+      `  Net supplier line total: ${formatMoney(item.netLineTotal, currency)}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+
+  const ctaHtml = dashboardUrl
+    ? `
+      <p style="margin:20px 0 0 0">
+        <a
+          href="${escapeHtml(dashboardUrl)}"
+          style="display:inline-block;background:#111;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none"
+        >
+          Open supplier dashboard
+        </a>
+      </p>
+    `
+    : "";
+
+  const ctaText = dashboardUrl ? `Supplier dashboard: ${dashboardUrl}\n\n` : "";
+
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
+      <h2 style="margin:0 0 6px 0">New purchase order received</h2>
+      <p style="margin:0 0 12px 0">Hello ${escapeHtml(supplierName)},</p>
+      <p style="margin:0 0 16px 0">
+        You have received a new purchase order on <strong>DaySpring</strong>.
+      </p>
+
+      <div style="margin:0 0 16px 0;padding:14px 16px;border:1px solid #e5e7eb;border-radius:12px;background:#fafafa">
+        <div><strong>Order ID:</strong> <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">${escapeHtml(
+          args.orderId
+        )}</span></div>
+        <div><strong>Purchase Order ID:</strong> <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">${escapeHtml(
+          args.purchaseOrderId
+        )}</span></div>
+        <div><strong>Status:</strong> ${escapeHtml(args.status ?? "CREATED")}</div>
+      </div>
+
+      <div style="margin:0 0 16px 0;padding:14px 16px;border:1px solid #dcfce7;border-radius:12px;background:#f0fdf4">
+        <div style="font-weight:700;color:#166534;margin-bottom:8px">Your payout summary</div>
+        <div><strong>Gross supplier subtotal:</strong> ${escapeHtml(
+          formatMoney(grossSupplierSubtotal, currency)
+        )}</div>
+        <div><strong>Deducted margin:</strong> ${escapeHtml(
+          formatMoney(deductedMarginTotal, currency)
+        )}</div>
+        <div><strong>Net supplier subtotal:</strong> ${escapeHtml(
+          formatMoney(netSupplierSubtotal, currency)
+        )}</div>
+        <div><strong>Shipping fee:</strong> ${escapeHtml(
+          formatMoney(shippingFee, currency)
+        )}</div>
+        <div style="margin-top:6px;font-size:16px;">
+          <strong>Amount payable by DaySpring:</strong>
+          <span style="color:#166534">${escapeHtml(
+            formatMoney(amountPayable, currency)
+          )}</span>
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:#166534">
+          Tax is already included where applicable.
+        </div>
+      </div>
+
+      <h3 style="margin:0 0 10px 0">Items</h3>
+
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
+        <thead>
+          <tr style="background:#f9fafb">
+            <th style="padding:10px 12px;text-align:left;border-bottom:1px solid #e5e7eb">Item</th>
+            <th style="padding:10px 12px;text-align:center;border-bottom:1px solid #e5e7eb">Qty</th>
+            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Gross unit</th>
+            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Margin</th>
+            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Net unit</th>
+            <th style="padding:10px 12px;text-align:right;border-bottom:1px solid #e5e7eb">Net line total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${itemRowsHtml || `<tr><td colspan="6" style="padding:12px">No items found.</td></tr>`}
+        </tbody>
+      </table>
+
+      ${ctaHtml}
+
+      <p style="margin:18px 0 0 0;color:#444">
+        Please log in to your supplier dashboard to process this order.
+      </p>
+
+      <p style="margin:14px 0 0 0;color:#6b7280;font-size:12px">— DaySpring</p>
+    </div>
+  `;
+
+  const text = [
+    `Hello ${supplierName},`,
+    "",
+    "You have received a new purchase order on DaySpring.",
+    "",
+    `Order ID: ${args.orderId}`,
+    `Purchase Order ID: ${args.purchaseOrderId}`,
+    `Status: ${String(args.status ?? "CREATED")}`,
+    "",
+    "Your payout summary:",
+    `Gross supplier subtotal: ${formatMoney(grossSupplierSubtotal, currency)}`,
+    `Deducted margin: ${formatMoney(deductedMarginTotal, currency)}`,
+    `Net supplier subtotal: ${formatMoney(netSupplierSubtotal, currency)}`,
+    `Shipping fee: ${formatMoney(shippingFee, currency)}`,
+    `Amount payable by DaySpring: ${formatMoney(amountPayable, currency)}`,
+    "Tax is already included where applicable.",
+    "",
+    "Items:",
+    ...(itemRowsText.length ? itemRowsText : ["- No items found."]),
+    "",
+    ctaText,
+    "Please log in to your supplier dashboard to process this order.",
+    "",
+    "DaySpring",
+  ].join("\n");
+
+  return safeSend({
+    to: args.to,
+    subject: `New purchase order ${args.purchaseOrderId} for order ${args.orderId}`,
+    html,
+    text,
+  });
 }
 
-function escapeHtml(input: any) {
-  return String(input ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+function round2(n: number) {
+  return Math.round((Number(n) || 0) * 100) / 100;
 }

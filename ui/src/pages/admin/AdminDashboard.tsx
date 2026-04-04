@@ -265,6 +265,73 @@ const stopHashNav = (evt: React.SyntheticEvent) => {
   }
 };
 
+
+function SectionCard({
+  title,
+  subtitle,
+  children,
+  right,
+}: {
+  title: string;
+  subtitle?: string;
+  children: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border bg-white shadow-sm">
+      <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="min-w-[180px]">
+          <h3 className="text-ink font-semibold">{title}</h3>
+          {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
+        </div>
+        {right}
+      </div>
+      <div className="p-4 md:p-5">{children}</div>
+    </div>
+  );
+}
+
+function TabButton({
+  k,
+  label,
+  mobileLabel,
+  Icon,
+  activeTab,
+  onSelect,
+}: {
+  k: TabKey;
+  label: string;
+  mobileLabel?: string;
+  Icon: any;
+  activeTab: TabKey;
+  onSelect: (nextTab: TabKey) => void;
+}) {
+  const active = activeTab === k;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(k)}
+      className={[
+        "group inline-flex w-full items-center gap-2 justify-center",
+        "min-h-[44px] px-3 py-2 rounded-xl border transition",
+        "overflow-hidden text-[13px] font-medium",
+        "sm:w-auto sm:justify-start sm:text-sm sm:px-2.5 sm:py-2",
+        active
+          ? "bg-zinc-900 text-white border-zinc-900 shadow-sm"
+          : "bg-white text-zinc-700 border-zinc-200 hover:bg-black/5",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400/60",
+      ].join(" ")}
+    >
+      <Icon size={16} className={`shrink-0 ${active ? "text-white" : "text-zinc-600"}`} />
+      <span className="truncate max-w-full">
+        <span className="sm:hidden">{mobileLabel ?? label}</span>
+        <span className="hidden sm:inline">{label}</span>
+      </span>
+    </button>
+  );
+}
+
 /* =========================================================
    AdminDashboard (COOKIE AUTH)
    ========================================================= */
@@ -284,6 +351,30 @@ export default function AdminDashboard() {
   const [focusProductId, setFocusProductId] = useState<string | null>(null);
 
   const [searchParams, setSearchParams] = useSearchParams();
+
+
+  function handleTabSelect(nextTab: TabKey) {
+    setTab(nextTab);
+
+    setSearchParams((prev) => {
+      const s = new URLSearchParams(prev);
+      s.set("tab", nextTab);
+
+      if (nextTab !== "products") {
+        s.delete("pTab");
+        s.delete("q");
+        s.delete("status");
+        s.delete("view");
+
+        setProdSearch("");
+        setFocusProductId(null);
+      } else {
+        if (!s.get("pTab")) s.set("pTab", "manage");
+      }
+
+      return s;
+    });
+  }
 
   const validTabs: TabKey[] = [
     "overview",
@@ -945,91 +1036,6 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
     })();
   }, [tab, canAdmin, qc]);
 
-  function TabButton({
-    k,
-    label,
-    mobileLabel,
-    Icon,
-  }: {
-    k: TabKey;
-    label: string;
-    mobileLabel?: string;
-    Icon: any;
-  }) {
-    const active = tab === k;
-
-    return (
-      <button
-        type="button"
-        onClick={() => {
-          setTab(k);
-
-          setSearchParams((prev) => {
-            const s = new URLSearchParams(prev);
-            s.set("tab", k);
-
-            if (k !== "products") {
-              s.delete("pTab");
-              s.delete("q");
-              s.delete("status");
-              s.delete("view");
-
-              setProdSearch("");
-              setFocusProductId(null);
-            } else {
-              if (!s.get("pTab")) s.set("pTab", "manage");
-            }
-
-            return s;
-          });
-        }}
-        className={[
-          // ✅ Mobile: neat pills, no overflow
-          "group inline-flex w-full items-center gap-2 justify-center",
-          "min-h-[44px] px-3 py-2 rounded-xl border transition",
-          "overflow-hidden text-[13px] font-medium",
-          // ✅ Desktop
-          "sm:w-auto sm:justify-start sm:text-sm sm:px-2.5 sm:py-2",
-          active
-            ? "bg-zinc-900 text-white border-zinc-900 shadow-sm"
-            : "bg-white text-zinc-700 border-zinc-200 hover:bg-black/5",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400/60",
-        ].join(" ")}
-      >
-        <Icon size={16} className={`shrink-0 ${active ? "text-white" : "text-zinc-600"}`} />
-        <span className="truncate max-w-full">
-          <span className="sm:hidden">{mobileLabel ?? label}</span>
-          <span className="hidden sm:inline">{label}</span>
-        </span>
-      </button>
-    );
-  }
-
-  function SectionCard({
-    title,
-    subtitle,
-    children,
-    right,
-  }: {
-    title: string;
-    subtitle?: string;
-    children: ReactNode;
-    right?: ReactNode;
-  }) {
-    return (
-      <div className="rounded-2xl border bg-white shadow-sm">
-        <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div className="min-w-[180px]">
-            <h3 className="text-ink font-semibold">{title}</h3>
-            {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
-          </div>
-          {right}
-        </div>
-        <div className="p-4 md:p-5">{children}</div>
-      </div>
-    );
-  }
-
   function SkeletonRow({ cols = 4 }: { cols?: number }) {
     return (
       <tr className="animate-pulse">
@@ -1655,30 +1661,48 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
         <div className="mt-6">
           <div className="rounded-2xl border bg-white p-2 shadow-sm">
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-              <TabButton k="overview" label="Overview" Icon={ShieldCheck} />
+              <TabButton
+                k="overview"
+                label="Overview"
+                Icon={ShieldCheck}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
               <TabButton
                 k="users"
                 label="Users & Roles"
                 mobileLabel="Users"
                 Icon={UserCheck}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
+
               <TabButton
                 k="careers"
                 label="Careers"
                 mobileLabel="Careers"
                 Icon={Users}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
+
               <TabButton
                 k="products"
                 label="Product Moderation"
                 mobileLabel="Products"
                 Icon={PackageCheck}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
+
               <TabButton
                 k="catalog"
                 label="Supplier/Catalog Settings"
                 mobileLabel="Catalog"
                 Icon={Settings}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
 
               <TabButton
@@ -1686,23 +1710,59 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                 label="Supplier Documents"
                 mobileLabel="Supplier Docs"
                 Icon={FileBadge2}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
-              <TabButton k="refunds" label="Refunds" Icon={Undo2} />
+
+              <TabButton
+                k="refunds"
+                label="Refunds"
+                Icon={Undo2}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
               <TabButton
                 k="transactions"
                 label="Transactions"
                 mobileLabel="Payments"
                 Icon={CreditCard}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
-              <TabButton k="finance" label="Finance" Icon={CreditCard} />
+
+              <TabButton
+                k="finance"
+                label="Finance"
+                Icon={CreditCard}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
               <TabButton
                 k="ops"
                 label="Ops & Security"
                 mobileLabel="Ops"
                 Icon={Settings}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
-              <TabButton k="marketing" label="Marketing" Icon={BellRing} />
-              <TabButton k="analytics" label="Analytics" Icon={BarChart3} />
+
+              <TabButton
+                k="marketing"
+                label="Marketing"
+                Icon={BellRing}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
+              <TabButton
+                k="analytics"
+                label="Analytics"
+                Icon={BarChart3}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
             </div>
           </div>
         </div>
@@ -2568,8 +2628,8 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     for (const [key, value] of Object.entries(raw)) {
       const urls = Array.isArray(value)
         ? value
-            .map((x) => String(x ?? "").trim())
-            .filter(Boolean)
+          .map((x) => String(x ?? "").trim())
+          .filter(Boolean)
         : [];
       if (urls.length) out[String(key)] = urls;
     }
