@@ -487,157 +487,126 @@ export default function SupplierRefunds() {
     return { total, pending };
   }, [rows]);
 
-function openActionModal(r: SupplierRefundRow, action: "ACCEPT" | "REJECT" | "ESCALATE") {
-  const evidenceUrls = getEvidenceUrls(r);
-  const evidenceItems = getEvidenceItems(r);
+  function openActionModal(r: SupplierRefundRow, action: "ACCEPT" | "REJECT" | "ESCALATE") {
+    let noteVal = "";
+    const evidenceUrls = getEvidenceUrls(r);
+    const evidenceItems = getEvidenceItems(r);
 
-  const title =
-    action === "ACCEPT"
-      ? "Accept refund?"
-      : action === "REJECT"
-        ? "Reject refund?"
-        : "Escalate to admin?";
+    const title = action === "ACCEPT" ? "Accept refund?" : action === "REJECT" ? "Reject refund?" : "Escalate to admin?";
 
-  const icon =
-    action === "ACCEPT" ? (
-      <CheckCircle2 size={18} className="text-emerald-700" />
-    ) : action === "REJECT" ? (
-      <XCircle size={18} className="text-rose-700" />
-    ) : (
-      <AlertTriangle size={18} className="text-indigo-700" />
-    );
+    const icon =
+      action === "ACCEPT" ? (
+        <CheckCircle2 size={18} className="text-emerald-700" />
+      ) : action === "REJECT" ? (
+        <XCircle size={18} className="text-rose-700" />
+      ) : (
+        <AlertTriangle size={18} className="text-indigo-700" />
+      );
 
-  function ActionModalBody() {
-    const [noteVal, setNoteVal] = useState("");
-
-    const handleSubmit = () => {
-      closeModal();
-      actM.mutate({
-        id: r.id,
-        action,
-        note: noteVal.trim() || undefined,
-      });
-    };
-
-    return (
-      <div className="space-y-3">
-        <div className="flex items-start gap-2">
-          <div className="mt-0.5">{icon}</div>
-          <div className="min-w-0">
-            <div className="text-sm text-zinc-800">
-              Refund <b>{r.id}</b> • Order <b>{r.orderId}</b> • PO <b>{r.purchaseOrderId}</b>
-            </div>
-            <div className="text-xs text-zinc-500 mt-1">
-              Status: <StatusPill status={r.status} /> • Total:{" "}
-              <b>{ngn.format(normMoney(r.totalAmount))}</b>
+    openModal({
+      title,
+      message: (
+        <div className="space-y-3">
+          <div className="flex items-start gap-2">
+            <div className="mt-0.5">{icon}</div>
+            <div className="min-w-0">
+              <div className="text-sm text-zinc-800">
+                Refund <b>{(r as any).id}</b> • Order <b>{(r as any).orderId}</b> • PO <b>{(r as any).purchaseOrderId}</b>
+              </div>
+              <div className="text-xs text-zinc-500 mt-1">
+                Status: <StatusPill status={(r as any).status} /> • Total:{" "}
+                <b>{ngn.format(normMoney((r as any).totalAmount))}</b>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="rounded-xl border bg-white p-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs text-zinc-500 flex items-center gap-2">
-              <ImageIcon size={14} /> Evidence
-            </div>
-            {evidenceUrls.length ? (
-              <a
-                href={evidenceUrls[0]}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-indigo-700 hover:underline inline-flex items-center gap-1"
-              >
-                Open first <ExternalLink size={12} />
-              </a>
-            ) : null}
-          </div>
-
-          {evidenceItems.length > 0 ? (
-            <div className="mt-3 space-y-3">
-              {evidenceItems.map((item) => (
-                <div key={item.itemId} className="rounded-lg border bg-zinc-50 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-zinc-900 truncate">
-                        {item.title || "Item"}
-                      </div>
-                      <div className="text-xs text-zinc-500">
-                        Item ID: <span className="font-mono">{item.itemId}</span>
-                        {item.qty ? <> • Qty {item.qty}</> : null}
-                      </div>
-                    </div>
-                    <div className="text-xs text-zinc-500 shrink-0">
-                      {item.urls.length} image(s)
-                    </div>
-                  </div>
-
-                  <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {item.urls.map((u, idx) => (
-                      <a
-                        key={`${item.itemId}-${u}-${idx}`}
-                        href={u}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block"
-                      >
-                        <img
-                          src={u}
-                          alt="Evidence"
-                          loading="lazy"
-                          className="h-28 w-full rounded-lg border object-cover hover:opacity-95"
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.display = "none";
-                          }}
-                        />
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : evidenceUrls.length ? (
-            <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {evidenceUrls.map((u, idx) => (
-                <a key={`${u}-${idx}`} href={u} target="_blank" rel="noreferrer" className="block">
-                  <img
-                    src={u}
-                    alt="Evidence"
-                    loading="lazy"
-                    className="h-28 w-full rounded-lg border object-cover hover:opacity-95"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).style.display = "none";
-                    }}
-                  />
+          <div className="rounded-xl border bg-white p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs text-zinc-500 flex items-center gap-2">
+                <ImageIcon size={14} /> Evidence
+              </div>
+              {evidenceUrls.length ? (
+                <a
+                  href={evidenceUrls[0]}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-indigo-700 hover:underline inline-flex items-center gap-1"
+                >
+                  Open first <ExternalLink size={12} />
                 </a>
-              ))}
+              ) : null}
             </div>
-          ) : (
-            <div className="mt-2 text-sm text-zinc-500">No evidence attached.</div>
-          )}
-        </div>
 
-        <div className="rounded-xl border bg-white p-3">
-          <div className="text-xs text-zinc-500 mb-1">Optional note</div>
-          <textarea
-            rows={3}
-            className="w-full rounded-lg border px-3 py-2 text-sm"
-            placeholder="Add context for the customer/admin…"
-            value={noteVal}
-            onChange={(e) => setNoteVal(e.target.value)}
-          />
-        </div>
+            {evidenceItems.length > 0 ? (
+              <div className="mt-3 space-y-3">
+                {evidenceItems.map((item) => (
+                  <div key={item.itemId} className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-zinc-900 truncate">{item.title || "Item"}</div>
+                        <div className="text-xs text-zinc-500">
+                          Item ID: <span className="font-mono">{item.itemId}</span>
+                          {item.qty ? <> • Qty {item.qty}</> : null}
+                        </div>
+                      </div>
+                      <div className="text-xs text-zinc-500 shrink-0">{item.urls.length} image(s)</div>
+                    </div>
 
+                    <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {item.urls.map((u, idx) => (
+                        <a key={`${item.itemId}-${u}-${idx}`} href={u} target="_blank" rel="noreferrer" className="block">
+                          <img
+                            src={u}
+                            alt="Evidence"
+                            loading="lazy"
+                            className="h-28 w-full rounded-lg border object-cover hover:opacity-95"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = "none";
+                            }}
+                          />
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : evidenceUrls.length ? (
+              <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {evidenceUrls.map((u, idx) => (
+                  <a key={`${u}-${idx}`} href={u} target="_blank" rel="noreferrer" className="block">
+                    <img
+                      src={u}
+                      alt="Evidence"
+                      loading="lazy"
+                      className="h-28 w-full rounded-lg border object-cover hover:opacity-95"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-2 text-sm text-zinc-500">No evidence attached.</div>
+            )}
+          </div>
+
+          <div className="rounded-xl border bg-white p-3">
+            <div className="text-xs text-zinc-500 mb-1">Optional note</div>
+            <textarea
+              rows={3}
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+              placeholder="Add context for the customer/admin…"
+              onChange={(e) => (noteVal = e.target.value)}
+            />
+          </div>
+        </div>
+      ),
+      footer: (
         <div className="flex justify-end gap-2">
           <button
             type="button"
-            onClick={() => closeModal()}
-            className="px-3 py-1.5 rounded-md text-sm border bg-white hover:bg-black/5"
-          >
-            Cancel
-          </button>
-
-          <button
-            type="button"
-            onClick={handleSubmit}
+            onClick={() => actM.mutate({ id: r.id, action, note: noteVal || undefined })}
             disabled={actM.isPending}
             className={`px-3 py-1.5 rounded-md text-sm text-white disabled:opacity-60 ${
               action === "ACCEPT"
@@ -647,19 +616,13 @@ function openActionModal(r: SupplierRefundRow, action: "ACCEPT" | "REJECT" | "ES
                   : "bg-indigo-600 hover:bg-indigo-700"
             }`}
           >
-            {action === "ESCALATE" ? "Escalate" : action === "ACCEPT" ? "Accept" : "Reject"}
+            {actM.isPending ? "Saving…" : action === "ESCALATE" ? "Escalate" : action}
           </button>
         </div>
-      </div>
-    );
+      ),
+      disableOverlayClose: true,
+    });
   }
-
-  openModal({
-    title,
-    message: <ActionModalBody />,
-    disableOverlayClose: true,
-  });
-}
 
   const viewingRefundId = (refundId ?? "").trim();
 
