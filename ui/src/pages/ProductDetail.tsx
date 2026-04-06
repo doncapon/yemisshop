@@ -2478,9 +2478,9 @@ export default function ProductDetail() {
 
   return (
     <SiteLayout>
-      <div className="bg-gradient-to-b from-zinc-50 to-white">
+      <div className="bg-gradient-to-b from-zinc-50 to-white -mt-4 md:-mt-6">
         <div>
-          <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pt-3 md:pt-6">
+          <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pt-0">
             <div className="flex items-center justify-between gap-3">
               <button
                 type="button"
@@ -2504,117 +2504,119 @@ export default function ProductDetail() {
 
           <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 py-3 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 max-[360px]:gap-4">
             {/* LEFT */}
+            {/* LEFT */}
             <div className="space-y-3 md:space-y-5">
-              <div className="relative w-full">
-                <div
-                  className={`relative rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
-                  style={{ aspectRatio: "1 / 1" }}
-                  onMouseEnter={() => showMainImg && setIsZooming(true)}
-                  onMouseLeave={() => setIsZooming(false)}
-                  onMouseMove={handleZoomMove}
-                  onTouchStart={() => showMainImg && setIsZooming(true)}
-                  onTouchMove={handleTouchZoomMove}
-                  onTouchEnd={() => setIsZooming(false)}
-                >
-                  {showMainImg ? (
-                    <>
-                      <img
-                        src={currentSrc}
-                        alt={product.title || "Product image"}
-                        className="w-full h-full object-cover"
-                        loading="eager"
-                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
-                      />
-
-                      {isZooming && (
-                        <div
-                          className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
-                          style={{
-                            left: `${zoomPos.x}%`,
-                            top: `${zoomPos.y}%`,
-                            transform: "translate(-50%, -50%)",
-                          }}
+              <div className="w-full max-w-[420px] sm:max-w-[480px] md:max-w-[540px] lg:max-w-[580px] mx-auto">
+                <div className="relative w-full">
+                  <div
+                    className={`relative h-[250px] sm:h-[300px] md:h-[340px] lg:h-[380px] aspect-square w-full rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
+                    onMouseEnter={() => showMainImg && setIsZooming(true)}
+                    onMouseLeave={() => setIsZooming(false)}
+                    onMouseMove={handleZoomMove}
+                    onTouchStart={() => showMainImg && setIsZooming(true)}
+                    onTouchMove={handleTouchZoomMove}
+                    onTouchEnd={() => setIsZooming(false)}
+                  >
+                    {showMainImg ? (
+                      <>
+                        <img
+                          src={currentSrc}
+                          alt={product.title || "Product image"}
+                          className="w-full h-full object-cover object-top"
+                          loading="eager"
+                          onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
                         />
-                      )}
 
-                      {isZooming && (
-                        <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
-                          <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
-                            <div
-                              className="h-full w-full"
-                              style={{
-                                backgroundImage: `url(${currentSrc})`,
-                                backgroundRepeat: "no-repeat",
-                                backgroundSize: "416%",
-                                backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
-                              }}
-                            />
+                        {isZooming && (
+                          <div
+                            className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
+                            style={{
+                              left: `${zoomPos.x}%`,
+                              top: `${zoomPos.y}%`,
+                              transform: "translate(-50%, -50%)",
+                            }}
+                          />
+                        )}
+
+                        {isZooming && (
+                          <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
+                            <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
+                              <div
+                                className="h-full w-full"
+                                style={{
+                                  backgroundImage: `url(${currentSrc})`,
+                                  backgroundRepeat: "no-repeat",
+                                  backgroundSize: "416%",
+                                  backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
+                                }}
+                              />
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
+                      </>
+                    ) : (
+                      <NoImageBox className="bg-zinc-50" />
+                    )}
+                  </div>
+
+                  <span
+                    className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
+                  >
+                    {availabilityBadge.text}
+                  </span>
+
+                  {images.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                        className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
+                        aria-label="Previous image"
+                      >
+                        ‹
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+                        className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
+                        aria-label="Next image"
+                      >
+                        ›
+                      </button>
                     </>
-                  ) : (
-                    <NoImageBox className="bg-zinc-50" />
                   )}
                 </div>
 
-                <span
-                  className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
-                >
-                  {availabilityBadge.text}
-                </span>
-
                 {images.length > 1 && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                      className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
-                      aria-label="Previous image"
-                    >
-                      ‹
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                      className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
-                      aria-label="Next image"
-                    >
-                      ›
-                    </button>
-                  </>
+                  <div className="mt-3 grid grid-cols-5 gap-2 sm:gap-2.5">
+                    {images.map((src, idx) => {
+                      const broken = !!brokenByIndex[idx];
+                      if (!src || broken) return null;
+
+                      const active = idx === mainIndex;
+                      return (
+                        <button
+                          key={`${src}-${idx}`}
+                          type="button"
+                          onClick={() => setMainIndex(idx)}
+                          className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder} ${silverShadowSm}`}
+                          style={{ aspectRatio: "1 / 1" }}
+                          aria-label={`Show image ${idx + 1}`}
+                        >
+                          <img
+                            src={src}
+                            alt=""
+                            aria-hidden="true"
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                            onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
+                          />
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
-
-              {images.length > 1 && (
-                <div className="grid grid-cols-5 gap-2">
-                  {images.map((src, idx) => {
-                    const broken = !!brokenByIndex[idx];
-                    if (!src || broken) return null;
-
-                    const active = idx === mainIndex;
-                    return (
-                      <button
-                        key={`${src}-${idx}`}
-                        type="button"
-                        onClick={() => setMainIndex(idx)}
-                        className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder} ${silverShadowSm}`}
-                        style={{ aspectRatio: "1 / 1" }}
-                        aria-label={`Show image ${idx + 1}`}
-                      >
-                        <img
-                          src={src}
-                          alt=""
-                          aria-hidden="true"
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                          onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
-                        />
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
 
               <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
                 <h2 className="text-base font-semibold mb-1">Description</h2>
