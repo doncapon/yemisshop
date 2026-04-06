@@ -3906,6 +3906,8 @@ export default function OrdersPage() {
     return true;
   }
 
+  const canViewSupplierIdentity = isAdmin || isSuperAdmin;
+
   /* ---------------- Render ---------------- */
   return (
     <SiteLayout>
@@ -4355,9 +4357,13 @@ export default function OrdersPage() {
                                 {Array.isArray(details.purchaseOrders) && details.purchaseOrders.length > 0 && (
                                   <div className={`mt-4 overflow-hidden ${CARD_XL}`}>
                                     <div className="px-4 py-3 border-b border-zinc-200/70 flex items-center justify-between">
-                                      <div className="text-sm font-semibold text-ink">Supplier fulfillment</div>
+                                      <div className="text-sm font-semibold text-ink">
+                                        {canViewSupplierIdentity ? "Supplier fulfillment" : "Delivery status"}
+                                      </div>
                                       <div className="text-xs text-ink-soft">
-                                        {getOrderSupplierSummary(details).count} supplier(s)
+                                        {canViewSupplierIdentity
+                                          ? `${getOrderSupplierSummary(details).count} supplier(s)`
+                                          : "Latest delivery and refund updates"}
                                       </div>
                                     </div>
 
@@ -4382,12 +4388,15 @@ export default function OrdersPage() {
                                           >
                                             <div className="flex flex-wrap items-center gap-2">
                                               <span className="font-medium text-zinc-900">
-                                                {po.supplierName || po.supplierId || "Supplier"}
+                                                {canViewSupplierIdentity ? (po.supplierName || po.supplierId || "Supplier") : "Order update"}
                                               </span>
-                                              <span>•</span>
+                                                 {canViewSupplierIdentity && <><span>•</span>
+                                           
                                               <span>
+
                                                 PO: <span className="font-mono">{po.id}</span>
-                                              </span>
+                                              </span></>
+                                              }
                                               {getPurchaseOrderDeliveryDisplay(po) ? (
                                                 <>
                                                   <span>•</span>
@@ -4408,7 +4417,7 @@ export default function OrdersPage() {
                                                   <span>Payout: <b>{po.payoutStatus}</b></span>
                                                 </>
                                               ) : null}
-                                              {supplierPaid ? (
+                                              {supplierPaid && canViewSupplierIdentity ? (
                                                 <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
                                                   Supplier paid
                                                 </span>
@@ -4739,7 +4748,7 @@ export default function OrdersPage() {
                     <div className="border-t border-zinc-200/70 bg-white px-3 py-3 space-y-3">
                       {Array.isArray(details.purchaseOrders) && details.purchaseOrders.length > 0 && (
                         <div className="rounded-2xl border border-zinc-200/80 bg-zinc-50 p-3">
-                          <div className="mb-2 text-[11px] font-semibold text-zinc-900">Supplier fulfillment</div>
+                          <div className="mb-2 text-[11px] font-semibold text-zinc-900"> {canViewSupplierIdentity ? "Supplier fulfillment" : "Delivery status"}</div>
                           <div className="space-y-2">
                             {details.purchaseOrders.map((po) => {
                               const supplierPaid = isPurchaseOrderSupplierPaid(po, details);
@@ -4758,7 +4767,7 @@ export default function OrdersPage() {
                                 <div key={po.id} className="rounded-xl border border-zinc-200/70 bg-white px-3 py-2">
                                   <div className="text-[10px] leading-5 text-zinc-700">
                                     <div className="font-medium text-zinc-900">
-                                      {po.supplierName || po.supplierId || "Supplier"}
+                                      {canViewSupplierIdentity ? (po.supplierName || po.supplierId || "Supplier") : "Order update"}
                                     </div>
                                     <div className="mt-0.5">
                                       PO: <span className="font-mono">{po.id}</span>

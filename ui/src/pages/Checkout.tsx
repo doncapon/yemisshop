@@ -2854,6 +2854,11 @@ export default function Checkout() {
     };
   }, [redirectingOrderId]);
 
+  const roleNorm = String(meQ.data?.role || "").trim().toUpperCase();
+  const isSuperAdmin = roleNorm === "SUPER_ADMIN";
+  const isAdmin = roleNorm === "SUPER_ADMIN";
+  const canViewSupplierIdentity = isAdmin || isSuperAdmin;
+
   if (redirectingOrderId) {
     return (
       <SiteLayout>
@@ -3019,7 +3024,11 @@ export default function Checkout() {
 
             {(pricingQ.isLoading || pricingWarning) && (
               <div className="mt-3 text-xs sm:text-sm rounded-xl border bg-white/80 p-3 text-ink">
-                {pricingQ.isLoading ? "Calculating best supplier prices…" : pricingWarning}
+                {pricingQ.isLoading
+                  ? canViewSupplierIdentity
+                    ? "Calculating best supplier prices…"
+                    : "Calculating live prices…"
+                  : pricingWarning}
               </div>
             )}
           </div>
@@ -3645,7 +3654,7 @@ export default function Checkout() {
                     </div>
                   )}
 
-                  {shippingEnabled && shippingQ.data?.quotes?.length ? (
+                  {canViewSupplierIdentity && shippingEnabled && shippingQ.data?.quotes?.length ? (
                     <div className="mt-2 space-y-2">
                       {shippingQ.data.quotes.map((q) => (
                         <div
@@ -3655,7 +3664,7 @@ export default function Checkout() {
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
                               <div className="text-[11px] sm:text-xs font-medium text-ink">
-                                {displaySupplierName(q.supplierId, supplierNameMap, q.supplierName)}
+                                {canViewSupplierIdentity ? displaySupplierName(q.supplierId, supplierNameMap, q.supplierName) : "Delivery"}
                               </div>
 
                               <div className="text-[10px] sm:text-[11px] text-ink-soft">
@@ -3694,7 +3703,9 @@ export default function Checkout() {
 
                   {shippingEnabled && shippingQ.data?.partial && (
                     <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
-                      Shipping was quoted for some suppliers only. Total may change after remaining supplier zones/rates are configured.
+                      {canViewSupplierIdentity
+                        ? "Shipping was quoted for some suppliers only. Total may change after remaining supplier zones/rates are configured."
+                        : "Shipping was quoted partially. Total may still update before payment if remaining delivery rates are applied."}
                     </div>
                   )}
                 </div>
@@ -3755,7 +3766,9 @@ export default function Checkout() {
                 </button>
 
                 <p className="mt-3 text-[10px] sm:text-[11px] text-ink-soft text-center leading-4">
-                  Totals use live supplier offers and supplier shipping quotes. If an offer or quote expires, your pricing may update.
+                  {canViewSupplierIdentity
+                    ? "Totals use live supplier offers and supplier shipping quotes. If an offer or quote expires, your pricing may update."
+                    : "Totals use live pricing and delivery quotes. If pricing or delivery quotes change before payment, your total may update."}
                 </p>
               </Card>
             </aside>
