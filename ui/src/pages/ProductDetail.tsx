@@ -2552,10 +2552,6 @@ export default function ProductDetail() {
                           </div>
                         </div>
                       )}
-
-                      <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white">
-                        Zoom
-                      </div>
                     </>
                   ) : (
                     <NoImageBox className="bg-zinc-50" />
