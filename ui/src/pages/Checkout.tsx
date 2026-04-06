@@ -2491,32 +2491,20 @@ export default function Checkout() {
 
       const quote = pricingQ.data as QuotePayload | null;
 
-      const invalidLine = cart.find((it) => {
-        const key = lineKeyFor(it);
-        const qLine = quote?.lines?.[key];
-        const firstAlloc = qLine?.allocations?.[0];
-        return !qLine || !firstAlloc || !firstAlloc.offerId;
-      });
-
-      if (invalidLine) {
-        const invalidKey = lineKeyFor(invalidLine);
-        const repaired = removeCartLineByKey(cart, invalidKey);
-        setCart(repaired);
-        writeCart(repaired);
-
-        throw new Error(
-          `"${invalidLine.title || "An item"}" is no longer available at checkout and has been removed from your cart. Please review your cart and try again.`
-        );
-      }
-
       const bad = cart.find((l) => {
         const key = lineKeyFor(l);
-        const supplierLine = quote?.lines?.[key];
-        const hasQuotedSupplierPrice = !!supplierLine && asMoney(supplierLine.lineTotal, 0) > 0;
+        const qLine = quote?.lines?.[key];
+
         const cachedUnit = num(l.unitPrice, num(l.price, 0));
         const explicitTotal = asMoney(l.totalPrice, 0);
-        return cachedUnit <= 0 && explicitTotal <= 0 && !hasQuotedSupplierPrice;
+        const quotedUnit =
+          qLine && qLine.qtyRequested > 0
+            ? round2(asMoney(qLine.lineTotal, 0) / Math.max(1, qLine.qtyRequested))
+            : 0;
+
+        return cachedUnit <= 0 && explicitTotal <= 0 && quotedUnit <= 0;
       });
+
       if (bad) {
         throw new Error("One or more items have no price. Please remove and re-add them to cart.");
       }
@@ -2525,6 +2513,20 @@ export default function Checkout() {
       if (vaHome) throw new Error(vaHome);
 
       const finalShip = savedShippingToQuoteAddress(selectedShippingAddress);
+
+      const invalidLine = cart.find((it) => {
+        const key = lineKeyFor(it);
+        const qLine = quote?.lines?.[key];
+        const firstAlloc = qLine?.allocations?.[0];
+
+        return !qLine || !firstAlloc || !firstAlloc.offerId;
+      });
+
+      if (invalidLine) {
+        throw new Error(
+          `"${invalidLine.title || "An item"}" is no longer available at the selected price. Please refresh your cart or remove and re-add that item.`
+        );
+      }
 
       const items = cart.map((it) => {
         const key = lineKeyFor(it);
@@ -2552,13 +2554,20 @@ export default function Checkout() {
           ? normalizeSelectedOptions(it.selectedOptions)
           : undefined;
 
-        const retailUnit = asMoney(
+        const cachedUnit = asMoney(
           it.unitPrice,
           asMoney(
             it.price,
             Math.max(0, asMoney(it.totalPrice, 0) / Math.max(1, num(it.qty, 1)))
           )
         );
+
+        const quotedUnit =
+          qLine && qLine.qtyRequested > 0
+            ? round2(asMoney(qLine.lineTotal, 0) / Math.max(1, qLine.qtyRequested))
+            : 0;
+
+        const retailUnit = cachedUnit > 0 ? cachedUnit : quotedUnit;
 
         return {
           key,
@@ -2568,7 +2577,7 @@ export default function Checkout() {
           kind,
           selectedOptions: kind === "VARIANT" ? normalizedOptions : undefined,
           supplierId: firstAlloc?.supplierId || it.supplierId || undefined,
-          offerId: firstAlloc?.offerId || undefined,
+          offerId: firstAlloc?.offerId || it.offerId || undefined,
           unitPrice: retailUnit,
           unitPriceCache: retailUnit,
         };
@@ -2660,7 +2669,10 @@ export default function Checkout() {
       });
 
       try {
-        const res = await api.post("/api/orders", payload, AXIOS_COOKIE_CFG);
+        const res = await api.post("/api/orders", payload, {
+          ...AXIOS_COOKIE_CFG,
+          timeout: 45000,
+        });
         return res.data as { data: { id: string } };
       } catch (e: any) {
         const status = e?.response?.status;
@@ -2668,6 +2680,12 @@ export default function Checkout() {
           nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
           throw new Error("Please login again.");
         }
+
+        console.error("[checkout/create-order error]", {
+          status: e?.response?.status,
+          data: e?.response?.data,
+          payload,
+        });
 
         throw new Error(
           safeServerMessage(
@@ -2709,7 +2727,7 @@ export default function Checkout() {
           },
           {
             ...AXIOS_COOKIE_CFG,
-            timeout: 20_000,
+            timeout: 30_000,
           }
         );
 
@@ -2835,6 +2853,11 @@ export default function Checkout() {
       cancelled = true;
     };
   }, [redirectingOrderId]);
+
+  const roleNorm = String(meQ.data?.role || "").trim().toUpperCase();
+  const isSuperAdmin = roleNorm === "SUPER_ADMIN";
+  const isAdmin = roleNorm === "SUPER_ADMIN";
+  const canViewSupplierIdentity = isAdmin || isSuperAdmin;
 
   if (redirectingOrderId) {
     return (
@@ -3001,7 +3024,11 @@ export default function Checkout() {
 
             {(pricingQ.isLoading || pricingWarning) && (
               <div className="mt-3 text-xs sm:text-sm rounded-xl border bg-white/80 p-3 text-ink">
-                {pricingQ.isLoading ? "Calculating best supplier prices…" : pricingWarning}
+                {pricingQ.isLoading
+                  ? canViewSupplierIdentity
+                    ? "Calculating best supplier prices…"
+                    : "Calculating live prices…"
+                  : pricingWarning}
               </div>
             )}
           </div>
@@ -3627,7 +3654,7 @@ export default function Checkout() {
                     </div>
                   )}
 
-                  {shippingEnabled && shippingQ.data?.quotes?.length ? (
+                  {canViewSupplierIdentity && shippingEnabled && shippingQ.data?.quotes?.length ? (
                     <div className="mt-2 space-y-2">
                       {shippingQ.data.quotes.map((q) => (
                         <div
@@ -3637,7 +3664,7 @@ export default function Checkout() {
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
                               <div className="text-[11px] sm:text-xs font-medium text-ink">
-                                {displaySupplierName(q.supplierId, supplierNameMap, q.supplierName)}
+                                {canViewSupplierIdentity ? displaySupplierName(q.supplierId, supplierNameMap, q.supplierName) : "Delivery"}
                               </div>
 
                               <div className="text-[10px] sm:text-[11px] text-ink-soft">
@@ -3676,7 +3703,9 @@ export default function Checkout() {
 
                   {shippingEnabled && shippingQ.data?.partial && (
                     <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
-                      Shipping was quoted for some suppliers only. Total may change after remaining supplier zones/rates are configured.
+                      {canViewSupplierIdentity
+                        ? "Shipping was quoted for some suppliers only. Total may change after remaining supplier zones/rates are configured."
+                        : "Shipping was quoted partially. Total may still update before payment if remaining delivery rates are applied."}
                     </div>
                   )}
                 </div>
@@ -3737,7 +3766,9 @@ export default function Checkout() {
                 </button>
 
                 <p className="mt-3 text-[10px] sm:text-[11px] text-ink-soft text-center leading-4">
-                  Totals use live supplier offers and supplier shipping quotes. If an offer or quote expires, your pricing may update.
+                  {canViewSupplierIdentity
+                    ? "Totals use live supplier offers and supplier shipping quotes. If an offer or quote expires, your pricing may update."
+                    : "Totals use live pricing and delivery quotes. If pricing or delivery quotes change before payment, your total may update."}
                 </p>
               </Card>
             </aside>

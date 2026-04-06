@@ -504,7 +504,10 @@ export default function SupplierProductsPage() {
 
       const supplierMe = ((supplierRes.data as any)?.data ??
         supplierRes.data ??
-        {}) as SupplierMeLite;
+        {}) as SupplierMeLite & {
+          status?: string | null;
+          kycStatus?: string | null;
+        };
 
       const docsRaw = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
       const docs = Array.isArray(docsRaw) ? (docsRaw as SupplierDocumentLite[]) : [];
@@ -528,7 +531,27 @@ export default function SupplierProductsPage() {
         "PROOF_OF_ADDRESS",
       ];
 
-      const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
+      const latestRequiredStates = requiredKinds.map((kind) => {
+        const matches = docs
+          .filter((d) => String(d.kind ?? "").trim().toUpperCase() === kind)
+          .sort((a: any, b: any) => {
+            const at = new Date((a as any).uploadedAt ?? 0).getTime();
+            const bt = new Date((b as any).uploadedAt ?? 0).getTime();
+            return bt - at;
+          });
+
+        const latest = matches[0];
+        const status = String(latest?.status ?? "").trim().toUpperCase();
+
+        return {
+          kind,
+          status: status || "MISSING",
+        };
+      });
+
+      const docsDone = latestRequiredStates.every(
+        (x) => x.status === "PENDING" || x.status === "APPROVED"
+      );
 
       const nextPath = getSupplierNextPath({
         contactDone,
@@ -537,13 +560,47 @@ export default function SupplierProductsPage() {
         docsDone,
       });
 
+      const onboardingDone = contactDone && businessDone && addressDone && docsDone;
+
+      const requiredDocPending = latestRequiredStates.some((x) => x.status === "PENDING");
+      const requiredDocRejected = latestRequiredStates.some((x) => x.status === "REJECTED");
+
+      const supplierStatus = String((supplierMe as any)?.status ?? "").trim().toUpperCase();
+      const supplierKycStatus = String((supplierMe as any)?.kycStatus ?? "").trim().toUpperCase();
+
+      const supplierWasPreviouslyApproved =
+        supplierStatus === "ACTIVE" ||
+        supplierStatus === "APPROVED" ||
+        supplierStatus === "VERIFIED" ||
+        supplierKycStatus === "APPROVED" ||
+        supplierKycStatus === "VERIFIED";
+
+      // This is the important new lock:
+      // once a supplier was already approved, any required-doc resubmission/rejection
+      // should restrict sensitive actions until admin reviews it again.
+      const complianceLocked =
+        supplierWasPreviouslyApproved && (requiredDocPending || requiredDocRejected);
+
+      let complianceReason = "";
+      if (requiredDocRejected) {
+        complianceReason =
+          "One or more required verification documents were rejected. Product actions are temporarily locked until your documents are approved again.";
+      } else if (requiredDocPending) {
+        complianceReason =
+          "Your updated required verification documents are under admin review. Product actions are temporarily locked until review is complete.";
+      }
+
       return {
         contactDone,
         businessDone,
         addressDone,
         docsDone,
-        onboardingDone: contactDone && businessDone && addressDone && docsDone,
+        onboardingDone,
         nextPath,
+        complianceLocked,
+        complianceReason,
+        requiredDocPending,
+        requiredDocRejected,
       };
     },
     staleTime: 15_000,
@@ -552,7 +609,9 @@ export default function SupplierProductsPage() {
   });
 
   const onboarding = onboardingQ.data;
-  const supplierLocked = isSupplier && !!onboarding && !onboarding.onboardingDone;
+  const onboardingLocked = isSupplier && !!onboarding && !onboarding.onboardingDone;
+  const complianceLocked = isSupplier && !!onboarding?.complianceLocked;
+  const supplierLocked = onboardingLocked || complianceLocked;
 
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<
@@ -726,6 +785,13 @@ export default function SupplierProductsPage() {
   };
 
   const goEdit = async (productId: string) => {
+    if (complianceLocked) {
+      window.alert(
+        onboarding?.complianceReason ||
+        "Product actions are temporarily locked while your required documents are under review."
+      );
+      return;
+    }
     qc.invalidateQueries({ queryKey: ["supplier", "product", productId] });
     try {
       await qc.prefetchQuery({
@@ -812,20 +878,28 @@ export default function SupplierProductsPage() {
                   animate={{ opacity: 1, y: 0 }}
                   className="text-[20px] sm:text-2xl md:text-3xl font-bold tracking-tight leading-tight"
                 >
-                  Products locked until onboarding is complete
+                  {complianceLocked
+                    ? "Product actions temporarily locked"
+                    : "Products locked until onboarding is complete"}
                 </motion.h1>
 
                 <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
-                  Finish the remaining supplier onboarding steps before you can add, edit or
-                  manage products.
+                  {complianceLocked
+                    ? onboarding?.complianceReason ||
+                    "Your verification documents are under review. Product actions are temporarily unavailable."
+                    : "Finish the remaining supplier onboarding steps before you can add, edit or manage products."}
                 </p>
 
                 <div className="mt-4 flex flex-wrap gap-2">
                   <Link
-                    to={onboarding?.nextPath || "/supplier/verify-contact"}
+                    to={
+                      complianceLocked
+                        ? "/supplier/onboarding/documents"
+                        : onboarding?.nextPath || "/supplier/verify-contact"
+                    }
                     className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
                   >
-                    Continue onboarding <ArrowRight size={14} />
+                    {complianceLocked ? "Review documents" : "Continue onboarding"} <ArrowRight size={14} />
                   </Link>
 
                   <Link
@@ -917,21 +991,29 @@ export default function SupplierProductsPage() {
                 </div>
 
                 <div className="p-4 sm:p-5 space-y-3">
-                  {[
-                    "Add products",
-                    "Edit listings",
-                    "Delete listings",
-                    "Manage stock",
-                    "Manage pricing",
-                  ].map((label) => (
-                    <div
-                      key={label}
-                      className="flex items-center gap-3 rounded-xl border bg-zinc-50 px-3 py-3 text-sm text-zinc-700"
-                    >
-                      <Lock size={15} className="shrink-0 text-zinc-500" />
-                      <span>{label}</span>
-                    </div>
-                  ))}
+                  {(complianceLocked
+                    ? [
+                      "Add products",
+                      "Edit listings",
+                      "Delete listings",
+                      "Publish / make listings live",
+                      "Manage stock and pricing",
+                    ]
+                    : [
+                      "Add products",
+                      "Edit listings",
+                      "Delete listings",
+                      "Manage stock",
+                      "Manage pricing",
+                    ]).map((label) => (
+                      <div
+                        key={label}
+                        className="flex items-center gap-3 rounded-xl border bg-zinc-50 px-3 py-3 text-sm text-zinc-700"
+                      >
+                        <Lock size={15} className="shrink-0 text-zinc-500" />
+                        <span>{label}</span>
+                      </div>
+                    ))}
                 </div>
               </Card>
             </div>
@@ -961,12 +1043,23 @@ export default function SupplierProductsPage() {
                 </div>
 
                 <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-                  <Link
-                    to={withSupplierCtx("/supplier/products/add")}
-                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
-                  >
-                    <Plus size={14} /> Add
-                  </Link>
+                  {complianceLocked ? (
+                    <button
+                      type="button"
+                      disabled
+                      className="inline-flex items-center justify-center gap-2 rounded-full bg-white/80 text-zinc-500 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold cursor-not-allowed"
+                      title="Product actions are temporarily locked while your required documents are under review."
+                    >
+                      <Plus size={14} /> Add
+                    </button>
+                  ) : (
+                    <Link
+                      to={withSupplierCtx("/supplier/products/add")}
+                      className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
+                    >
+                      <Plus size={14} /> Add
+                    </Link>
+                  )}
                   <Link
                     to={withSupplierCtx("/supplier")}
                     className="inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:bg-white/15"
@@ -1219,17 +1312,34 @@ export default function SupplierProductsPage() {
                               <button
                                 type="button"
                                 onClick={() => goEdit(p.id)}
-                                className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-3 py-2.5 text-[12px] font-semibold hover:bg-black/5"
+                                disabled={complianceLocked}
+                                title={
+                                  complianceLocked
+                                    ? onboarding?.complianceReason ||
+                                    "Product actions are temporarily locked while your required documents are under review."
+                                    : "Edit"
+                                }
+                                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold ${complianceLocked
+                                  ? "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                  : "bg-white hover:bg-black/5"
+                                  }`}
                               >
                                 <Pencil size={14} /> Edit
                               </button>
 
                               <button
                                 type="button"
-                                disabled={!del.canDelete || deleteM.isPending}
-                                title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
+                                disabled={complianceLocked || !del.canDelete || deleteM.isPending}
+                                title={
+                                  complianceLocked
+                                    ? onboarding?.complianceReason ||
+                                    "Product actions are temporarily locked while your required documents are under review."
+                                    : !del.canDelete
+                                      ? del.reason || "Not deletable"
+                                      : "Delete"
+                                }
                                 onClick={() => confirmAndDelete(p)}
-                                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition ${del.canDelete && !deleteM.isPending
+                                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition ${!complianceLocked && del.canDelete && !deleteM.isPending
                                   ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
                                   : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
                                   }`}
@@ -1395,7 +1505,17 @@ export default function SupplierProductsPage() {
                                   <button
                                     type="button"
                                     onClick={() => goEdit(p.id)}
-                                    className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1.5 text-[11px] hover:bg-black/5"
+                                    disabled={complianceLocked}
+                                    title={
+                                      complianceLocked
+                                        ? onboarding?.complianceReason ||
+                                        "Product actions are temporarily locked while your required documents are under review."
+                                        : "Edit"
+                                    }
+                                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] ${complianceLocked
+                                        ? "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                        : "bg-white hover:bg-black/5"
+                                      }`}
                                   >
                                     <Pencil size={12} /> Edit
                                   </button>

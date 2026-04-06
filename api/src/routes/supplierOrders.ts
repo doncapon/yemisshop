@@ -17,13 +17,12 @@ import {
 import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
 
 const router = Router();
+const OTP_RESEND_COOLDOWN_SECS = 60;
 
-// ✅ ADD this helper near the top (after router const is fine)
 function normRole(role: any): string {
   return String(role ?? "").trim().toUpperCase();
 }
 
-// ✅ CHANGE these 3 helpers to use normalization
 const isAdmin = (role?: string) => {
   const r = normRole(role);
   return r === "ADMIN" || r === "SUPER_ADMIN";
@@ -39,19 +38,13 @@ function parsePositiveInt(v: any, fallback: number, min = 1, max = 100) {
   return Math.min(i, max);
 }
 
-/**
- * Supplier context:
- * - Admin can impersonate by ?supplierId=
- * - Supplier uses their own supplier record
- * - Rider derives supplierId via SupplierRider and also gets riderId
- */
 type SupplierCtx =
   | {
       ok: true;
       supplierId: string;
       supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
       impersonating: boolean;
-      riderId?: string | null; // ✅ present for rider sessions
+      riderId?: string | null;
     }
   | { ok: false; status: number; error: string };
 
@@ -60,7 +53,6 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
   const userId = req.user?.id;
   if (!userId) return { ok: false, status: 401, error: "Unauthorized" };
 
-  // ADMIN/SUPER_ADMIN view-as supplier
   if (isAdmin(role)) {
     const supplierId = String(req.query?.supplierId ?? "").trim();
     if (!supplierId) {
@@ -77,7 +69,6 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
     return { ok: true, supplierId: supplier.id, supplier, impersonating: true, riderId: null };
   }
 
-  // Supplier normal mode
   if (isSupplier(role)) {
     const supplier = await prisma.supplier.findFirst({
       where: { userId },
@@ -88,7 +79,6 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
     return { ok: true, supplierId: supplier.id, supplier, impersonating: false, riderId: null };
   }
 
-  // Rider mode (derive supplierId via SupplierRider)
   if (isRider(role)) {
     const rider = await prisma.supplierRider.findFirst({
       where: { userId, isActive: true },
@@ -106,7 +96,7 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
       supplierId: rider.supplierId,
       supplier: rider.supplier,
       impersonating: false,
-      riderId: rider.id, // ✅ important
+      riderId: rider.id,
     };
   }
 
@@ -130,7 +120,6 @@ async function getSupplierForUser(userId: string) {
 }
 
 function getRefundDelegate(tx: any) {
-  // try common model names
   return tx.refund || tx.refundRequest || tx.orderRefund || tx.refunds || null;
 }
 
@@ -193,14 +182,6 @@ const asNum = (v: any, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 
-/**
- * Settlement policy (can tweak later)
- * - Refund items always
- * - Refund tax pro-rata to canceled items subtotal
- * - Refund serviceFeeComms pro-rata to canceled units
- * - Refund base fee only if entire order gets canceled (optional) -> here we pro-rata
- * - Gateway fee default: NOT refunded (often non-refundable)
- */
 async function computeRefundForPurchaseOrderTx(tx: any, purchaseOrderId: string) {
   const po = await tx.purchaseOrder.findUnique({
     where: { id: purchaseOrderId },
@@ -208,7 +189,6 @@ async function computeRefundForPurchaseOrderTx(tx: any, purchaseOrderId: string)
   });
   if (!po) throw new Error("PurchaseOrder not found");
 
-  // items in this PO
   const poItems = await tx.purchaseOrderItem.findMany({
     where: { purchaseOrderId: po.id },
     select: {
@@ -259,7 +239,6 @@ async function computeRefundForPurchaseOrderTx(tx: any, purchaseOrderId: string)
 
   const unitsCanceled = items.reduce((s: number, it: any) => s + Math.max(0, asNum(it.quantity, 0)), 0);
 
-  // total units in order (for comms pro-rata)
   const allOrderItems = await tx.orderItem.findMany({
     where: { orderId: po.orderId },
     select: { quantity: true, unitPrice: true, lineTotal: true },
@@ -271,8 +250,6 @@ async function computeRefundForPurchaseOrderTx(tx: any, purchaseOrderId: string)
   const ratioByUnits = totalUnits > 0 ? Math.min(1, unitsCanceled / totalUnits) : 0;
 
   const taxRefund = round2(Math.max(0, asNum(order.tax, 0) * ratioByValue));
-
-  // policy: pro-rata base + comms by units; gateway = 0 default
   const serviceBaseRefund = round2(Math.max(0, asNum(order.serviceFeeBase, 0) * ratioByValue));
   const serviceCommsRefund = round2(Math.max(0, asNum(order.serviceFeeComms, 0) * ratioByUnits));
   const serviceGatewayRefund = 0;
@@ -308,7 +285,6 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     throw new Error("Cannot release payout unless PO is DELIVERED");
   }
 
-  // ✅ block payout unless supplier is payout-ready
   await assertSupplierPayoutReadyTx(tx, po.supplierId);
 
   const payment = await tx.payment.findFirst({
@@ -318,13 +294,12 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
   });
   if (!payment) throw new Error("No PAID payment found for this order");
 
-  // ✅ Find the allocation that is still on-hold (PENDING)
   const alloc = await tx.supplierPaymentAllocation.findFirst({
     where: {
       paymentId: payment.id,
       purchaseOrderId: po.id,
       supplierId: po.supplierId,
-      status: allocHeldStatus(), // PENDING
+      status: allocHeldStatus(),
     },
     select: { id: true, amount: true, status: true },
   });
@@ -345,7 +320,7 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     data: {
       supplierId: po.supplierId,
       type: "CREDIT",
-      amount: alloc.amount, // keep Decimal
+      amount: alloc.amount,
       currency: "NGN",
       referenceType: "PURCHASE_ORDER",
       referenceId: po.id,
@@ -379,13 +354,12 @@ async function assertSupplierPayoutReadyTx(tx: any, supplierId: string) {
   if (!s) throw new Error("Supplier not found");
 
   const enabled = s.isPayoutEnabled !== false;
-
   const accNum = !!(s.accountNumber ?? null);
   const accName = !!(s.accountName ?? null);
   const bank = !!(s.bankCode ?? s.bankName ?? null);
   const country = s.bankCountry == null ? true : !!s.bankCountry;
-
   const verified = s.bankVerificationStatus === "VERIFIED";
+
   if (!(enabled && verified && accNum && accName && bank && country)) {
     throw new Error("Supplier is not payout-ready (missing bank details or payouts disabled).");
   }
@@ -415,6 +389,94 @@ function hasScalarField(modelName: string, fieldName: string): boolean {
     return false;
   }
 }
+
+/* =========================
+   Parent order status sync
+========================= */
+
+function normStatus(value: any) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function poStatusToAggregateBucket(raw: any) {
+  const s = normStatus(raw);
+
+  if (s === "CANCELLED") return "CANCELED";
+  if (s === "OUT_FOR_DELIVERY") return "SHIPPED";
+
+  if (
+    s === "AWAITING_FULFILLMENT" ||
+    s === "AWAITING_FULFILMENT" ||
+    s === "CREATED" ||
+    s === "FUNDED" ||
+    s === "PROCESSING"
+  ) {
+    return "PENDING";
+  }
+
+  if (s === "PENDING" || s === "CONFIRMED" || s === "PACKED" || s === "SHIPPED" || s === "DELIVERED" || s === "CANCELED") {
+    return s;
+  }
+
+  return "PENDING";
+}
+
+async function recomputeOrderStatusTx(tx: any, orderId: string) {
+  const purchaseOrders = await tx.purchaseOrder.findMany({
+    where: { orderId },
+    select: { id: true, status: true },
+  });
+
+  if (!purchaseOrders.length) return null;
+
+  const buckets = purchaseOrders.map((po: any) => poStatusToAggregateBucket(po.status));
+
+  const allCanceled = buckets.every((s: string) => s === "CANCELED");
+  const hasActive = buckets.some((s: string) => s !== "CANCELED");
+
+  let nextOrderStatus = "AWAITING_FULFILLMENT";
+
+  if (allCanceled) {
+    nextOrderStatus = "CANCELED";
+  } else if (hasActive) {
+    const active = buckets.filter((s: string) => s !== "CANCELED");
+
+    const allDelivered = active.length > 0 && active.every((s: string) => s === "DELIVERED");
+    const anyShippedLike = active.some((s: string) => s === "SHIPPED" || s === "DELIVERED");
+    const anyPackedOrConfirmedOrPending = active.some(
+      (s: string) => s === "PENDING" || s === "CONFIRMED" || s === "PACKED"
+    );
+
+    if (allDelivered) {
+      nextOrderStatus = "DELIVERED";
+    } else if (anyShippedLike && !anyPackedOrConfirmedOrPending) {
+      nextOrderStatus = "SHIPPED";
+    } else {
+      nextOrderStatus = "AWAITING_FULFILLMENT";
+    }
+  }
+
+  const orderUpdateData: Record<string, any> = {
+    status: nextOrderStatus,
+  };
+
+  if (hasScalarField("Order", "deliveredAt")) {
+    orderUpdateData.deliveredAt = nextOrderStatus === "DELIVERED" ? new Date() : null;
+  }
+
+  if (hasScalarField("Order", "canceledAt")) {
+    orderUpdateData.canceledAt = nextOrderStatus === "CANCELED" ? new Date() : null;
+  }
+
+  const updated = await tx.order.update({
+    where: { id: orderId },
+    data: orderUpdateData,
+    select: { id: true, status: true },
+  });
+
+  return updated;
+}
+
 /* =========================
    Rider delivery OTP helpers
 ========================= */
@@ -428,23 +490,11 @@ function sha256(s: string) {
   return crypto.createHash("sha256").update(s).digest("hex");
 }
 
-function safeEqual(a: string, b: string) {
-  try {
-    const aa = Buffer.from(a);
-    const bb = Buffer.from(b);
-    if (aa.length !== bb.length) return false;
-    return crypto.timingSafeEqual(aa, bb);
-  } catch {
-    return a === b;
-  }
-}
-
 function newSalt() {
   return crypto.randomBytes(16).toString("hex");
 }
 
 function makeCodeHash(otp: string, salt: string) {
-  // Simple + fast. If you want stronger, switch to pbkdf2.
   return sha256(`${otp}:${salt}`);
 }
 
@@ -486,7 +536,7 @@ async function bestEffortSendDeliveryOtp(opts: {
     hasEmail: boolean;
     hasPhone: boolean;
     sent: boolean;
-    channels: string[]; // succeeded
+    channels: string[];
     attempted: string[];
     errors: string[];
   } = {
@@ -504,7 +554,6 @@ async function bestEffortSendDeliveryOtp(opts: {
     console.warn("[DELIVERY_OTP] send failed:", msg);
   };
 
-  // Helpful audit log (so you can confirm it is the right recipient)
   console.log("[DELIVERY_OTP] sending to:", {
     orderId: opts.orderId,
     purchaseOrderId: opts.purchaseOrderId,
@@ -514,11 +563,9 @@ async function bestEffortSendDeliveryOtp(opts: {
 
   const phoneE164 = toE164Maybe(opts.phone);
 
-  // Track what notify already sent so we don’t duplicate
   let notifySentEmail = false;
   let notifySentWhatsapp = false;
 
-  // 1) Unified notifier (preferred)
   try {
     if (typeof (sendOrderOtpNotifications as any) === "function") {
       report.attempted.push("NOTIFY_SERVICE");
@@ -546,13 +593,14 @@ async function bestEffortSendDeliveryOtp(opts: {
       }
 
       const errs = (notifyReport as any)?.errors;
-      if (Array.isArray(errs) && errs.length) report.errors.push(...errs.map((x: any) => `NOTIFY_SERVICE: ${x}`));
+      if (Array.isArray(errs) && errs.length) {
+        report.errors.push(...errs.map((x: any) => `NOTIFY_SERVICE: ${x}`));
+      }
     }
   } catch (e) {
     recordErr("sendOrderOtpNotifications", e);
   }
 
-  // 2) Email fallback (ONLY if notify didn’t send email)
   try {
     if (opts.email && !notifySentEmail) {
       report.attempted.push("EMAIL_FALLBACK");
@@ -563,7 +611,6 @@ async function bestEffortSendDeliveryOtp(opts: {
     recordErr("sendOtpEmail", e);
   }
 
-  // 3) WhatsApp fallback (ONLY if notify didn’t send whatsapp)
   try {
     if (phoneE164 && !notifySentWhatsapp) {
       report.attempted.push("WHATSAPP_FALLBACK");
@@ -580,7 +627,6 @@ async function bestEffortSendDeliveryOtp(opts: {
     recordErr("sendOtpWhatsappViaTermii", e);
   }
 
-  // ✅ sent = at least one channel succeeded
   report.sent = report.channels.length > 0;
 
   return report;
@@ -591,11 +637,6 @@ async function bestEffortSendDeliveryOtp(opts: {
  * ✅ SUPPLIER + ADMIN + SUPPLIER_RIDER
  * - rider sees only assigned POs in delivery mode (SHIPPED / OUT_FOR_DELIVERY)
  * - ✅ now supports true server-side pagination
- *
- * Query params:
- * - page=1
- * - pageSize=20
- * - view=active|delivered|all
  */
 router.get("/", requireAuth, async (req: any, res) => {
   try {
@@ -616,7 +657,6 @@ router.get("/", requireAuth, async (req: any, res) => {
     const pageSize = parsePositiveInt(req.query?.pageSize, 20, 1, 100);
     const skip = (page - 1) * pageSize;
 
-    // Build rider status filter
     const riderActiveStatuses = [PurchaseOrderStatus.SHIPPED, PurchaseOrderStatus.OUT_FOR_DELIVERY];
     const riderDeliveredStatuses = [PurchaseOrderStatus.DELIVERED];
 
@@ -627,13 +667,11 @@ router.get("/", requireAuth, async (req: any, res) => {
           ? [...riderActiveStatuses, ...riderDeliveredStatuses]
           : riderActiveStatuses;
 
-    // If your PurchaseOrder has deliveredByUserId, use it to ensure "jobs THEY marked as delivered"
     const poHasDeliveredBy = hasScalarField("PurchaseOrder", "deliveredByUserId");
 
     const supplierId = ctx.supplierId;
-
-    // ✅ Rider restriction:
     const riderId = isRider(req.user?.role) ? String(ctx.riderId || "").trim() || null : null;
+
     if (isRider(req.user?.role) && !riderId) {
       return res.status(403).json({ error: "Rider profile not found / inactive" });
     }
@@ -663,7 +701,6 @@ router.get("/", requireAuth, async (req: any, res) => {
       });
     }
 
-    // ✅ Page purchase orders first (server-side pagination)
     const pos = await prisma.purchaseOrder.findMany({
       where: poWhere,
       orderBy: [{ id: "desc" }],
@@ -700,7 +737,6 @@ router.get("/", requireAuth, async (req: any, res) => {
     const orderIds = Array.from(new Set(pos.map((p: any) => String(p.orderId)).filter(Boolean)));
     const poIds = pos.map((p: any) => String(p.id)).filter(Boolean);
 
-    // ✅ Fetch ONLY rows for paged orderIds
     const rows = await prisma.orderItem.findMany({
       where: {
         chosenSupplierId: supplierId,
@@ -745,7 +781,6 @@ router.get("/", requireAuth, async (req: any, res) => {
       },
     });
 
-    // 3) Delivery OTP verified timestamps per PO
     const verifiedByPoId: Record<string, string> = {};
     if (poIds.length) {
       const verifiedRows = await prisma.purchaseOrderDeliveryOtp.findMany({
@@ -762,7 +797,6 @@ router.get("/", requireAuth, async (req: any, res) => {
       }
     }
 
-    // 4) Index PO by orderId
     const poByOrder: Record<string, any> = {};
     for (const po of pos as any[]) {
       const oid = String(po.orderId);
@@ -786,7 +820,6 @@ router.get("/", requireAuth, async (req: any, res) => {
       };
     }
 
-    // 5) Group order items by orderId -> API payload
     const grouped: Record<string, any> = {};
     for (const r of rows as any[]) {
       const oid = String(r.orderId);
@@ -837,7 +870,6 @@ router.get("/", requireAuth, async (req: any, res) => {
       });
     }
 
-    // ✅ Preserve PO page order even if some grouped rows arrive in different order
     const orderedData = orderIds
       .map((oid) => grouped[String(oid)])
       .filter(Boolean);
@@ -864,10 +896,12 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
     const ctx = await resolveSupplierContext(req);
     if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
-    const poId = String(req.params.poId || "").trim();
-    const userId = String(req.user?.id || "");
+    const poId = String(req.params?.poId || "").trim();
+    const userId = String(req.user?.id || "").trim();
+    if (!poId) return res.status(400).json({ error: "Missing poId" });
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const result = await prisma.$transaction(async (tx) => {
+    const out = await prisma.$transaction(async (tx) => {
       const po = await assertCanDeliverPoTx(tx, {
         poId,
         supplierId: ctx.supplierId,
@@ -875,12 +909,44 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
         userId,
       });
 
-      const status = String(po.status || "").toUpperCase();
-      if (!["SHIPPED", "OUT_FOR_DELIVERY"].includes(status)) {
-        throw new Error("PO not deliverable");
+      const poStatus = String(po.status || "").toUpperCase();
+      const allowed = new Set(["SHIPPED", "OUT_FOR_DELIVERY"]);
+      if (!allowed.has(poStatus)) {
+        throw new Error("Delivery OTP can only be requested when PO is SHIPPED / OUT_FOR_DELIVERY");
       }
 
-      // 🔥 CHECK EXISTING ACTIVE OTP
+      const order = await tx.order.findUnique({
+        where: { id: po.orderId },
+        select: { id: true, userId: true, shippingAddressId: true } as any,
+      });
+
+      if (!order) throw new Error("Order not found");
+
+      const userRow = await (tx as any).user?.findUnique?.({
+        where: { id: order.userId },
+        select: {
+          email: true,
+          ...(hasScalarField("User", "phone") ? { phone: true } : {}),
+        } as any,
+      });
+
+      let addressPhone: string | null = null;
+
+      if (hasScalarField("ShippingAddress", "phone") && order.shippingAddressId) {
+        const addr = await (tx as any).shippingAddress?.findUnique?.({
+          where: { id: order.shippingAddressId },
+          select: { phone: true } as any,
+        });
+        addressPhone = (addr as any)?.phone ?? null;
+      }
+
+      const email = (userRow as any)?.email ?? null;
+      const phone = addressPhone ?? (userRow as any)?.phone ?? null;
+
+      if (!email && !phone) {
+        throw new Error("Customer has no email/phone to send delivery OTP.");
+      }
+
       const existing = await tx.purchaseOrderDeliveryOtp.findFirst({
         where: {
           purchaseOrderId: po.id,
@@ -888,45 +954,80 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
           consumedAt: null,
         },
         orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          createdAt: true,
+          lockedUntil: true,
+        },
       });
 
-      if (existing) {
+      const now = new Date();
+
+      if (existing?.lockedUntil && existing.lockedUntil > now) {
+        throw new Error("OTP is temporarily locked due to too many failed attempts. Please try again later.");
+      }
+
+      if (existing?.id) {
+        const sentAgoSecs = Math.floor((now.getTime() - new Date(existing.createdAt).getTime()) / 1000);
+        const cooldownRemaining = Math.max(0, OTP_RESEND_COOLDOWN_SECS - sentAgoSecs);
+
         return {
-          reused: true,
-          message: "OTP already active",
+          alreadyActive: true,
+          message:
+            cooldownRemaining > 0
+              ? `OTP has already been generated. Please wait ${cooldownRemaining}s before trying again.`
+              : "OTP has already been generated for this delivery.",
+          resendAvailableInSec: cooldownRemaining,
         };
       }
 
-      // 🔥 CREATE NEW OTP
       const otp = sixDigitOtp();
       const salt = newSalt();
+      const codeHash = makeCodeHash(otp, salt);
+
+      const expiresAt = new Date("2099-12-31T23:59:59.999Z");
 
       await tx.purchaseOrderDeliveryOtp.create({
         data: {
           purchaseOrderId: po.id,
           orderId: po.orderId,
-          codeHash: makeCodeHash(otp, salt),
+          customerId: String(order.userId),
+          codeHash,
           salt,
+          expiresAt,
           attempts: 0,
+          lockedUntil: null,
+          verifiedAt: null,
+          consumedAt: null,
+          deliveredAt: null,
+          deliveredByUserId: null,
         },
       });
 
-      // 🔥 SEND OTP
-      await bestEffortSendDeliveryOtp({
+      const sendReport = await bestEffortSendDeliveryOtp({
         orderId: po.orderId,
         purchaseOrderId: po.id,
         otp,
+        email,
+        phone,
       });
 
+      if (!sendReport.hasEmail && !sendReport.hasPhone) {
+        throw new Error("Customer has no email/phone to send delivery OTP.");
+      }
+
       return {
-        created: true,
+        alreadyActive: false,
+        message: "OTP sent to customer.",
+        sendReport,
         ...(process.env.NODE_ENV !== "production" ? { devOtp: otp } : {}),
       };
     });
 
-    return res.json({ ok: true, data: result });
+    return res.json({ ok: true, data: out });
   } catch (e: any) {
-    return res.status(400).json({ error: e.message });
+    console.error("POST /purchase-orders/:poId/delivery-otp/request failed:", e);
+    return res.status(400).json({ error: e?.message || "Failed to request delivery OTP" });
   }
 });
 
@@ -935,6 +1036,7 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
  * ✅ SUPPLIER + SUPPLIER_RIDER can verify OTP
  * - marks PO as DELIVERED
  * - releases payout
+ * - recomputes parent order status
  */
 router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (req: any, res) => {
   try {
@@ -957,7 +1059,6 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         userId,
       });
 
-      // 🔥 GET ACTIVE OTP (NO EXPIRY CHECK)
       const otpRow = await tx.purchaseOrderDeliveryOtp.findFirst({
         where: {
           purchaseOrderId: po.id,
@@ -973,13 +1074,11 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
 
       const now = new Date();
 
-      // 🔥 LOCK CHECK
       if (otpRow.lockedUntil && otpRow.lockedUntil > now) {
         throw new Error("Too many attempts. Try again later.");
       }
 
-      const isValid =
-        makeCodeHash(code, otpRow.salt) === otpRow.codeHash;
+      const isValid = makeCodeHash(code, otpRow.salt) === otpRow.codeHash;
 
       if (!isValid) {
         const attempts = (otpRow.attempts ?? 0) + 1;
@@ -988,25 +1087,21 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
           where: { id: otpRow.id },
           data: {
             attempts,
-            lockedUntil: attempts >= 5
-              ? new Date(Date.now() + 10 * 60 * 1000)
-              : null,
+            lockedUntil: attempts >= 5 ? new Date(Date.now() + 10 * 60 * 1000) : null,
           },
         });
 
         throw new Error("Invalid OTP");
       }
 
-      // ✅ SUCCESS → CONSUME OTP
       await tx.purchaseOrderDeliveryOtp.update({
         where: { id: otpRow.id },
         data: {
           verifiedAt: now,
-          consumedAt: now, // 🔥 THIS is your expiry
+          consumedAt: now,
         },
       });
 
-      // ✅ MARK DELIVERED
       const updatedPo = await tx.purchaseOrder.update({
         where: { id: po.id },
         data: {
@@ -1016,29 +1111,30 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         },
       });
 
-      // ✅ RELEASE PAYOUT
-      let payoutError = null;
+      const orderStatus = await recomputeOrderStatusTx(tx, String(po.orderId));
+
+      let payoutError: string | null = null;
       try {
         await releasePayoutForPOTx(tx, po.id);
       } catch (e: any) {
-        payoutError = e.message;
+        payoutError = e?.message || "Failed to release payout";
       }
 
       return {
         po: updatedPo,
+        orderStatus,
         payoutError,
       };
     });
 
     return res.json({ ok: true, data: result });
   } catch (e: any) {
-    return res.status(400).json({ error: e.message });
+    return res.status(400).json({ error: e?.message || "Failed to verify delivery OTP" });
   }
 });
 
 /**
  * PATCH /api/supplier/orders/:orderId/status
- * (kept as your major; only minor guard notes + notifications)
  */
 router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
   try {
@@ -1070,6 +1166,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
     const normalizedNext = statusRaw === "CANCELLED" ? "CANCELED" : statusRaw;
 
     const ALLOWED = new Set([
+      "AWAITING_FULFILLMENT",
       "CREATED",
       "PENDING",
       "CONFIRMED",
@@ -1093,7 +1190,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
     const toFlowBase = (s: string) => {
       const x = String(s || "").toUpperCase().trim();
       if (x === "CANCELLED") return "CANCELED";
-      if (["CREATED", "FUNDED", "PROCESSING"].includes(x)) return "PENDING";
+      if (["AWAITING_FULFILLMENT", "CREATED", "FUNDED", "PROCESSING"].includes(x)) return "PENDING";
       if (x === "OUT_FOR_DELIVERY") return "SHIPPED";
       return x;
     };
@@ -1134,7 +1231,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         select: { id: true, orderId: true, supplierId: true, status: true },
       });
 
-      const currentStatus = po?.status ?? "PENDING";
+      const currentStatus = po?.status ?? "AWAITING_FULFILLMENT";
       const curBase = toFlowBase(String(currentStatus));
 
       if (!canTransition(String(currentStatus), normalizedNext)) {
@@ -1198,6 +1295,8 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         });
       }
 
+      const orderStatus = await recomputeOrderStatusTx(tx, orderId);
+
       const orderRow = await tx.order.findUnique({
         where: { id: orderId },
         select: { id: true, userId: true },
@@ -1247,6 +1346,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
 
           return {
             po,
+            orderStatus,
             refund: null,
             payout: null,
             note: "Canceled at PENDING (no OTP). Refund not auto-requested; admin/reroute flow should decide.",
@@ -1298,7 +1398,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
           console.error("Failed to send supplier-cancel (refund) notifications:", notifyErr);
         }
 
-        return { po, refund, payout: null };
+        return { po, orderStatus, refund, payout: null };
       }
 
       if (normalizedNext === "DELIVERED") {
@@ -1352,7 +1452,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
           console.error("Failed to send delivered (patch) notifications:", notifyErr);
         }
 
-        return { po, refund: null, payout };
+        return { po, orderStatus, refund: null, payout };
       }
 
       try {
@@ -1406,7 +1506,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         console.error("Failed to send intermediate status notifications:", notifyErr);
       }
 
-      return { po, refund: null, payout: null };
+      return { po, orderStatus, refund: null, payout: null };
     });
 
     return res.json({ ok: true, data: result });
@@ -1441,6 +1541,7 @@ function orderItemHasField(field: string) {
  * Supplier/Admin assigns a rider to a PO. riderId can be null to unassign.
  * ✅ When assigned, PO status becomes OUT_FOR_DELIVERY.
  * ✅ When unassigned (riderId=null) and status was OUT_FOR_DELIVERY, revert back to SHIPPED.
+ * ✅ Recomputes parent order status.
  */
 router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any, res) => {
   try {
@@ -1467,7 +1568,9 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
       if (String(po.supplierId) !== String(ctx.supplierId)) throw new Error("Forbidden");
 
       const st = String(po.status || "").toUpperCase();
-      if (st === "DELIVERED" || st === "CANCELED") throw new Error("Cannot re/assign rider for DELIVERED/CANCELED PO");
+      if (st === "DELIVERED" || st === "CANCELED") {
+        throw new Error("Cannot re/assign rider for DELIVERED/CANCELED PO");
+      }
 
       if (riderId) {
         const rider = await tx.supplierRider.findUnique({
@@ -1488,6 +1591,8 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
           },
           select: { id: true, riderId: true, status: true, orderId: true, supplierId: true },
         });
+
+        const orderStatus = await recomputeOrderStatusTx(tx, String(updated.orderId));
 
         try {
           const orderRow = await tx.order.findUnique({
@@ -1547,7 +1652,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
           console.error("Failed to send rider assignment notifications:", notifyErr);
         }
 
-        return updated;
+        return { ...updated, orderStatus };
       } else {
         let nextStatus: PurchaseOrderStatus | undefined = undefined;
         if (!riderId && st === "OUT_FOR_DELIVERY") nextStatus = PurchaseOrderStatus.SHIPPED;
@@ -1558,10 +1663,12 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
             riderId: null,
             ...(nextStatus ? { status: nextStatus } : {}),
           },
-          select: { id: true, riderId: true, status: true },
+          select: { id: true, riderId: true, status: true, orderId: true },
         });
 
-        return updated;
+        const orderStatus = await recomputeOrderStatusTx(tx, String(updated.orderId));
+
+        return { ...updated, orderStatus };
       }
     });
 

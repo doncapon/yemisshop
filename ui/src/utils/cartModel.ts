@@ -52,12 +52,55 @@ function normKind(input: any, variantId: string | null): CartItemKind {
 function normOptionsKey(raw: any): string {
   const s = toStr(raw);
   if (!s) return "";
-  // make optionsKey stable: "a:b|c:d" sorted
+
+  // Support legacy JSON-ish keys as well as pipe keys.
+  // Final output is always stable pipe format: "attribute:value|attribute:value"
+  try {
+    if (
+      (s.startsWith("{") && s.endsWith("}")) ||
+      (s.startsWith("[") && s.endsWith("]"))
+    ) {
+      const parsed = JSON.parse(s);
+
+      const options = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.options)
+          ? parsed.options
+          : [];
+
+      const parts = options
+        .map((o: any) => {
+          const attribute = toStr(
+            o?.attribute ??
+            o?.attributeName ??
+            o?.name ??
+            o?.key ??
+            o?.attributeId
+          );
+          const value = toStr(
+            o?.value ??
+            o?.valueName ??
+            o?.option ??
+            o?.text ??
+            o?.valueId
+          );
+          return attribute || value ? `${attribute}:${value}` : "";
+        })
+        .filter(Boolean)
+        .sort((a: any, b: any) => a.localeCompare(b));
+
+      return parts.join("|");
+    }
+  } catch {
+    // fall through to pipe parser
+  }
+
   const parts = s
     .split("|")
     .map((p) => p.trim())
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
+
   return parts.join("|");
 }
 
@@ -122,6 +165,24 @@ function stableStringify(value: any): string {
   } catch {
     return "";
   }
+}
+
+function chooseSnapshotString(nextValue: any, prevValue: any): string | null {
+  const nextStr = nextValue != null ? String(nextValue).trim() : "";
+  if (nextStr) return nextStr;
+
+  const prevStr = prevValue != null ? String(prevValue).trim() : "";
+  return prevStr || null;
+}
+
+function chooseSnapshotNumber(nextValue: any, prevValue: any): number | null {
+  const nextNum = Number(nextValue);
+  if (Number.isFinite(nextNum) && nextNum > 0) return nextNum;
+
+  const prevNum = Number(prevValue);
+  if (Number.isFinite(prevNum) && prevNum > 0) return prevNum;
+
+  return null;
 }
 
 function dedupeNormalizedLines(lines: CartLine[]): CartLine[] {
@@ -192,17 +253,51 @@ export function upsertCartLine(input: CartLine): CartLine[] {
   const idx = rows.findIndex((x) => sameIdentity(x, normalized));
 
   let next: CartLine[];
+
   if (nextQty <= 0) {
     next = idx >= 0 ? rows.filter((_, i) => i !== idx) : rows;
   } else if (idx >= 0) {
+    const prev = rows[idx];
+
     next = rows.slice();
     next[idx] = {
-      ...next[idx],
+      ...prev,
       ...normalized,
+
       qty: nextQty,
+
+      // Preserve snapshots if incoming update does not provide them
+      titleSnapshot: chooseSnapshotString(
+        normalized.titleSnapshot,
+        prev.titleSnapshot
+      ),
+      imageSnapshot: chooseSnapshotString(
+        normalized.imageSnapshot,
+        prev.imageSnapshot
+      ),
+      unitPriceCache: chooseSnapshotNumber(
+        normalized.unitPriceCache,
+        prev.unitPriceCache
+      ),
+
+      // Preserve selected options if incoming update is empty
+      selectedOptions:
+        (normalized.selectedOptions?.length
+          ? normalized.selectedOptions
+          : undefined) ??
+        prev.selectedOptions,
+
+      // Preserve supplier/offer if the incoming line does not specify them
+      supplierId: normalized.supplierId ?? prev.supplierId ?? undefined,
+      offerId: normalized.offerId ?? prev.offerId ?? undefined,
     };
   } else {
-    next = rows.concat([{ ...normalized, qty: nextQty }]);
+    next = rows.concat([
+      {
+        ...normalized,
+        qty: nextQty,
+      },
+    ]);
   }
 
   writeCartLines(next);

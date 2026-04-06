@@ -27,6 +27,28 @@ const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 
 type RefundStatus = string;
 
+type RefundEvidenceItem = {
+  itemId: string;
+  title?: string | null;
+  qty?: number | null;
+  urls: string[];
+  count?: number;
+};
+
+type RefundLineItem = {
+  id?: string;
+  qty?: number | null;
+  orderItem?: {
+    id?: string | null;
+    title?: string | null;
+    quantity?: number | null;
+    unitPrice?: any;
+    lineTotal?: any;
+  } | null;
+  evidenceUrls?: string[];
+  evidenceCount?: number;
+};
+
 export type SupplierRefundRow = {
   id: string;
   orderId?: string | null;
@@ -48,6 +70,13 @@ export type SupplierRefundRow = {
   meta?: any;
 
   requestedBy?: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
+
+  evidenceUrls?: string[];
+  evidenceCount?: number;
+  evidenceItemCount?: number;
+  evidenceByItemId?: Record<string, string[]>;
+  evidenceItems?: RefundEvidenceItem[];
+  items?: RefundLineItem[];
 };
 
 function normMoney(v: any) {
@@ -86,13 +115,22 @@ function parseUrlList(s: string) {
 }
 
 function getEvidenceUrls(r: any): string[] {
-  const v = r?.meta?.evidenceUrls ?? r?.meta?.evidence ?? r?.evidenceUrls ?? null;
+  const v =
+    r?.evidenceUrls ??
+    r?.meta?.evidenceUrls ??
+    r?.meta?.evidence ??
+    r?.meta?.evidenceByItemId ??
+    r?.evidenceByItemId ??
+    null;
 
   const out: string[] = [];
 
   const pushAny = (x: any) => {
     if (!x) return;
-    if (Array.isArray(x)) return x.forEach(pushAny);
+    if (Array.isArray(x)) {
+      x.forEach(pushAny);
+      return;
+    }
 
     if (typeof x === "string") {
       const s = x.trim();
@@ -101,7 +139,10 @@ function getEvidenceUrls(r: any): string[] {
       if (s.startsWith("[") && s.endsWith("]")) {
         try {
           const arr = JSON.parse(s);
-          if (Array.isArray(arr)) return pushAny(arr);
+          if (Array.isArray(arr)) {
+            pushAny(arr);
+            return;
+          }
         } catch {}
       }
 
@@ -118,6 +159,10 @@ function getEvidenceUrls(r: any): string[] {
       if (x.images) pushAny(x.images);
       if (x.files) pushAny(x.files);
       if (x.items) pushAny(x.items);
+
+      if (!Array.isArray(x) && Object.keys(x).length) {
+        Object.values(x).forEach(pushAny);
+      }
     }
   };
 
@@ -131,6 +176,46 @@ function getEvidenceUrls(r: any): string[] {
         .filter((x) => !/^javascript:/i.test(x))
     )
   );
+}
+
+function getEvidenceItems(r: any): RefundEvidenceItem[] {
+  const direct = Array.isArray(r?.evidenceItems) ? r.evidenceItems : [];
+  if (direct.length) {
+    return direct
+      .map((it: any) => ({
+        itemId: String(it?.itemId ?? "").trim(),
+        title: it?.title ?? null,
+        qty: Number.isFinite(Number(it?.qty)) ? Number(it.qty) : null,
+        urls: Array.isArray(it?.urls)
+          ? it.urls.filter((u: any) => isUrlish(String(u || "").trim())).map((u: any) => String(u).trim())
+          : [],
+        count: Number.isFinite(Number(it?.count)) ? Number(it.count) : undefined,
+      }))
+      .filter((it: RefundEvidenceItem) => it.itemId && it.urls.length > 0);
+  }
+
+  const items = Array.isArray(r?.items) ? r.items : [];
+  const fromItems = items
+    .map((row: any) => {
+      const itemId = String(row?.orderItem?.id ?? row?.orderItemId ?? "").trim();
+      const urls = Array.isArray(row?.evidenceUrls)
+        ? row.evidenceUrls.filter((u: any) => isUrlish(String(u || "").trim())).map((u: any) => String(u).trim())
+        : [];
+      if (!itemId || !urls.length) return null;
+
+      return {
+        itemId,
+        title: row?.orderItem?.title ?? "Item",
+        qty: Number.isFinite(Number(row?.qty ?? row?.orderItem?.quantity))
+          ? Number(row?.qty ?? row?.orderItem?.quantity)
+          : null,
+        urls,
+        count: urls.length,
+      } as RefundEvidenceItem;
+    })
+    .filter(Boolean) as RefundEvidenceItem[];
+
+  return fromItems;
 }
 
 function StatusPill({ status }: { status?: string | null }) {
@@ -170,15 +255,19 @@ function EvidenceThumbs({ urls, max = 3, size = 9 }: { urls: string[]; max?: num
   const shown = urls.slice(0, max);
   const rest = urls.length - shown.length;
 
-  // size: tailwind h/w scale (9 => 36px)
-  const cls = `h-${size} w-${size}`;
+  const sizeClass =
+    size === 8 ? "h-8 w-8" :
+    size === 9 ? "h-9 w-9" :
+    size === 10 ? "h-10 w-10" :
+    size === 12 ? "h-12 w-12" :
+    "h-9 w-9";
 
   return (
     <div className="inline-flex items-center gap-2">
       <div className="flex items-center gap-2">
-        {shown.map((u) => (
+        {shown.map((u, idx) => (
           <a
-            key={u}
+            key={`${u}-${idx}`}
             href={u}
             target="_blank"
             rel="noreferrer"
@@ -189,7 +278,7 @@ function EvidenceThumbs({ urls, max = 3, size = 9 }: { urls: string[]; max?: num
               src={u}
               alt="Evidence"
               loading="lazy"
-              className={`${cls} rounded-lg border object-cover group-hover:opacity-90`}
+              className={`${sizeClass} rounded-lg border object-cover group-hover:opacity-90`}
               onError={(e) => {
                 (e.currentTarget as HTMLImageElement).style.display = "none";
               }}
@@ -212,11 +301,10 @@ function getRequestorName(r: any): string {
 
 export default function SupplierRefunds() {
   const qc = useQueryClient();
-  const { openModal } = useModal();
+  const { openModal, closeModal } = useModal();
   const toast = useToast();
   const navigate = useNavigate();
 
-  // ✅ cookie-based auth: do NOT use token headers; rely on HttpOnly cookies (withCredentials)
   const role = useAuthStore((s: any) => s.user?.role);
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
@@ -246,7 +334,6 @@ export default function SupplierRefunds() {
       return;
     }
 
-    // ✅ if admin has a stored supplierId, force it into the URL immediately (so refunds load on launch)
     if (fromStore) {
       setSearchParams(
         (prev) => {
@@ -300,8 +387,7 @@ export default function SupplierRefunds() {
       );
       queueMicrotask(() => (syncingRef.current = false));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refundId]);
+  }, [refundId, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (refundId) return;
@@ -336,13 +422,12 @@ export default function SupplierRefunds() {
 
   async function fetchRefunds(params: { q?: string; status?: string; take: number; skip: number }) {
     const { data } = await api.get("/api/supplier/refunds", {
-      withCredentials: true, // ✅ cookie auth
+      withCredentials: true,
       params: {
         ...params,
-        supplierId: adminSupplierId, // ✅ admin view-as supplier
+        supplierId: adminSupplierId,
       },
     });
-    // expected shape: { data: { data: rows } } OR { data: rows }
     const payload = (data as any)?.data ?? data;
     const rows = (payload as any)?.data ?? payload;
     return { data: Array.isArray(rows) ? rows : [] };
@@ -350,15 +435,14 @@ export default function SupplierRefunds() {
 
   async function refundAction(id: string, body: { action: "ACCEPT" | "REJECT" | "ESCALATE"; note?: string }) {
     const { data } = await api.post(`/api/supplier/refunds/${encodeURIComponent(id)}/action`, body, {
-      withCredentials: true, // ✅ cookie auth
-      params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
+      withCredentials: true,
+      params: { supplierId: adminSupplierId },
     });
     return (data as any)?.data ?? data;
   }
 
   const refundsQ = useQuery({
     queryKey: ["supplier", "refunds", { q, status, supplierId: adminSupplierId }],
-    // ✅ show on launch: cookie sessions may not store a token; only block admin view until supplierId is known
     enabled: !isAdmin || !!adminSupplierId,
     queryFn: async () =>
       fetchRefunds({
@@ -369,7 +453,7 @@ export default function SupplierRefunds() {
       }),
     staleTime: 20_000,
     refetchOnWindowFocus: false,
-    refetchOnMount: "always", // ✅ ensures it fetches when you land on the page
+    refetchOnMount: "always",
     retry: 1,
   });
 
@@ -386,8 +470,8 @@ export default function SupplierRefunds() {
           vars.action === "ACCEPT"
             ? "Refund accepted."
             : vars.action === "REJECT"
-            ? "Refund rejected."
-            : "Refund escalated to admin.",
+              ? "Refund rejected."
+              : "Refund escalated to admin.",
         duration: 2500,
       });
     },
@@ -406,6 +490,7 @@ export default function SupplierRefunds() {
   function openActionModal(r: SupplierRefundRow, action: "ACCEPT" | "REJECT" | "ESCALATE") {
     let noteVal = "";
     const evidenceUrls = getEvidenceUrls(r);
+    const evidenceItems = getEvidenceItems(r);
 
     const title = action === "ACCEPT" ? "Accept refund?" : action === "REJECT" ? "Reject refund?" : "Escalate to admin?";
 
@@ -452,10 +537,43 @@ export default function SupplierRefunds() {
               ) : null}
             </div>
 
-            {evidenceUrls.length ? (
+            {evidenceItems.length > 0 ? (
+              <div className="mt-3 space-y-3">
+                {evidenceItems.map((item) => (
+                  <div key={item.itemId} className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-zinc-900 truncate">{item.title || "Item"}</div>
+                        <div className="text-xs text-zinc-500">
+                          Item ID: <span className="font-mono">{item.itemId}</span>
+                          {item.qty ? <> • Qty {item.qty}</> : null}
+                        </div>
+                      </div>
+                      <div className="text-xs text-zinc-500 shrink-0">{item.urls.length} image(s)</div>
+                    </div>
+
+                    <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {item.urls.map((u, idx) => (
+                        <a key={`${item.itemId}-${u}-${idx}`} href={u} target="_blank" rel="noreferrer" className="block">
+                          <img
+                            src={u}
+                            alt="Evidence"
+                            loading="lazy"
+                            className="h-28 w-full rounded-lg border object-cover hover:opacity-95"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = "none";
+                            }}
+                          />
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : evidenceUrls.length ? (
               <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {evidenceUrls.map((u) => (
-                  <a key={u} href={u} target="_blank" rel="noreferrer" className="block">
+                {evidenceUrls.map((u, idx) => (
+                  <a key={`${u}-${idx}`} href={u} target="_blank" rel="noreferrer" className="block">
                     <img
                       src={u}
                       alt="Evidence"
@@ -494,8 +612,8 @@ export default function SupplierRefunds() {
               action === "ACCEPT"
                 ? "bg-emerald-600 hover:bg-emerald-700"
                 : action === "REJECT"
-                ? "bg-rose-600 hover:bg-rose-700"
-                : "bg-indigo-600 hover:bg-indigo-700"
+                  ? "bg-rose-600 hover:bg-rose-700"
+                  : "bg-indigo-600 hover:bg-indigo-700"
             }`}
           >
             {actM.isPending ? "Saving…" : action === "ESCALATE" ? "Escalate" : action}
@@ -511,6 +629,7 @@ export default function SupplierRefunds() {
   const RefundCard = ({ r }: { r: SupplierRefundRow }) => {
     const canAct = canSupplierAct((r as any).status);
     const evidenceUrls = getEvidenceUrls(r);
+    const evidenceItems = getEvidenceItems(r);
     const isMatch = viewingRefundId && String((r as any).id) === viewingRefundId;
 
     return (
@@ -566,12 +685,45 @@ export default function SupplierRefunds() {
             </span>
           </div>
 
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs text-zinc-500 inline-flex items-center gap-1">
+          <div className="flex items-start justify-between gap-2">
+            <span className="text-xs text-zinc-500 inline-flex items-center gap-1 pt-1">
               <ImageIcon size={14} /> Evidence
             </span>
-            <EvidenceThumbs urls={evidenceUrls} max={3} size={9} />
+            <div className="text-right">
+              <div className="inline-flex justify-end">
+                <EvidenceThumbs urls={evidenceUrls} max={3} size={9} />
+              </div>
+              <div className="mt-1 text-[11px] text-zinc-500">
+                {evidenceItems.length > 0
+                  ? `${evidenceItems.length} item${evidenceItems.length === 1 ? "" : "s"} with evidence`
+                  : evidenceUrls.length > 0
+                    ? `${evidenceUrls.length} image${evidenceUrls.length === 1 ? "" : "s"}`
+                    : "No evidence"}
+              </div>
+            </div>
           </div>
+
+          {evidenceItems.length > 0 ? (
+            <div className="rounded-xl border bg-zinc-50 p-2">
+              <div className="space-y-2">
+                {evidenceItems.slice(0, 2).map((item) => (
+                  <div key={item.itemId} className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-zinc-900 truncate">{item.title || "Item"}</div>
+                      <div className="text-[11px] text-zinc-500">
+                        {item.qty ? `Qty ${item.qty} • ` : ""}
+                        {item.urls.length} image{item.urls.length === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                    <EvidenceThumbs urls={item.urls} max={2} size={8} />
+                  </div>
+                ))}
+                {evidenceItems.length > 2 ? (
+                  <div className="text-[11px] text-zinc-500">+{evidenceItems.length - 2} more item(s)</div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="mt-3">
@@ -621,7 +773,6 @@ export default function SupplierRefunds() {
     <SiteLayout>
       <SupplierLayout>
         <div className="mt-6">
-          {/* Header (mobile-first) */}
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
@@ -677,7 +828,6 @@ export default function SupplierRefunds() {
             </div>
           </motion.div>
 
-          {/* Filters */}
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
             <div className="relative">
               <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
@@ -713,7 +863,6 @@ export default function SupplierRefunds() {
             </div>
           </div>
 
-          {/* ✅ Mobile cards */}
           <div className="mt-4 space-y-3 md:hidden">
             {refundsQ.isLoading ? (
               <>
@@ -744,7 +893,6 @@ export default function SupplierRefunds() {
             )}
           </div>
 
-          {/* ✅ Desktop table */}
           <div className="hidden md:block mt-4 rounded-2xl border bg-white shadow-sm overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
@@ -789,6 +937,7 @@ export default function SupplierRefunds() {
                 {rows.map((r) => {
                   const canAct = canSupplierAct((r as any).status);
                   const evidenceUrls = getEvidenceUrls(r);
+                  const evidenceItems = getEvidenceItems(r);
                   const isMatch = viewingRefundId && String((r as any).id) === viewingRefundId;
 
                   return (
@@ -847,8 +996,17 @@ export default function SupplierRefunds() {
                       </td>
 
                       <td className="px-3 py-3 text-right">
-                        <div className="inline-flex justify-end">
-                          <EvidenceThumbs urls={evidenceUrls} />
+                        <div className="inline-flex flex-col items-end gap-1">
+                          <div className="inline-flex justify-end">
+                            <EvidenceThumbs urls={evidenceUrls} />
+                          </div>
+                          <div className="text-[11px] text-zinc-500">
+                            {evidenceItems.length > 0
+                              ? `${evidenceItems.length} item${evidenceItems.length === 1 ? "" : "s"}`
+                              : evidenceUrls.length > 0
+                                ? `${evidenceUrls.length} image${evidenceUrls.length === 1 ? "" : "s"}`
+                                : "—"}
+                          </div>
                         </div>
                       </td>
 
@@ -891,7 +1049,6 @@ export default function SupplierRefunds() {
             </table>
           </div>
 
-          {/* Desktop error (kept) */}
           {refundsQ.isError && (
             <div className="hidden md:block mt-3 text-sm text-rose-700">
               Failed to load refunds.{" "}

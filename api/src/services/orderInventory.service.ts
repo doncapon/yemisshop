@@ -1,4 +1,3 @@
-// api/src/services/orderInventory.service.ts
 import { recomputeProductStockTx } from "./stockRecalc.service.js";
 import { syncProductInStockCacheTx } from "./inventory.service.js";
 
@@ -23,7 +22,18 @@ export async function hasSuccessfulPaymentForOrderTx(tx: any, orderId: string): 
   });
 }
 
-export async function restoreOrderItemStockTx(tx: any, orderItemId: string) {
+async function flushTouchedProductsTx(tx: any, touchedProductIds: Set<string>) {
+  for (const productId of touchedProductIds) {
+    await recomputeProductStockTx(tx, productId);
+    await syncProductInStockCacheTx(tx, productId);
+  }
+}
+
+export async function restoreOrderItemStockTx(
+  tx: any,
+  orderItemId: string,
+  touchedProductIds?: Set<string>
+) {
   const it = await tx.orderItem.findUnique({
     where: { id: orderItemId },
     select: {
@@ -54,10 +64,20 @@ export async function restoreOrderItemStockTx(tx: any, orderItemId: string) {
       });
     }
 
-    if (updatedOffer.productId) {
-      await recomputeProductStockTx(tx, String(updatedOffer.productId));
+    const pid = String(updatedOffer.productId ?? it.productId ?? "").trim();
+    if (pid) {
+      if (touchedProductIds) {
+        touchedProductIds.add(pid);
+      } else {
+        await recomputeProductStockTx(tx, pid);
+        await syncProductInStockCacheTx(tx, pid);
+      }
     }
-  } else if (it.chosenSupplierProductOfferId) {
+
+    return;
+  }
+
+  if (it.chosenSupplierProductOfferId) {
     const updatedOffer = await tx.supplierProductOffer.update({
       where: { id: it.chosenSupplierProductOfferId },
       data: { availableQty: { increment: qty } },
@@ -71,13 +91,27 @@ export async function restoreOrderItemStockTx(tx: any, orderItemId: string) {
       });
     }
 
-    if (updatedOffer.productId) {
-      await recomputeProductStockTx(tx, String(updatedOffer.productId));
+    const pid = String(updatedOffer.productId ?? it.productId ?? "").trim();
+    if (pid) {
+      if (touchedProductIds) {
+        touchedProductIds.add(pid);
+      } else {
+        await recomputeProductStockTx(tx, pid);
+        await syncProductInStockCacheTx(tx, pid);
+      }
     }
+
+    return;
   }
 
-  if (it.productId) {
-    await syncProductInStockCacheTx(tx, String(it.productId));
+  const fallbackPid = String(it.productId ?? "").trim();
+  if (fallbackPid) {
+    if (touchedProductIds) {
+      touchedProductIds.add(fallbackPid);
+    } else {
+      await recomputeProductStockTx(tx, fallbackPid);
+      await syncProductInStockCacheTx(tx, fallbackPid);
+    }
   }
 }
 
@@ -87,9 +121,13 @@ export async function restoreOrderInventoryTx(tx: any, orderId: string) {
     select: { id: true },
   });
 
+  const touchedProductIds = new Set<string>();
+
   for (const it of items) {
-    await restoreOrderItemStockTx(tx, String(it.id));
+    await restoreOrderItemStockTx(tx, String(it.id), touchedProductIds);
   }
+
+  await flushTouchedProductsTx(tx, touchedProductIds);
 }
 
 export async function restorePurchaseOrderInventoryTx(tx: any, purchaseOrderId: string) {
@@ -98,16 +136,18 @@ export async function restorePurchaseOrderInventoryTx(tx: any, purchaseOrderId: 
     select: { orderItemId: true },
   });
 
+  const touchedProductIds = new Set<string>();
+
   for (const row of poItems) {
-    await restoreOrderItemStockTx(tx, String(row.orderItemId));
+    await restoreOrderItemStockTx(tx, String(row.orderItemId), touchedProductIds);
   }
+
+  await flushTouchedProductsTx(tx, touchedProductIds);
 }
 
 export function canAutoRestoreForRefund(poStatus: any): boolean {
   const s = poStatusUpper(poStatus);
 
-  // Only auto-restock when the goods were not yet in the physical outbound flow.
-  // If already shipped/delivered, money refund != inventory return.
   return !["SHIPPED", "OUT_FOR_DELIVERY", "DELIVERED"].includes(s);
 }
 

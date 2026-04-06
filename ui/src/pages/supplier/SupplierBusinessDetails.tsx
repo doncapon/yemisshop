@@ -1,12 +1,10 @@
 // src/pages/supplier/SupplierBusinessDetails.tsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
-  BadgeCheck,
   Building2,
-  CheckCircle2,
   MapPin,
   ShieldCheck,
   Wallet,
@@ -30,7 +28,17 @@ const FALLBACK_BANKS: BankOption[] = [
   { country: "NG", code: "035", name: "Wema Bank" },
 ];
 
+const ADMIN_SUPPLIER_KEY = "adminSupplierId";
+
 type BankVerificationStatus = "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
+
+type SupplierDocument = {
+  id?: string;
+  kind?: string | null;
+  status?: string | null;
+  storageKey?: string | null;
+  originalFilename?: string | null;
+};
 
 type SupplierMe = {
   id: string;
@@ -114,7 +122,9 @@ const EMPTY_FORM = {
   accountNumber: "",
 };
 
-function hasAddress(addr: SupplierMe["registeredAddress"] | SupplierMe["pickupAddress"]) {
+function hasAddress(
+  addr: SupplierMe["registeredAddress"] | SupplierMe["pickupAddress"]
+) {
   if (!addr) return false;
   return Boolean(
     addr.streetName ||
@@ -126,7 +136,7 @@ function hasAddress(addr: SupplierMe["registeredAddress"] | SupplierMe["pickupAd
   );
 }
 
-function hasDocuments(s: SupplierMe | null) {
+function hasInlineDocuments(s: SupplierMe | null) {
   if (!s) return false;
   return Boolean(
     (Array.isArray(s.documents) && s.documents.length > 0) ||
@@ -137,8 +147,28 @@ function hasDocuments(s: SupplierMe | null) {
   );
 }
 
+function normalizeDocumentsPayload(raw: any): SupplierDocument[] {
+  const candidates = [
+    raw?.data?.data,
+    raw?.data?.documents,
+    raw?.data,
+    raw?.documents,
+    raw,
+  ];
+
+  for (const item of candidates) {
+    if (Array.isArray(item)) return item as SupplierDocument[];
+  }
+
+  return [];
+}
+
+function hasFetchedDocuments(docs: SupplierDocument[]) {
+  return Array.isArray(docs) && docs.length > 0;
+}
+
 const norm = (v: any) => String(v ?? "").trim();
-const normCode = (v: any) => norm(v).padStart(3, "0");
+const normCode = (v: any) => String(v ?? "").trim().padStart(3, "0");
 const hasValue = (v: any) => String(v ?? "").trim().length > 0;
 
 function pickFirst(...vals: any[]) {
@@ -162,8 +192,20 @@ function normalizeDateInputValue(value: any) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function extractSupplierRecord(raw: any): any {
+  return (
+    raw?.data?.data?.supplier ||
+    raw?.data?.data ||
+    raw?.data?.supplier ||
+    raw?.supplier ||
+    raw?.data ||
+    raw ||
+    {}
+  );
+}
+
 function normalizeSupplierPayload(raw: any): SupplierMe {
-  const s = raw?.data ?? raw?.supplier ?? raw ?? {};
+  const s = extractSupplierRecord(raw);
 
   return {
     ...s,
@@ -181,6 +223,16 @@ function normalizeSupplierPayload(raw: any): SupplierMe {
     bankName: pickFirst(s.bankName),
     accountName: pickFirst(s.accountName),
     accountNumber: pickFirst(s.accountNumber),
+
+    registeredAddress: s.registeredAddress ?? null,
+    pickupAddress: s.pickupAddress ?? null,
+    documents: Array.isArray(s.documents) ? s.documents : null,
+    verificationDocuments: Array.isArray(s.verificationDocuments)
+      ? s.verificationDocuments
+      : null,
+    identityDocumentUrl: s.identityDocumentUrl ?? null,
+    proofOfAddressUrl: s.proofOfAddressUrl ?? null,
+    cacDocumentUrl: s.cacDocumentUrl ?? null,
   };
 }
 
@@ -188,27 +240,221 @@ function isRegisteredBusinessType(v: string | null | undefined) {
   return String(v ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
 }
 
+function isPlaceholderBankText(value: unknown) {
+  const v = String(value ?? "").trim().toLowerCase();
+  return (
+    !v ||
+    v === "0" ||
+    v === "00" ||
+    v === "000" ||
+    v === "select bank" ||
+    v === "select bank..." ||
+    v === "account name" ||
+    v === "account number" ||
+    v === "null" ||
+    v === "undefined" ||
+    v === "n/a" ||
+    v === "na" ||
+    v === "-"
+  );
+}
+
+function isZeroOnly(value: unknown) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return !!digits && /^0+$/.test(digits);
+}
+
+function hasMeaningfulBankDetails(
+  source:
+    | {
+        bankCountry?: string | null;
+        bankCode?: string | null;
+        bankName?: string | null;
+        accountName?: string | null;
+        accountNumber?: string | null;
+      }
+    | null
+    | undefined
+) {
+  if (!source) return false;
+
+  const bankCountry = String(source.bankCountry ?? "").trim().toUpperCase();
+  const bankCode = String(source.bankCode ?? "").trim();
+  const bankName = String(source.bankName ?? "").trim();
+  const accountName = String(source.accountName ?? "").trim();
+  const accountNumber = String(source.accountNumber ?? "").trim();
+
+  const meaningfulBankCode = !isPlaceholderBankText(bankCode) && !isZeroOnly(bankCode);
+  const meaningfulBankName = !isPlaceholderBankText(bankName);
+  const meaningfulAccountName = !isPlaceholderBankText(accountName);
+  const meaningfulAccountNumber =
+    !isPlaceholderBankText(accountNumber) && !isZeroOnly(accountNumber);
+
+  const hasCoreBankFields =
+    meaningfulBankCode ||
+    meaningfulBankName ||
+    meaningfulAccountName ||
+    meaningfulAccountNumber;
+
+  const onlyDefaultCountry =
+    !bankCountry || bankCountry === "NG" || bankCountry === "NIGERIA";
+
+  if (!hasCoreBankFields && onlyDefaultCountry) return false;
+  return hasCoreBankFields;
+}
+
+function getEffectiveBankStatus(
+  rawStatus: string | null | undefined,
+  source:
+    | {
+        bankCountry?: string | null;
+        bankCode?: string | null;
+        bankName?: string | null;
+        accountName?: string | null;
+        accountNumber?: string | null;
+      }
+    | null
+    | undefined
+): BankVerificationStatus {
+  const status = String(rawStatus ?? "").trim().toUpperCase();
+
+  if (status === "VERIFIED") return "VERIFIED";
+  if (status === "REJECTED") return "REJECTED";
+  if (status === "PENDING") {
+    return hasMeaningfulBankDetails(source) ? "PENDING" : "UNVERIFIED";
+  }
+  return "UNVERIFIED";
+}
+
 export default function SupplierBusinessDetails() {
   const nav = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const locationState = (location.state as any) ?? {};
 
   const [loading, setLoading] = useState(true);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [businessSaveState, setBusinessSaveState] = useState<SaveState>("idle");
+  const [bankSaveState, setBankSaveState] = useState<SaveState>("idle");
   const [err, setErr] = useState<string | null>(null);
+  const [bankFormError, setBankFormError] = useState<string | null>(null);
 
   const [form, setForm] = useState(EMPTY_FORM);
 
   const [supplier, setSupplier] = useState<SupplierMe | null>(null);
+  const [supplierDocuments, setSupplierDocuments] = useState<SupplierDocument[]>([]);
   const [countries, setCountries] = useState<any[]>([]);
   const [banks, setBanks] = useState<BankOption[]>(FALLBACK_BANKS);
   const [bankEditUnlocked, setBankEditUnlocked] = useState(false);
   const [businessStepSaved, setBusinessStepSaved] = useState(false);
+  const [documentsLockedOnLoad, setDocumentsLockedOnLoad] = useState(false);
 
-  const cameFromVerifyContact = Boolean((location.state as any)?.fromVerifyContact);
+  const cameFromVerifyContact = Boolean(locationState?.fromVerifyContact);
 
-  const businessStepStorageKey = useMemo(
-    () => (supplier?.id ? `supplier:onboarding:business-step-saved:${supplier.id}` : ""),
-    [supplier?.id]
+  const hasHydratedRef = useRef(false);
+  const autosaveTimerRef = useRef<number | null>(null);
+
+  const isBusinessAutosaving = businessSaveState === "saving";
+  const isBankSaving = bankSaveState === "saving";
+
+  const isAdminReviewMode = useMemo(() => {
+    return Boolean(
+      locationState?.adminReview ||
+        locationState?.allowReview ||
+        location.pathname.startsWith("/admin/")
+    );
+  }, [location.pathname, locationState]);
+
+  const adminSupplierId = useMemo(() => {
+    if (!isAdminReviewMode) return "";
+
+    const fromQuery = searchParams.get("supplierId");
+    const fromStateSupplierId = locationState?.supplierId;
+    const fromStateAdminSupplierId = locationState?.adminSupplierId;
+
+    let fromStorage = "";
+    try {
+      fromStorage = localStorage.getItem(ADMIN_SUPPLIER_KEY) || "";
+    } catch {}
+
+    return pickFirst(
+      fromQuery,
+      fromStateSupplierId,
+      fromStateAdminSupplierId,
+      fromStorage
+    );
+  }, [isAdminReviewMode, locationState, searchParams]);
+
+  useEffect(() => {
+    try {
+      if (isAdminReviewMode && adminSupplierId) {
+        localStorage.setItem(ADMIN_SUPPLIER_KEY, adminSupplierId);
+      } else {
+        localStorage.removeItem(ADMIN_SUPPLIER_KEY);
+      }
+    } catch {}
+  }, [adminSupplierId, isAdminReviewMode]);
+
+  const buildStepUrl = useCallback(
+    (path: string) => {
+      if (!isAdminReviewMode || !adminSupplierId) return path;
+      const qs = new URLSearchParams();
+      qs.set("supplierId", adminSupplierId);
+      return `${path}?${qs.toString()}`;
+    },
+    [adminSupplierId, isAdminReviewMode]
+  );
+
+  const makeStepState = useCallback(
+    (targetPath: string, extraState?: Record<string, any>) => ({
+      adminReview: isAdminReviewMode,
+      allowReview: isAdminReviewMode,
+      supplierId: isAdminReviewMode ? adminSupplierId || "" : "",
+      adminSupplierId: isAdminReviewMode ? adminSupplierId || "" : "",
+      fromOnboardingTab: true,
+      skipAutoFinalize: true,
+      returnTo: targetPath,
+      nextAfterVerify: targetPath,
+      fromVerifyContact: false,
+      fromBusinessDetails: targetPath.includes("/business-details"),
+      ...extraState,
+    }),
+    [adminSupplierId, isAdminReviewMode]
+  );
+
+  const pushOnboardingStep = useCallback(
+    (path: string, extraState?: Record<string, any>) => {
+      const targetPath = buildStepUrl(path);
+      nav(targetPath, {
+        state: makeStepState(targetPath, extraState),
+      });
+    },
+    [buildStepUrl, makeStepState, nav]
+  );
+
+  const persistVerifyContactJourney = useCallback(
+    (patch: {
+      contactVerified?: boolean;
+      reachedBusiness?: boolean;
+      reachedAddress?: boolean;
+      reachedDocuments?: boolean;
+      reachedDashboard?: boolean;
+    }) => {
+      if (!isAdminReviewMode || !adminSupplierId) return;
+
+      try {
+        const key = `supplier:verify-contact:journey:${adminSupplierId}`;
+        const raw = sessionStorage.getItem(key);
+        const current = raw && raw.trim() ? JSON.parse(raw) : {};
+        sessionStorage.setItem(
+          key,
+          JSON.stringify({
+            ...current,
+            ...patch,
+          })
+        );
+      } catch {}
+    },
+    [adminSupplierId, isAdminReviewMode]
   );
 
   const isRegisteredBusiness = useMemo(
@@ -216,25 +462,176 @@ export default function SupplierBusinessDetails() {
     [form.registrationType]
   );
 
+  const legalNameRef = useRef<HTMLInputElement | null>(null);
+  const registeredBusinessNameRef = useRef<HTMLInputElement | null>(null);
+  const registrationNumberRef = useRef<HTMLInputElement | null>(null);
+  const registrationTypeRef = useRef<HTMLSelectElement | null>(null);
+  const registrationDateRef = useRef<HTMLInputElement | null>(null);
+  const registrationCountryCodeRef = useRef<HTMLSelectElement | null>(null);
+  const natureOfBusinessRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const bankCountryRef = useRef<HTMLSelectElement | null>(null);
+  const bankNameRef = useRef<HTMLSelectElement | null>(null);
+  const bankCodeRef = useRef<HTMLSelectElement | null>(null);
+  const accountNameRef = useRef<HTMLInputElement | null>(null);
+  const accountNumberRef = useRef<HTMLInputElement | null>(null);
+
+  const fieldRefs = {
+    legalName: legalNameRef,
+    registeredBusinessName: registeredBusinessNameRef,
+    registrationNumber: registrationNumberRef,
+    registrationType: registrationTypeRef,
+    registrationDate: registrationDateRef,
+    registrationCountryCode: registrationCountryCodeRef,
+    natureOfBusiness: natureOfBusinessRef,
+    bankCountry: bankCountryRef,
+    bankName: bankNameRef,
+    bankCode: bankCodeRef,
+    accountName: accountNameRef,
+    accountNumber: accountNumberRef,
+  };
+
+  const businessFieldMap: Record<string, keyof typeof fieldRefs> = {
+    "Legal entity name": "legalName",
+    "Registered business name": "registeredBusinessName",
+    "Registration number": "registrationNumber",
+    "Registration type": "registrationType",
+    "Registration date": "registrationDate",
+    Country: "registrationCountryCode",
+    "Nature of business": "natureOfBusiness",
+  };
+
+  const bankFieldMap: Record<string, keyof typeof fieldRefs> = {
+    "Bank country": "bankCountry",
+    "Bank name": "bankName",
+    "Bank code": "bankCode",
+    "Account name": "accountName",
+    "Account number": "accountNumber",
+  };
+
+  const scrollToTop = useCallback(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
+  const scrollToField = useCallback(
+    (field: keyof typeof fieldRefs) => {
+      const el = fieldRefs[field]?.current;
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        window.setTimeout(() => {
+          try {
+            el.focus();
+          } catch {}
+        }, 180);
+      } else {
+        scrollToTop();
+      }
+    },
+    [scrollToTop]
+  );
+
+  const getMissingDraftBusinessFields = useCallback(() => {
+    const items: string[] = [];
+    if (!hasValue(form.legalName)) items.push("Legal entity name");
+    if (isRegisteredBusiness && !hasValue(form.registeredBusinessName)) {
+      items.push("Registered business name");
+    }
+    if (!hasValue(form.registrationNumber)) items.push("Registration number");
+    if (!hasValue(form.registrationType)) items.push("Registration type");
+    if (!hasValue(form.registrationDate)) items.push("Registration date");
+    if (!hasValue(form.registrationCountryCode)) items.push("Country");
+    if (!hasValue(form.natureOfBusiness)) items.push("Nature of business");
+    return items;
+  }, [form, isRegisteredBusiness]);
+
+  const getMissingDraftBankFields = useCallback(() => {
+    const items: string[] = [];
+    if (!hasValue(form.bankCountry)) items.push("Bank country");
+    if (!hasValue(form.bankCode)) items.push("Bank code");
+    if (!hasValue(form.bankName)) items.push("Bank name");
+    if (!hasValue(form.accountName)) items.push("Account name");
+    if (!hasValue(form.accountNumber)) items.push("Account number");
+    return items;
+  }, [form]);
+
+  const showBusinessValidationError = useCallback(
+    (missingBusiness: string[]) => {
+      setErr(
+        `Please complete all required business details first: ${missingBusiness.join(", ")}.`
+      );
+      const firstField = businessFieldMap[missingBusiness[0]];
+      if (firstField) scrollToField(firstField);
+      else scrollToTop();
+    },
+    [businessFieldMap, scrollToField, scrollToTop]
+  );
+
+  const showBankValidationError = useCallback(
+    (
+      missingBank: string[],
+      prefix = "Please complete all required bank details first"
+    ) => {
+      const message = `${prefix}: ${missingBank.join(", ")}.`;
+      setErr(message);
+      setBankFormError(message);
+      const firstField = bankFieldMap[missingBank[0]];
+      if (firstField) scrollToField(firstField);
+      else scrollToTop();
+    },
+    [bankFieldMap, scrollToField, scrollToTop]
+  );
+
+  const documentsLocked = documentsLockedOnLoad;
+
   const setField =
     (key: keyof typeof form) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    (
+      e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+    ) => {
+      if (documentsLocked) return;
+
       const value = e.target.value;
+
       setForm((f) => {
         const next = { ...f, [key]: value };
-        if (key === "registrationType" && String(value).trim().toUpperCase() === "INDIVIDUAL") {
+
+        if (
+          key === "registrationType" &&
+          String(value).trim().toUpperCase() === "INDIVIDUAL"
+        ) {
           next.registeredBusinessName = "";
         }
+
         return next;
       });
-      setSaveState("idle");
-      setErr(null);
+
+      if (
+        key === "legalName" ||
+        key === "registeredBusinessName" ||
+        key === "registrationNumber" ||
+        key === "registrationType" ||
+        key === "registrationDate" ||
+        key === "registrationCountryCode" ||
+        key === "registryAuthorityId" ||
+        key === "natureOfBusiness"
+      ) {
+        if (businessSaveState !== "saving") setBusinessSaveState("idle");
+      } else {
+        if (bankSaveState !== "saving") setBankSaveState("idle");
+        if (bankFormError) setBankFormError(null);
+      }
+
+      if (err) setErr(null);
     };
 
   const hydrateFormFromSupplier = useCallback((s: SupplierMe, replace = false) => {
     setForm((prev) => {
-      const nextRegistrationType = pickFirst(s.registrationType, replace ? "" : prev.registrationType);
-      const nextIsRegisteredBusiness = isRegisteredBusinessType(nextRegistrationType);
+      const nextRegistrationType = pickFirst(
+        s.registrationType,
+        replace ? "" : prev.registrationType
+      );
+      const nextIsRegisteredBusiness =
+        isRegisteredBusinessType(nextRegistrationType);
 
       if (replace) {
         return {
@@ -286,7 +683,9 @@ export default function SupplierBusinessDetails() {
   }, []);
 
   const savedBusinessFieldsComplete = useMemo(() => {
-    const registeredBusinessRequired = isRegisteredBusinessType(supplier?.registrationType);
+    const registeredBusinessRequired = isRegisteredBusinessType(
+      supplier?.registrationType
+    );
     return {
       legalName: hasValue(supplier?.legalName),
       registeredBusinessName: registeredBusinessRequired
@@ -321,7 +720,9 @@ export default function SupplierBusinessDetails() {
   const draftBusinessFieldsComplete = useMemo(() => {
     return {
       legalName: hasValue(form.legalName),
-      registeredBusinessName: isRegisteredBusiness ? hasValue(form.registeredBusinessName) : true,
+      registeredBusinessName: isRegisteredBusiness
+        ? hasValue(form.registeredBusinessName)
+        : true,
       registrationNumber: hasValue(form.registrationNumber),
       registrationType: hasValue(form.registrationType),
       registrationDate: hasValue(form.registrationDate),
@@ -351,14 +752,21 @@ export default function SupplierBusinessDetails() {
   const missingSavedBusinessFields = useMemo(() => {
     const items: string[] = [];
     if (!savedBusinessFieldsComplete.legalName) items.push("Legal entity name");
-    if (!savedBusinessFieldsComplete.registeredBusinessName && isRegisteredBusinessType(supplier?.registrationType)) {
+    if (
+      !savedBusinessFieldsComplete.registeredBusinessName &&
+      isRegisteredBusinessType(supplier?.registrationType)
+    ) {
       items.push("Registered business name");
     }
-    if (!savedBusinessFieldsComplete.registrationNumber) items.push("Registration number");
-    if (!savedBusinessFieldsComplete.registrationType) items.push("Registration type");
-    if (!savedBusinessFieldsComplete.registrationDate) items.push("Registration date");
+    if (!savedBusinessFieldsComplete.registrationNumber)
+      items.push("Registration number");
+    if (!savedBusinessFieldsComplete.registrationType)
+      items.push("Registration type");
+    if (!savedBusinessFieldsComplete.registrationDate)
+      items.push("Registration date");
     if (!savedBusinessFieldsComplete.registrationCountryCode) items.push("Country");
-    if (!savedBusinessFieldsComplete.natureOfBusiness) items.push("Nature of business");
+    if (!savedBusinessFieldsComplete.natureOfBusiness)
+      items.push("Nature of business");
     return items;
   }, [savedBusinessFieldsComplete, supplier]);
 
@@ -373,8 +781,12 @@ export default function SupplierBusinessDetails() {
   }, [savedBankFieldsComplete]);
 
   const businessDirty = useMemo(() => {
-    const supplierRegisteredBusinessRequired = isRegisteredBusinessType(supplier?.registrationType);
-    const currentRegisteredBusinessName = isRegisteredBusiness ? form.registeredBusinessName : "";
+    const supplierRegisteredBusinessRequired = isRegisteredBusinessType(
+      supplier?.registrationType
+    );
+    const currentRegisteredBusinessName = isRegisteredBusiness
+      ? form.registeredBusinessName
+      : "";
     const savedRegisteredBusinessName = supplierRegisteredBusinessRequired
       ? supplier?.registeredBusinessName
       : "";
@@ -386,7 +798,8 @@ export default function SupplierBusinessDetails() {
       norm(form.registrationType) !== norm(supplier?.registrationType) ||
       norm(normalizeDateInputValue(form.registrationDate)) !==
         norm(normalizeDateInputValue(supplier?.registrationDate)) ||
-      norm(form.registrationCountryCode) !== norm(supplier?.registrationCountryCode || "NG") ||
+      norm(form.registrationCountryCode) !==
+        norm(supplier?.registrationCountryCode || "NG") ||
       norm(form.registryAuthorityId) !== norm(supplier?.registryAuthorityId) ||
       norm(form.natureOfBusiness) !== norm(supplier?.natureOfBusiness)
     );
@@ -402,87 +815,154 @@ export default function SupplierBusinessDetails() {
     );
   }, [form, supplier]);
 
-  const hasUnsavedChanges = businessDirty || bankDirty;
-
   const addressDone = useMemo(() => {
-    return hasAddress(supplier?.registeredAddress) || hasAddress(supplier?.pickupAddress);
+    return (
+      hasAddress(supplier?.registeredAddress) || hasAddress(supplier?.pickupAddress)
+    );
   }, [supplier]);
 
   const docsDone = useMemo(() => {
-    return hasDocuments(supplier);
+    return hasInlineDocuments(supplier) || hasFetchedDocuments(supplierDocuments);
+  }, [supplier, supplierDocuments]);
+
+  const businessReadyLive = useMemo(() => {
+    return documentsLocked ? savedBusinessDone || draftBusinessDone : draftBusinessDone;
+  }, [documentsLocked, savedBusinessDone, draftBusinessDone]);
+
+  const bankReadyLive = useMemo(() => {
+    return documentsLocked ? savedBankDone || draftBankDone : draftBankDone;
+  }, [documentsLocked, savedBankDone, draftBankDone]);
+
+  const savedBankIsMeaningful = useMemo(() => {
+    return hasMeaningfulBankDetails(supplier);
   }, [supplier]);
 
-  const canProceedToAddress = useMemo(() => {
-    return savedBusinessDone && draftBusinessDone && !businessDirty;
-  }, [savedBusinessDone, draftBusinessDone, businessDirty]);
+  const effectiveBankStatus = useMemo<BankVerificationStatus>(() => {
+    return getEffectiveBankStatus(supplier?.bankVerificationStatus, supplier);
+  }, [supplier]);
 
-  const canProceedToDocuments = useMemo(() => {
-    return savedBusinessDone && draftBusinessDone && addressDone && !hasUnsavedChanges;
-  }, [savedBusinessDone, draftBusinessDone, addressDone, hasUnsavedChanges]);
+  const bankLockedByStatus = useMemo(() => {
+    return effectiveBankStatus === "VERIFIED" || effectiveBankStatus === "PENDING";
+  }, [effectiveBankStatus]);
+
+  const bankEditable = useMemo(() => {
+    if (documentsLocked) return false;
+    if (!savedBankIsMeaningful) return true;
+    if (!bankLockedByStatus) return true;
+    return bankEditUnlocked;
+  }, [documentsLocked, savedBankIsMeaningful, bankLockedByStatus, bankEditUnlocked]);
+
+  const businessTextLocked = documentsLocked;
+  const businessSelectLocked = documentsLocked;
+  const bankTextLocked = documentsLocked || !bankEditable;
+  const bankSelectLocked = documentsLocked || !bankEditable;
+
+  const canProceedToAddress = useMemo(() => {
+    if (loading) return false;
+    if (documentsLocked) return true;
+    return (
+      businessReadyLive &&
+      bankReadyLive &&
+      !businessDirty &&
+      !bankDirty &&
+      !isBusinessAutosaving &&
+      !isBankSaving
+    );
+  }, [
+    loading,
+    documentsLocked,
+    businessReadyLive,
+    bankReadyLive,
+    businessDirty,
+    bankDirty,
+    isBusinessAutosaving,
+    isBankSaving,
+  ]);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
       setErr(null);
 
-      const { data } = await api.get("/api/supplier/me", {
-        withCredentials: true,
-      });
+      const params =
+        isAdminReviewMode && adminSupplierId ? { supplierId: adminSupplierId } : undefined;
 
-      const s = normalizeSupplierPayload(data);
-      setSupplier(s);
-      hydrateFormFromSupplier(s, false);
+      const [supplierRes, docsRes] = await Promise.allSettled([
+        api.get("/api/supplier/me", {
+          withCredentials: true,
+          params,
+        }),
+        api.get("/api/supplier/documents", {
+          withCredentials: true,
+          params,
+        }),
+      ]);
 
-      const storageKey = s.id
-        ? `supplier:onboarding:business-step-saved:${s.id}`
-        : "";
+      if (supplierRes.status === "fulfilled") {
+        const s = normalizeSupplierPayload(supplierRes.value.data);
+        setSupplier(s);
+        hydrateFormFromSupplier(s, false);
 
-      if (storageKey) {
-        if (cameFromVerifyContact) {
-          try {
-            sessionStorage.removeItem(storageKey);
-          } catch {}
-          setBusinessStepSaved(false);
-        } else {
-          try {
-            setBusinessStepSaved(sessionStorage.getItem(storageKey) === "true");
-          } catch {
+        const fetchedDocs =
+          docsRes.status === "fulfilled"
+            ? normalizeDocumentsPayload(docsRes.value.data)
+            : [];
+
+        setSupplierDocuments(fetchedDocs);
+
+        const lockedFromInitialLoad =
+          hasInlineDocuments(s) || hasFetchedDocuments(fetchedDocs);
+        setDocumentsLockedOnLoad(lockedFromInitialLoad);
+
+        const storageKey = s.id
+          ? `supplier:onboarding:business-step-saved:${s.id}`
+          : "";
+
+        if (storageKey) {
+          if (cameFromVerifyContact) {
+            try {
+              sessionStorage.removeItem(storageKey);
+            } catch {}
             setBusinessStepSaved(false);
+          } else {
+            try {
+              setBusinessStepSaved(sessionStorage.getItem(storageKey) === "true");
+            } catch {
+              setBusinessStepSaved(false);
+            }
           }
+        } else {
+          setBusinessStepSaved(false);
+        }
+
+        if (getEffectiveBankStatus(s.bankVerificationStatus, s) !== "VERIFIED") {
+          setBankEditUnlocked(false);
         }
       } else {
-        setBusinessStepSaved(false);
+        throw supplierRes.reason;
       }
 
-      if ((s.bankVerificationStatus ?? "UNVERIFIED") === "VERIFIED") {
-        setBankEditUnlocked(false);
-      }
+      hasHydratedRef.current = true;
     } catch (e: any) {
       setErr(
         e?.response?.data?.error ||
           e?.response?.data?.message ||
           "Could not load supplier onboarding."
       );
+      scrollToTop();
     } finally {
       setLoading(false);
     }
-  }, [cameFromVerifyContact, hydrateFormFromSupplier]);
+  }, [
+    adminSupplierId,
+    cameFromVerifyContact,
+    hydrateFormFromSupplier,
+    isAdminReviewMode,
+    scrollToTop,
+  ]);
 
   useEffect(() => {
-    load();
-  }, [load, location.key]);
-
-  useEffect(() => {
-    const onFocus = () => load();
-    const onPageShow = () => load();
-
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("pageshow", onPageShow);
-
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("pageshow", onPageShow);
-    };
+    void load();
   }, [load]);
 
   useEffect(() => {
@@ -507,11 +987,6 @@ export default function SupplierBusinessDetails() {
       .catch(() => setBanks(FALLBACK_BANKS));
   }, []);
 
-  const bankStatus = (supplier?.bankVerificationStatus ?? "UNVERIFIED") as BankVerificationStatus;
-  const bankLockedByStatus = bankStatus === "VERIFIED" || bankStatus === "PENDING";
-  const bankEditable = !bankLockedByStatus || bankEditUnlocked;
-  const bankFieldsDisabled = !bankEditable || loading || saveState === "saving";
-
   const countryBanks = useMemo(() => {
     const country = form.bankCountry || "NG";
     return banks.filter((b) => b.country === country);
@@ -519,6 +994,7 @@ export default function SupplierBusinessDetails() {
 
   useEffect(() => {
     if (!countryBanks.length) return;
+    if (documentsLocked) return;
 
     setForm((f) => {
       const currentCode = normCode(f.bankCode);
@@ -552,20 +1028,23 @@ export default function SupplierBusinessDetails() {
 
       return f;
     });
-  }, [countryBanks]);
+  }, [countryBanks, documentsLocked]);
 
   function setBankByName(name: string) {
+    if (documentsLocked) return;
     const match = countryBanks.find((b) => b.name === name);
     setForm((f) => ({
       ...f,
       bankName: name || "",
       bankCode: match ? normCode(match.code) : "",
     }));
-    setSaveState("idle");
-    setErr(null);
+    if (bankSaveState !== "saving") setBankSaveState("idle");
+    if (bankFormError) setBankFormError(null);
+    if (err) setErr(null);
   }
 
   function setBankByCode(code: string) {
+    if (documentsLocked) return;
     const c = normCode(code);
     const match = countryBanks.find((b) => normCode(b.code) === c);
     setForm((f) => ({
@@ -573,13 +1052,16 @@ export default function SupplierBusinessDetails() {
       bankCode: c,
       bankName: match?.name || f.bankName || "",
     }));
-    setSaveState("idle");
-    setErr(null);
+    if (bankSaveState !== "saving") setBankSaveState("idle");
+    if (bankFormError) setBankFormError(null);
+    if (err) setErr(null);
   }
 
-  const save = async () => {
+  const saveBusinessOnly = useCallback(async () => {
     try {
-      setSaveState("saving");
+      if (documentsLocked) return;
+
+      setBusinessSaveState("saving");
       setErr(null);
 
       const payload: any = {
@@ -595,23 +1077,21 @@ export default function SupplierBusinessDetails() {
         natureOfBusiness: form.natureOfBusiness.trim() || null,
       };
 
-      if (bankEditable) {
-        payload.bankCountry = form.bankCountry.trim() || null;
-        payload.bankCode = normCode(form.bankCode) || null;
-        payload.bankName = form.bankName.trim() || null;
-        payload.accountName = form.accountName.trim() || null;
-        payload.accountNumber = form.accountNumber.replace(/\D/g, "").trim() || null;
-      }
+      const params =
+        isAdminReviewMode && adminSupplierId ? { supplierId: adminSupplierId } : undefined;
 
       const { data } = await api.put("/api/supplier/me", payload, {
         withCredentials: true,
+        params,
       });
 
       const s = normalizeSupplierPayload(data);
       setSupplier(s);
       hydrateFormFromSupplier(s, true);
 
-      const isSavedRegisteredBusinessRequired = isRegisteredBusinessType(s.registrationType);
+      const isSavedRegisteredBusinessRequired = isRegisteredBusinessType(
+        s.registrationType
+      );
 
       const isBusinessComplete =
         hasValue(s.legalName) &&
@@ -639,73 +1119,221 @@ export default function SupplierBusinessDetails() {
         } catch {}
       }
 
-      setSaveState("saved");
-      setBankEditUnlocked(false);
+      setBusinessSaveState("saved");
     } catch (e: any) {
-      setSaveState("error");
+      setBusinessSaveState("error");
       setErr(
         e?.response?.data?.error ||
           e?.response?.data?.message ||
-          "Could not save onboarding details."
+          "Could not save business details."
       );
+      scrollToTop();
     }
-  };
+  }, [
+    adminSupplierId,
+    documentsLocked,
+    form,
+    hydrateFormFromSupplier,
+    isAdminReviewMode,
+    isRegisteredBusiness,
+    scrollToTop,
+  ]);
 
-  const goToAddressStep = () => {
-    if (!draftBusinessDone) {
-      setErr("Please complete all required business details before continuing.");
+  const saveBankDetails = useCallback(async () => {
+    try {
+      if (!bankEditable || documentsLocked) return;
+
+      const missingBank = getMissingDraftBankFields();
+      if (missingBank.length > 0) {
+        setBankSaveState("error");
+        showBankValidationError(
+          missingBank,
+          "Please complete all missing bank details before saving"
+        );
+        return;
+      }
+
+      setBankSaveState("saving");
+      setErr(null);
+      setBankFormError(null);
+
+      const payload: any = {
+        bankCountry: form.bankCountry.trim() || null,
+        bankCode: normCode(form.bankCode) || null,
+        bankName: form.bankName.trim() || null,
+        accountName: form.accountName.trim() || null,
+        accountNumber: form.accountNumber.replace(/\D/g, "").trim() || null,
+      };
+
+      const params =
+        isAdminReviewMode && adminSupplierId ? { supplierId: adminSupplierId } : undefined;
+
+      const { data } = await api.put("/api/supplier/me", payload, {
+        withCredentials: true,
+        params,
+      });
+
+      const s = normalizeSupplierPayload(data);
+      setSupplier(s);
+      hydrateFormFromSupplier(s, true);
+
+      setBankSaveState("saved");
+      setBankEditUnlocked(false);
+      setBankFormError(null);
+    } catch (e: any) {
+      setBankSaveState("error");
+      setErr(
+        e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          "Could not save bank details."
+      );
+      setBankFormError(
+        e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          "Could not save bank details."
+      );
+      scrollToTop();
+    }
+  }, [
+    adminSupplierId,
+    bankEditable,
+    documentsLocked,
+    form,
+    getMissingDraftBankFields,
+    hydrateFormFromSupplier,
+    isAdminReviewMode,
+    scrollToTop,
+    showBankValidationError,
+  ]);
+
+  useEffect(() => {
+    if (!hasHydratedRef.current) return;
+    if (loading) return;
+    if (documentsLocked) return;
+    if (!businessDirty) return;
+    if (isBusinessAutosaving) return;
+
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void saveBusinessOnly();
+    }, 1200);
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, [businessDirty, documentsLocked, isBusinessAutosaving, loading, saveBusinessOnly]);
+
+  useEffect(() => {
+    return () => {
+      if (autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  const goToAddressStep = useCallback(() => {
+    if (loading) return;
+    if (!canProceedToAddress && !documentsLocked) return;
+
+    setErr(null);
+    setBankFormError(null);
+
+    if (documentsLocked) {
+      pushOnboardingStep("/supplier/onboarding/address", {
+        fromBusinessDetails: true,
+      });
       return;
     }
 
-    if (businessDirty) {
-      setErr("You have unsaved business details. Please save progress before continuing.");
-      return;
-    }
+    pushOnboardingStep("/supplier/onboarding/address", {
+      fromBusinessDetails: true,
+    });
+  }, [loading, canProceedToAddress, documentsLocked, pushOnboardingStep]);
 
-    if (!savedBusinessDone) {
-      setErr("Please save your completed business details before continuing to Address.");
-      return;
-    }
+  const goToVerifyContact = useCallback(() => {
+    if (loading) return;
 
-    nav("/supplier/onboarding/address");
-  };
+    setErr(null);
 
-  const goToDocumentsStep = () => {
-    if (!draftBusinessDone) {
-      setErr("Please complete all required business details before continuing.");
-      return;
-    }
+    persistVerifyContactJourney({
+      contactVerified: true,
+      reachedBusiness: true,
+      reachedAddress: addressDone,
+      reachedDocuments: docsDone,
+      reachedDashboard: false,
+    });
 
-    if (hasUnsavedChanges) {
-      setErr("You have unsaved changes. Please save progress before continuing.");
-      return;
-    }
+    const targetPath = buildStepUrl("/supplier/verify-contact");
+    nav(targetPath, {
+      state: {
+        adminReview: isAdminReviewMode,
+        allowReview: isAdminReviewMode,
+        supplierId: isAdminReviewMode ? adminSupplierId || "" : "",
+        adminSupplierId: isAdminReviewMode ? adminSupplierId || "" : "",
+        fromOnboardingTab: true,
+        skipAutoFinalize: true,
+        fromBusinessDetails: true,
+        returnTo: buildStepUrl("/supplier/onboarding"),
+        nextAfterVerify: buildStepUrl("/supplier/onboarding"),
+      },
+    });
+  }, [
+    loading,
+    addressDone,
+    adminSupplierId,
+    buildStepUrl,
+    docsDone,
+    isAdminReviewMode,
+    nav,
+    persistVerifyContactJourney,
+  ]);
 
-    if (!savedBusinessDone) {
-      setErr("Please save your completed business details before continuing to Documents.");
-      return;
-    }
+  const businessAutosaveStatusText =
+    documentsLocked
+      ? "Business details locked after document submission"
+      : businessSaveState === "saving"
+      ? "Saving business details…"
+      : businessSaveState === "saved"
+      ? "Business details saved"
+      : businessSaveState === "error"
+      ? "Business autosave failed"
+      : businessDirty
+      ? "Unsaved business changes"
+      : "Business details up to date";
 
-    if (!addressDone) {
-      setErr("Please complete Address details before continuing to Documents.");
-      return;
-    }
-
-    nav("/supplier/onboarding/documents");
-  };
-
-  const goToDashboard = () => {
-    nav("/supplier");
-  };
+  const bankSaveStatusText =
+    documentsLocked
+      ? "Bank details locked after document submission"
+      : bankSaveState === "saving"
+      ? "Saving bank details…"
+      : bankSaveState === "saved"
+      ? "Bank details saved"
+      : bankSaveState === "error"
+      ? "Bank save failed"
+      : bankDirty
+      ? "Unsaved bank changes"
+      : "Bank details up to date";
 
   const stepBase =
     "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
   const stepDone = "border-emerald-200 bg-emerald-50 text-emerald-700";
   const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
   const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
+  const stepClickable = "cursor-pointer hover:bg-zinc-50";
+  const stepDisabledLoading =
+    "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-400 pointer-events-none";
+  const stepDisabledBlocked =
+    "cursor-not-allowed border-zinc-100 bg-zinc-50 text-zinc-400 pointer-events-none";
 
   const input =
-    "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm";
+    "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-[border-color,box-shadow,background-color] duration-150 ease-out focus:border-violet-400 focus:ring-4 focus:ring-violet-200 shadow-sm";
+  const inputLocked =
+    "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0";
   const label = "mb-1.5 block text-sm font-semibold text-slate-800";
   const card =
     "rounded-[28px] border border-white/70 bg-white/95 p-4 shadow-[0_16px_50px_rgba(15,23,42,0.08)] backdrop-blur sm:p-6 md:p-8";
@@ -713,24 +1341,24 @@ export default function SupplierBusinessDetails() {
   const primaryBtn =
     "inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60";
   const secondaryBtn =
-    "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50";
+    "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60";
 
   const bankStatusChip = (() => {
-    if (bankStatus === "VERIFIED") {
+    if (effectiveBankStatus === "VERIFIED") {
       return (
         <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] text-emerald-700">
           <VerifiedIcon size={14} /> Verified
         </span>
       );
     }
-    if (bankStatus === "PENDING") {
+    if (effectiveBankStatus === "PENDING") {
       return (
         <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] text-amber-700">
           <Clock size={14} /> Pending verification
         </span>
       );
     }
-    if (bankStatus === "REJECTED") {
+    if (effectiveBankStatus === "REJECTED") {
       return (
         <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] text-rose-700">
           <AlertTriangle size={14} /> Rejected
@@ -745,12 +1373,10 @@ export default function SupplierBusinessDetails() {
   })();
 
   const progress = useMemo(() => {
-    const contactDone = true;
-
     const items = [
-      { key: "contact", label: "Contact verified", done: contactDone },
-      { key: "business", label: "Business details", done: savedBusinessDone },
-      { key: "bank", label: "Bank details", done: savedBankDone },
+      { key: "contact", label: "Contact verified", done: true },
+      { key: "business", label: "Business details", done: businessReadyLive },
+      { key: "bank", label: "Bank details", done: bankReadyLive },
       { key: "address", label: "Address details", done: addressDone },
       { key: "docs", label: "Documents uploaded", done: docsDone },
     ];
@@ -763,16 +1389,19 @@ export default function SupplierBusinessDetails() {
       doneCount,
       total: items.length,
       pct,
-      businessDone: savedBusinessDone,
-      bankDone: savedBankDone,
-      addressDone,
-      docsDone,
     };
-  }, [savedBusinessDone, savedBankDone, addressDone, docsDone]);
+  }, [addressDone, bankReadyLive, businessReadyLive, docsDone]);
 
-  const canAccessFullDashboard = useMemo(() => {
-    return progress.businessDone && progress.addressDone && progress.bankDone && progress.docsDone;
-  }, [progress]);
+  const documentsAccessible = useMemo(() => {
+    return addressDone;
+  }, [addressDone]);
+
+  const addressTabAccessible = canProceedToAddress || documentsLocked;
+  const documentsTabAccessible = docsDone || documentsAccessible;
+
+  const canClickPreviousTab = !loading;
+  const canClickAddressTab = !loading && addressTabAccessible;
+  const tabsBlockedByLoading = loading;
 
   return (
     <SiteLayout>
@@ -792,69 +1421,134 @@ export default function SupplierBusinessDetails() {
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-6">
                 <div className={`${stepBase} ${stepDone}`}>
-                  <CheckCircle2 size={16} />
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
+                    1
+                  </span>
                   <span>Register</span>
                 </div>
 
-                <div className={`${stepBase} ${stepDone}`}>
-                  <BadgeCheck size={16} />
-                  <span>Verify email / phone</span>
-                </div>
+                <button
+                  type="button"
+                  onClick={canClickPreviousTab ? goToVerifyContact : undefined}
+                  disabled={!canClickPreviousTab}
+                  className={`${stepBase} ${
+                    tabsBlockedByLoading ? stepDisabledLoading : stepDone
+                  } ${
+                    canClickPreviousTab && !tabsBlockedByLoading
+                      ? stepClickable
+                      : "cursor-not-allowed"
+                  }`}
+                >
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
+                    2
+                  </span>
+                  <span>Verify contact</span>
+                </button>
 
                 <div className={`${stepBase} ${stepActive}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
                     3
                   </span>
                   <span>Business details</span>
                 </div>
 
-                <div className={`${stepBase} ${progress.addressDone ? stepDone : stepLocked}`}>
-                  <MapPin size={16} />
-                  <span>Address details</span>
-                </div>
+                <button
+                  type="button"
+                  onClick={canClickAddressTab ? goToAddressStep : undefined}
+                  disabled={!canClickAddressTab}
+                  className={`${stepBase} ${
+                    tabsBlockedByLoading
+                      ? stepDisabledLoading
+                      : addressTabAccessible
+                      ? stepDone
+                      : stepDisabledBlocked
+                  } ${
+                    canClickAddressTab && !tabsBlockedByLoading
+                      ? stepClickable
+                      : "cursor-not-allowed"
+                  }`}
+                >
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
+                    4
+                  </span>
+                  <span>Address</span>
+                </button>
 
-                <div className={`${stepBase} ${progress.docsDone ? stepDone : stepLocked}`}>
-                  <ShieldCheck size={16} />
+                <div
+                  className={`${stepBase} ${
+                    tabsBlockedByLoading
+                      ? stepDisabledLoading
+                      : documentsTabAccessible
+                      ? stepDone
+                      : stepDisabledBlocked
+                  }`}
+                >
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
+                    5
+                  </span>
                   <span>Documents</span>
                 </div>
 
-                <div className={`${stepBase} ${canAccessFullDashboard ? stepDone : stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                <div
+                  className={`${stepBase} ${
+                    tabsBlockedByLoading ? stepDisabledLoading : stepDisabledBlocked
+                  }`}
+                >
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-semibold">
                     6
                   </span>
                   <span>Dashboard access</span>
                 </div>
               </div>
+
+              {loading && (
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+                  Loading onboarding details. Tabs are temporarily locked until the page is fully ready.
+                </div>
+              )}
             </div>
 
-            {hasUnsavedChanges && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                You have unsaved changes. Save progress before continuing to the next step.
-              </div>
-            )}
-
-            {draftBusinessDone && !savedBusinessDone && (
+            {documentsLocked && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Business details look complete, but they are not saved yet.
+                Documents had already been submitted when this page loaded. Business and bank details are read-only on this visit.
               </div>
             )}
 
-            {draftBankDone && !savedBankDone && (
+            {!documentsLocked && businessDirty && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Business changes are being saved automatically. You can still click Next, and we’ll
+                guide you to what needs attention.
+              </div>
+            )}
+
+            {!documentsLocked && bankDirty && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                You have unsaved bank changes. Click Next and you’ll be taken to the bank field that
+                still needs saving.
+              </div>
+            )}
+
+            {!documentsLocked && draftBusinessDone && !savedBusinessDone && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                Business details look complete. Autosave will store them shortly.
+              </div>
+            )}
+
+            {!documentsLocked && draftBankDone && !savedBankDone && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
                 Bank details look complete, but they are not saved yet.
               </div>
             )}
 
-            {!savedBusinessDone && missingSavedBusinessFields.length > 0 && (
+            {!documentsLocked && !savedBusinessDone && missingSavedBusinessFields.length > 0 && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Complete and save all required business details before continuing:{" "}
-                {missingSavedBusinessFields.join(", ")}.
+                Complete all required business details: {missingSavedBusinessFields.join(", ")}.
               </div>
             )}
 
-            {!savedBankDone && missingSavedBankFields.length > 0 && (
+            {!documentsLocked && !savedBankDone && missingSavedBankFields.length > 0 && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Bank details still missing or not saved: {missingSavedBankFields.join(", ")}.
+                Bank details still missing: {missingSavedBankFields.join(", ")}.
               </div>
             )}
 
@@ -884,9 +1578,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Legal entity name</label>
                         <input
+                          ref={legalNameRef}
                           value={form.legalName}
                           onChange={setField("legalName")}
-                          className={input}
+                          readOnly={businessTextLocked}
+                          className={`${input} ${businessTextLocked ? inputLocked : ""}`}
                           placeholder="Legal business name"
                         />
                       </div>
@@ -895,9 +1591,11 @@ export default function SupplierBusinessDetails() {
                         <div>
                           <label className={label}>Registered business name</label>
                           <input
+                            ref={registeredBusinessNameRef}
                             value={form.registeredBusinessName}
                             onChange={setField("registeredBusinessName")}
-                            className={input}
+                            readOnly={businessTextLocked}
+                            className={`${input} ${businessTextLocked ? inputLocked : ""}`}
                             placeholder="Registered business name"
                           />
                         </div>
@@ -906,9 +1604,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Registration number</label>
                         <input
+                          ref={registrationNumberRef}
                           value={form.registrationNumber}
                           onChange={setField("registrationNumber")}
-                          className={input}
+                          readOnly={businessTextLocked}
+                          className={`${input} ${businessTextLocked ? inputLocked : ""}`}
                           placeholder="Registration number"
                         />
                       </div>
@@ -916,9 +1616,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Registration type</label>
                         <select
+                          ref={registrationTypeRef}
                           value={form.registrationType}
                           onChange={setField("registrationType")}
-                          className={input}
+                          disabled={businessSelectLocked}
+                          className={`${input} ${businessSelectLocked ? inputLocked : ""}`}
                         >
                           <option value="">Select registration type</option>
                           <option value="INDIVIDUAL">Individual</option>
@@ -929,19 +1631,23 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Registration date</label>
                         <input
+                          ref={registrationDateRef}
                           type="date"
                           value={form.registrationDate}
                           onChange={setField("registrationDate")}
-                          className={input}
+                          readOnly={businessTextLocked}
+                          className={`${input} ${businessTextLocked ? inputLocked : ""}`}
                         />
                       </div>
 
                       <div>
                         <label className={label}>Country</label>
                         <select
+                          ref={registrationCountryCodeRef}
                           value={form.registrationCountryCode}
                           onChange={setField("registrationCountryCode")}
-                          className={input}
+                          disabled={businessSelectLocked}
+                          className={`${input} ${businessSelectLocked ? inputLocked : ""}`}
                         >
                           {countries.length === 0 && <option>Loading countries...</option>}
                           {countries.map((c) => (
@@ -955,9 +1661,13 @@ export default function SupplierBusinessDetails() {
                       <div className="md:col-span-2">
                         <label className={label}>Nature of business</label>
                         <textarea
+                          ref={natureOfBusinessRef}
                           value={form.natureOfBusiness}
                           onChange={setField("natureOfBusiness")}
-                          className={`${input} min-h-[110px] resize-y`}
+                          readOnly={businessTextLocked}
+                          className={`${input} min-h-[110px] resize-y ${
+                            businessTextLocked ? inputLocked : ""
+                          }`}
                           placeholder="Describe the products or services your business provides"
                         />
                       </div>
@@ -980,16 +1690,18 @@ export default function SupplierBusinessDetails() {
 
                       <div className="flex flex-wrap items-center gap-2">
                         {bankStatusChip}
-                        {bankStatus === "VERIFIED" && !bankEditUnlocked && (
-                          <button
-                            type="button"
-                            onClick={() => setBankEditUnlocked(true)}
-                            className="rounded-full border bg-white px-3 py-1.5 text-[11px] hover:bg-black/5"
-                          >
-                            Request change
-                          </button>
-                        )}
-                        {bankEditUnlocked && (
+                        {effectiveBankStatus === "VERIFIED" &&
+                          !bankEditUnlocked &&
+                          !documentsLocked && (
+                            <button
+                              type="button"
+                              onClick={() => setBankEditUnlocked(true)}
+                              className="rounded-full border bg-white px-3 py-1.5 text-[11px] hover:bg-black/5"
+                            >
+                              Request change
+                            </button>
+                          )}
+                        {bankEditUnlocked && !documentsLocked && (
                           <button
                             type="button"
                             onClick={() => setBankEditUnlocked(false)}
@@ -1001,30 +1713,44 @@ export default function SupplierBusinessDetails() {
                       </div>
                     </div>
 
-                    {supplier?.bankVerificationNote && (
+                    {supplier?.bankVerificationNote && savedBankIsMeaningful && (
                       <div className="mb-3 rounded-xl border bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
                         <span className="font-semibold">Admin note:</span>{" "}
                         {supplier.bankVerificationNote}
                       </div>
                     )}
 
-                    {bankStatus === "PENDING" && (
+                    {effectiveBankStatus === "PENDING" && savedBankIsMeaningful && (
                       <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
                         Bank details are <span className="font-semibold">pending verification</span>.
                         Editing is locked until review is complete.
                       </div>
                     )}
 
-                    {bankStatus === "VERIFIED" && !bankEditUnlocked && (
+                    {effectiveBankStatus === "VERIFIED" && !bankEditUnlocked && !documentsLocked && (
                       <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800">
                         Your bank details are verified and locked. Use{" "}
                         <span className="font-semibold">Request change</span> to update them.
                       </div>
                     )}
 
-                    {bankEditUnlocked && bankStatus !== "PENDING" && (
-                      <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
-                        When you save new bank details, they will be submitted for verification.
+                    {documentsLocked && (
+                      <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-800">
+                        Bank details are locked because documents had already been submitted when this page loaded.
+                      </div>
+                    )}
+
+                    {bankEditUnlocked &&
+                      effectiveBankStatus !== "PENDING" &&
+                      !documentsLocked && (
+                        <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+                          When you save new bank details, they will be submitted for verification.
+                        </div>
+                      )}
+
+                    {bankFormError && (
+                      <div className="mb-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                        {bankFormError}
                       </div>
                     )}
 
@@ -1032,23 +1758,22 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Bank country</label>
                         <select
+                          ref={bankCountryRef}
                           value={form.bankCountry}
                           onChange={(e) => {
+                            if (documentsLocked) return;
                             setForm((f) => ({
                               ...f,
                               bankCountry: e.target.value || "NG",
                               bankCode: "",
                               bankName: "",
                             }));
-                            setSaveState("idle");
-                            setErr(null);
+                            if (bankSaveState !== "saving") setBankSaveState("idle");
+                            if (bankFormError) setBankFormError(null);
+                            if (err) setErr(null);
                           }}
-                          disabled={bankFieldsDisabled}
-                          className={`${input} ${
-                            bankFieldsDisabled
-                              ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                              : ""
-                          }`}
+                          disabled={bankSelectLocked}
+                          className={`${input} ${bankSelectLocked ? inputLocked : ""}`}
                         >
                           {countries.length === 0 && <option>Loading countries...</option>}
                           {countries.map((c) => (
@@ -1062,14 +1787,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Bank name</label>
                         <select
+                          ref={bankNameRef}
                           value={form.bankName}
                           onChange={(e) => setBankByName(e.target.value)}
-                          disabled={bankFieldsDisabled}
-                          className={`${input} ${
-                            bankFieldsDisabled
-                              ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                              : ""
-                          }`}
+                          disabled={bankSelectLocked}
+                          className={`${input} ${bankSelectLocked ? inputLocked : ""}`}
                         >
                           <option value="">Select bank…</option>
                           {countryBanks.map((b) => (
@@ -1083,14 +1805,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Bank code</label>
                         <select
+                          ref={bankCodeRef}
                           value={normCode(form.bankCode)}
                           onChange={(e) => setBankByCode(e.target.value)}
-                          disabled={bankFieldsDisabled}
-                          className={`${input} ${
-                            bankFieldsDisabled
-                              ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                              : ""
-                          }`}
+                          disabled={bankSelectLocked}
+                          className={`${input} ${bankSelectLocked ? inputLocked : ""}`}
                         >
                           <option value="">Select bank…</option>
                           {countryBanks.map((b) => (
@@ -1104,14 +1823,11 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <label className={label}>Account name</label>
                         <input
+                          ref={accountNameRef}
                           value={form.accountName}
                           onChange={setField("accountName")}
-                          disabled={bankFieldsDisabled}
-                          className={`${input} ${
-                            bankFieldsDisabled
-                              ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                              : ""
-                          }`}
+                          readOnly={bankTextLocked}
+                          className={`${input} ${bankTextLocked ? inputLocked : ""}`}
                           placeholder="Account name"
                         />
                       </div>
@@ -1119,24 +1835,52 @@ export default function SupplierBusinessDetails() {
                       <div className="md:col-span-2">
                         <label className={label}>Account number</label>
                         <input
+                          ref={accountNumberRef}
                           value={form.accountNumber}
                           onChange={(e) => {
+                            if (documentsLocked) return;
                             setForm((f) => ({
                               ...f,
                               accountNumber: e.target.value.replace(/\D/g, "").slice(0, 16),
                             }));
-                            setSaveState("idle");
-                            setErr(null);
+                            if (bankSaveState !== "saving") setBankSaveState("idle");
+                            if (bankFormError) setBankFormError(null);
+                            if (err) setErr(null);
                           }}
-                          disabled={bankFieldsDisabled}
-                          className={`${input} ${
-                            bankFieldsDisabled
-                              ? "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0"
-                              : ""
-                          }`}
+                          readOnly={bankTextLocked}
+                          className={`${input} ${bankTextLocked ? inputLocked : ""}`}
                           placeholder="Account number"
                         />
                       </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                      <span
+                        className={`text-sm ${
+                          bankSaveState === "error"
+                            ? "text-rose-600"
+                            : bankSaveState === "saving"
+                            ? "text-amber-700"
+                            : "text-zinc-600"
+                        }`}
+                      >
+                        {bankSaveStatusText}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => void saveBankDetails()}
+                        disabled={documentsLocked || !bankEditable || isBankSaving || loading}
+                        className={secondaryBtn}
+                      >
+                        {documentsLocked
+                          ? "Locked"
+                          : bankSaveState === "saving"
+                          ? "Saving bank details…"
+                          : bankSaveState === "saved" && !bankDirty
+                          ? "Bank details saved"
+                          : "Save bank details"}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1196,8 +1940,8 @@ export default function SupplierBusinessDetails() {
                     <button
                       type="button"
                       onClick={goToAddressStep}
-                      disabled={!canProceedToAddress}
-                      className={`${secondaryBtn} mt-4 w-full disabled:cursor-not-allowed disabled:opacity-50`}
+                      disabled={loading || !addressTabAccessible}
+                      className={`${secondaryBtn} mt-4 w-full`}
                     >
                       Continue to address
                     </button>
@@ -1211,16 +1955,21 @@ export default function SupplierBusinessDetails() {
                       <div>
                         <h3 className="text-sm font-semibold text-zinc-900">Document step</h3>
                         <p className="mt-1 text-sm text-zinc-600">
-                          Upload required documents to complete verification.
+                          {documentsAccessible
+                            ? "Documents is now available after completing the Address step."
+                            : "This becomes available after the Address step is completed."}
                         </p>
                       </div>
                     </div>
 
                     <button
                       type="button"
-                      onClick={goToDocumentsStep}
-                      disabled={!canProceedToDocuments}
-                      className={`${secondaryBtn} mt-4 w-full disabled:cursor-not-allowed disabled:opacity-50`}
+                      disabled
+                      className={`mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed ${
+                        documentsTabAccessible
+                          ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : "border border-zinc-300 bg-white text-zinc-400"
+                      }`}
                     >
                       Continue to documents
                     </button>
@@ -1229,16 +1978,10 @@ export default function SupplierBusinessDetails() {
                   <div className={panel}>
                     <h3 className="text-sm font-semibold text-zinc-900">Full dashboard access</h3>
                     <p className="mt-1 text-sm text-zinc-600">
-                      Dashboard becomes fully available once minimum onboarding requirements are
-                      complete.
+                      Dashboard becomes fully available once all onboarding steps are completed.
                     </p>
 
-                    <button
-                      type="button"
-                      onClick={goToDashboard}
-                      disabled={!canAccessFullDashboard}
-                      className={`${primaryBtn} mt-4 w-full`}
-                    >
+                    <button type="button" disabled className={`${primaryBtn} mt-4 w-full`}>
                       Go to dashboard
                     </button>
                   </div>
@@ -1248,31 +1991,31 @@ export default function SupplierBusinessDetails() {
               <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <button
                   type="button"
-                  onClick={() => nav("/supplier/verify-contact")}
+                  onClick={goToVerifyContact}
+                  disabled={loading}
                   className={secondaryBtn}
                 >
                   <ArrowLeft className="mr-2 h-4 w-4" />
                   Back
                 </button>
 
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={save}
-                    disabled={loading || saveState === "saving"}
-                    className={secondaryBtn}
+                <div className="flex items-center gap-3">
+                  <span
+                    className={`text-sm ${
+                      businessSaveState === "error"
+                        ? "text-rose-600"
+                        : businessSaveState === "saving"
+                        ? "text-amber-700"
+                        : "text-zinc-600"
+                    }`}
                   >
-                    {saveState === "saving"
-                      ? "Saving…"
-                      : saveState === "saved"
-                      ? "Saved"
-                      : "Save progress"}
-                  </button>
+                    {businessAutosaveStatusText}
+                  </span>
 
                   <button
                     type="button"
                     onClick={goToAddressStep}
-                    disabled={!canProceedToAddress}
+                    disabled={loading || !addressTabAccessible}
                     className={primaryBtn}
                   >
                     Next step

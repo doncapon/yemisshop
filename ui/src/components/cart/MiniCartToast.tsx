@@ -1,7 +1,7 @@
 // src/components/cart/MiniCartToast.tsx
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { useLocation  } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { ShoppingCart, X } from "lucide-react";
 import api from "../../api/client";
 import { readCartLines, upsertCartLine, toMiniCartRows } from "../../utils/cartModel";
@@ -127,15 +127,15 @@ function normalizePayload(d: ToastPayload | null | undefined) {
 
   const focus: ToastFocus | null = d?.focus?.productId
     ? {
-      productId: String(d.focus.productId),
-      variantId: d.focus.variantId ?? null,
-    }
+        productId: String(d.focus.productId),
+        variantId: d.focus.variantId ?? null,
+      }
     : last
-      ? {
+    ? {
         productId: String(last.productId),
         variantId: last.variantId ?? null,
       }
-      : null;
+    : null;
 
   return { cart, focus, opts: d?.opts, preserveOrder: !!d?.preserveOrder };
 }
@@ -249,8 +249,8 @@ async function fetchAvailabilityForRows(
       const arr = Array.isArray((data as any)?.data)
         ? (data as any).data
         : Array.isArray(data)
-          ? data
-          : [];
+        ? data
+        : [];
 
       const lines: Record<string, Availability> = {};
       const byProduct: Record<
@@ -459,8 +459,9 @@ function MiniCartQtyEditor({
         type="button"
         disabled={!canDec}
         onClick={() => update(value - 1)}
-        className={`w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 ${!canDec ? "opacity-50 cursor-not-allowed" : ""
-          }`}
+        className={`h-6 w-6 rounded-full border bg-white text-sm hover:bg-zinc-50 sm:h-7 sm:w-7 ${
+          !canDec ? "cursor-not-allowed opacity-50" : ""
+        }`}
       >
         −
       </button>
@@ -471,15 +472,16 @@ function MiniCartQtyEditor({
         min={0}
         max={maxQty}
         onChange={(e) => update(Number(e.target.value))}
-        className="w-12 h-7 text-center text-xs border rounded-lg"
+        className="h-6 w-10 rounded-lg border text-center text-[11px] sm:h-7 sm:w-12 sm:text-xs"
       />
 
       <button
         type="button"
         disabled={!canInc}
         onClick={() => update(value + 1)}
-        className={`w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 ${!canInc ? "opacity-50 cursor-not-allowed" : ""
-          }`}
+        className={`h-6 w-6 rounded-full border bg-white text-sm hover:bg-zinc-50 sm:h-7 sm:w-7 ${
+          !canInc ? "cursor-not-allowed opacity-50" : ""
+        }`}
       >
         +
       </button>
@@ -553,27 +555,33 @@ export default function MiniCartToastHost() {
     [stopTimer]
   );
 
-  const goToCart = React.useCallback((e?: React.MouseEvent) => {
-  e?.preventDefault();
-  e?.stopPropagation();
-  stopTimer();
-  setOpen(false);
+  const goToCart = React.useCallback(
+    (e?: React.MouseEvent) => {
+      e?.preventDefault();
+      e?.stopPropagation();
+      stopTimer();
+      setOpen(false);
 
-  window.setTimeout(() => {
-    window.location.assign("/cart");
-  }, 0);
-}, [stopTimer]);
+      window.setTimeout(() => {
+        window.location.assign("/cart");
+      }, 0);
+    },
+    [stopTimer]
+  );
 
-const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
-  e?.preventDefault();
-  e?.stopPropagation();
-  stopTimer();
-  setOpen(false);
+  const goToCatalog = React.useCallback(
+    (e?: React.MouseEvent) => {
+      e?.preventDefault();
+      e?.stopPropagation();
+      stopTimer();
+      setOpen(false);
 
-  window.setTimeout(() => {
-    window.location.assign("/");
-  }, 0);
-}, [stopTimer]);
+      window.setTimeout(() => {
+        window.location.assign("/");
+      }, 0);
+    },
+    [stopTimer]
+  );
 
   React.useEffect(() => {
     setOpen(false);
@@ -679,9 +687,9 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
         unitPriceCache: unit,
         selectedOptions: Array.isArray(r.selectedOptions)
           ? r.selectedOptions.map((o) => ({
-            attribute: o.attribute,
-            value: o.value,
-          }))
+              attribute: o.attribute,
+              value: o.value,
+            }))
           : [],
       } as any);
     }
@@ -731,7 +739,7 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
   if (!payload) return null;
 
   return createPortal(
-    <div className="fixed right-4 top-4 z-[99999] pointer-events-none">
+    <div className="pointer-events-none fixed inset-x-3 top-3 z-[99999] sm:left-auto sm:right-4 sm:top-4 sm:inset-x-auto">
       <div
         onMouseEnter={stopTimer}
         onMouseLeave={() => {
@@ -740,27 +748,30 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
             closeToast();
           }, 300);
         }}
-        className={`w-[92vw] max-w-[420px] rounded-2xl border bg-white shadow-2xl overflow-hidden transition-all ${open
-          ? "opacity-100 translate-y-0 pointer-events-auto"
-          : "opacity-0 translate-y-3 pointer-events-none"
-          }`}
+        className={`w-full max-w-[420px] overflow-hidden rounded-2xl border bg-white shadow-2xl transition-all sm:w-[92vw] ${
+          open
+            ? "pointer-events-auto translate-y-0 opacity-100"
+            : "pointer-events-none translate-y-3 opacity-0"
+        }`}
       >
-        <div className="p-4 bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white">
-          <div className="flex justify-between items-center">
-            <div className="flex gap-2 items-center">
-              <ShoppingCart size={18} />
-              <span>{payload.opts?.title ?? "Added to cart"}</span>
+        <div className="bg-gradient-to-r from-fuchsia-600 to-pink-600 p-3 text-white sm:p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <ShoppingCart size={18} className="shrink-0" />
+              <span className="truncate text-sm font-medium sm:text-base">
+                {payload.opts?.title ?? "Added to cart"}
+              </span>
             </div>
-            <button type="button" onClick={() => closeToast()}>
+            <button type="button" onClick={() => closeToast()} className="shrink-0">
               <X size={16} />
             </button>
           </div>
         </div>
 
-        <div className="p-4">
-          <div className="max-h-[55vh] overflow-y-auto pr-1 space-y-3">
+        <div className="p-3 sm:p-4">
+          <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1 sm:space-y-3">
             {notice ? (
-              <div className="mt-2 text-[12px] font-semibold text-white bg-rose-600/80 rounded-lg px-2 py-1">
+              <div className="mt-1 rounded-lg bg-rose-600/80 px-2 py-1 text-[11px] font-semibold text-white sm:mt-2 sm:text-[12px]">
                 {notice}
               </div>
             ) : null}
@@ -772,18 +783,23 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
               const maxQty = maxMap.get(stableKey);
 
               return (
-                <div key={stableKey} className="flex gap-3 border rounded-xl p-3">
+                <div
+                  key={stableKey}
+                  className="flex gap-2 rounded-xl border p-2.5 sm:gap-3 sm:p-3"
+                >
                   <img
                     src={it.image || "/placeholder.svg"}
-                    className="w-14 h-14 rounded-xl object-cover border"
+                    className="h-12 w-12 shrink-0 rounded-xl border object-cover sm:h-14 sm:w-14"
                     alt={it.title || "Cart item"}
                   />
 
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold truncate">{it.title}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold sm:text-sm">
+                      {it.title}
+                    </div>
 
-                    <div className="mt-1 flex items-center justify-between gap-2">
-                      <div className="flex flex-col gap-1">
+                    <div className="mt-2 flex flex-col gap-2 sm:mt-1 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex min-w-0 flex-col gap-1">
                         <MiniCartQtyEditor
                           row={it}
                           maxQty={maxQty}
@@ -817,9 +833,9 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
                                 unitPriceCache: unit,
                                 selectedOptions: Array.isArray(it.selectedOptions)
                                   ? it.selectedOptions.map((o) => ({
-                                    attribute: o.attribute,
-                                    value: o.value,
-                                  }))
+                                      attribute: o.attribute,
+                                      value: o.value,
+                                    }))
                                   : [],
                               } as any);
 
@@ -843,7 +859,7 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
                         />
 
                         {typeof maxQty === "number" && Number.isFinite(maxQty) ? (
-                          <div className="text-[10px] text-zinc-500">
+                          <div className="text-[10px] text-zinc-500 sm:text-[10px]">
                             Max:{" "}
                             <span className="font-semibold text-zinc-700">
                               {Math.max(0, Math.floor(maxQty))}
@@ -852,7 +868,7 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
                         ) : null}
                       </div>
 
-                      <div className="text-sm font-semibold whitespace-nowrap">
+                      <div className="text-right text-xs font-semibold whitespace-nowrap sm:text-sm">
                         {NGN.format(line)}
                       </div>
                     </div>
@@ -862,11 +878,11 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
             })}
           </div>
 
-          <div className="mt-4 flex items-center">
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
             <button
               type="button"
               onClick={goToCatalog}
-              className="text-sm px-3 py-2 border rounded-xl bg-white hover:bg-zinc-50 pointer-events-auto"
+              className="pointer-events-auto w-full rounded-xl border bg-white px-3 py-2 text-xs hover:bg-zinc-50 sm:w-auto sm:text-sm"
             >
               Continue shopping
             </button>
@@ -874,7 +890,7 @@ const goToCatalog = React.useCallback((e?: React.MouseEvent) => {
             <button
               type="button"
               onClick={goToCart}
-              className="ml-auto text-sm px-3 py-2 rounded-xl bg-zinc-900 text-white pointer-events-auto"
+              className="pointer-events-auto w-full rounded-xl bg-zinc-900 px-3 py-2 text-xs text-white sm:ml-auto sm:w-auto sm:text-sm"
             >
               View cart →
             </button>

@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+// src/pages/supplier/SupplierVerifyContact.tsx
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
-  BadgeCheck,
-  CheckCircle2,
   Mail,
   Phone,
   RefreshCw,
@@ -13,15 +12,25 @@ import {
 } from "lucide-react";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
+import { useAuthStore } from "../../store/auth";
+
+const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 
 type VerifyLocationState = {
   supplierId?: string | null;
   email?: string | null;
   phone?: string | null;
+  dialCode?: string | null;
   emailSent?: boolean;
   phoneOtpSent?: boolean;
   nextAfterVerify?: string;
   flow?: string;
+  adminReview?: boolean;
+  allowReview?: boolean;
+  skipAutoFinalize?: boolean;
+  returnTo?: string;
+  fromBusinessDetails?: boolean;
+  fromOnboardingTab?: boolean;
 };
 
 type VerifySummary = {
@@ -34,32 +43,99 @@ type VerifySummary = {
   contactLastName: string;
   contactEmail: string;
   contactPhone: string;
+  contactDialCode: string;
+};
+
+type AddressLite = {
+  id?: string;
+  houseNumber?: string | null;
+  streetName?: string | null;
+  town?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  postCode?: string | null;
 };
 
 type SupplierMeLite = {
   id?: string;
   supplierId?: string;
+  userId?: string | null;
+
   businessName?: string | null;
   legalName?: string | null;
   registeredBusinessName?: string | null;
+  registrationNumber?: string | null;
   registrationType?: string | null;
+  registrationDate?: string | null;
   registrationCountryCode?: string | null;
+  registryAuthorityId?: string | null;
+  natureOfBusiness?: string | null;
+
+  bankCountry?: string | null;
+  bankCode?: string | null;
+  bankName?: string | null;
+  accountName?: string | null;
+  accountNumber?: string | null;
+
   contactFirstName?: string | null;
   contactLastName?: string | null;
   contactEmail?: string | null;
   contactPhone?: string | null;
+  contactDialCode?: string | null;
   name?: string | null;
+
+  registeredAddress?: AddressLite | null;
+  pickupAddress?: AddressLite | null;
+
+  documents?: any[] | null;
+  verificationDocuments?: any[] | null;
+  identityDocumentUrl?: string | null;
+  proofOfAddressUrl?: string | null;
+  cacDocumentUrl?: string | null;
+
+  user?: {
+    id?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    emailVerifiedAt?: string | null;
+    phoneVerifiedAt?: string | null;
+  } | null;
 };
 
 type AuthMeLite = {
+  id?: string | null;
   email?: string | null;
+  role?: string | null;
   phone?: string | null;
   firstName?: string | null;
+  middleName?: string | null;
   lastName?: string | null;
   emailVerified?: boolean | null;
   phoneVerified?: boolean | null;
   emailVerifiedAt?: string | null;
   phoneVerifiedAt?: string | null;
+  status?: string | null;
+};
+
+type PersistedJourneyState = {
+  contactVerified?: boolean;
+  reachedBusiness?: boolean;
+  reachedAddress?: boolean;
+  reachedDocuments?: boolean;
+  reachedDashboard?: boolean;
+};
+
+type VerificationSnapshot = {
+  emailVerified: boolean;
+  phoneVerified: boolean;
+};
+
+type NormalSessionSnapshot = {
+  authData: AuthMeLite | null;
+  supplierData: SupplierMeLite | null;
 };
 
 function maskEmail(v: string) {
@@ -75,22 +151,56 @@ function maskPhone(v: string) {
   return `${raw.slice(0, 4)}***${raw.slice(-3)}`;
 }
 
+function normalizeDialCode(raw: unknown): string {
+  const digits = String(raw ?? "").replace(/[^\d]/g, "");
+  return digits ? `+${digits}` : "";
+}
+
 function getTempToken() {
   if (typeof window === "undefined") return "";
   return localStorage.getItem("tempToken") || "";
 }
 
-function getVerifyConfig() {
+function clearTempToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("tempToken");
+}
+
+function getVerifyConfig(): {
+  withCredentials: boolean;
+  headers?: Record<string, string>;
+} {
   const tempToken = getTempToken();
+
+  if (tempToken) {
+    return {
+      withCredentials: true,
+      headers: {
+        Authorization: `Bearer ${tempToken}`,
+      },
+    };
+  }
 
   return {
     withCredentials: true,
-    headers: tempToken ? { Authorization: `Bearer ${tempToken}` } : {},
+  };
+}
+
+function getNormalSessionConfig(): {
+  withCredentials: boolean;
+  headers?: Record<string, string>;
+} {
+  return {
+    withCredentials: true,
   };
 }
 
 function pickString(v: unknown) {
   return String(v ?? "").trim();
+}
+
+function hasValue(v: unknown) {
+  return String(v ?? "").trim().length > 0;
 }
 
 function isTruthyVerificationFlag(value: unknown) {
@@ -99,17 +209,86 @@ function isTruthyVerificationFlag(value: unknown) {
   return false;
 }
 
-function isEmailVerified(authMe?: AuthMeLite | null) {
+function isAuthEmailVerified(
+  source?: Pick<AuthMeLite, "emailVerified" | "emailVerifiedAt"> | null
+) {
   return (
-    isTruthyVerificationFlag(authMe?.emailVerified) ||
-    isTruthyVerificationFlag(authMe?.emailVerifiedAt)
+    isTruthyVerificationFlag(source?.emailVerified) ||
+    isTruthyVerificationFlag(source?.emailVerifiedAt)
   );
 }
 
-function isPhoneVerified(authMe?: AuthMeLite | null) {
+function isAuthPhoneVerified(
+  source?: Pick<AuthMeLite, "phoneVerified" | "phoneVerifiedAt"> | null
+) {
   return (
-    isTruthyVerificationFlag(authMe?.phoneVerified) ||
-    isTruthyVerificationFlag(authMe?.phoneVerifiedAt)
+    isTruthyVerificationFlag(source?.phoneVerified) ||
+    isTruthyVerificationFlag(source?.phoneVerifiedAt)
+  );
+}
+
+function isSupplierUserEmailVerified(source?: SupplierMeLite | null) {
+  return Boolean(source?.user?.emailVerifiedAt);
+}
+
+function isSupplierUserPhoneVerified(source?: SupplierMeLite | null) {
+  return Boolean(source?.user?.phoneVerifiedAt);
+}
+
+function isRegisteredBusinessType(v?: string | null) {
+  return String(v ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
+}
+
+function hasAddress(addr?: AddressLite | null) {
+  if (!addr) return false;
+  return Boolean(
+    addr.streetName ||
+      addr.houseNumber ||
+      addr.city ||
+      addr.state ||
+      addr.country ||
+      addr.postCode ||
+      addr.town
+  );
+}
+
+function hasDocuments(s?: SupplierMeLite | null) {
+  if (!s) return false;
+  return Boolean(
+    (Array.isArray(s.documents) && s.documents.length > 0) ||
+      (Array.isArray(s.verificationDocuments) &&
+        s.verificationDocuments.length > 0) ||
+      s.identityDocumentUrl ||
+      s.proofOfAddressUrl ||
+      s.cacDocumentUrl
+  );
+}
+
+function hasMeaningfulBusinessDetails(s?: SupplierMeLite | null) {
+  if (!s) return false;
+  const registeredBusinessRequired = isRegisteredBusinessType(
+    s.registrationType
+  );
+
+  return (
+    hasValue(s.legalName) &&
+    (!registeredBusinessRequired || hasValue(s.registeredBusinessName)) &&
+    hasValue(s.registrationNumber) &&
+    hasValue(s.registrationType) &&
+    hasValue(s.registrationDate) &&
+    hasValue(s.registrationCountryCode) &&
+    hasValue(s.natureOfBusiness)
+  );
+}
+
+function hasMeaningfulBankDetails(s?: SupplierMeLite | null) {
+  if (!s) return false;
+  return (
+    hasValue(s.bankCountry) &&
+    hasValue(s.bankCode) &&
+    hasValue(s.bankName) &&
+    hasValue(s.accountName) &&
+    hasValue(s.accountNumber)
   );
 }
 
@@ -134,12 +313,199 @@ function registrationTypeLabel(v?: string | null) {
   return "—";
 }
 
+function normalizeAuthMePayload(payload: any): AuthMeLite | null {
+  const data = payload?.data ?? payload?.user ?? payload ?? {};
+
+  const id = String(data?.id ?? "").trim();
+  const email = String(data?.email ?? "").trim();
+
+  if (!id || !email) {
+    return null;
+  }
+
+  return {
+    id,
+    email,
+    role: String(data?.role ?? "").trim(),
+    phone: data?.phone ?? null,
+    firstName: data?.firstName ?? null,
+    middleName: data?.middleName ?? null,
+    lastName: data?.lastName ?? null,
+    emailVerified: !!(data?.emailVerified ?? data?.emailVerifiedAt),
+    phoneVerified: !!(data?.phoneVerified ?? data?.phoneVerifiedAt),
+    emailVerifiedAt: data?.emailVerifiedAt ?? null,
+    phoneVerifiedAt: data?.phoneVerifiedAt ?? null,
+    status: data?.status ?? null,
+  };
+}
+
+function readJourneyState(key: string): PersistedJourneyState {
+  if (!key || typeof window === "undefined") return {};
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as PersistedJourneyState;
+  } catch {
+    return {};
+  }
+}
+
+function writeJourneyState(key: string, patch: PersistedJourneyState) {
+  if (!key || typeof window === "undefined") return;
+  try {
+    const current = readJourneyState(key);
+    sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        ...current,
+        ...patch,
+      })
+    );
+  } catch {}
+}
+
 export default function SupplierVerifyContact() {
   const nav = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
 
   const state = (location.state ?? {}) as VerifyLocationState;
 
+  const adminSupplierId = useMemo(() => {
+    const fromQuery = searchParams.get("supplierId");
+    const fromState = state.supplierId;
+
+    const explicitAdminMode = Boolean(
+      state.adminReview ||
+        state.allowReview ||
+        location.pathname.startsWith("/admin/")
+    );
+
+    if (!explicitAdminMode) return "";
+
+    let fromStorage = "";
+    try {
+      fromStorage = localStorage.getItem(ADMIN_SUPPLIER_KEY) || "";
+    } catch {}
+
+    return pickString(fromQuery || fromState || fromStorage);
+  }, [
+    location.pathname,
+    searchParams,
+    state.adminReview,
+    state.allowReview,
+    state.supplierId,
+  ]);
+
+  const isAdminReviewMode = useMemo(() => {
+    return Boolean(
+      state.adminReview ||
+        state.allowReview ||
+        location.pathname.startsWith("/admin/")
+    );
+  }, [location.pathname, state.adminReview, state.allowReview]);
+
+  const buildStepUrl = useMemo(() => {
+    return (path: string) => {
+      if (!isAdminReviewMode || !adminSupplierId) return path;
+      const qs = new URLSearchParams();
+      qs.set("supplierId", adminSupplierId);
+      return `${path}?${qs.toString()}`;
+    };
+  }, [adminSupplierId, isAdminReviewMode]);
+
+  const makeStepState = useMemo(() => {
+    return (
+      targetPath: string,
+      extraState?: Record<string, unknown>
+    ): Record<string, unknown> => {
+      return {
+        email: state.email || "",
+        phone: state.phone || "",
+        dialCode: state.dialCode || "",
+        emailSent: state.emailSent || false,
+        phoneOtpSent: state.phoneOtpSent || false,
+        flow: state.flow,
+
+        adminReview: isAdminReviewMode,
+        allowReview: isAdminReviewMode,
+        skipAutoFinalize: true,
+        supplierId: isAdminReviewMode
+          ? adminSupplierId || state.supplierId || ""
+          : "",
+        fromOnboardingTab: true,
+
+        returnTo: targetPath,
+        nextAfterVerify: targetPath,
+
+        fromBusinessDetails: false,
+
+        ...extraState,
+      };
+    };
+  }, [
+    adminSupplierId,
+    isAdminReviewMode,
+    state.dialCode,
+    state.email,
+    state.emailSent,
+    state.flow,
+    state.phone,
+    state.phoneOtpSent,
+    state.supplierId,
+  ]);
+
+  const pushStep = useMemo(() => {
+    return (path: string, extraState?: Record<string, unknown>) => {
+      const targetPath = buildStepUrl(path);
+      nav(targetPath, {
+        state: makeStepState(targetPath, extraState),
+      });
+    };
+  }, [buildStepUrl, makeStepState, nav]);
+
+  const journeyKey = useMemo(() => {
+    const keyId = pickString(
+      adminSupplierId || state.supplierId || searchParams.get("supplierId")
+    );
+    return keyId ? `supplier:verify-contact:journey:${keyId}` : "";
+  }, [adminSupplierId, searchParams, state.supplierId]);
+
+  const stepHint = useMemo(() => {
+    return `${state.returnTo || ""} ${state.nextAfterVerify || ""}`.toLowerCase();
+  }, [state.nextAfterVerify, state.returnTo]);
+
+  const cameFromBusinessStep = useMemo(() => {
+    return Boolean(
+      state.fromBusinessDetails || stepHint.includes("/business-details")
+    );
+  }, [state.fromBusinessDetails, stepHint]);
+
+  const cameFromAddressStep = useMemo(() => {
+    return stepHint.includes("/onboarding/address");
+  }, [stepHint]);
+
+  const cameFromDocumentsStep = useMemo(() => {
+    return stepHint.includes("/onboarding/documents");
+  }, [stepHint]);
+
+  const cameFromDashboardStep = useMemo(() => {
+    return /(^|[\s?])\/supplier($|[/?\s])/.test(stepHint);
+  }, [stepHint]);
+
+  const cameFromOnboardingRoot = useMemo(() => {
+    return (
+      stepHint.includes("/supplier/onboarding") &&
+      !stepHint.includes("/business-details") &&
+      !stepHint.includes("/address") &&
+      !stepHint.includes("/documents") &&
+      !/(^|[\s?])\/supplier($|[/?\s])/.test(stepHint)
+    );
+  }, [stepHint]);
+
+  const [journeyState, setJourneyState] = useState<PersistedJourneyState>({});
   const [summary, setSummary] = useState<VerifySummary | null>(
     state.email || state.phone
       ? {
@@ -152,12 +518,19 @@ export default function SupplierVerifyContact() {
           registeredBusinessName: "",
           contactEmail: state.email || "",
           contactPhone: state.phone || "",
+          contactDialCode: normalizeDialCode(state.dialCode || ""),
         }
       : null
   );
 
+  const [supplierSnapshot, setSupplierSnapshot] =
+    useState<SupplierMeLite | null>(null);
+
   const [email, setEmail] = useState(state.email || "");
   const [phone, setPhone] = useState(state.phone || "");
+  const [dialCode, setDialCode] = useState(
+    normalizeDialCode(state.dialCode || "")
+  );
 
   const [emailSent, setEmailSent] = useState(!!state.emailSent);
   const [phoneOtpSent, setPhoneOtpSent] = useState(!!state.phoneOtpSent);
@@ -166,56 +539,249 @@ export default function SupplierVerifyContact() {
   const [phoneVerified, setPhoneVerified] = useState(false);
 
   const [otp, setOtp] = useState("");
+  const [otpError, setOtpError] = useState<string | null>(null);
+
   const [busyEmail, setBusyEmail] = useState(false);
   const [busyPhone, setBusyPhone] = useState(false);
   const [busyVerifyOtp, setBusyVerifyOtp] = useState(false);
   const [checking, setChecking] = useState(true);
   const [loadingSummary, setLoadingSummary] = useState(true);
+  const [finalizingSession, setFinalizingSession] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [hasAuthenticatedSession, setHasAuthenticatedSession] =
+    useState<boolean>(false);
 
-  const nextAfterVerify = state.nextAfterVerify || "/supplier/onboarding";
+  const hasAutoFinalizedRef = useRef(false);
+  const hasAutoRequestedOtpRef = useRef(false);
 
-  const loadSummary = async () => {
+  const hasVerifySession = useMemo(() => {
+    return Boolean(getTempToken());
+  }, [emailVerified, phoneVerified, loadingSummary]);
+
+  const hasAnyVerificationSession = useMemo(() => {
+    return hasVerifySession || hasAuthenticatedSession;
+  }, [hasAuthenticatedSession, hasVerifySession]);
+
+  const verificationActionConfig = useCallback(() => {
+    return getVerifyConfig();
+  }, []);
+
+  const tryLoadNormalSession = useCallback(
+    async (): Promise<NormalSessionSnapshot | null> => {
+      try {
+        const authRes = await api.get("/api/auth/me", {
+          withCredentials: true,
+        });
+
+        const authData = normalizeAuthMePayload(authRes.data);
+        if (!authData) return null;
+
+        let supplierData: SupplierMeLite | null = null;
+
+        try {
+          const supplierRes = await api.get("/api/supplier/me", {
+            withCredentials: true,
+          });
+          supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+        } catch {
+          supplierData = null;
+        }
+
+        return {
+          authData,
+          supplierData,
+        };
+      } catch {
+        return null;
+      }
+    },
+    []
+  );
+
+  const runVerificationAction = useCallback(
+    async <T,>(
+      runner: (config: { withCredentials: boolean; headers?: Record<string, string> }) => Promise<T>,
+      opts?: {
+        allowNormalSessionFallback?: boolean;
+        clearStaleTempTokenOnFallback?: boolean;
+      }
+    ): Promise<T> => {
+      const allowNormalSessionFallback = opts?.allowNormalSessionFallback ?? true;
+      const clearStaleTempTokenOnFallback =
+        opts?.clearStaleTempTokenOnFallback ?? true;
+
+      const tempToken = getTempToken();
+
+      if (tempToken) {
+        try {
+          return await runner(getVerifyConfig());
+        } catch (error: any) {
+          const status = error?.response?.status;
+          const message = String(
+            error?.response?.data?.error || error?.response?.data?.message || ""
+          ).toLowerCase();
+
+          const mayBeStaleVerifySession =
+            status === 400 ||
+            status === 401 ||
+            status === 403 ||
+            /session/.test(message) ||
+            /token/.test(message) ||
+            /unauthori/.test(message) ||
+            /forbidden/.test(message) ||
+            /invalid code/.test(message) ||
+            /invalid otp/.test(message) ||
+            /expired/.test(message);
+
+          if (!allowNormalSessionFallback || !mayBeStaleVerifySession) {
+            throw error;
+          }
+
+          const normalSession = await tryLoadNormalSession();
+          if (!normalSession?.authData) {
+            throw error;
+          }
+
+          setHasAuthenticatedSession(true);
+
+          if (clearStaleTempTokenOnFallback) {
+            clearTempToken();
+          }
+
+          return await runner(getNormalSessionConfig());
+        }
+      }
+
+      return await runner(getNormalSessionConfig());
+    },
+    [tryLoadNormalSession]
+  );
+
+  useEffect(() => {
+    setJourneyState(readJourneyState(journeyKey));
+  }, [journeyKey]);
+
+  useEffect(() => {
+    if (!journeyKey) return;
+
+    const patch: PersistedJourneyState = {};
+
+    if (cameFromBusinessStep) patch.reachedBusiness = true;
+    if (cameFromAddressStep) patch.reachedAddress = true;
+    if (cameFromDocumentsStep) patch.reachedDocuments = true;
+    if (cameFromDashboardStep) patch.reachedDashboard = true;
+
+    if (Object.keys(patch).length > 0) {
+      writeJourneyState(journeyKey, patch);
+      setJourneyState(readJourneyState(journeyKey));
+    }
+  }, [
+    cameFromAddressStep,
+    cameFromBusinessStep,
+    cameFromDashboardStep,
+    cameFromDocumentsStep,
+    journeyKey,
+  ]);
+
+  const loadSummary = useCallback(async () => {
     try {
       setLoadingSummary(true);
       setErr(null);
 
       const cfg = getVerifyConfig();
+      const tempToken = getTempToken();
 
       let supplierData: SupplierMeLite | null = null;
       let authData: AuthMeLite | null = null;
 
-      try {
-        const supplierRes = await api.get("/api/supplier/me", cfg);
-        supplierData = ((supplierRes.data as any)?.data ??
-          supplierRes.data ??
-          {}) as SupplierMeLite;
-      } catch {}
+      if (isAdminReviewMode) {
+        try {
+          const supplierRes = await api.get("/api/supplier/me", {
+            ...cfg,
+            params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+          });
+          supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+          setSupplierSnapshot(supplierData);
+          setHasAuthenticatedSession(true);
+        } catch {
+          setHasAuthenticatedSession(false);
+        }
+      } else if (tempToken) {
+        try {
+          const supplierRes = await api.get("/api/supplier/me", cfg);
+          supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+          setSupplierSnapshot(supplierData);
+        } catch {
+          // ignore and try normal session below
+        }
 
-      try {
-        const authRes = await api.get("/api/auth/me", cfg);
-        const authPayload = authRes.data as any;
-        authData = (
-          authPayload?.data?.user ??
-          authPayload?.user ??
-          authPayload?.data ??
-          authPayload ??
-          {}
-        ) as AuthMeLite;
-      } catch {}
+        try {
+          const authRes = await api.get("/api/auth/me", cfg);
+          authData = normalizeAuthMePayload(authRes.data);
+        } catch {
+          // ignore and try normal session below
+        }
+
+        if (authData || supplierData) {
+          setHasAuthenticatedSession(true);
+        } else {
+          const normalSession = await tryLoadNormalSession();
+
+          if (normalSession) {
+            setHasAuthenticatedSession(true);
+            authData = normalSession.authData;
+            supplierData = normalSession.supplierData;
+
+            if (supplierData) {
+              setSupplierSnapshot(supplierData);
+            }
+
+            clearTempToken();
+          } else {
+            setHasAuthenticatedSession(false);
+          }
+        }
+      } else {
+        const normalSession = await tryLoadNormalSession();
+
+        if (normalSession) {
+          setHasAuthenticatedSession(true);
+          authData = normalSession.authData;
+          supplierData = normalSession.supplierData;
+
+          if (supplierData) {
+            setSupplierSnapshot(supplierData);
+          }
+        } else {
+          setHasAuthenticatedSession(false);
+        }
+      }
 
       const resolvedEmail =
         state.email ||
         pickString(supplierData?.contactEmail) ||
+        pickString(supplierData?.user?.email) ||
         pickString(authData?.email);
 
       const resolvedPhone =
         state.phone ||
         pickString(supplierData?.contactPhone) ||
+        pickString(supplierData?.user?.phone) ||
         pickString(authData?.phone);
+
+      const resolvedDialCode =
+        normalizeDialCode(state.dialCode) ||
+        normalizeDialCode(supplierData?.contactDialCode);
 
       setEmail(resolvedEmail);
       setPhone(resolvedPhone);
+      setDialCode(resolvedDialCode);
 
       if (supplierData || authData) {
         setSummary({
@@ -223,23 +789,38 @@ export default function SupplierVerifyContact() {
             pickString(supplierData?.businessName) ||
             pickString(supplierData?.name),
           legalName: pickString(supplierData?.legalName),
-          registeredBusinessName: pickString(supplierData?.registeredBusinessName),
+          registeredBusinessName: pickString(
+            supplierData?.registeredBusinessName
+          ),
           registrationType: pickString(supplierData?.registrationType),
           registrationCountryCode: pickString(
             supplierData?.registrationCountryCode
           ),
           contactFirstName:
             pickString(supplierData?.contactFirstName) ||
+            pickString(supplierData?.user?.firstName) ||
             pickString(authData?.firstName),
           contactLastName:
             pickString(supplierData?.contactLastName) ||
+            pickString(supplierData?.user?.lastName) ||
             pickString(authData?.lastName),
           contactEmail: resolvedEmail,
           contactPhone: resolvedPhone,
+          contactDialCode: resolvedDialCode,
         });
 
-        setEmailVerified(isEmailVerified(authData));
-        setPhoneVerified(isPhoneVerified(authData));
+        if (isAdminReviewMode) {
+          setEmailVerified(isSupplierUserEmailVerified(supplierData));
+          setPhoneVerified(isSupplierUserPhoneVerified(supplierData));
+        } else {
+          const nextEmailVerified =
+            isAuthEmailVerified(authData) || isSupplierUserEmailVerified(supplierData);
+          const nextPhoneVerified =
+            isAuthPhoneVerified(authData) || isSupplierUserPhoneVerified(supplierData);
+
+          setEmailVerified(nextEmailVerified);
+          setPhoneVerified(nextPhoneVerified);
+        }
       }
     } catch (e: any) {
       setErr(
@@ -247,82 +828,472 @@ export default function SupplierVerifyContact() {
           e?.response?.data?.message ||
           "Could not load supplier registration details."
       );
+      setHasAuthenticatedSession(false);
     } finally {
       setLoadingSummary(false);
     }
-  };
+  }, [
+    adminSupplierId,
+    isAdminReviewMode,
+    state.dialCode,
+    state.email,
+    state.phone,
+    tryLoadNormalSession,
+  ]);
 
   const legalEntityLabel =
     summary?.registrationType === "REGISTERED_BUSINESS"
       ? "Company legal name"
       : "Full legal name";
 
-  const loadStatus = async () => {
+  const loadStatus = useCallback(
+    async (): Promise<VerificationSnapshot | null> => {
+      try {
+        setErr(null);
+        setChecking(true);
+
+        if (isAdminReviewMode) {
+          const supplierRes = await api.get("/api/supplier/me", {
+            ...getVerifyConfig(),
+            params: adminSupplierId ? { supplierId: adminSupplierId } : undefined,
+          });
+
+          const supplierData = ((supplierRes.data as any)?.data ??
+            supplierRes.data ??
+            {}) as SupplierMeLite;
+
+          const nextEmailVerified = Boolean(supplierData?.user?.emailVerifiedAt);
+          const nextPhoneVerified = Boolean(supplierData?.user?.phoneVerifiedAt);
+
+          setSupplierSnapshot(supplierData);
+          setEmailVerified(nextEmailVerified);
+          setPhoneVerified(nextPhoneVerified);
+          setHasAuthenticatedSession(true);
+
+          return {
+            emailVerified: nextEmailVerified,
+            phoneVerified: nextPhoneVerified,
+          };
+        }
+
+        const activeEmail = email || summary?.contactEmail || "";
+        if (!activeEmail) {
+          const normalSession = await tryLoadNormalSession();
+
+          if (normalSession?.authData) {
+            const nextEmailVerified = isAuthEmailVerified(normalSession.authData);
+            const nextPhoneVerified = isAuthPhoneVerified(normalSession.authData);
+
+            setHasAuthenticatedSession(true);
+            setEmail(normalSession.authData.email || "");
+            setPhone(pickString(normalSession.authData.phone));
+            setEmailVerified(nextEmailVerified);
+            setPhoneVerified(nextPhoneVerified);
+
+            if (normalSession.supplierData) {
+              setSupplierSnapshot(normalSession.supplierData);
+              setEmail(
+                pickString(normalSession.supplierData.contactEmail) ||
+                  pickString(normalSession.supplierData.user?.email) ||
+                  normalSession.authData.email ||
+                  ""
+              );
+              setPhone(
+                pickString(normalSession.supplierData.contactPhone) ||
+                  pickString(normalSession.supplierData.user?.phone) ||
+                  pickString(normalSession.authData.phone)
+              );
+              setDialCode(
+                normalizeDialCode(normalSession.supplierData.contactDialCode) ||
+                  dialCode
+              );
+            }
+
+            return {
+              emailVerified: nextEmailVerified,
+              phoneVerified: nextPhoneVerified,
+            };
+          }
+
+          setHasAuthenticatedSession(false);
+          setErr("No supplier email found for verification.");
+          return null;
+        }
+
+        const emailRes = await api.get("/api/auth/email-status", {
+          params: { email: activeEmail },
+          withCredentials: true,
+        });
+
+        const nextEmailVerified =
+          !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified;
+
+        setEmailVerified(nextEmailVerified);
+
+        let nextPhoneVerified = false;
+        const tempToken = getTempToken();
+
+        if (tempToken) {
+          let usedVerifySession = false;
+
+          try {
+            const cfg = getVerifyConfig();
+
+            try {
+              const supplierRes = await api.get("/api/supplier/me", cfg);
+              const supplierData = ((supplierRes.data as any)?.data ??
+                supplierRes.data ??
+                {}) as SupplierMeLite;
+              setSupplierSnapshot(supplierData);
+              nextPhoneVerified =
+                nextPhoneVerified || isSupplierUserPhoneVerified(supplierData);
+              usedVerifySession = true;
+            } catch {
+              // ignore
+            }
+
+            try {
+              const meRes = await api.get("/api/auth/me", cfg);
+              const me = normalizeAuthMePayload(meRes.data);
+              nextPhoneVerified = nextPhoneVerified || isAuthPhoneVerified(me);
+              usedVerifySession = true;
+            } catch {
+              // ignore
+            }
+          } catch {
+            // ignore
+          }
+
+          if (!usedVerifySession) {
+            const normalSession = await tryLoadNormalSession();
+
+            if (normalSession) {
+              clearTempToken();
+              setHasAuthenticatedSession(true);
+
+              if (normalSession.supplierData) {
+                setSupplierSnapshot(normalSession.supplierData);
+                nextPhoneVerified =
+                  nextPhoneVerified ||
+                  isSupplierUserPhoneVerified(normalSession.supplierData);
+              }
+
+              nextPhoneVerified =
+                nextPhoneVerified || isAuthPhoneVerified(normalSession.authData);
+
+              if (normalSession.authData?.email) {
+                setEmail(normalSession.authData.email);
+              }
+              if (normalSession.authData?.phone) {
+                setPhone(pickString(normalSession.authData.phone));
+              }
+            } else {
+              setHasAuthenticatedSession(false);
+            }
+          } else {
+            setHasAuthenticatedSession(true);
+          }
+        } else {
+          const normalSession = await tryLoadNormalSession();
+
+          if (normalSession) {
+            setHasAuthenticatedSession(true);
+
+            if (normalSession.supplierData) {
+              setSupplierSnapshot(normalSession.supplierData);
+              nextPhoneVerified =
+                nextPhoneVerified ||
+                isSupplierUserPhoneVerified(normalSession.supplierData);
+            }
+
+            nextPhoneVerified =
+              nextPhoneVerified || isAuthPhoneVerified(normalSession.authData);
+            setPhoneVerified(nextPhoneVerified);
+
+            if (normalSession.authData?.email) {
+              setEmail(normalSession.authData.email);
+            }
+            if (normalSession.authData?.phone) {
+              setPhone(pickString(normalSession.authData.phone));
+            }
+          } else {
+            setHasAuthenticatedSession(false);
+          }
+        }
+
+        setPhoneVerified(nextPhoneVerified);
+
+        return {
+          emailVerified: nextEmailVerified,
+          phoneVerified: nextPhoneVerified,
+        };
+      } catch (e: any) {
+        setErr(
+          e?.response?.data?.error ||
+            e?.response?.data?.message ||
+            "Could not load verification status."
+        );
+        return null;
+      } finally {
+        setChecking(false);
+      }
+    },
+    [adminSupplierId, dialCode, email, isAdminReviewMode, summary?.contactEmail, tryLoadNormalSession]
+  );
+
+  const hydrateAuthStoreFromSession = async () => {
+    await useAuthStore.getState().bootstrap();
+
+    const authedUser = useAuthStore.getState().user;
+    if (!authedUser?.id) {
+      throw new Error("Could not hydrate authenticated user.");
+    }
+
+    return authedUser;
+  };
+
+  const contactVerifiedByJourney = useMemo(() => {
+    return Boolean(journeyState.contactVerified);
+  }, [journeyState.contactVerified]);
+
+  const reachedBusinessEffective = useMemo(() => {
+    return Boolean(journeyState.reachedBusiness);
+  }, [journeyState]);
+
+  const reachedAddressEffective = useMemo(() => {
+    return Boolean(journeyState.reachedAddress);
+  }, [journeyState]);
+
+  const emailVerifiedEffective = useMemo(() => {
+    return emailVerified || contactVerifiedByJourney;
+  }, [emailVerified, contactVerifiedByJourney]);
+
+  const phoneVerifiedEffective = useMemo(() => {
+    return phoneVerified || contactVerifiedByJourney;
+  }, [phoneVerified, contactVerifiedByJourney]);
+
+  useEffect(() => {
+    if (!journeyKey) return;
+
+    if (emailVerified && phoneVerified) {
+      writeJourneyState(journeyKey, { contactVerified: true });
+      setJourneyState(readJourneyState(journeyKey));
+      return;
+    }
+
+    if (!emailVerified && !phoneVerified && journeyState.contactVerified) {
+      writeJourneyState(journeyKey, { contactVerified: false });
+      setJourneyState(readJourneyState(journeyKey));
+    }
+  }, [emailVerified, phoneVerified, journeyKey, journeyState.contactVerified]);
+
+  const canContinue = useMemo(
+    () => emailVerifiedEffective && phoneVerifiedEffective,
+    [emailVerifiedEffective, phoneVerifiedEffective]
+  );
+
+  const businessDetailsDone = useMemo(() => {
+    return (
+      hasMeaningfulBusinessDetails(supplierSnapshot) &&
+      hasMeaningfulBankDetails(supplierSnapshot)
+    );
+  }, [supplierSnapshot]);
+
+  const addressDone = useMemo(() => {
+    return (
+      hasAddress(supplierSnapshot?.registeredAddress) ||
+      hasAddress(supplierSnapshot?.pickupAddress)
+    );
+  }, [supplierSnapshot]);
+
+  const documentsDone = useMemo(() => {
+    return hasDocuments(supplierSnapshot);
+  }, [supplierSnapshot]);
+
+  useEffect(() => {
+    if (!journeyKey) return;
+
+    const patch: PersistedJourneyState = {};
+    if (businessDetailsDone) patch.reachedBusiness = true;
+    if (addressDone) patch.reachedAddress = true;
+    if (documentsDone) patch.reachedDocuments = true;
+    if (businessDetailsDone && addressDone && documentsDone && canContinue) {
+      patch.reachedDashboard = true;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      writeJourneyState(journeyKey, patch);
+      setJourneyState(readJourneyState(journeyKey));
+    }
+  }, [addressDone, businessDetailsDone, canContinue, documentsDone, journeyKey]);
+
+  const businessDetailsAccessible = useMemo(() => {
+    return canContinue;
+  }, [canContinue]);
+
+  const documentsAccessible = useMemo(() => {
+    return addressDone || reachedAddressEffective;
+  }, [addressDone, reachedAddressEffective]);
+
+  const openedFromOnboardingTab = useMemo(() => {
+    return Boolean(
+      state.fromOnboardingTab ||
+        state.returnTo ||
+        state.nextAfterVerify ||
+        cameFromBusinessStep ||
+        cameFromAddressStep ||
+        cameFromDocumentsStep ||
+        cameFromDashboardStep ||
+        cameFromOnboardingRoot
+    );
+  }, [
+    cameFromAddressStep,
+    cameFromBusinessStep,
+    cameFromDashboardStep,
+    cameFromDocumentsStep,
+    cameFromOnboardingRoot,
+    state.fromOnboardingTab,
+    state.nextAfterVerify,
+    state.returnTo,
+  ]);
+
+  const shouldAutoFinalize = useMemo(() => {
+    return (
+      !isAdminReviewMode &&
+      !state.skipAutoFinalize &&
+      canContinue &&
+      !openedFromOnboardingTab
+    );
+  }, [
+    canContinue,
+    isAdminReviewMode,
+    openedFromOnboardingTab,
+    state.skipAutoFinalize,
+  ]);
+
+  const finalizeVerifiedSession = async (opts?: { replace?: boolean }) => {
+    const replace = opts?.replace ?? true;
+    const targetPath = buildStepUrl("/supplier/onboarding");
+
+    if (journeyKey) {
+      writeJourneyState(journeyKey, {
+        contactVerified: canContinue,
+        reachedBusiness: true,
+      });
+      setJourneyState(readJourneyState(journeyKey));
+    }
+
+    if (isAdminReviewMode) {
+      nav(targetPath, {
+        replace,
+        state: makeStepState(targetPath, {
+          fromVerifyContact: true,
+          fromBusinessDetails: true,
+        }),
+      });
+      return;
+    }
+
+    if (hasAutoFinalizedRef.current) return;
+    hasAutoFinalizedRef.current = true;
+
     try {
       setErr(null);
-      setChecking(true);
+      setFinalizingSession(true);
 
-      const cfg = getVerifyConfig();
-      const activeEmail = email || summary?.contactEmail || "";
+      try {
+        await hydrateAuthStoreFromSession();
+        clearTempToken();
+        nav(targetPath, {
+          replace,
+          state: makeStepState(targetPath, {
+            fromVerifyContact: true,
+            fromBusinessDetails: true,
+          }),
+        });
+        return;
+      } catch {
+        // no normal session yet
+      }
 
-      if (!activeEmail) {
-        setErr("No supplier email found for verification.");
+      const tempToken = getTempToken();
+
+      if (!tempToken) {
+        const snapshot = await loadStatus();
+
+        if (snapshot?.emailVerified && snapshot?.phoneVerified) {
+          try {
+            await hydrateAuthStoreFromSession();
+            nav(targetPath, {
+              replace,
+              state: makeStepState(targetPath, {
+                fromVerifyContact: true,
+                fromBusinessDetails: true,
+              }),
+            });
+            return;
+          } catch {
+            // fall through
+          }
+        }
+
+        hasAutoFinalizedRef.current = false;
+        setErr("Please verify both email and phone before continuing.");
         return;
       }
 
-      const emailRes = await api.get("/api/auth/email-status", {
-        params: { email: activeEmail },
-        withCredentials: true,
-      });
-
-      setEmailVerified(
-        !!emailRes?.data?.emailVerifiedAt || !!emailRes?.data?.emailVerified
+      await api.post(
+        "/api/auth/complete-verified-login",
+        {},
+        {
+          withCredentials: true,
+          headers: {
+            Authorization: `Bearer ${tempToken}`,
+          },
+        }
       );
 
-      try {
-        const meRes = await api.get("/api/auth/me", cfg);
-        const mePayload = meRes.data as any;
-        const me = (
-          mePayload?.data?.user ??
-          mePayload?.user ??
-          mePayload?.data ??
-          mePayload ??
-          {}
-        ) as AuthMeLite;
+      clearTempToken();
+      await hydrateAuthStoreFromSession();
 
-        setPhoneVerified(isPhoneVerified(me));
-      } catch {
-        // ignore
-      }
+      nav(targetPath, {
+        replace,
+        state: makeStepState(targetPath, {
+          fromVerifyContact: true,
+          fromBusinessDetails: true,
+        }),
+      });
     } catch (e: any) {
+      hasAutoFinalizedRef.current = false;
       setErr(
         e?.response?.data?.error ||
           e?.response?.data?.message ||
-          "Could not load verification status."
+          "Your details were verified, but we could not finish signing you in automatically. Please try again."
       );
     } finally {
-      setChecking(false);
+      setFinalizingSession(false);
     }
   };
 
   useEffect(() => {
-    loadSummary();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void loadSummary();
+  }, [loadSummary]);
 
   useEffect(() => {
     if (!loadingSummary) {
-      loadStatus();
+      void loadStatus();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingSummary, email]);
+  }, [loadingSummary, email, isAdminReviewMode, adminSupplierId, loadStatus]);
 
-  const canContinue = useMemo(
-    () => emailVerified && phoneVerified,
-    [emailVerified, phoneVerified]
-  );
+  useEffect(() => {
+    if (shouldAutoFinalize) {
+      void finalizeVerifiedSession({ replace: true });
+    }
+  }, [shouldAutoFinalize]);
 
   const resendEmail = async () => {
+    if (isAdminReviewMode) return;
+
     try {
       setErr(null);
       setBusyEmail(true);
@@ -333,67 +1304,226 @@ export default function SupplierVerifyContact() {
         return;
       }
 
-      await api.post(
-        "/api/auth/resend-verification",
-        { email: activeEmail },
-        { withCredentials: true }
+      if (!hasAnyVerificationSession) {
+        const normalSession = await tryLoadNormalSession();
+        if (!normalSession?.authData) {
+          setErr("Your session expired. Please sign in again to continue.");
+          return;
+        }
+        setHasAuthenticatedSession(true);
+      }
+
+      await runVerificationAction((config) =>
+        api.post(
+          "/api/auth/resend-verification",
+          { email: activeEmail },
+          config
+        )
       );
 
       setEmailSent(true);
     } catch (e: any) {
-      setErr(
+      const status = e?.response?.status;
+      const msg =
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not resend email verification."
-      );
+        e?.response?.data?.message ||
+        "Could not resend email verification.";
+
+      if (status === 401) {
+        setHasAuthenticatedSession(false);
+        setErr("Your session expired. Please sign in again to resend email verification.");
+        return;
+      }
+
+      setErr(msg);
     } finally {
       setBusyEmail(false);
     }
   };
 
   const resendPhoneOtp = async () => {
+    if (isAdminReviewMode) return;
+    if (phoneVerifiedEffective || canContinue || finalizingSession) return;
+
+    if (!hasAnyVerificationSession) {
+      const normalSession = await tryLoadNormalSession();
+
+      if (!normalSession?.authData) {
+        setHasAuthenticatedSession(false);
+        setErr("Your session expired. Please sign in again to resend the code.");
+        return;
+      }
+
+      setHasAuthenticatedSession(true);
+    }
+
     try {
       setErr(null);
+      setOtpError(null);
       setBusyPhone(true);
 
-      await api.post("/api/auth/resend-otp", {}, getVerifyConfig());
+      const activePhone = phone || summary?.contactPhone || "";
+      const activeDialCode =
+        normalizeDialCode(dialCode) ||
+        normalizeDialCode(summary?.contactDialCode) ||
+        normalizeDialCode(state.dialCode);
+
+      if (!activePhone) {
+        setErr("No phone number found for verification.");
+        return;
+      }
+
+      await runVerificationAction((config) =>
+        api.post(
+          "/api/auth/resend-otp",
+          {
+            phone: activePhone,
+            contactPhone: activePhone,
+            dialCode: activeDialCode,
+            contactDialCode: activeDialCode,
+          },
+          config
+        )
+      );
 
       setPhoneOtpSent(true);
+      setOtp("");
+      setOtpError(null);
     } catch (e: any) {
-      setErr(
+      const status = e?.response?.status;
+      const msg =
         e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          "Could not send phone verification code."
-      );
+        e?.response?.data?.message ||
+        "Could not send phone verification code.";
+
+      if (status === 401) {
+        setHasAuthenticatedSession(false);
+        const snapshot = await loadStatus();
+
+        if (snapshot?.phoneVerified) {
+          setPhoneVerified(true);
+          setErr(null);
+          return;
+        }
+
+        setErr("Your session expired. Please sign in again to resend the code.");
+        return;
+      }
+
+      setErr(msg);
     } finally {
       setBusyPhone(false);
     }
   };
 
+  useEffect(() => {
+    if (
+      isAdminReviewMode ||
+      loadingSummary ||
+      hasAutoRequestedOtpRef.current ||
+      phoneVerifiedEffective ||
+      phoneOtpSent ||
+      finalizingSession ||
+      !(phone || summary?.contactPhone) ||
+      !hasAnyVerificationSession
+    ) {
+      return;
+    }
+
+    hasAutoRequestedOtpRef.current = true;
+    void resendPhoneOtp();
+  }, [
+    isAdminReviewMode,
+    loadingSummary,
+    phoneVerifiedEffective,
+    phoneOtpSent,
+    phone,
+    summary?.contactPhone,
+    finalizingSession,
+    hasAnyVerificationSession,
+  ]);
+
+  useEffect(() => {
+    if (phoneVerifiedEffective) {
+      hasAutoRequestedOtpRef.current = true;
+      return;
+    }
+
+    hasAutoRequestedOtpRef.current = false;
+  }, [phoneVerifiedEffective, phone, dialCode]);
+
   const verifyPhoneOtp = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!otp.trim()) {
-      setErr("Please enter the verification code sent to your phone.");
+    if (isAdminReviewMode) return;
+    if (phoneVerifiedEffective || canContinue || finalizingSession) return;
+
+    const cleanOtp = otp.replace(/\s+/g, "").trim();
+
+    if (!cleanOtp) {
+      setOtpError("Please enter the verification code sent to your phone.");
+      setErr(null);
       return;
+    }
+
+    if (!hasAnyVerificationSession) {
+      const snapshot = await loadStatus();
+
+      if (snapshot?.phoneVerified) {
+        setPhoneVerified(true);
+        setOtp("");
+        setOtpError(null);
+        setErr(null);
+        return;
+      }
+
+      const normalSession = await tryLoadNormalSession();
+      if (normalSession?.authData) {
+        setHasAuthenticatedSession(true);
+      } else {
+        setHasAuthenticatedSession(false);
+        setOtpError("Your session expired. Please sign in again.");
+        setErr(null);
+        return;
+      }
     }
 
     try {
       setErr(null);
+      setOtpError(null);
       setBusyVerifyOtp(true);
 
-      await api.post(
-        "/api/auth/verify-otp",
-        {
-          otp: otp.trim(),
-        },
-        getVerifyConfig()
+      const activePhone = phone || summary?.contactPhone || "";
+      const activeDialCode =
+        normalizeDialCode(dialCode) ||
+        normalizeDialCode(summary?.contactDialCode) ||
+        normalizeDialCode(state.dialCode);
+
+      await runVerificationAction((config) =>
+        api.post(
+          "/api/auth/verify-otp",
+          {
+            otp: cleanOtp,
+            phone: activePhone || undefined,
+            contactPhone: activePhone || undefined,
+            dialCode: activeDialCode || undefined,
+            contactDialCode: activeDialCode || undefined,
+          },
+          config
+        )
       );
 
       setPhoneVerified(true);
       setOtp("");
-      await loadStatus();
+      setOtpError(null);
+
+      const snapshot = await loadStatus();
+
+      if (snapshot?.phoneVerified) {
+        setPhoneVerified(true);
+      }
     } catch (e: any) {
+      const status = e?.response?.status;
       const msg =
         e?.response?.data?.error ||
         e?.response?.data?.message ||
@@ -402,18 +1532,52 @@ export default function SupplierVerifyContact() {
       if (/phone already verified/i.test(msg)) {
         setPhoneVerified(true);
         setErr(null);
+        setOtpError(null);
         setOtp("");
         return;
       }
 
-      setErr(msg);
+      if (status === 401) {
+        setHasAuthenticatedSession(false);
+        const snapshot = await loadStatus();
+
+        if (snapshot?.phoneVerified) {
+          setPhoneVerified(true);
+          setErr(null);
+          setOtpError(null);
+          setOtp("");
+          return;
+        }
+
+        setOtpError("Your session expired. Please sign in again.");
+        setErr(null);
+        return;
+      }
+
+      setOtpError(msg);
+      setErr(null);
     } finally {
       setBusyVerifyOtp(false);
     }
   };
 
-  const continueToOnboarding = () => {
-    nav(nextAfterVerify, { replace: true });
+  const continueToOnboarding = async () => {
+    if (!canContinue) return;
+    await finalizeVerifiedSession({ replace: true });
+  };
+
+  const goToBusinessDetails = async () => {
+    if (!businessDetailsAccessible || finalizingSession) return;
+
+    if (canContinue) {
+      await finalizeVerifiedSession({ replace: true });
+      return;
+    }
+
+    pushStep("/supplier/onboarding", {
+      fromVerifyContact: true,
+      fromBusinessDetails: true,
+    });
   };
 
   const stepBase =
@@ -433,70 +1597,154 @@ export default function SupplierVerifyContact() {
   const input =
     "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm";
 
+  const otpInputClass = otpError
+    ? `${input} border-rose-400 bg-rose-50/40 focus:border-rose-500 focus:ring-rose-200`
+    : input;
+
+  const continueButtonLabel = "Continue to business details";
+
+  const steps = [
+    {
+      step: 1,
+      label: "Register",
+      active: false,
+      done: true,
+      accessible: false,
+      onClick: undefined as (() => void) | undefined,
+    },
+    {
+      step: 2,
+      label: "Verify email / phone",
+      active: true,
+      done: canContinue,
+      accessible: true,
+      onClick: undefined as (() => void) | undefined,
+    },
+    {
+      step: 3,
+      label: "Business details",
+      active: false,
+      done: businessDetailsDone || reachedBusinessEffective,
+      accessible: businessDetailsAccessible,
+      onClick: () => {
+        void goToBusinessDetails();
+      },
+    },
+    {
+      step: 4,
+      label: "Address details",
+      active: false,
+      done: addressDone,
+      accessible: false,
+      onClick: undefined as (() => void) | undefined,
+    },
+    {
+      step: 5,
+      label: "Documents",
+      active: false,
+      done: documentsDone,
+      accessible: documentsAccessible,
+      onClick: undefined as (() => void) | undefined,
+    },
+    {
+      step: 6,
+      label: "Dashboard access",
+      active: false,
+      done: false,
+      accessible: false,
+      onClick: undefined as (() => void) | undefined,
+    },
+  ];
+
   return (
     <SiteLayout>
       <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
-        <div className="px-3 sm:px-4 py-6 sm:py-10">
+        <div className="px-3 py-6 sm:px-4 sm:py-10">
           <div className="mx-auto w-full max-w-5xl space-y-6">
             <div className="space-y-4">
               <div className="text-center">
-                <h1 className="text-2xl sm:text-3xl font-semibold text-zinc-900">
+                <h1 className="text-2xl font-semibold text-zinc-900 sm:text-3xl">
                   Verify your contact details
                 </h1>
                 <p className="mt-2 text-sm text-zinc-600">
-                  Complete email and phone verification before continuing to business details.
+                  {isAdminReviewMode
+                    ? "Review the supplier’s email and phone verification status before continuing."
+                    : "Complete email and phone verification before continuing to business details."}
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                <div className={`${stepBase} ${stepDone}`}>
-                  <CheckCircle2 size={16} />
-                  <span>Register</span>
-                </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {steps.map((item) => {
+                  const stateClass = item.active
+                    ? stepActive
+                    : item.accessible
+                    ? stepDone
+                    : item.done
+                    ? stepDone
+                    : stepLocked;
 
-                <div className={`${stepBase} ${stepActive}`}>
-                  <BadgeCheck size={16} />
-                  <span>Verify email / phone</span>
-                </div>
+                  const clickable =
+                    item.step === 3 &&
+                    !item.active &&
+                    !!item.onClick &&
+                    item.accessible;
 
-                <div className={`${stepBase} ${stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    3
-                  </span>
-                  <span>Business details</span>
-                </div>
-
-                <div className={`${stepBase} ${stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    4
-                  </span>
-                  <span>Address details</span>
-                </div>
-
-                <div className={`${stepBase} ${stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    5
-                  </span>
-                  <span>Documents</span>
-                </div>
-
-                <div className={`${stepBase} ${stepLocked}`}>
-                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
-                    6
-                  </span>
-                  <span>Dashboard access</span>
-                </div>
+                  return (
+                    <button
+                      key={item.step}
+                      type="button"
+                      onClick={clickable ? item.onClick : undefined}
+                      disabled={!clickable || finalizingSession}
+                      className={`${stepBase} ${stateClass} ${
+                        clickable && !finalizingSession
+                          ? "cursor-pointer"
+                          : item.active
+                          ? "cursor-default"
+                          : "cursor-not-allowed"
+                      }`}
+                    >
+                      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold">
+                        {item.step}
+                      </span>
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
+            {isAdminReviewMode && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                Admin review mode is active. This page will not send codes or
+                auto-complete login.
+              </div>
+            )}
+
+            {!isAdminReviewMode && !hasAuthenticatedSession && !canContinue && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Your session expired. Please sign in again to continue.
+              </div>
+            )}
+
+            {!isAdminReviewMode &&
+              hasAuthenticatedSession &&
+              !hasVerifySession &&
+              !phoneVerifiedEffective && (
+                <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                  You are signed in with a normal session. You can still resend
+                  email verification, request a fresh OTP, verify your phone,
+                  and refresh your status here.
+                </div>
+              )}
+
             {err && (
-              <div className="rounded-xl border border-rose-300 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
+              <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                 {err}
               </div>
             )}
 
             <div className={`${card} space-y-5`}>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <div className={panel}>
                   <div className="flex items-start gap-3">
                     <div className="rounded-xl bg-zinc-100 p-3">
@@ -509,35 +1757,41 @@ export default function SupplierVerifyContact() {
                           <h2 className="text-base font-semibold text-zinc-900">
                             Email verification
                           </h2>
-                          <p className="mt-1 text-sm text-zinc-600 break-all">
+                          <p className="mt-1 break-all text-sm text-zinc-600">
                             {email ? maskEmail(email) : "No email found"}
                           </p>
                         </div>
 
                         <div
                           className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            emailVerified
+                            emailVerifiedEffective
                               ? "bg-emerald-100 text-emerald-700"
                               : "bg-amber-100 text-amber-700"
                           }`}
                         >
-                          {emailVerified ? "Verified" : "Pending"}
+                          {emailVerifiedEffective ? "Verified" : "Pending"}
                         </div>
                       </div>
 
-                      {!emailVerified && (
+                      {!emailVerifiedEffective && !isAdminReviewMode && (
                         <p className="mt-4 text-sm text-zinc-600">
                           Open the verification link sent to your inbox, then
                           return here and refresh your status.
                         </p>
                       )}
 
-                      {!emailVerified && (
+                      {!emailVerifiedEffective && isAdminReviewMode && (
+                        <p className="mt-4 text-sm text-zinc-600">
+                          This supplier’s email is not verified yet.
+                        </p>
+                      )}
+
+                      {!emailVerifiedEffective && !isAdminReviewMode && (
                         <div className="mt-4 flex flex-wrap gap-2">
                           <button
                             type="button"
                             onClick={resendEmail}
-                            disabled={busyEmail}
+                            disabled={busyEmail || !hasAnyVerificationSession}
                             className={secondaryBtn}
                           >
                             {busyEmail
@@ -549,7 +1803,21 @@ export default function SupplierVerifyContact() {
 
                           <button
                             type="button"
-                            onClick={loadStatus}
+                            onClick={() => void loadStatus()}
+                            disabled={checking}
+                            className={secondaryBtn}
+                          >
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            {checking ? "Checking…" : "Refresh status"}
+                          </button>
+                        </div>
+                      )}
+
+                      {!emailVerifiedEffective && isAdminReviewMode && (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void loadStatus()}
                             disabled={checking}
                             className={secondaryBtn}
                           >
@@ -581,60 +1849,90 @@ export default function SupplierVerifyContact() {
 
                         <div
                           className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            phoneVerified
+                            phoneVerifiedEffective
                               ? "bg-emerald-100 text-emerald-700"
                               : "bg-amber-100 text-amber-700"
                           }`}
                         >
-                          {phoneVerified ? "Verified" : "Pending"}
+                          {phoneVerifiedEffective ? "Verified" : "Pending"}
                         </div>
                       </div>
 
-                      {!phoneVerified && (
+                      {!phoneVerifiedEffective && !isAdminReviewMode && (
                         <p className="mt-4 text-sm text-zinc-600">
                           Enter the OTP sent to your phone or WhatsApp number.
                         </p>
                       )}
 
-                      <form onSubmit={verifyPhoneOtp} className="mt-4 space-y-3">
-                        {!phoneVerified && (
-                          <input
-                            value={otp}
-                            onChange={(e) => {
-                              setOtp(e.target.value);
-                              setErr(null);
-                            }}
-                            className={input}
-                            placeholder="Enter verification code"
-                            inputMode="numeric"
-                          />
-                        )}
+                      {!phoneVerifiedEffective && isAdminReviewMode && (
+                        <p className="mt-4 text-sm text-zinc-600">
+                          This supplier’s phone is not verified yet.
+                        </p>
+                      )}
 
-                        {!phoneVerified && (
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="submit"
-                              disabled={busyVerifyOtp}
-                              className={primaryBtn}
-                            >
-                              {busyVerifyOtp ? "Verifying…" : "Verify phone"}
-                            </button>
+                      {!isAdminReviewMode ? (
+                        <form onSubmit={verifyPhoneOtp} className="mt-4 space-y-3">
+                          {!phoneVerifiedEffective && !finalizingSession && (
+                            <>
+                              <input
+                                value={otp}
+                                onChange={(e) => {
+                                  setOtp(e.target.value.replace(/[^\d]/g, ""));
+                                  setErr(null);
+                                  setOtpError(null);
+                                }}
+                                className={otpInputClass}
+                                placeholder="Enter verification code"
+                                inputMode="numeric"
+                                autoComplete="one-time-code"
+                                disabled={!hasAnyVerificationSession}
+                              />
+                              {otpError && (
+                                <p className="text-xs text-rose-600">
+                                  {otpError}
+                                </p>
+                              )}
+                            </>
+                          )}
 
-                            <button
-                              type="button"
-                              onClick={resendPhoneOtp}
-                              disabled={busyPhone}
-                              className={secondaryBtn}
-                            >
-                              {busyPhone
-                                ? "Sending…"
-                                : phoneOtpSent
-                                ? "Resend code"
-                                : "Send code"}
-                            </button>
-                          </div>
-                        )}
-                      </form>
+                          {!phoneVerifiedEffective && !finalizingSession && (
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="submit"
+                                disabled={busyVerifyOtp || !hasAnyVerificationSession}
+                                className={primaryBtn}
+                              >
+                                {busyVerifyOtp ? "Verifying…" : "Verify phone"}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => void resendPhoneOtp()}
+                                disabled={busyPhone || !hasAnyVerificationSession}
+                                className={secondaryBtn}
+                              >
+                                {busyPhone
+                                  ? "Sending…"
+                                  : phoneOtpSent
+                                  ? "Resend code"
+                                  : "Send code"}
+                              </button>
+                            </div>
+                          )}
+                        </form>
+                      ) : (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void loadStatus()}
+                            disabled={checking}
+                            className={secondaryBtn}
+                          >
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            {checking ? "Checking…" : "Refresh status"}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -647,18 +1945,21 @@ export default function SupplierVerifyContact() {
                       Continue to business details
                     </h3>
                     <p className="mt-1 text-sm text-zinc-600">
-                      You’ll unlock the next step once both email and phone are
-                      verified.
+                      {isAdminReviewMode
+                        ? "Move to the next onboarding step for this supplier once both contact methods are verified."
+                        : "Once verified, sign in the supplier and continue to onboarding."}
                     </p>
                   </div>
 
                   <button
                     type="button"
-                    onClick={continueToOnboarding}
-                    disabled={!canContinue}
+                    onClick={() => void continueToOnboarding()}
+                    disabled={!canContinue || finalizingSession}
                     className={`${primaryBtn} min-w-[240px]`}
                   >
-                    Continue to business details
+                    {finalizingSession
+                      ? "Finishing setup…"
+                      : continueButtonLabel}
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </button>
                 </div>
@@ -685,7 +1986,7 @@ export default function SupplierVerifyContact() {
                   Loading registration details…
                 </div>
               ) : summary ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
                   <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
                     <div className="text-zinc-500">Store name</div>
                     <div className="mt-1 font-medium text-zinc-900">
@@ -721,7 +2022,7 @@ export default function SupplierVerifyContact() {
 
                   <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
                     <div className="text-zinc-500">Contact email</div>
-                    <div className="mt-1 font-medium text-zinc-900 break-all">
+                    <div className="mt-1 break-all font-medium text-zinc-900">
                       {summary.contactEmail || "—"}
                     </div>
                   </div>

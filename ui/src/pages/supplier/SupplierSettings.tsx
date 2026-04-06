@@ -22,6 +22,7 @@ import {
   FileBadge2,
   IdCard,
   Landmark,
+  ArrowRight,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -30,8 +31,9 @@ import SupplierLayout from "../../layouts/SupplierLayout";
 import { useAuthStore } from "../../store/auth";
 import { useModal } from "../../components/ModalProvider";
 import api from "../../api/client";
-import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
+import { useNavigate, useSearchParams, useLocation, Link } from "react-router-dom";
 import type { AxiosError } from "axios";
+import { useSupplierVerificationGate } from "../../hooks/useSupplierVerificationGate";
 
 /**
  * Adjust this import path if your countries config lives elsewhere.
@@ -171,8 +173,9 @@ function Card({
   return (
     <div
       id={anchorId}
-      className={`scroll-mt-24 rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden transition ${highlight ? "ring-2 ring-violet-300" : ""
-        } ${className}`}
+      className={`scroll-mt-24 rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden transition ${
+        highlight ? "ring-2 ring-violet-300" : ""
+      } ${className}`}
     >
       <div className="px-4 md:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="flex items-start gap-3 min-w-0">
@@ -217,11 +220,13 @@ function Field({
           onChange={(e) => onChange?.(e.target.value)}
           placeholder={placeholder}
           disabled={disabled}
-          className={`w-full rounded-xl border border-zinc-300/80 px-3 py-2.5 text-zinc-900 placeholder:text-zinc-400 outline-none transition shadow-sm ${icon ? "pl-9" : ""
-            } ${disabled
+          className={`w-full rounded-xl border border-zinc-300/80 px-3 py-2.5 text-zinc-900 placeholder:text-zinc-400 outline-none transition shadow-sm ${
+            icon ? "pl-9" : ""
+          } ${
+            disabled
               ? "bg-zinc-50 text-zinc-600 cursor-not-allowed"
               : "bg-white focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
-            }`}
+          }`}
         />
       </div>
     </div>
@@ -249,8 +254,9 @@ function ReadOnlyField({
           value={v || placeholder}
           readOnly
           disabled
-          className={`w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-zinc-800 outline-none shadow-sm ${icon ? "pl-9" : ""
-            }`}
+          className={`w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-zinc-800 outline-none shadow-sm ${
+            icon ? "pl-9" : ""
+          }`}
         />
       </div>
     </div>
@@ -275,20 +281,23 @@ function Toggle({
       type="button"
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`w-full rounded-2xl border transition p-4 text-left flex items-start justify-between gap-3 ${disabled ? "bg-zinc-50 text-zinc-500 cursor-not-allowed" : "bg-white hover:bg-black/5"
-        }`}
+      className={`w-full rounded-2xl border transition p-4 text-left flex items-start justify-between gap-3 ${
+        disabled ? "bg-zinc-50 text-zinc-500 cursor-not-allowed" : "bg-white hover:bg-black/5"
+      }`}
     >
       <div className="min-w-0">
         <div className="text-sm font-semibold text-zinc-900">{label}</div>
         {desc && <div className="text-xs text-zinc-500 mt-1">{desc}</div>}
       </div>
       <span
-        className={`shrink-0 inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? "bg-zinc-900 border-zinc-900" : "bg-zinc-200 border-zinc-300"
-          }`}
+        className={`shrink-0 inline-flex h-6 w-11 items-center rounded-full border transition ${
+          checked ? "bg-zinc-900 border-zinc-900" : "bg-zinc-200 border-zinc-300"
+        }`}
       >
         <span
-          className={`h-5 w-5 rounded-full bg-white shadow-sm transition transform ${checked ? "translate-x-5" : "translate-x-1"
-            }`}
+          className={`h-5 w-5 rounded-full bg-white shadow-sm transition transform ${
+            checked ? "translate-x-5" : "translate-x-1"
+          }`}
         />
       </span>
     </button>
@@ -362,12 +371,12 @@ function docKindIcon(kind: SupplierDocumentKind) {
 function normalizeDocumentsResponse(raw: unknown): SupplierDocumentDto[] {
   const source = raw as
     | {
-      data?: {
-        data?: SupplierDocumentDto[];
+        data?: {
+          data?: SupplierDocumentDto[];
+          documents?: SupplierDocumentDto[];
+        } | SupplierDocumentDto[];
         documents?: SupplierDocumentDto[];
-      } | SupplierDocumentDto[];
-      documents?: SupplierDocumentDto[];
-    }
+      }
     | SupplierDocumentDto[]
     | null;
 
@@ -435,6 +444,7 @@ export default function SupplierSettings() {
   const location = useLocation();
 
   const userFromStore = useAuthStore((s) => s.user);
+  const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -455,6 +465,20 @@ export default function SupplierSettings() {
   const [roleOverride, setRoleOverride] = useState<string | null>(null);
   const role = roleOverride ?? roleFromStore ?? "";
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+  const isSupplierUser = role === "SUPPLIER";
+
+  const verificationQ = useSupplierVerificationGate(hydrated && isSupplierUser);
+
+  const verificationGate = verificationQ.data?.gate;
+  const docsPendingLock =
+    isSupplierUser &&
+    !verificationQ.isLoading &&
+    !!verificationGate &&
+    !!verificationGate.hasPendingRequiredDoc;
+
+  const docsPendingLockReason =
+    verificationGate?.lockReason ||
+    "A required verification document is currently pending review. Further document-related changes are locked until admin completes the review.";
 
   const adminSupplierId = isAdmin ? (urlSupplierId ?? storedSupplierId) : undefined;
 
@@ -664,7 +688,7 @@ export default function SupplierSettings() {
           supportEmail: String(parsed.supportEmail || d.supportEmail || ""),
         }));
       }
-    } catch { }
+    } catch {}
   }, []);
 
   useEffect(() => {
@@ -688,9 +712,9 @@ export default function SupplierSettings() {
 
         bankCountry: String(
           sup?.bankCountry ??
-          sup?.registrationCountryCode ??
-          d.bankCountry ??
-          "NG"
+            sup?.registrationCountryCode ??
+            d.bankCountry ??
+            "NG"
         ),
         bankCode: String(sup?.bankCode ?? d.bankCode ?? ""),
         bankName: String(sup?.bankName ?? d.bankName ?? ""),
@@ -731,6 +755,7 @@ export default function SupplierSettings() {
 
       const canAutoUnlock =
         !isAdmin &&
+        !docsPendingLock &&
         !bankEditUnlocked &&
         !didAutoOpenBankEdit;
 
@@ -752,6 +777,7 @@ export default function SupplierSettings() {
     location.hash,
     bankStatus,
     isAdmin,
+    docsPendingLock,
     bankEditUnlocked,
     didAutoOpenBankEdit,
     openModal,
@@ -782,10 +808,18 @@ export default function SupplierSettings() {
   const save = async () => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(draft));
-    } catch { }
+    } catch {}
 
     if (isAdmin) {
       openModal({ title: "Admin view", message: "Admin supplier settings is read-only for now." });
+      return;
+    }
+
+    if (docsPendingLock) {
+      openModal({
+        title: "Verification in progress",
+        message: docsPendingLockReason,
+      });
       return;
     }
 
@@ -843,8 +877,8 @@ export default function SupplierSettings() {
     );
   })();
 
-  const bankFieldsDisabled = isAdmin || !bankEditable;
-  const generalFieldsDisabled = isAdmin;
+  const bankFieldsDisabled = isAdmin || docsPendingLock || !bankEditable;
+  const generalFieldsDisabled = isAdmin || docsPendingLock;
   const showAdminNeedSupplier = isAdmin && !adminSupplierId;
 
   const docs = docsQ.data ?? [];
@@ -872,6 +906,12 @@ export default function SupplierSettings() {
       );
   }, [docs, requiredDocKinds]);
 
+  const docPendingKinds = useMemo(() => {
+    return requiredDocRows
+      .filter(({ doc }) => String(doc?.status ?? "").toUpperCase() === "PENDING")
+      .map(({ kind }) => docLabel(kind));
+  }, [requiredDocRows]);
+
   return (
     <SiteLayout>
       <SupplierLayout>
@@ -880,11 +920,11 @@ export default function SupplierSettings() {
             <div className="px-4 py-3 flex items-center gap-3">
               <button
                 onClick={save}
-                disabled={saving}
+                disabled={saving || docsPendingLock}
                 className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold hover:opacity-90 disabled:opacity-60"
               >
                 <Save size={16} />
-                {saving ? "Saving…" : "Save changes"}
+                {saving ? "Saving…" : docsPendingLock ? "Verification required" : "Save changes"}
               </button>
               <div className="shrink-0">{bankStatusChip}</div>
             </div>
@@ -909,11 +949,17 @@ export default function SupplierSettings() {
             <div className="mt-4 grid grid-cols-1 sm:flex sm:flex-wrap gap-2">
               <button
                 onClick={save}
-                disabled={saving || isAdmin}
+                disabled={saving || isAdmin || docsPendingLock}
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95 disabled:opacity-60"
               >
                 <Save size={16} />
-                {isAdmin ? "Admin view (read-only)" : saving ? "Saving…" : "Save changes"}
+                {isAdmin
+                  ? "Admin view (read-only)"
+                  : saving
+                    ? "Saving…"
+                    : docsPendingLock
+                      ? "Verification required"
+                      : "Save changes"}
               </button>
 
               <span className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold">
@@ -929,6 +975,42 @@ export default function SupplierSettings() {
             </div>
           </div>
         </div>
+
+        {docsPendingLock && (
+          <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <div className="font-semibold">Document review in progress</div>
+                <div className="mt-1 text-amber-800">
+                  {docsPendingLockReason}
+                </div>
+
+                {docPendingKinds.length > 0 && (
+                  <div className="mt-3 text-[12px] text-amber-800">
+                    Pending required document{docPendingKinds.length === 1 ? "" : "s"}:{" "}
+                    <b>{docPendingKinds.join(" • ")}</b>
+                  </div>
+                )}
+
+                <div className="mt-3 text-[12px] text-amber-800">
+                  While review is pending, document-related changes and further payout/bank modifications are locked.
+                </div>
+              </div>
+
+              {verificationGate?.nextPath ? (
+                <div className="shrink-0">
+                  <Link
+                    to={verificationGate.nextPath}
+                    className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                  >
+                    Continue verification
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Link>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        )}
 
         <div className="mt-6 space-y-4 pb-28 sm:pb-10">
           <Card
@@ -964,6 +1046,12 @@ export default function SupplierSettings() {
                 disabled={generalFieldsDisabled}
               />
             </div>
+
+            {docsPendingLock && (
+              <div className="mt-3 text-[11px] rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+                Contact-related changes are temporarily locked while required document review is pending.
+              </div>
+            )}
           </Card>
 
           <Card
@@ -992,7 +1080,7 @@ export default function SupplierSettings() {
             right={
               <div className="flex flex-wrap items-center gap-2">
                 {bankStatusChip}
-                {!isAdmin && bankStatus === "VERIFIED" && !bankEditUnlocked && (
+                {!isAdmin && bankStatus === "VERIFIED" && !bankEditUnlocked && !docsPendingLock && (
                   <button
                     type="button"
                     onClick={() => {
@@ -1008,7 +1096,7 @@ export default function SupplierSettings() {
                     Request change
                   </button>
                 )}
-                {!isAdmin && bankEditUnlocked && (
+                {!isAdmin && bankEditUnlocked && !docsPendingLock && (
                   <button
                     type="button"
                     onClick={() => setBankEditUnlocked(false)}
@@ -1026,20 +1114,25 @@ export default function SupplierSettings() {
               </div>
             )}
 
-            {bankStatus === "PENDING" && (
+            {docsPendingLock ? (
+              <div className="mb-3 text-[11px] rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+                Bank-detail changes are locked because a required verification document is still pending review.
+              </div>
+            ) : bankStatus === "PENDING" ? (
               <div className="mb-3 text-[11px] rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
                 Bank details are <span className="font-semibold">pending verification</span>. Editing is locked until admin review.
               </div>
-            )}
+            ) : null}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="md:col-span-1">
                 <label className="block text-xs font-semibold text-zinc-700">Bank country</label>
                 <select
-                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${bankFieldsDisabled
-                    ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                    : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
-                    }`}
+                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
+                    bankFieldsDisabled
+                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                  }`}
                   value={draft.bankCountry || "NG"}
                   disabled={bankFieldsDisabled}
                   onChange={(e) =>
@@ -1069,10 +1162,11 @@ export default function SupplierSettings() {
               <div className="md:col-span-1">
                 <label className="block text-xs font-semibold text-zinc-700">Bank name</label>
                 <select
-                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${bankFieldsDisabled
-                    ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                    : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
-                    }`}
+                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
+                    bankFieldsDisabled
+                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                  }`}
                   value={draft.bankName ?? ""}
                   disabled={bankFieldsDisabled}
                   onChange={(e) => setBankByName(e.target.value)}
@@ -1089,10 +1183,11 @@ export default function SupplierSettings() {
               <div className="md:col-span-1">
                 <label className="block text-xs font-semibold text-zinc-700">Bank code</label>
                 <select
-                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${bankFieldsDisabled
-                    ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                    : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
-                    }`}
+                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
+                    bankFieldsDisabled
+                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                  }`}
                   value={normCode(draft.bankCode)}
                   disabled={bankFieldsDisabled}
                   onChange={(e) => setBankByCode(e.target.value)}
@@ -1126,9 +1221,11 @@ export default function SupplierSettings() {
             <div className="mt-3 text-[11px] text-zinc-500">
               {isAdmin
                 ? "Admin view is read-only."
-                : bankStatus === "VERIFIED" && !bankEditUnlocked
-                  ? "Bank details are verified and locked. Use “Request change” to submit an update."
-                  : "When you save new bank details, they become pending admin verification."}
+                : docsPendingLock
+                  ? "Bank-related changes are locked until pending required documents are reviewed."
+                  : bankStatus === "VERIFIED" && !bankEditUnlocked
+                    ? "Bank details are verified and locked. Use “Request change” to submit an update."
+                    : "When you save new bank details, they become pending admin verification."}
             </div>
           </Card>
 
@@ -1143,23 +1240,29 @@ export default function SupplierSettings() {
                 desc="Get notified when you receive a new order."
                 checked={draft.notifyNewOrders}
                 onChange={(v) => setDraft((d) => ({ ...d, notifyNewOrders: v }))}
-                disabled={isAdmin}
+                disabled={isAdmin || docsPendingLock}
               />
               <Toggle
                 label="Low stock"
                 desc="Alerts when inventory is running low."
                 checked={draft.notifyLowStock}
                 onChange={(v) => setDraft((d) => ({ ...d, notifyLowStock: v }))}
-                disabled={isAdmin}
+                disabled={isAdmin || docsPendingLock}
               />
               <Toggle
                 label="Payout updates"
                 desc="Updates when payouts are processed."
                 checked={draft.notifyPayouts}
                 onChange={(v) => setDraft((d) => ({ ...d, notifyPayouts: v }))}
-                disabled={isAdmin}
+                disabled={isAdmin || docsPendingLock}
               />
             </div>
+
+            {docsPendingLock && (
+              <div className="mt-3 text-[11px] rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+                Settings changes are temporarily locked while required document review is pending.
+              </div>
+            )}
           </Card>
 
           <Card
@@ -1173,6 +1276,15 @@ export default function SupplierSettings() {
             }
           >
             <div className="space-y-4">
+              {docsPendingLock && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  <div className="font-semibold">Document modification guard active</div>
+                  <div className="mt-1 text-amber-800">
+                    At least one required document is pending review, so further document-related modifications are paused until review is completed.
+                  </div>
+                </div>
+              )}
+
               {requiredDocRows.map(({ kind, doc }) => (
                 <div key={kind} className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1295,17 +1407,29 @@ export default function SupplierSettings() {
           <div className="hidden sm:flex flex-wrap items-center gap-2">
             <button
               onClick={save}
-              disabled={saving || isAdmin}
+              disabled={saving || isAdmin || docsPendingLock}
               className="inline-flex items-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-60"
             >
               <Save size={16} />
-              {isAdmin ? "Admin view (read-only)" : saving ? "Saving…" : "Save changes"}
+              {isAdmin
+                ? "Admin view (read-only)"
+                : saving
+                  ? "Saving…"
+                  : docsPendingLock
+                    ? "Verification required"
+                    : "Save changes"}
             </button>
 
             <div className="text-[11px] text-zinc-500">
-              Bank changes require admin verification. Fields lock when status is{" "}
-              <span className="font-mono">PENDING</span> or{" "}
-              <span className="font-mono">VERIFIED</span>.
+              {docsPendingLock
+                ? "Required document review is pending. Document-related and payout/bank modifications are temporarily locked."
+                : "Bank changes require admin verification. Fields lock when status is "}
+              {!docsPendingLock && (
+                <>
+                  <span className="font-mono">PENDING</span> or{" "}
+                  <span className="font-mono">VERIFIED</span>.
+                </>
+              )}
             </div>
           </div>
         </div>

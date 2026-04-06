@@ -6,7 +6,6 @@ import crypto from "crypto";
 
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { logOrderActivity } from "../services/activity.service.js";
 import { ps, toKobo, PAYSTACK_SECRET_KEY } from "../lib/paystack.js";
 
 import { generateRef8, isFresh, toNumber } from "../lib/payments.js";
@@ -21,6 +20,9 @@ import { computePaystackSplitForOrder } from "../lib/splits.js";
 // enums
 import { SupplierPaymentStatus, PurchaseOrderStatus } from "@prisma/client";
 import { trackPurchaseIfNeeded } from "../services/tracking.service.js";
+import { logOrderActivity, logOrderActivityTx } from "../services/activity.service.js";
+import { sendSupplierPurchaseOrderEmail } from "../lib/email.js";
+import { resolveMarginPercentForItem } from "./orders.js";
 
 const router = Router();
 
@@ -69,15 +71,6 @@ function calcPaystackFee(amountNaira: number, opts?: { international?: boolean }
   const percent = amountNaira * 0.015;
   const extra = amountNaira > 2500 ? 100 : 0;
   return Math.min(percent + extra, 2000);
-}
-
-async function readSetting(key: string): Promise<string | null> {
-  try {
-    const row = await prisma.setting.findUnique({ where: { key } });
-    return row?.value ?? null;
-  } catch {
-    return null;
-  }
 }
 
 // Normalize query values: Express query can be string | string[] | undefined
@@ -133,6 +126,57 @@ function allocHeldStatus(): SupplierPaymentStatus {
   return (SPS.HELD ?? SPS.PENDING ?? "PENDING") as SupplierPaymentStatus;
 }
 
+function parseSelectedOptionsValue(value: any): any[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+
+  if (typeof value === "object") {
+    if (Array.isArray(value?.raw)) return value.raw;
+    return [];
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.raw)) {
+        return parsed.raw;
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+function getPricingSnapshotFromSelectedOptions(value: any): {
+  supplierGrossUnitCost?: number | null;
+  supplierNetUnitPayable?: number | null;
+  supplierMarginAmount?: number | null;
+  marginPercent?: number | null;
+} | null {
+  if (!value) return null;
+
+  if (typeof value === "object" && value?.pricingSnapshot && typeof value.pricingSnapshot === "object") {
+    return value.pricingSnapshot;
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && parsed.pricingSnapshot && typeof parsed.pricingSnapshot === "object") {
+        return parsed.pricingSnapshot;
+      }
+    } catch {
+      //
+    }
+  }
+
+  return null;
+}
+
 /* ----------------------------- PO helpers (idempotent + allocations) ----------------------------- */
 
 function generateSupplierOrderRef() {
@@ -177,7 +221,6 @@ async function ensureSupplierOrderRef(tx: any, orderId: string, supplierId: stri
   return ref;
 }
 
-
 async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
   const items = await tx.orderItem.findMany({
     where: { orderId },
@@ -189,6 +232,22 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
       chosenSupplierId: true,
       chosenSupplierUnitPrice: true,
     },
+  });
+
+  console.log("[ensurePurchaseOrdersForOrderTx] items", {
+    orderId,
+    count: items.length,
+    items: items.map((it: any) => ({
+      id: String(it.id),
+      chosenSupplierId: it.chosenSupplierId ? String(it.chosenSupplierId) : null,
+      quantity: Number(it.quantity ?? 0),
+      unitPrice: Number(it.unitPrice ?? 0),
+      lineTotal: it.lineTotal != null ? Number(it.lineTotal ?? 0) : null,
+      chosenSupplierUnitPrice:
+        it.chosenSupplierUnitPrice != null
+          ? Number(it.chosenSupplierUnitPrice ?? 0)
+          : null,
+    })),
   });
 
   const bySupplier = new Map<
@@ -206,13 +265,16 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     if (!sid) continue;
 
     const qty = Math.max(0, Number(it.quantity ?? 0));
-    const supplierUnit = Number(it.chosenSupplierUnitPrice ?? 0) || 0;
-    const supplierLine = supplierUnit * qty;
 
-    const customerLine =
-      it.lineTotal != null
-        ? Number(it.lineTotal ?? 0)
-        : (Number(it.unitPrice ?? 0) || 0) * qty;
+    // NET payable to supplier
+    const supplierUnit = money(it.chosenSupplierUnitPrice);
+    const supplierLine = round2(supplierUnit * qty);
+
+    // What customer paid for this supplier's lines
+    const customerUnit = money(it.unitPrice);
+    const customerLine = round2(
+      it.lineTotal != null ? money(it.lineTotal) : customerUnit * qty
+    );
 
     const cur =
       bySupplier.get(sid) ?? {
@@ -222,14 +284,35 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
         itemIds: [],
       };
 
-    cur.supplierAmount += supplierLine;
-    cur.customerSubtotal += customerLine;
+    cur.supplierAmount = round2(cur.supplierAmount + supplierLine);
+    cur.customerSubtotal = round2(cur.customerSubtotal + customerLine);
     cur.itemIds.push(String(it.id));
     bySupplier.set(sid, cur);
   }
 
   const supplierIds = Array.from(bySupplier.keys());
-  if (!supplierIds.length) return [];
+
+  console.log("[ensurePurchaseOrdersForOrderTx] supplier-groups", {
+    orderId,
+    supplierIds,
+    groups: supplierIds.map((sid) => {
+      const g = bySupplier.get(sid)!;
+      return {
+        supplierId: sid,
+        supplierAmount: round2(g.supplierAmount),
+        customerSubtotal: round2(g.customerSubtotal),
+        platformFee: round2(Math.max(0, g.customerSubtotal - g.supplierAmount)),
+        itemIds: g.itemIds,
+      };
+    }),
+  });
+
+  if (!supplierIds.length) {
+    console.warn("[ensurePurchaseOrdersForOrderTx] no supplierIds found from order items", {
+      orderId,
+    });
+    return [];
+  }
 
   const createdOrUpdated: any[] = [];
 
@@ -242,44 +325,34 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
 
     const supplierOrderRef = await ensureSupplierOrderRef(tx, orderId, sid);
 
-    let po = await tx.purchaseOrder.findFirst({
-      where: { orderId, supplierId: sid },
-      orderBy: { createdAt: "asc" },
-      select: { id: true },
-    });
-
-    if (!po) {
-      try {
-        po = await tx.purchaseOrder.create({
-          data: {
-            orderId,
-            supplierId: sid,
-            subtotal: customerSubtotal,
-            platformFee,
-            supplierAmount,
-            status: PurchaseOrderStatus.CREATED as any,
-            supplierOrderRef,
-          },
-          select: { id: true },
-        });
-      } catch (e: any) {
-        po = await tx.purchaseOrder.findFirst({
-          where: { orderId, supplierId: sid },
-          orderBy: { createdAt: "asc" },
-          select: { id: true },
-        });
-        if (!po) throw e;
-      }
-    }
-
-    await tx.purchaseOrder.update({
-      where: { id: po.id },
-      data: {
+    const po = await tx.purchaseOrder.upsert({
+      where: { orderId_supplierId: { orderId, supplierId: sid } },
+      create: {
+        orderId,
+        supplierId: sid,
+        subtotal: customerSubtotal,
+        platformFee,
+        supplierAmount,
+        status: PurchaseOrderStatus.CREATED as any,
+        supplierOrderRef,
+      },
+      update: {
         subtotal: customerSubtotal,
         platformFee,
         supplierAmount,
         supplierOrderRef,
       },
+      select: { id: true, supplierId: true },
+    });
+
+    console.log("[ensurePurchaseOrdersForOrderTx] purchase-order-upserted", {
+      orderId,
+      supplierId: sid,
+      purchaseOrderId: po.id,
+      supplierOrderRef,
+      subtotal: customerSubtotal,
+      supplierAmount,
+      platformFee,
     });
 
     await tx.purchaseOrderItem.deleteMany({
@@ -289,7 +362,7 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     if (g.itemIds.length) {
       await tx.purchaseOrderItem.createMany({
         data: g.itemIds.map((orderItemId) => ({
-          purchaseOrderId: po!.id,
+          purchaseOrderId: po.id,
           orderItemId,
           externalRef: null,
           externalStatus: null,
@@ -298,18 +371,51 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
       });
     }
 
-    createdOrUpdated.push({ id: po.id, supplierId: sid });
+    console.log("[ensurePurchaseOrdersForOrderTx] purchase-order-populated", {
+      orderId,
+      supplierId: sid,
+      purchaseOrderId: po.id,
+      itemIds: g.itemIds,
+      itemCount: g.itemIds.length,
+    });
+
+    createdOrUpdated.push({
+      id: po.id,
+      supplierId: sid,
+      subtotal: customerSubtotal,
+      supplierAmount,
+      platformFee,
+    });
   }
+
+  console.log("[ensurePurchaseOrdersForOrderTx] done", {
+    orderId,
+    purchaseOrders: createdOrUpdated,
+  });
 
   return createdOrUpdated;
 }
 
+function money(n: any): number {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : 0;
+}
 
 /**
  * ✅ Record supplier allocations when payment is PAID.
  * IMPORTANT: Do NOT delete existing allocations (webhook retries can arrive after some payouts were released).
  */
-async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, orderId: string) {
+/**
+ * Record supplier allocations when payment is PAID.
+ * IMPORTANT:
+ * - Do NOT delete existing allocations.
+ * - Allocation amount must be the already-net PO supplierAmount.
+ */
+async function recordSupplierAllocationsOnPaidTx(
+  tx: any,
+  paymentId: string,
+  orderId: string
+) {
   const pos = await tx.purchaseOrder.findMany({
     where: { orderId },
     include: { supplier: { select: { id: true, name: true } } },
@@ -319,7 +425,12 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
 
   const existing = await tx.supplierPaymentAllocation.findMany({
     where: { paymentId },
-    select: { id: true, purchaseOrderId: true, status: true },
+    select: {
+      id: true,
+      purchaseOrderId: true,
+      status: true,
+      amount: true,
+    },
   });
 
   const existingByPo = new Map<string, any>();
@@ -329,10 +440,14 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
 
   for (const po of pos) {
     const poId = String(po.id);
+    const supplierAmount = round2(money(po.supplierAmount));
+    const subtotal = round2(money(po.subtotal));
+    const platformFee = round2(money(po.platformFee));
 
     const already = existingByPo.get(poId);
+
     if (already) {
-      // keep status as-is (do not reset PAID → PENDING)
+      // Keep existing status untouched; do not reset PAID -> PENDING/HOLD
       rows.push(already);
     } else {
       rows.push(
@@ -342,16 +457,21 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
             orderId,
             supplierId: po.supplierId,
             purchaseOrderId: po.id,
-            amount: po.supplierAmount,
+            amount: supplierAmount, // NET payable to supplier
             status: allocHeldStatus(),
             supplierNameSnapshot: po.supplier?.name ?? null,
-            meta: { purchaseOrderStatus: po.status },
+            meta: {
+              purchaseOrderStatus: po.status,
+              subtotal,
+              platformFee,
+              supplierAmount,
+              netAllocation: true,
+            },
           },
         })
       );
     }
 
-    // mark PO funded (safe)
     await tx.purchaseOrder.update({
       where: { id: po.id },
       data: { status: PurchaseOrderStatus.FUNDED as any },
@@ -365,7 +485,10 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
         supplierId: po.supplierId,
         supplierName: po.supplier?.name ?? null,
         purchaseOrderId: po.id,
-        supplierAmount: Number(po.supplierAmount ?? 0),
+        subtotal: Number(po.subtotal ?? 0),
+        platformFee: Number(po.platformFee ?? 0),
+        supplierAmount: Number(po.supplierAmount ?? 0), // NET
+        netAllocation: true,
       })),
     },
   });
@@ -418,6 +541,21 @@ async function getCheapestUnitCost(
   return Number(base?.basePrice ?? 0);
 }
 
+async function getCheapestNetUnitPayable(
+  productId: string,
+  variantId?: string | null,
+  supplierId?: string | null
+) {
+  const gross = await getCheapestUnitCost(productId, variantId, supplierId);
+  const marginPercent = await readEffectiveMarginPercent();
+
+  const grossNum = round2(Number(gross ?? 0));
+  if (!(grossNum > 0)) return 0;
+
+  const marginAmount = round2(grossNum * (marginPercent / 100));
+  return round2(grossNum - marginAmount);
+}
+
 async function recomputeProfitForPayment(paymentId: string) {
   const p = await prisma.payment.findUnique({
     where: { id: paymentId },
@@ -461,17 +599,17 @@ async function recomputeProfitForPayment(paymentId: string) {
 
     if (!(unitCost > 0)) {
       const supplierId = it.chosenSupplierId ? String(it.chosenSupplierId) : null;
-
       const key = `${it.productId}|${it.variantId ?? "NULL"}|${supplierId ?? "ANY_SUPPLIER"}`;
 
       if (!offerCache.has(key)) {
-        const cheapest = await getCheapestUnitCost(
+        const cheapestNet = await getCheapestNetUnitPayable(
           String(it.productId),
           it.variantId ?? null,
           supplierId
         );
-        offerCache.set(key, Number(cheapest ?? 0));
+        offerCache.set(key, Number(cheapestNet ?? 0));
       }
+
       unitCost = offerCache.get(key)!;
     }
 
@@ -568,14 +706,17 @@ async function finalizePaidFlow(paymentId: string) {
         return null;
       }
 
+      // IMPORTANT:
+      // Even if already finalized before, still continue post-finalization checks
+      // like supplier email, customer email, receipt, etc.
       if (payment.purchaseEventSentAt) {
-        console.log("[finalizePaidFlow] already finalized, skipping", {
+        console.log("[finalizePaidFlow] already finalized", {
           paymentId,
           purchaseEventSentAt: payment.purchaseEventSentAt,
         });
 
         return {
-          skipped: true as const,
+          skippedCoreFinalize: true as const,
           orderId: payment.orderId,
           paymentId: payment.id,
         };
@@ -633,22 +774,36 @@ async function finalizePaidFlow(paymentId: string) {
       await ensurePurchaseOrdersForOrderTx(tx, payment.orderId);
       await recordSupplierAllocationsOnPaidTx(tx, payment.id, payment.orderId);
 
+      await tx.purchaseOrder.updateMany({
+        where: {
+          orderId: payment.orderId,
+          status: {
+            in: [
+              PurchaseOrderStatus.CREATED as any,
+              PurchaseOrderStatus.FUNDED as any,
+            ],
+          },
+        },
+        data: {
+          status: PurchaseOrderStatus.AWAITING_FULFILLMENT as any,
+        },
+      });
+
       trackPaymentId = payment.id;
 
       return {
-        skipped: false as const,
+        skippedCoreFinalize: false as const,
         orderId: payment.orderId,
         paymentId: payment.id,
       };
     },
     {
       maxWait: 10_000,
-      timeout: 20_000,
+      timeout: 30_000,
     }
   );
 
   if (!claimed) return;
-  if (claimed.skipped) return;
 
   const finalized = claimed;
   const { orderId } = finalized;
@@ -671,6 +826,68 @@ async function finalizePaidFlow(paymentId: string) {
     });
   } catch (e) {
     console.error("notifySuppliersForOrder failed", e);
+  }
+
+  try {
+    const alreadySent = await prisma.paymentEvent.findFirst({
+      where: {
+        paymentId: finalized.paymentId,
+        type: "SUPPLIER_PO_EMAIL_SENT",
+      },
+      select: { id: true },
+    });
+
+    if (!alreadySent) {
+      const emailResults = await emailSuppliersForPaidOrder({ orderId });
+
+      if (!emailResults.length) {
+        console.warn("[finalizePaidFlow] no supplier email jobs produced", {
+          orderId,
+          paymentId: finalized.paymentId,
+        });
+      }
+
+      const sent = emailResults.filter((x) => x.ok).length;
+      const failed = emailResults.filter((x) => !x.ok).length;
+
+      await prisma.paymentEvent.create({
+        data: {
+          paymentId: finalized.paymentId,
+          type: sent > 0 ? "SUPPLIER_PO_EMAIL_SENT" : "SUPPLIER_PO_EMAIL_FAILED",
+          data: {
+            orderId,
+            sent,
+            failed,
+            results: emailResults,
+          },
+        },
+      });
+
+      console.log("[finalizePaidFlow] supplier email summary", {
+        orderId,
+        sent,
+        failed,
+        results: emailResults,
+      });
+    } else {
+      console.log("[finalizePaidFlow] supplier PO email already recorded; skipping resend", {
+        paymentId: finalized.paymentId,
+        orderId,
+      });
+    }
+  } catch (e) {
+    console.error("emailSuppliersForPaidOrder failed", e);
+
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId: finalized.paymentId,
+        type: "SUPPLIER_PO_EMAIL_FAILED",
+        data: {
+          orderId,
+          error: (e as any)?.message ?? "Unknown supplier email failure",
+        },
+      },
+    });
   }
 
   try {
@@ -713,6 +930,423 @@ async function finalizePaidFlow(paymentId: string) {
   console.log("[finalizePaidFlow] done", finalized);
 }
 
+async function readEffectiveMarginPercent(): Promise<number> {
+  const raw =
+    (await readSetting("platformMarginPercent")) ??
+    (await readSetting("marginPercent")) ??
+    (await readSetting("pricingMarkupPercent")) ??
+    (await readSetting("markupPercent")) ??
+    "10";
+
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 10;
+  return Math.max(0, n);
+}
+
+async function getSupplierEmailJobsForPaidOrderTx(tx: any, args: { orderId: string }) {
+  const pos = await tx.purchaseOrder.findMany({
+    where: { orderId: args.orderId },
+    select: {
+      id: true,
+      orderId: true,
+      supplierId: true,
+      supplierOrderRef: true,
+      subtotal: true,
+      supplierAmount: true,
+      shippingFeeChargedToCustomer: true,
+      shippingCurrency: true,
+      status: true,
+      createdAt: true,
+
+      order: {
+        select: {
+          id: true,
+          subtotal: true,
+          tax: true,
+          total: true,
+        },
+      },
+
+      supplier: {
+        select: {
+          id: true,
+          name: true,
+          contactEmail: true,
+        },
+      },
+
+      items: {
+        select: {
+          orderItem: {
+            select: {
+              id: true,
+              title: true,
+              quantity: true,
+              unitPrice: true,
+              chosenSupplierUnitPrice: true,
+              lineTotal: true,
+              selectedOptions: true,
+              variantId: true,
+              productId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  console.log("[getSupplierEmailJobsForPaidOrderTx] purchase-orders-loaded", {
+    orderId: args.orderId,
+    count: pos.length,
+    purchaseOrders: pos.map((po: any) => ({
+      purchaseOrderId: String(po.id),
+      supplierId: String(po.supplierId),
+      supplierOrderRef: po.supplierOrderRef ?? null,
+      supplierName: po.supplier?.name ?? null,
+      supplierContactEmail: po.supplier?.contactEmail ?? null,
+      status: po.status ?? null,
+      itemsCount: Array.isArray(po.items) ? po.items.length : 0,
+    })),
+  });
+
+  const jobs = pos.map((po: any) => {
+    const supplierEmail = normalizeEmail(po.supplier?.contactEmail);
+    const supplierName = String(po.supplier?.name ?? "").trim() || "Supplier";
+
+    const items = (po.items || [])
+      .map((x: any) => x?.orderItem)
+      .filter(Boolean)
+      .map((item: any) => {
+        const quantity = Math.max(0, Number(item.quantity ?? 0));
+
+        const pricingSnapshot = getPricingSnapshotFromSelectedOptions(item.selectedOptions);
+        const snapshotMarginPercent =
+          pricingSnapshot?.marginPercent != null
+            ? Number(pricingSnapshot.marginPercent)
+            : null;
+
+        const netUnitPrice =
+          pricingSnapshot?.supplierNetUnitPayable != null
+            ? round2(Number(pricingSnapshot.supplierNetUnitPayable))
+            : round2(Number(item.chosenSupplierUnitPrice ?? 0));
+
+        const grossUnitPrice =
+          pricingSnapshot?.supplierGrossUnitCost != null
+            ? round2(Number(pricingSnapshot.supplierGrossUnitCost))
+            : null;
+
+        const netLineTotal = round2(netUnitPrice * quantity);
+
+        const grossLineTotal =
+          grossUnitPrice != null
+            ? round2(grossUnitPrice * quantity)
+            : null;
+
+        const marginAmount =
+          pricingSnapshot?.supplierMarginAmount != null
+            ? round2(Number(pricingSnapshot.supplierMarginAmount) * quantity)
+            : grossLineTotal != null
+              ? round2(Math.max(0, grossLineTotal - netLineTotal))
+              : null;
+
+        return {
+          title: item.title ?? "Item",
+          quantity,
+          unitPrice: netUnitPrice,
+          lineTotal: netLineTotal,
+          grossUnitPrice,
+          grossLineTotal,
+          marginPercent: snapshotMarginPercent,
+          marginAmount,
+          selectedOptions: item.selectedOptions ?? null,
+          variantId: item.variantId ? String(item.variantId) : null,
+          productId: item.productId ? String(item.productId) : null,
+        };
+      });
+
+    return {
+      purchaseOrderId: String(po.id),
+      orderId: String(po.orderId),
+      supplierId: String(po.supplierId),
+      supplierOrderRef: String(po.supplierOrderRef ?? "").trim(),
+      supplierEmail,
+      supplierName,
+      status: String(po.status ?? "FUNDED"),
+      subtotal: Number(po.subtotal ?? 0),
+      supplierAmount: Number(po.supplierAmount ?? 0),
+      shippingFeeChargedToCustomer: Number(po.shippingFeeChargedToCustomer ?? 0),
+      shippingCurrency: String(po.shippingCurrency ?? "NGN"),
+      orderSubtotal: Number(po.order?.subtotal ?? 0),
+      orderTax: Number(po.order?.tax ?? 0),
+      orderTotal: Number(po.order?.total ?? 0),
+      createdAt: po.createdAt ?? null,
+      items,
+      debug: {
+        supplierContactEmailRaw: po.supplier?.contactEmail ?? null,
+        supplierContactEmailNormalized: supplierEmail || null,
+      },
+    };
+  });
+
+  console.log("[getSupplierEmailJobsForPaidOrderTx] jobs-built", {
+    orderId: args.orderId,
+    count: jobs.length,
+    jobs: jobs.map((job: any) => ({
+      purchaseOrderId: job.purchaseOrderId,
+      supplierId: job.supplierId,
+      supplierEmail: job.supplierEmail,
+      supplierName: job.supplierName,
+      itemsCount: job.items.length,
+      debug: job.debug,
+      itemsPreview: job.items.map((it: any) => ({
+        title: it.title,
+        quantity: it.quantity,
+        netUnitPrice: it.unitPrice,
+        netLineTotal: it.lineTotal,
+        grossUnitPrice: it.grossUnitPrice ?? null,
+        grossLineTotal: it.grossLineTotal ?? null,
+        marginPercent: it.marginPercent ?? null,
+        marginAmount: it.marginAmount ?? null,
+      })),
+    })),
+  });
+
+  return jobs;
+}
+
+function normalizeEmail(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+async function readSetting(key: string): Promise<string | null> {
+  try {
+    const row = await prisma.setting.findUnique({ where: { key } });
+    return row?.value ?? null;
+  } catch {
+    try {
+      const row = await prisma.setting.findFirst({ where: { key } });
+      return row?.value ?? null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function emailSuppliersForPaidOrder(args: { orderId: string }) {
+  console.log("[supplier-paid-order-email] start", { orderId: args.orderId });
+
+  const defaultMarginPercent = await readEffectiveMarginPercent();
+
+  console.log("[supplier-paid-order-email] resolved-default-margin-percent", {
+    orderId: args.orderId,
+    defaultMarginPercent,
+  });
+
+  const jobs = await prisma.$transaction(async (tx: any) => {
+    return getSupplierEmailJobsForPaidOrderTx(tx, { orderId: args.orderId });
+  });
+
+  console.log("[supplier-paid-order-email] jobs-loaded", {
+    orderId: args.orderId,
+    count: jobs.length,
+    jobs: jobs.map((job: any) => ({
+      purchaseOrderId: job.purchaseOrderId,
+      supplierId: job.supplierId,
+      supplierEmail: job.supplierEmail,
+      itemsCount: Array.isArray(job.items) ? job.items.length : 0,
+      debug: job.debug,
+    })),
+  });
+
+  const results: Array<{
+    purchaseOrderId: string;
+    supplierId: string;
+    supplierEmail: string | null;
+    ok: boolean;
+    error?: string;
+  }> = [];
+
+  for (const job of jobs) {
+    if (!job.supplierEmail) {
+      console.warn("[supplier-paid-order-email] supplier contactEmail missing/blank", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        debug: job.debug,
+      });
+
+      await prisma.orderActivity.create({
+        data: {
+          orderId: job.orderId,
+          supplierId: job.supplierId,
+          type: "SUPPLIER_PO_EMAIL_FAILED",
+          message: `Supplier purchase order email failed for PO ${job.purchaseOrderId}`,
+          meta: {
+            purchaseOrderId: job.purchaseOrderId,
+            supplierEmail: null,
+            error: "Supplier contactEmail missing or blank",
+            debug: job.debug,
+          },
+        },
+      });
+
+      results.push({
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: null,
+        ok: false,
+        error: "Supplier contactEmail missing or blank",
+      });
+      continue;
+    }
+
+    try {
+      const jobMarginPercent =
+        job.items.find((it: any) => it.marginPercent != null)?.marginPercent ??
+        defaultMarginPercent;
+
+      console.log("[supplier-paid-order-email] sending", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        supplierName: job.supplierName,
+        itemsCount: job.items.length,
+        defaultMarginPercent,
+        jobMarginPercent,
+        supplierAmountNet: job.supplierAmount,
+        shippingFeeChargedToCustomer: job.shippingFeeChargedToCustomer,
+        orderTax: job.orderTax,
+        itemsPreview: job.items.map((it: any) => ({
+          title: it.title,
+          quantity: it.quantity,
+          netUnitPrice: it.unitPrice,
+          netLineTotal: it.lineTotal,
+          grossUnitPrice: it.grossUnitPrice ?? null,
+          grossLineTotal: it.grossLineTotal ?? null,
+          marginPercent: it.marginPercent ?? null,
+          marginAmount: it.marginAmount ?? null,
+        })),
+      });
+
+      const sendResult = await sendSupplierPurchaseOrderEmail({
+        to: job.supplierEmail,
+        supplierName: job.supplierName,
+        orderId: job.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        status: job.status,
+        subtotal: job.subtotal,
+        supplierAmount: job.supplierAmount,
+        shippingFeeChargedToCustomer: job.shippingFeeChargedToCustomer,
+        shippingCurrency: job.shippingCurrency,
+        orderTax: job.orderTax,
+        marginPercent: jobMarginPercent,
+        createdAt: job.createdAt,
+        items: (job.items || []).map((it: any) => ({
+          title: it.title,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          lineTotal: it.lineTotal,
+          grossUnitPrice: it.grossUnitPrice ?? null,
+          grossLineTotal: it.grossLineTotal ?? null,
+          marginPercent: it.marginPercent ?? jobMarginPercent,
+          marginAmount: it.marginAmount ?? null,
+          selectedOptions: it.selectedOptions,
+          variantId: it.variantId,
+          productId: it.productId,
+        })),
+      });
+
+      console.log("[supplier-paid-order-email] sendSupplierPurchaseOrderEmail complete", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        sendResult,
+      });
+
+      await prisma.orderActivity.create({
+        data: {
+          orderId: job.orderId,
+          supplierId: job.supplierId,
+          type: "SUPPLIER_PO_EMAIL_SENT",
+          message: `Supplier purchase order email sent for PO ${job.purchaseOrderId}`,
+          meta: {
+            purchaseOrderId: job.purchaseOrderId,
+            supplierEmail: job.supplierEmail,
+            marginPercent: jobMarginPercent,
+            items: job.items.map((it: any) => ({
+              title: it.title,
+              quantity: it.quantity,
+              netUnitPrice: it.unitPrice,
+              netLineTotal: it.lineTotal,
+              grossUnitPrice: it.grossUnitPrice ?? null,
+              grossLineTotal: it.grossLineTotal ?? null,
+              marginPercent: it.marginPercent ?? jobMarginPercent,
+              marginAmount: it.marginAmount ?? null,
+            })),
+          },
+        },
+      });
+
+      console.log("[supplier-paid-order-email] sent successfully", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+      });
+
+      results.push({
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        ok: true,
+      });
+    } catch (err: any) {
+      console.error("[supplier-paid-order-email] failed", {
+        orderId: args.orderId,
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        message: err?.message,
+        stack: err?.stack,
+      });
+
+      await prisma.orderActivity.create({
+        data: {
+          orderId: job.orderId,
+          supplierId: job.supplierId,
+          type: "SUPPLIER_PO_EMAIL_FAILED",
+          message: `Supplier purchase order email failed for PO ${job.purchaseOrderId}`,
+          meta: {
+            purchaseOrderId: job.purchaseOrderId,
+            supplierEmail: job.supplierEmail,
+            error: err?.message ?? "Unknown email error",
+            marginPercent:
+              job.items.find((it: any) => it.marginPercent != null)?.marginPercent ??
+              defaultMarginPercent,
+          },
+        },
+      });
+
+      results.push({
+        purchaseOrderId: job.purchaseOrderId,
+        supplierId: job.supplierId,
+        supplierEmail: job.supplierEmail,
+        ok: false,
+        error: err?.message ?? "Unknown email error",
+      });
+    }
+  }
+
+  console.log("[supplier-paid-order-email] done", {
+    orderId: args.orderId,
+    count: results.length,
+    results,
+  });
+
+  return results;
+}
 
 /* ----------------------------- Public endpoints ----------------------------- */
 
@@ -734,7 +1368,6 @@ router.get("/summary", requireAuth, async (req: any, res: any, next: any) => {
     next(e);
   }
 });
-
 
 const asNum = (v: any, d = 0) => {
   const n = Number(v);
@@ -889,22 +1522,17 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
             shippingRateSource: (order as any).shippingRateSource ?? null,
           });
 
-          await logOrderActivity(
-            orderId,
-            "PAYMENT_INIT",
-            "Checkout total differed from persisted order total during payment init",
-            {
-              payableTotal,
-              clientExpectedTotal,
-              diff,
-              subtotal,
-              tax,
-              serviceFeeTotal,
-              shippingFee,
-              shippingCurrency: (order as any).shippingCurrency ?? "NGN",
-              shippingRateSource: (order as any).shippingRateSource ?? null,
-            }
-          );
+          await logOrderActivity(orderId, "PAYMENT_INIT", "Checkout total differed from persisted order total during payment init", {
+            payableTotal,
+            clientExpectedTotal,
+            diff,
+            subtotal,
+            tax,
+            serviceFeeTotal,
+            shippingFee,
+            shippingCurrency: (order as any).shippingCurrency ?? "NGN",
+            shippingRateSource: (order as any).shippingRateSource ?? null,
+          });
 
           // IMPORTANT:
           // In dev/local, do not block payment init.

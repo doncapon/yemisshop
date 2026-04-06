@@ -141,7 +141,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
 
   const [q, setQ] = useState("");
   // IMPORTANT: many backends store this as HELD not PENDING
-  const [status, setStatus] = useState<string>("HELD");
+  const [status, setStatus] = useState<string>("ALL");
 
   const [take, setTake] = useState<number>(20);
   const [page, setPage] = useState<number>(1);

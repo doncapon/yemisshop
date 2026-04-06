@@ -127,6 +127,8 @@ model Refund {
   stockRestoredAt   DateTime?
   stockRestoredById String?
 
+  customerRefundPayout CustomerRefundPayout?
+
   @@index([orderId])
   @@index([supplierId])
   @@index([status, createdAt])
@@ -573,13 +575,33 @@ model User {
   Wishlist                       Wishlist[]
   sessions                       UserSession[]
 
+  customerRefundPayouts CustomerRefundPayout[]
+
   address                        Address?                     @relation("UserPrimaryAddress", fields: [addressId], references: [id])
   defaultShippingAddress         UserShippingAddress?         @relation("UserDefaultShippingAddress", fields: [defaultShippingAddressId], references: [id])
   shippingAddresses              UserShippingAddress[]        @relation("UserSavedShippingAddresses")
 
+  @@index([phone])
   @@index([emailVerifiedAt])
   @@index([phoneVerifiedAt])
   @@index([defaultShippingAddressId])
+}
+
+
+model PhoneRegistry {
+  id          String   @id @default(cuid())
+  e164        String   @unique
+  countryCode String?
+  national    String?
+  purpose     String?
+  ownerType   String
+  ownerId     String
+  isVerified  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerType, ownerId])
+  @@index([countryCode])
 }
 
 
@@ -624,6 +646,9 @@ model UserShippingAddress {
   defaultForUser     User[]    @relation("UserDefaultShippingAddress")
   selectedByOrders   Order[]
 
+
+  @@index([phone])
+  @@index([whatsappPhone])
   @@index([userId, createdAt])
   @@index([userId, isDefault])
   @@index([userId, isActive])
@@ -647,7 +672,7 @@ model AnalyticsEvent {
 model Supplier {
   id            String       @id @default(cuid())
   name          String       @unique
-  contactEmail  String?
+  contactEmail  String       @unique
   whatsappPhone String?
   type          SupplierType
   status        String       @default("PENDING_VERIFICATION")
@@ -739,6 +764,8 @@ model Supplier {
   variantOffers         SupplierVariantOffer[]       @relation("SupplierToVariantOffers")
   isDeleted             Boolean                      @default(false)
 
+  @@index([whatsappPhone])
+  @@index([pickupContactPhone])
   @@index([status])
   @@index([isPayoutEnabled])
   @@index([bankVerificationStatus])
@@ -1054,6 +1081,7 @@ model SupplierRider {
   supplier       Supplier        @relation(fields: [supplierId], references: [id], onDelete: Cascade)
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([phone])
   @@index([supplierId])
 }
 
@@ -1599,6 +1627,7 @@ model Employee {
   hasTaxDoc      Boolean               @default(false)
   documents      EmployeeDocument[]
 
+  @@index([phone])
   @@index([status, department])
   @@index([emailWork])
   @@index([emailPersonal])
@@ -1877,6 +1906,7 @@ enum PurchaseOrderStatus {
   CREATED
   FUNDED
   CONFIRMED
+  AWAITING_FULFILLMENT
   PACKED
   SHIPPED
   DELIVERED
@@ -1944,4 +1974,26 @@ enum CareersLocationType {
   ONSITE
   HYBRID
   REMOTE
+}
+
+
+model CustomerRefundPayout {
+  id                String   @id @default(cuid())
+  refundId          String   @unique
+  userId            String
+  accountName       String
+  accountNumber     String
+  bankCode          String
+  bankName          String?
+  recipientCode     String?
+  transferReference String?
+  transferStatus    String?
+  providerPayload   Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  refund            Refund   @relation(fields: [refundId], references: [id], onDelete: Cascade)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }

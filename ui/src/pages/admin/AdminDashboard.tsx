@@ -265,6 +265,73 @@ const stopHashNav = (evt: React.SyntheticEvent) => {
   }
 };
 
+
+function SectionCard({
+  title,
+  subtitle,
+  children,
+  right,
+}: {
+  title: string;
+  subtitle?: string;
+  children: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border bg-white shadow-sm">
+      <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="min-w-[180px]">
+          <h3 className="text-ink font-semibold">{title}</h3>
+          {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
+        </div>
+        {right}
+      </div>
+      <div className="p-4 md:p-5">{children}</div>
+    </div>
+  );
+}
+
+function TabButton({
+  k,
+  label,
+  mobileLabel,
+  Icon,
+  activeTab,
+  onSelect,
+}: {
+  k: TabKey;
+  label: string;
+  mobileLabel?: string;
+  Icon: any;
+  activeTab: TabKey;
+  onSelect: (nextTab: TabKey) => void;
+}) {
+  const active = activeTab === k;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(k)}
+      className={[
+        "group inline-flex w-full items-center gap-2 justify-center",
+        "min-h-[44px] px-3 py-2 rounded-xl border transition",
+        "overflow-hidden text-[13px] font-medium",
+        "sm:w-auto sm:justify-start sm:text-sm sm:px-2.5 sm:py-2",
+        active
+          ? "bg-zinc-900 text-white border-zinc-900 shadow-sm"
+          : "bg-white text-zinc-700 border-zinc-200 hover:bg-black/5",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400/60",
+      ].join(" ")}
+    >
+      <Icon size={16} className={`shrink-0 ${active ? "text-white" : "text-zinc-600"}`} />
+      <span className="truncate max-w-full">
+        <span className="sm:hidden">{mobileLabel ?? label}</span>
+        <span className="hidden sm:inline">{label}</span>
+      </span>
+    </button>
+  );
+}
+
 /* =========================================================
    AdminDashboard (COOKIE AUTH)
    ========================================================= */
@@ -284,6 +351,30 @@ export default function AdminDashboard() {
   const [focusProductId, setFocusProductId] = useState<string | null>(null);
 
   const [searchParams, setSearchParams] = useSearchParams();
+
+
+  function handleTabSelect(nextTab: TabKey) {
+    setTab(nextTab);
+
+    setSearchParams((prev) => {
+      const s = new URLSearchParams(prev);
+      s.set("tab", nextTab);
+
+      if (nextTab !== "products") {
+        s.delete("pTab");
+        s.delete("q");
+        s.delete("status");
+        s.delete("view");
+
+        setProdSearch("");
+        setFocusProductId(null);
+      } else {
+        if (!s.get("pTab")) s.set("pTab", "manage");
+      }
+
+      return s;
+    });
+  }
 
   const validTabs: TabKey[] = [
     "overview",
@@ -471,86 +562,6 @@ export default function AdminDashboard() {
         throw e;
       }
     },
-  });
-
-  type AdminRefundTop = {
-    id: string;
-    orderId: string;
-    purchaseOrderId: string;
-    supplierId?: string | null;
-    status: string;
-    requestedAt?: string;
-    createdAt?: string;
-    requestedBy?: { email?: string };
-    supplier?: { name?: string };
-    totalAmount?: number | string;
-    provider?: string | null;
-    providerReference?: string | null;
-    adminDecision?: string | null;
-    adminNote?: string | null;
-  };
-
-  const [refundQ, setRefundQ] = useState("");
-  const [refundStatus, setRefundStatus] = useState<string>("");
-
-  const refundsQTop = useQuery({
-    queryKey: ["admin", "refunds", { refundQ, refundStatus }],
-    enabled: !!canAdmin && tab === "refunds",
-    queryFn: async () => {
-      const { data } = await api.get<{ data: AdminRefundTop[] }>(
-        `/api/refunds?q=${encodeURIComponent(
-          refundQ
-        )}&status=${encodeURIComponent(refundStatus)}`,
-        { withCredentials: true }
-      );
-      return data?.data ?? [];
-    },
-    staleTime: staleTimeMs,
-    refetchOnWindowFocus: false,
-  });
-
-  const decideRefundMTop = useMutation({
-    mutationFn: async (vars: {
-      id: string;
-      decision: "APPROVE" | "REJECT";
-      note?: string;
-    }) =>
-      (
-        await api.patch(
-          `/api/refunds/${vars.id}/decision`,
-          { decision: vars.decision, note: vars.note },
-          { withCredentials: true }
-        )
-      ).data,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
-      toast.push({ title: "Refunds", message: "Decision saved.", duration: 2000 });
-    },
-    onError: (e: any) =>
-      openModal({
-        title: "Refunds",
-        message: e?.response?.data?.error || "Failed.",
-      }),
-  });
-
-  const markRefundedMTop = useMutation({
-    mutationFn: async (id: string) =>
-      (
-        await api.post(
-          `/api/refunds/${id}/approve`,
-          {},
-          { withCredentials: true }
-        )
-      ).data,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
-      toast.push({ title: "Refunds", message: "Marked refunded.", duration: 2000 });
-    },
-    onError: (e: any) =>
-      openModal({
-        title: "Refunds",
-        message: e?.response?.data?.error || "Failed.",
-      }),
   });
 
   const verifyPayment = useMutation({
@@ -1024,91 +1035,6 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
       }
     })();
   }, [tab, canAdmin, qc]);
-
-  function TabButton({
-    k,
-    label,
-    mobileLabel,
-    Icon,
-  }: {
-    k: TabKey;
-    label: string;
-    mobileLabel?: string;
-    Icon: any;
-  }) {
-    const active = tab === k;
-
-    return (
-      <button
-        type="button"
-        onClick={() => {
-          setTab(k);
-
-          setSearchParams((prev) => {
-            const s = new URLSearchParams(prev);
-            s.set("tab", k);
-
-            if (k !== "products") {
-              s.delete("pTab");
-              s.delete("q");
-              s.delete("status");
-              s.delete("view");
-
-              setProdSearch("");
-              setFocusProductId(null);
-            } else {
-              if (!s.get("pTab")) s.set("pTab", "manage");
-            }
-
-            return s;
-          });
-        }}
-        className={[
-          // ✅ Mobile: neat pills, no overflow
-          "group inline-flex w-full items-center gap-2 justify-center",
-          "min-h-[44px] px-3 py-2 rounded-xl border transition",
-          "overflow-hidden text-[13px] font-medium",
-          // ✅ Desktop
-          "sm:w-auto sm:justify-start sm:text-sm sm:px-2.5 sm:py-2",
-          active
-            ? "bg-zinc-900 text-white border-zinc-900 shadow-sm"
-            : "bg-white text-zinc-700 border-zinc-200 hover:bg-black/5",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400/60",
-        ].join(" ")}
-      >
-        <Icon size={16} className={`shrink-0 ${active ? "text-white" : "text-zinc-600"}`} />
-        <span className="truncate max-w-full">
-          <span className="sm:hidden">{mobileLabel ?? label}</span>
-          <span className="hidden sm:inline">{label}</span>
-        </span>
-      </button>
-    );
-  }
-
-  function SectionCard({
-    title,
-    subtitle,
-    children,
-    right,
-  }: {
-    title: string;
-    subtitle?: string;
-    children: ReactNode;
-    right?: ReactNode;
-  }) {
-    return (
-      <div className="rounded-2xl border bg-white shadow-sm">
-        <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div className="min-w-[180px]">
-            <h3 className="text-ink font-semibold">{title}</h3>
-            {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
-          </div>
-          {right}
-        </div>
-        <div className="p-4 md:p-5">{children}</div>
-      </div>
-    );
-  }
 
   function SkeletonRow({ cols = 4 }: { cols?: number }) {
     return (
@@ -1650,13 +1576,13 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                   <span className="truncate">Job roles</span>
                 </Link>
 
-                {/* Careers config */}
+                {/* Careers g */}
                 <Link
-                  to="/admin/careers/config"
+                  to="/admin/careers/g"
                   className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm w-full sm:w-auto"
                 >
                   <Settings size={16} />
-                  <span className="truncate">Careers config</span>
+                  <span className="truncate">Careers g</span>
                 </Link>
 
                 {/* Back to main site */}
@@ -1735,30 +1661,48 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
         <div className="mt-6">
           <div className="rounded-2xl border bg-white p-2 shadow-sm">
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-              <TabButton k="overview" label="Overview" Icon={ShieldCheck} />
+              <TabButton
+                k="overview"
+                label="Overview"
+                Icon={ShieldCheck}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
               <TabButton
                 k="users"
                 label="Users & Roles"
                 mobileLabel="Users"
                 Icon={UserCheck}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
+
               <TabButton
                 k="careers"
                 label="Careers"
                 mobileLabel="Careers"
                 Icon={Users}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
+
               <TabButton
                 k="products"
                 label="Product Moderation"
                 mobileLabel="Products"
                 Icon={PackageCheck}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
+
               <TabButton
                 k="catalog"
                 label="Supplier/Catalog Settings"
                 mobileLabel="Catalog"
                 Icon={Settings}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
 
               <TabButton
@@ -1766,23 +1710,59 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                 label="Supplier Documents"
                 mobileLabel="Supplier Docs"
                 Icon={FileBadge2}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
-              <TabButton k="refunds" label="Refunds" Icon={Undo2} />
+
+              <TabButton
+                k="refunds"
+                label="Refunds"
+                Icon={Undo2}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
               <TabButton
                 k="transactions"
                 label="Transactions"
                 mobileLabel="Payments"
                 Icon={CreditCard}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
-              <TabButton k="finance" label="Finance" Icon={CreditCard} />
+
+              <TabButton
+                k="finance"
+                label="Finance"
+                Icon={CreditCard}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
               <TabButton
                 k="ops"
                 label="Ops & Security"
                 mobileLabel="Ops"
                 Icon={Settings}
+                activeTab={tab}
+                onSelect={handleTabSelect}
               />
-              <TabButton k="marketing" label="Marketing" Icon={BellRing} />
-              <TabButton k="analytics" label="Analytics" Icon={BarChart3} />
+
+              <TabButton
+                k="marketing"
+                label="Marketing"
+                Icon={BellRing}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
+              <TabButton
+                k="analytics"
+                label="Analytics"
+                Icon={BarChart3}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
             </div>
           </div>
         </div>
@@ -1827,7 +1807,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
 
                   {/* Careers config */}
                   <QuickAction
-                    toAction={() => nav("/admin/careers/confi")}
+                    toAction={() => nav("/admin/careers/config")}
                     icon={Settings}
                     label="Careers config"
                     desc="Configure careers site & settings"
@@ -2457,6 +2437,50 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
   const toast = useToast();
   const { openModal, closeModal } = useModal();
 
+  type BankOption = {
+    country: "NG";
+    code: string;
+    name: string;
+  };
+
+  type RefundPayoutDetailsInput = {
+    accountName: string;
+    accountNumber: string;
+    bankCode: string;
+    bankName?: string;
+  };
+
+  type RefundPayoutDetailsResponse = {
+    ok: true;
+    data: {
+      id: string;
+      refundId: string;
+      userId: string;
+      accountName: string;
+      accountNumberMasked: string;
+      bankCode: string;
+      bankName?: string | null;
+      recipientCode?: string | null;
+      transferReference?: string | null;
+      transferStatus?: string | null;
+      createdAt: string;
+      updatedAt: string;
+    } | null;
+  };
+
+  type AdminRefundItem = {
+    id: string;
+    qty?: number | string | null;
+    orderItemId?: string | null;
+    orderItem?: {
+      id: string;
+      title?: string | null;
+      quantity?: number | string | null;
+      unitPrice?: number | string | null;
+      lineTotal?: number | string | null;
+    } | null;
+  };
+
   type AdminRefund = {
     id: string;
     orderId: string;
@@ -2469,21 +2493,35 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
       email?: string;
       firstName?: string | null;
       lastName?: string | null;
+      id?: string | null;
     };
     supplier?: { name?: string };
     totalAmount?: number | string;
+    itemsAmount?: number | string;
     provider?: string | null;
     providerReference?: string | null;
     adminDecision?: string | null;
     adminNote?: string | null;
+    reason?: string | null;
+    items?: AdminRefundItem[];
+    meta?: {
+      liability?: {
+        supplierLiabilityAmount?: number | string | null;
+        platformLiabilityAmount?: number | string | null;
+      };
+      shippingAmount?: number | string | null;
+      customerNote?: string | null;
+      requestedMode?: string | null;
+      evidenceCount?: number | null;
+      evidenceItemIds?: string[] | null;
+      evidenceByItemId?: Record<string, string[] | undefined> | null;
+    } | null;
   };
 
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<string>("");
-
-  // Pagination
   const [take, setTake] = useState<number>(20);
-  const [page, setPage] = useState<number>(1); // 1-based
+  const [page, setPage] = useState<number>(1);
 
   React.useEffect(() => {
     setPage(1);
@@ -2525,14 +2563,230 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     return Number.isFinite(n) ? n : 0;
   }
 
+  function getRefundBreakdown(r: AdminRefund) {
+    const total = fmtMoney(r.totalAmount);
+    const itemsAmount = fmtMoney(r.itemsAmount);
+
+    const supplierLiability = fmtMoney(
+      (r.meta as any)?.liability?.supplierLiabilityAmount
+    );
+
+    const platformLiability = fmtMoney(
+      (r.meta as any)?.liability?.platformLiabilityAmount
+    );
+
+    const shippingAmount = fmtMoney((r.meta as any)?.shippingAmount);
+    const evidenceCount = Number((r.meta as any)?.evidenceCount ?? 0) || 0;
+
+    return {
+      total,
+      itemsAmount,
+      supplierLiability,
+      platformLiability,
+      shippingAmount,
+      evidenceCount,
+    };
+  }
+
+  function getLiabilityKind(r: AdminRefund) {
+    const b = getRefundBreakdown(r);
+
+    if (b.supplierLiability > 0 && b.platformLiability > 0) return "SHARED";
+    if (b.supplierLiability > 0) return "SUPPLIER";
+    if (b.platformLiability > 0) return "PLATFORM";
+    return "UNSET";
+  }
+
+  function getLiabilityLabel(r: AdminRefund) {
+    const kind = getLiabilityKind(r);
+    if (kind === "SUPPLIER") return "Supplier liable";
+    if (kind === "PLATFORM") return "Platform liable";
+    if (kind === "SHARED") return "Shared liability";
+    return "Liability not set";
+  }
+
+  function getLiabilityBadgeClass(r: AdminRefund) {
+    const kind = getLiabilityKind(r);
+
+    if (kind === "SUPPLIER") {
+      return "bg-amber-50 text-amber-700 border-amber-200";
+    }
+    if (kind === "PLATFORM") {
+      return "bg-indigo-50 text-indigo-700 border-indigo-200";
+    }
+    if (kind === "SHARED") {
+      return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    }
+    return "bg-zinc-50 text-zinc-700 border-zinc-200";
+  }
+
+  function getEvidenceByItemId(r: AdminRefund): Record<string, string[]> {
+    const raw = (r.meta as any)?.evidenceByItemId;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+
+    const out: Record<string, string[]> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      const urls = Array.isArray(value)
+        ? value
+          .map((x) => String(x ?? "").trim())
+          .filter(Boolean)
+        : [];
+      if (urls.length) out[String(key)] = urls;
+    }
+    return out;
+  }
+
+  function getRefundItems(r: AdminRefund) {
+    return Array.isArray(r.items) ? r.items : [];
+  }
+
+  function getRefundItemIdentity(item: AdminRefundItem) {
+    return String(item.orderItem?.id || item.orderItemId || item.id || "");
+  }
+
+  function getRefundedQty(item: AdminRefundItem) {
+    const n = Number(item.qty);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function getOrderedQty(item: AdminRefundItem) {
+    const n = Number(item.orderItem?.quantity);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function getRefundItemUnitPrice(item: AdminRefundItem) {
+    return fmtMoney(item.orderItem?.unitPrice);
+  }
+
+  function getRefundItemAmount(item: AdminRefundItem) {
+    const unit = getRefundItemUnitPrice(item);
+    const qty = getRefundedQty(item);
+    return unit * qty;
+  }
+
+  function isPartialRefundItem(item: AdminRefundItem) {
+    const refunded = getRefundedQty(item);
+    const ordered = getOrderedQty(item);
+    return refunded > 0 && ordered > 0 && refunded < ordered;
+  }
+
+  function getRefundItemEvidenceUrls(r: AdminRefund, item: AdminRefundItem) {
+    const evidence = getEvidenceByItemId(r);
+    const id = getRefundItemIdentity(item);
+    return id ? evidence[id] || [] : [];
+  }
+
+  function getRefundIntelligence(r: AdminRefund) {
+    const b = getRefundBreakdown(r);
+    const kind = getLiabilityKind(r);
+    const statusUpper = String(r.status || "").toUpperCase();
+    const reasonUpper = String(r.reason || "").toUpperCase();
+
+    const notes: string[] = [];
+    const warnings: string[] = [];
+    let recommendation = "";
+
+    if (kind === "SUPPLIER") {
+      recommendation = "Approve — supplier should bear the refund impact.";
+    } else if (kind === "PLATFORM") {
+      recommendation = "Review carefully — platform absorbs the refund impact.";
+    } else if (kind === "SHARED") {
+      recommendation = "Approve with review — refund impact is shared.";
+    } else {
+      recommendation = "Review manually — liability breakdown is missing.";
+      warnings.push("Liability split has not been set.");
+    }
+
+    if (b.shippingAmount > 0) {
+      notes.push(`Shipping included: ${ngnLocal.format(b.shippingAmount)}.`);
+    }
+
+    if (b.platformLiability > 0) {
+      notes.push(`Platform exposure: ${ngnLocal.format(b.platformLiability)}.`);
+    }
+
+    if (b.supplierLiability > 0) {
+      notes.push(`Supplier exposure: ${ngnLocal.format(b.supplierLiability)}.`);
+    }
+
+    if (b.platformLiability >= Math.max(5000, b.total * 0.4)) {
+      warnings.push("High platform exposure on this refund.");
+    }
+
+    if (
+      ["DAMAGED", "WRONG_ITEM", "NOT_AS_DESCRIBED", "OTHER"].includes(reasonUpper) &&
+      b.evidenceCount <= 0
+    ) {
+      warnings.push("Evidence-sensitive reason but no evidence count is recorded.");
+    }
+
+    const refundItems = getRefundItems(r);
+    if (refundItems.some(isPartialRefundItem)) {
+      notes.push("Contains a partial refund item selection.");
+    }
+
+    if (statusUpper === "APPROVED") {
+      notes.push("Already approved — next step is settlement.");
+    }
+
+    if (statusUpper === "REFUNDED") {
+      notes.push("Customer refund already completed.");
+    }
+
+    notes.push("VAT is inclusive in product price and is not refunded separately.");
+
+    return {
+      recommendation,
+      notes,
+      warnings,
+    };
+  }
+
+  async function getRefundPayoutDetails(refundId: string): Promise<RefundPayoutDetailsResponse> {
+    const { data } = await api.get(
+      `/api/refunds/${encodeURIComponent(refundId)}/payout-details`,
+      { withCredentials: true }
+    );
+    return data;
+  }
+
+  async function saveRefundPayoutDetails(
+    refundId: string,
+    payload: RefundPayoutDetailsInput
+  ): Promise<RefundPayoutDetailsResponse> {
+    const { data } = await api.post(
+      `/api/refunds/${encodeURIComponent(refundId)}/payout-details`,
+      payload,
+      { withCredentials: true }
+    );
+    return data;
+  }
+
+  async function reconcileRefund(refundId: string) {
+    await api.post(
+      `/api/refunds/${encodeURIComponent(refundId)}/reconcile`,
+      {},
+      { withCredentials: true }
+    );
+  }
+
+  const banksQ = useQuery({
+    queryKey: ["banks", "ng"],
+    enabled: !!canAdmin,
+    queryFn: async () => {
+      const { data } = await api.get("/api/banks", { withCredentials: true });
+      return Array.isArray(data?.data) ? (data.data as BankOption[]) : [];
+    },
+    staleTime: 6 * 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
   const refundsQ = useQuery({
     queryKey: ["admin", "refunds", { q, status, take, skip }],
     enabled: !!canAdmin,
     queryFn: async () => {
       const { data } = await api.get(
-        `/api/refunds?q=${encodeURIComponent(
-          q
-        )}&status=${encodeURIComponent(
+        `/api/refunds?q=${encodeURIComponent(q)}&status=${encodeURIComponent(
           status
         )}&take=${take}&skip=${skip}`,
         { withCredentials: true }
@@ -2546,12 +2800,8 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
       const total: number | undefined =
         (typeof root?.total === "number" ? root.total : undefined) ??
         (typeof root?.count === "number" ? root.count : undefined) ??
-        (typeof root?.data?.total === "number"
-          ? root.data.total
-          : undefined) ??
-        (typeof root?.data?.count === "number"
-          ? root.data.count
-          : undefined) ??
+        (typeof root?.data?.total === "number" ? root.data.total : undefined) ??
+        (typeof root?.data?.count === "number" ? root.data.count : undefined) ??
         undefined;
 
       return { rows, total };
@@ -2570,9 +2820,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
   const canPrev = page > 1;
   const canNext =
-    typeof totalPages === "number"
-      ? page < totalPages
-      : rows.length === take;
+    typeof totalPages === "number" ? page < totalPages : rows.length === take;
 
   const decideRefundM = useMutation({
     mutationFn: async (vars: {
@@ -2604,31 +2852,729 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
   });
 
   const markRefundedM = useMutation({
-    mutationFn: async (id: string) =>
+    mutationFn: async (vars: {
+      id: string;
+      payload?: {
+        mode?: "AUTO" | "PROVIDER_REFUND" | "BANK_TRANSFER";
+        note?: string;
+        payout?: RefundPayoutDetailsInput;
+      };
+    }) =>
       (
         await api.post(
-          `/api/refunds/${encodeURIComponent(id)}/approve`,
-          {},
+          `/api/refunds/${encodeURIComponent(vars.id)}/mark-refunded`,
+          vars.payload ?? {},
           { withCredentials: true }
         )
       ).data,
-    onSuccess: async () => {
+    onSuccess: async (resp: any) => {
       await qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
+      await qc.invalidateQueries({ queryKey: ["orders"] });
+      await qc.invalidateQueries({ queryKey: ["adminOrders"] });
+
+      const alreadyRefunded = !!resp?.meta?.alreadyRefunded;
+      const repairedLinkedData = !!resp?.meta?.repairedLinkedData;
+      const settlementMode = String(resp?.meta?.settlementMode || "");
+
       toast.push({
         title: "Refunds",
-        message: "Marked refunded.",
-        duration: 2000,
+        message: alreadyRefunded
+          ? repairedLinkedData
+            ? "Refund already existed; linked data reconciled."
+            : "Refund was already marked refunded."
+          : settlementMode
+            ? `Refund completed via ${settlementMode.replace(/_/g, " ").toLowerCase()}.`
+            : "Marked refunded.",
+        duration: 3000,
       });
+
       closeModal();
     },
     onError: (e: any) =>
       openModal({
         title: "Refunds",
-        message: e?.response?.data?.error || "Failed.",
+        message:
+          e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          "Failed.",
       }),
   });
 
-  const isMutating = decideRefundM.isPending || markRefundedM.isPending;
+  const savePayoutDetailsM = useMutation({
+    mutationFn: async (vars: {
+      refundId: string;
+      payload: RefundPayoutDetailsInput;
+    }) => saveRefundPayoutDetails(vars.refundId, vars.payload),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
+      toast.push({
+        title: "Refund payout details",
+        message: "Payout details saved.",
+        duration: 2200,
+      });
+    },
+    onError: (e: any) =>
+      openModal({
+        title: "Refund payout details",
+        message: e?.response?.data?.error || "Failed to save payout details.",
+      }),
+  });
+
+  const reconcileRefundM = useMutation({
+    mutationFn: async (refundId: string) => reconcileRefund(refundId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
+      await qc.invalidateQueries({ queryKey: ["orders"] });
+      await qc.invalidateQueries({ queryKey: ["adminOrders"] });
+      toast.push({
+        title: "Refunds",
+        message: "Refund reconciled.",
+        duration: 2200,
+      });
+    },
+    onError: (e: any) =>
+      openModal({
+        title: "Refunds",
+        message: e?.response?.data?.error || "Failed to reconcile refund.",
+      }),
+  });
+
+  const isMutating =
+    decideRefundM.isPending ||
+    markRefundedM.isPending ||
+    savePayoutDetailsM.isPending ||
+    reconcileRefundM.isPending;
+
+  function renderRefundItemsBlock(r: AdminRefund) {
+    const refundItems = getRefundItems(r);
+
+    if (!refundItems.length) {
+      return (
+        <div className="rounded-lg border bg-zinc-50 p-3 text-sm text-zinc-600">
+          No refund item rows were returned.
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-3">
+        {refundItems.map((item) => {
+          const itemId = getRefundItemIdentity(item);
+          const refundedQty = getRefundedQty(item);
+          const orderedQty = getOrderedQty(item);
+          const unitPrice = getRefundItemUnitPrice(item);
+          const refundAmount = getRefundItemAmount(item);
+          const evidenceUrls = getRefundItemEvidenceUrls(r, item);
+
+          return (
+            <div key={item.id} className="rounded-xl border p-3 bg-white">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-zinc-900 break-words">
+                    {item.orderItem?.title || "Refund item"}
+                  </div>
+
+                  <div className="mt-1 flex flex-wrap gap-2 text-xs text-zinc-600">
+                    <span>Refunding {refundedQty || 0}</span>
+                    <span>of {orderedQty || 0}</span>
+                    <span>•</span>
+                    <span>Unit {ngnLocal.format(unitPrice)}</span>
+                    {itemId ? (
+                      <>
+                        <span>•</span>
+                        <span className="font-mono">{itemId}</span>
+                      </>
+                    ) : null}
+                  </div>
+
+                  {isPartialRefundItem(item) ? (
+                    <div className="mt-2">
+                      <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                        Partial refund
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="shrink-0 text-right">
+                  <div className="text-xs text-zinc-500">Refund amount</div>
+                  <div className="font-semibold text-zinc-900">
+                    {ngnLocal.format(refundAmount)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <div className="text-xs font-medium text-zinc-700">
+                  Evidence {evidenceUrls.length ? `(${evidenceUrls.length})` : ""}
+                </div>
+
+                {evidenceUrls.length ? (
+                  <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {evidenceUrls.map((url, idx) => (
+                      <a
+                        key={`${item.id}-${url}-${idx}`}
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block overflow-hidden rounded-xl border bg-zinc-50 hover:opacity-90"
+                      >
+                        <img
+                          src={url}
+                          alt={`Evidence ${idx + 1}`}
+                          className="h-24 w-full object-cover"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-1 text-xs text-zinc-500">
+                    No evidence images recorded for this item.
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function openRefundViewModal(r: AdminRefund) {
+    const b = getRefundBreakdown(r);
+    const intel = getRefundIntelligence(r);
+
+    openModal({
+      title: `Refund ${r.orderId || r.id}`,
+      message: (
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border bg-white">
+              {String(r.status)}
+            </span>
+            <span
+              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${getLiabilityBadgeClass(
+                r
+              )}`}
+            >
+              {getLiabilityLabel(r)}
+            </span>
+          </div>
+
+          <div className="text-sm">
+            <b>PO:</b> {r.purchaseOrderId || "—"}
+          </div>
+
+          <div className="text-sm">
+            <b>Supplier:</b> {r.supplier?.name || r.supplierId || "—"}
+          </div>
+
+          <div className="rounded-lg border bg-zinc-50 p-3 space-y-1 text-sm">
+            <div>
+              <b>Total refund:</b> {ngnLocal.format(b.total)}
+            </div>
+            <div>
+              <b>Items:</b> {ngnLocal.format(b.itemsAmount)}
+            </div>
+            <div>Supplier liability: {ngnLocal.format(b.supplierLiability)}</div>
+            <div>Platform liability: {ngnLocal.format(b.platformLiability)}</div>
+            {b.shippingAmount > 0 ? (
+              <div>Shipping: {ngnLocal.format(b.shippingAmount)}</div>
+            ) : null}
+            <div className="text-[11px] text-blue-600 pt-1">
+              VAT is inclusive in product price and is not refunded separately.
+            </div>
+          </div>
+
+          <div className="rounded-lg border bg-amber-50 p-3">
+            <div className="text-xs font-semibold text-amber-800 mb-1">
+              Refund intelligence
+            </div>
+            <div className="text-sm text-amber-900">{intel.recommendation}</div>
+
+            {intel.notes.length ? (
+              <ul className="mt-2 space-y-1 text-xs text-zinc-700">
+                {intel.notes.map((n, i) => (
+                  <li key={i}>• {n}</li>
+                ))}
+              </ul>
+            ) : null}
+
+            {intel.warnings.length ? (
+              <ul className="mt-2 space-y-1 text-xs text-rose-700">
+                {intel.warnings.map((w, i) => (
+                  <li key={i}>⚠ {w}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-semibold text-zinc-900">
+              Refunded items
+            </div>
+            {renderRefundItemsBlock(r)}
+          </div>
+
+          <div className="text-xs text-zinc-500">
+            Provider: {r.provider || "—"}
+          </div>
+          <div className="text-xs text-zinc-500">
+            Provider ref: {r.providerReference || "—"}
+          </div>
+          <div className="text-xs text-zinc-500">
+            Admin decision: {r.adminDecision || "—"}
+          </div>
+
+          {r.reason ? (
+            <div className="text-sm text-zinc-700">
+              <b>Reason:</b> {String(r.reason).replace(/_/g, " ")}
+            </div>
+          ) : null}
+
+          {(r.meta as any)?.customerNote ? (
+            <div className="text-sm text-zinc-700">
+              <b>Customer note:</b> {(r.meta as any).customerNote}
+            </div>
+          ) : null}
+
+          {r.adminNote ? (
+            <div className="text-sm text-zinc-700">
+              <b>Admin note:</b> {r.adminNote}
+            </div>
+          ) : null}
+        </div>
+      ),
+    });
+  }
+
+  function openApproveModal(r: AdminRefund) {
+    const intel = getRefundIntelligence(r);
+
+    const RefundApproveModal = () => {
+      const [note, setNote] = useState("");
+
+      return (
+        <div className="space-y-4">
+          <div className="text-sm text-zinc-700">
+            Approve refund for order <b>{r.orderId}</b>?
+          </div>
+
+          <div className="rounded-lg border bg-emerald-50 p-3">
+            <div className="text-xs font-semibold text-emerald-800 mb-1">
+              Recommendation
+            </div>
+            <div className="text-sm text-emerald-900">{intel.recommendation}</div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-semibold text-zinc-900">
+              Refunded items
+            </div>
+            {renderRefundItemsBlock(r)}
+          </div>
+
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={4}
+            placeholder="Admin note (optional)"
+            className="w-full rounded-xl border px-3 py-2"
+          />
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              className="rounded-xl border bg-white px-3 py-2 hover:bg-black/5"
+              onClick={() => closeModal()}
+              disabled={decideRefundM.isPending}
+            >
+              Cancel
+            </button>
+            <button
+              className="rounded-xl bg-emerald-600 px-3 py-2 text-white hover:bg-emerald-700 disabled:opacity-50"
+              disabled={decideRefundM.isPending}
+              onClick={() =>
+                decideRefundM.mutate({
+                  id: r.id,
+                  decision: "APPROVE",
+                  note: note.trim() || undefined,
+                })
+              }
+            >
+              Approve
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    openModal({
+      title: `Approve refund ${r.orderId || r.id}`,
+      message: <RefundApproveModal />,
+      size: "md",
+    });
+  }
+
+  function openRejectModal(r: AdminRefund) {
+    const intel = getRefundIntelligence(r);
+
+    const RefundRejectModal = () => {
+      const [note, setNote] = useState("");
+
+      return (
+        <div className="space-y-4">
+          <div className="text-sm text-zinc-700">
+            Reject refund for order <b>{r.orderId}</b>?
+          </div>
+
+          {intel.warnings.length ? (
+            <div className="rounded-lg border bg-rose-50 p-3">
+              <div className="text-xs font-semibold text-rose-800 mb-1">
+                Review warnings
+              </div>
+              <ul className="space-y-1 text-sm text-rose-900">
+                {intel.warnings.map((w, i) => (
+                  <li key={i}>⚠ {w}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            <div className="text-sm font-semibold text-zinc-900">
+              Refunded items
+            </div>
+            {renderRefundItemsBlock(r)}
+          </div>
+
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={4}
+            placeholder="Reject reason / admin note"
+            className="w-full rounded-xl border px-3 py-2"
+          />
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              className="rounded-xl border bg-white px-3 py-2 hover:bg-black/5"
+              onClick={() => closeModal()}
+              disabled={decideRefundM.isPending}
+            >
+              Cancel
+            </button>
+            <button
+              className="rounded-xl bg-rose-600 px-3 py-2 text-white hover:bg-rose-700 disabled:opacity-50"
+              disabled={decideRefundM.isPending}
+              onClick={() =>
+                decideRefundM.mutate({
+                  id: r.id,
+                  decision: "REJECT",
+                  note: note.trim() || undefined,
+                })
+              }
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    openModal({
+      title: `Reject refund ${r.orderId || r.id}`,
+      message: <RefundRejectModal />,
+      size: "md",
+    });
+  }
+
+  function openPayoutDetailsModal(r: AdminRefund) {
+    const intel = getRefundIntelligence(r);
+
+    const RefundPayoutModal = () => {
+      const [loading, setLoading] = useState(true);
+      const [saving, setSaving] = useState(false);
+      const [submittingRefund, setSubmittingRefund] = useState(false);
+      const [error, setError] = useState<string | null>(null);
+
+      const [accountName, setAccountName] = useState("");
+      const [accountNumber, setAccountNumber] = useState("");
+      const [bankCode, setBankCode] = useState("");
+      const [bankName, setBankName] = useState("");
+      const [note, setNote] = useState("");
+
+      const [existingMaskedAccount, setExistingMaskedAccount] = useState<string | null>(null);
+      const [existingRecipientCode, setExistingRecipientCode] = useState<string | null>(null);
+      const [existingTransferReference, setExistingTransferReference] = useState<string | null>(null);
+      const [existingTransferStatus, setExistingTransferStatus] = useState<string | null>(null);
+
+      useEffect(() => {
+        let mounted = true;
+
+        (async () => {
+          try {
+            setLoading(true);
+            setError(null);
+
+            const resp = await getRefundPayoutDetails(r.id);
+            const details = resp?.data ?? null;
+
+            if (!mounted) return;
+
+            if (details) {
+              setAccountName(details.accountName || "");
+              setBankCode(details.bankCode || "");
+              setBankName(details.bankName || "");
+              setExistingMaskedAccount(details.accountNumberMasked || null);
+              setExistingRecipientCode(details.recipientCode || null);
+              setExistingTransferReference(details.transferReference || null);
+              setExistingTransferStatus(details.transferStatus || null);
+            }
+          } catch (e: any) {
+            if (!mounted) return;
+            setError(e?.response?.data?.error || e?.message || "Failed to load payout details.");
+          } finally {
+            if (mounted) setLoading(false);
+          }
+        })();
+
+        return () => {
+          mounted = false;
+        };
+      }, []);
+
+      const bankOptions = banksQ.data ?? [];
+      const selectedBank = bankOptions.find((b) => b.code === bankCode) ?? null;
+
+      const canSave =
+        accountName.trim().length > 1 &&
+        /^\d{10}$/.test(accountNumber.trim()) &&
+        bankCode.trim().length > 0;
+
+      return (
+        <div className="space-y-4">
+          <div className="rounded-lg border bg-zinc-50 p-3 text-sm">
+            <div>
+              Refund <b>{r.id}</b> • Amount{" "}
+              <b>{ngnLocal.format(fmtMoney(r.totalAmount))}</b>
+            </div>
+            <div className="mt-1 text-xs text-zinc-600">
+              {intel.recommendation}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-semibold text-zinc-900">
+              Refunded items
+            </div>
+            {renderRefundItemsBlock(r)}
+          </div>
+
+          {loading ? (
+            <div className="text-sm text-zinc-500">Loading payout details…</div>
+          ) : (
+            <>
+              {existingMaskedAccount ? (
+                <div className="rounded-xl border bg-zinc-50 p-3 text-xs text-zinc-700 space-y-1">
+                  <div>
+                    <b>Existing account:</b> {existingMaskedAccount}
+                  </div>
+                  {existingRecipientCode ? (
+                    <div>
+                      <b>Recipient code:</b> {existingRecipientCode}
+                    </div>
+                  ) : null}
+                  {existingTransferReference ? (
+                    <div>
+                      <b>Transfer ref:</b> {existingTransferReference}
+                    </div>
+                  ) : null}
+                  {existingTransferStatus ? (
+                    <div>
+                      <b>Transfer status:</b> {existingTransferStatus}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">Account name</label>
+                <input
+                  value={accountName}
+                  onChange={(e) => setAccountName(e.target.value)}
+                  className="w-full rounded-xl border px-3 py-2"
+                  placeholder="Customer account name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">Account number</label>
+                <input
+                  value={accountNumber}
+                  onChange={(e) => setAccountNumber(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                  className="w-full rounded-xl border px-3 py-2"
+                  placeholder="10-digit account number"
+                  inputMode="numeric"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">Bank</label>
+                  <select
+                    value={bankCode}
+                    onChange={(e) => {
+                      const code = e.target.value;
+                      setBankCode(code);
+                      const bank = bankOptions.find((b) => b.code === code);
+                      setBankName(bank?.name || "");
+                    }}
+                    className="w-full rounded-xl border px-3 py-2 bg-white"
+                  >
+                    <option value="">Select bank</option>
+                    {bankOptions.map((b) => (
+                      <option key={b.code} value={b.code}>
+                        {b.name} ({b.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">Bank code</label>
+                  <input
+                    value={bankCode}
+                    readOnly
+                    className="w-full rounded-xl border px-3 py-2 bg-zinc-50 text-zinc-700"
+                    placeholder="Auto-filled from selected bank"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">Bank name</label>
+                <input
+                  value={selectedBank?.name || bankName}
+                  readOnly
+                  className="w-full rounded-xl border px-3 py-2 bg-zinc-50 text-zinc-700"
+                  placeholder="Auto-filled from selected bank"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">Note (optional)</label>
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-xl border px-3 py-2"
+                  placeholder="Optional refund note"
+                />
+              </div>
+            </>
+          )}
+
+          {error ? <div className="text-sm text-rose-600">{error}</div> : null}
+
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              className="rounded-xl border bg-white px-3 py-2 hover:bg-black/5"
+              onClick={() => closeModal()}
+              disabled={saving || submittingRefund}
+            >
+              Close
+            </button>
+
+            <button
+              className="rounded-xl border bg-white px-3 py-2 hover:bg-black/5 disabled:opacity-50"
+              disabled={!canSave || saving || submittingRefund}
+              onClick={async () => {
+                try {
+                  setSaving(true);
+                  setError(null);
+
+                  await savePayoutDetailsM.mutateAsync({
+                    refundId: r.id,
+                    payload: {
+                      accountName: accountName.trim(),
+                      accountNumber: accountNumber.trim(),
+                      bankCode: bankCode.trim(),
+                      bankName: (selectedBank?.name || bankName || "").trim() || undefined,
+                    },
+                  });
+
+                  const refreshed = await getRefundPayoutDetails(r.id);
+                  const details = refreshed?.data ?? null;
+
+                  setExistingMaskedAccount(details?.accountNumberMasked ?? null);
+                  setExistingRecipientCode(details?.recipientCode ?? null);
+                  setExistingTransferReference(details?.transferReference ?? null);
+                  setExistingTransferStatus(details?.transferStatus ?? null);
+                } catch (e: any) {
+                  setError(e?.response?.data?.error || e?.message || "Failed to save payout details.");
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            >
+              {saving ? "Saving…" : "Save payout details"}
+            </button>
+
+            <button
+              className="rounded-xl bg-zinc-900 px-3 py-2 text-white hover:opacity-90 disabled:opacity-50"
+              disabled={submittingRefund || loading}
+              onClick={async () => {
+                try {
+                  setSubmittingRefund(true);
+                  setError(null);
+
+                  const payload: {
+                    mode: "AUTO";
+                    note?: string;
+                    payout?: RefundPayoutDetailsInput;
+                  } = {
+                    mode: "AUTO",
+                    note: note.trim() || "Refund completed by admin",
+                  };
+
+                  if (canSave) {
+                    payload.payout = {
+                      accountName: accountName.trim(),
+                      accountNumber: accountNumber.trim(),
+                      bankCode: bankCode.trim(),
+                      bankName: (selectedBank?.name || bankName || "").trim() || undefined,
+                    };
+                  }
+
+                  await markRefundedM.mutateAsync({
+                    id: r.id,
+                    payload,
+                  });
+                } catch (e: any) {
+                  setError(
+                    e?.response?.data?.error ||
+                    e?.response?.data?.message ||
+                    e?.message ||
+                    "Failed to mark refunded."
+                  );
+                } finally {
+                  setSubmittingRefund(false);
+                }
+              }}
+            >
+              {submittingRefund ? "Submitting…" : "Save + mark refunded"}
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    openModal({
+      title: `Refund payout details • ${r.orderId || r.id}`,
+      message: <RefundPayoutModal />,
+      size: "md",
+    });
+  }
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm">
@@ -2686,7 +3632,6 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
         </div>
       </div>
 
-      {/* Pagination bar */}
       <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
         <div className="text-xs text-zinc-600">
           {refundsQ.isFetching
@@ -2694,10 +3639,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
             : refundsQ.isError
               ? "Failed to load."
               : typeof total === "number"
-                ? `Showing ${Math.min(
-                  skip + 1,
-                  total
-                )}–${Math.min(skip + rows.length, total)} of ${total}`
+                ? `Showing ${Math.min(skip + 1, total)}–${Math.min(skip + rows.length, total)} of ${total}`
                 : `Showing ${rows.length} item(s)`}
         </div>
 
@@ -2714,8 +3656,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
             Page <b>{page}</b>
             {typeof totalPages === "number" ? (
               <>
-                {" "}
-                of <b>{totalPages}</b>
+                {" "}of <b>{totalPages}</b>
               </>
             ) : null}
           </div>
@@ -2730,7 +3671,6 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
         </div>
       </div>
 
-      {/* Mobile cards */}
       <div className="sm:hidden p-4 space-y-3">
         {refundsQ.isLoading && (
           <>
@@ -2766,6 +3706,10 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
             const disableDecision =
               statusUpper === "REFUNDED" || statusUpper === "CLOSED";
 
+            const b = getRefundBreakdown(r);
+            const intel = getRefundIntelligence(r);
+            const refundItems = getRefundItems(r);
+
             return (
               <div key={r.id} className="rounded-2xl border p-4 bg-white">
                 <div className="flex items-start justify-between gap-3">
@@ -2783,17 +3727,57 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                   <StatusDot label={r.status} />
                 </div>
 
-                <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                  <div className="text-xs text-ink-soft">Amount</div>
-                  <div className="text-right text-ink">
-                    {ngnLocal.format(fmtMoney(r.totalAmount))}
-                  </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <span
+                    className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${getLiabilityBadgeClass(
+                      r
+                    )}`}
+                  >
+                    {getLiabilityLabel(r)}
+                  </span>
+                  {refundItems.some(isPartialRefundItem) ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border border-amber-200 bg-amber-50 text-amber-700">
+                      Partial items present
+                    </span>
+                  ) : null}
+                </div>
 
-                  <div className="text-xs text-ink-soft">Created</div>
-                  <div className="text-right text-ink">
-                    {fmtDate2(r.createdAt || r.requestedAt)}
+                <div className="mt-3 rounded-xl border bg-zinc-50 p-3 text-sm space-y-1">
+                  <div className="font-semibold text-zinc-900">
+                    {ngnLocal.format(b.total)}
+                  </div>
+                  <div className="text-xs text-zinc-600">
+                    Items: {ngnLocal.format(b.itemsAmount)}
+                  </div>
+                  <div className="text-xs text-zinc-600">
+                    Supplier: {ngnLocal.format(b.supplierLiability)}
+                  </div>
+                  <div className="text-xs text-zinc-600">
+                    Platform: {ngnLocal.format(b.platformLiability)}
+                  </div>
+                  {b.shippingAmount > 0 ? (
+                    <div className="text-xs text-zinc-600">
+                      Shipping: {ngnLocal.format(b.shippingAmount)}
+                    </div>
+                  ) : null}
+                  <div className="text-[11px] text-blue-600">
+                    VAT included, not refunded separately
                   </div>
                 </div>
+
+                <div className="mt-3 text-xs text-zinc-700">
+                  <b>Recommendation:</b> {intel.recommendation}
+                </div>
+
+                {intel.warnings.length ? (
+                  <div className="mt-2 space-y-1">
+                    {intel.warnings.map((w, i) => (
+                      <div key={i} className="text-xs text-rose-700">
+                        ⚠ {w}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
 
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <Link
@@ -2802,43 +3786,11 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                   >
                     Order
                   </Link>
+
                   <button
                     className="inline-flex items-center justify-center px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
                     disabled={isMutating}
-                    onClick={() =>
-                      openModal({
-                        title: `Refund ${r.orderId || r.id}`,
-                        message: (
-                          <div className="space-y-2">
-                            <div className="text-sm">
-                              <b>Status:</b> {String(r.status)}
-                            </div>
-                            <div className="text-sm">
-                              <b>PO:</b> {r.purchaseOrderId || "—"}
-                            </div>
-                            <div className="text-sm">
-                              <b>Supplier:</b>{" "}
-                              {r.supplier?.name || r.supplierId || "—"}
-                            </div>
-                            <div className="text-sm">
-                              <b>Amount:</b>{" "}
-                              {ngnLocal.format(fmtMoney(r.totalAmount))}
-                            </div>
-                            <div className="text-xs text-zinc-500">
-                              Provider ref: {r.providerReference || "—"}
-                            </div>
-                            <div className="text-xs text-zinc-500">
-                              Admin decision: {r.adminDecision || "—"}
-                            </div>
-                            {r.adminNote ? (
-                              <div className="text-sm text-zinc-700">
-                                {r.adminNote}
-                              </div>
-                            ) : null}
-                          </div>
-                        ),
-                      })
-                    }
+                    onClick={() => openRefundViewModal(r)}
                   >
                     View
                   </button>
@@ -2846,18 +3798,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                   <button
                     className="px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                     disabled={disableDecision || isMutating}
-                    onClick={() => {
-                      const note = window.prompt("Admin note (optional)");
-                      if (note === null) return;
-                      const ok = window.confirm("Approve this refund?");
-                      if (!ok) return;
-
-                      decideRefundM.mutate({
-                        id: r.id,
-                        decision: "APPROVE",
-                        note: note.trim() ? note.trim() : undefined,
-                      });
-                    }}
+                    onClick={() => openApproveModal(r)}
                   >
                     Approve
                   </button>
@@ -2865,15 +3806,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                   <button
                     className="px-3 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
                     disabled={disableDecision || isMutating}
-                    onClick={() => {
-                      const note =
-                        window.prompt("Reject reason (optional)") || "";
-                      decideRefundM.mutate({
-                        id: r.id,
-                        decision: "REJECT",
-                        note: note || undefined,
-                      });
-                    }}
+                    onClick={() => openRejectModal(r)}
                   >
                     Reject
                   </button>
@@ -2881,9 +3814,17 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                   <button
                     className="col-span-2 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 disabled:opacity-50"
                     disabled={isMutating}
-                    onClick={() => markRefundedM.mutate(r.id)}
+                    onClick={() => openPayoutDetailsModal(r)}
                   >
-                    Mark refunded
+                    Payout details / refund
+                  </button>
+
+                  <button
+                    className="col-span-2 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 disabled:opacity-50"
+                    disabled={isMutating}
+                    onClick={() => reconcileRefundM.mutate(r.id)}
+                  >
+                    Fix / Reconcile
                   </button>
                 </div>
               </div>
@@ -2891,40 +3832,23 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
           })}
       </div>
 
-      {/* Desktop table */}
       <div className="hidden sm:block p-4 pr-1 md:p-5 md:pr-2">
         <div className="overflow-x-auto relative">
-          <table className="min-w-[1100px] w-full text-sm">
+          <table className="min-w-[1500px] w-full text-sm">
             <thead>
               <tr className="bg-zinc-50 text-ink">
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">
-                  Order
-                </th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">
-                  PO
-                </th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[240px]">
-                  Supplier
-                </th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">
-                  Requested By
-                </th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[140px]">
-                  Amount
-                </th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[160px]">
-                  Status
-                </th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[180px]">
-                  Created
-                </th>
-
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">Order</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">PO</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[240px]">Supplier</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[240px]">Requested By</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[260px]">Refund breakdown</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[320px]">Items / evidence</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">Intelligence</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[160px]">Status</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[180px]">Created</th>
                 <th
-                  className="sticky right-0 z-40 text-right px-3 py-2 bg-zinc-50 whitespace-nowrap w-[220px] min-w-[220px] max-w-[220px] border-l"
-                  style={{
-                    boxShadow:
-                      "-10px 0 16px -14px rgba(0,0,0,0.35)",
-                  }}
+                  className="sticky right-0 z-40 text-right px-3 py-2 bg-zinc-50 whitespace-nowrap w-[260px] min-w-[260px] max-w-[260px] border-l"
+                  style={{ boxShadow: "-10px 0 16px -14px rgba(0,0,0,0.35)" }}
                 >
                   Actions
                 </th>
@@ -2934,10 +3858,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
             <tbody className="divide-y">
               {refundsQ.isLoading && (
                 <tr>
-                  <td
-                    colSpan={8}
-                    className="px-3 py-6 text-center text-zinc-500"
-                  >
+                  <td colSpan={10} className="px-3 py-6 text-center text-zinc-500">
                     Loading refunds…
                   </td>
                 </tr>
@@ -2945,32 +3866,29 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
               {refundsQ.isError && (
                 <tr>
-                  <td
-                    colSpan={8}
-                    className="px-3 py-6 text-center text-rose-600"
-                  >
+                  <td colSpan={10} className="px-3 py-6 text-center text-rose-600">
                     Failed to load refunds.
                   </td>
                 </tr>
               )}
 
-              {!refundsQ.isLoading &&
-                !refundsQ.isError &&
-                rows.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={8}
-                      className="px-3 py-6 text-center text-zinc-500"
-                    >
-                      No refunds found.
-                    </td>
-                  </tr>
-                )}
+              {!refundsQ.isLoading && !refundsQ.isError && rows.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="px-3 py-6 text-center text-zinc-500">
+                    No refunds found.
+                  </td>
+                </tr>
+              )}
 
               {rows.map((r) => {
                 const statusUpper = String(r.status || "").toUpperCase();
                 const disableDecision =
                   statusUpper === "REFUNDED" || statusUpper === "CLOSED";
+
+                const b = getRefundBreakdown(r);
+                const intel = getRefundIntelligence(r);
+                const refundItems = getRefundItems(r);
+                const previewItems = refundItems.slice(0, 2);
 
                 return (
                   <tr key={r.id} className="hover:bg-black/5">
@@ -2988,9 +3906,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                       )}
                     </td>
 
-                    <td className="px-3 py-3 whitespace-nowrap">
-                      {r.purchaseOrderId || "—"}
-                    </td>
+                    <td className="px-3 py-3 whitespace-nowrap">{r.purchaseOrderId || "—"}</td>
 
                     <td className="px-3 py-3 whitespace-nowrap">
                       <span
@@ -3010,8 +3926,99 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                       </span>
                     </td>
 
-                    <td className="px-3 py-3 whitespace-nowrap">
-                      {ngnLocal.format(fmtMoney(r.totalAmount))}
+                    <td className="px-3 py-3">
+                      <div className="space-y-1 min-w-[220px]">
+                        <div className="font-semibold text-zinc-900">
+                          {ngnLocal.format(b.total)}
+                        </div>
+
+                        <div className="text-[11px] text-zinc-600">
+                          Items: {ngnLocal.format(b.itemsAmount)}
+                        </div>
+
+                        <div className="text-[11px] text-zinc-600">
+                          Supplier: {ngnLocal.format(b.supplierLiability)}
+                        </div>
+
+                        <div className="text-[11px] text-zinc-600">
+                          Platform: {ngnLocal.format(b.platformLiability)}
+                        </div>
+
+                        {b.shippingAmount > 0 ? (
+                          <div className="text-[11px] text-zinc-600">
+                            Shipping: {ngnLocal.format(b.shippingAmount)}
+                          </div>
+                        ) : null}
+
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${getLiabilityBadgeClass(
+                            r
+                          )}`}
+                        >
+                          {getLiabilityLabel(r)}
+                        </span>
+
+                        <div className="text-[10px] text-blue-600">
+                          VAT included, not refunded separately
+                        </div>
+                      </div>
+                    </td>
+
+                    <td className="px-3 py-3">
+                      <div className="min-w-[300px] space-y-2">
+                        {previewItems.length === 0 ? (
+                          <div className="text-xs text-zinc-500">No item rows</div>
+                        ) : (
+                          previewItems.map((item) => {
+                            const refundedQty = getRefundedQty(item);
+                            const orderedQty = getOrderedQty(item);
+                            const evidenceUrls = getRefundItemEvidenceUrls(r, item);
+
+                            return (
+                              <div key={item.id} className="rounded-lg border bg-zinc-50 p-2">
+                                <div className="text-xs font-medium text-zinc-900 truncate">
+                                  {item.orderItem?.title || "Refund item"}
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-zinc-600">
+                                  <span>
+                                    {refundedQty} of {orderedQty}
+                                  </span>
+                                  <span>•</span>
+                                  <span>{ngnLocal.format(getRefundItemAmount(item))}</span>
+                                  <span>•</span>
+                                  <span>{evidenceUrls.length} evidence</span>
+                                </div>
+                                {isPartialRefundItem(item) ? (
+                                  <div className="mt-1">
+                                    <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                                      Partial
+                                    </span>
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })
+                        )}
+
+                        {refundItems.length > previewItems.length ? (
+                          <div className="text-[11px] text-zinc-500">
+                            +{refundItems.length - previewItems.length} more item(s)
+                          </div>
+                        ) : null}
+                      </div>
+                    </td>
+
+                    <td className="px-3 py-3">
+                      <div className="min-w-[210px] space-y-1">
+                        <div className="text-xs font-medium text-zinc-900">
+                          {intel.recommendation}
+                        </div>
+                        {intel.warnings.slice(0, 2).map((w, i) => (
+                          <div key={i} className="text-[11px] text-rose-700">
+                            ⚠ {w}
+                          </div>
+                        ))}
+                      </div>
                     </td>
 
                     <td className="px-3 py-3 whitespace-nowrap">
@@ -3025,52 +4032,14 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                     </td>
 
                     <td
-                      className="sticky right-0 z-30 px-3 py-3 text-right bg-white w-[220px] min-w-[220px] max-w-[220px] border-l"
-                      style={{
-                        boxShadow:
-                          "-10px 0 16px -14px rgba(0,0,0,0.25)",
-                      }}
+                      className="sticky right-0 z-30 px-3 py-3 text-right bg-white w-[260px] min-w-[260px] max-w-[260px] border-l"
+                      style={{ boxShadow: "-10px 0 16px -14px rgba(0,0,0,0.25)" }}
                     >
                       <div className="inline-flex flex-col items-end gap-2">
                         <button
                           className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
                           disabled={isMutating}
-                          onClick={() =>
-                            openModal({
-                              title: `Refund ${r.orderId || r.id}`,
-                              message: (
-                                <div className="space-y-2">
-                                  <div className="text-sm">
-                                    <b>Status:</b> {String(r.status)}
-                                  </div>
-                                  <div className="text-sm">
-                                    <b>PO:</b> {r.purchaseOrderId || "—"}
-                                  </div>
-                                  <div className="text-sm">
-                                    <b>Supplier:</b>{" "}
-                                    {r.supplier?.name || r.supplierId || "—"}
-                                  </div>
-                                  <div className="text-sm">
-                                    <b>Amount:</b>{" "}
-                                    {ngnLocal.format(fmtMoney(r.totalAmount))}
-                                  </div>
-                                  <div className="text-xs text-zinc-500">
-                                    Provider ref:{" "}
-                                    {r.providerReference || "—"}
-                                  </div>
-                                  <div className="text-xs text-zinc-500">
-                                    Admin decision:{" "}
-                                    {r.adminDecision || "—"}
-                                  </div>
-                                  {r.adminNote ? (
-                                    <div className="text-sm text-zinc-700">
-                                      {r.adminNote}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              ),
-                            })
-                          }
+                          onClick={() => openRefundViewModal(r)}
                         >
                           View
                         </button>
@@ -3078,20 +4047,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                         <button
                           className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                           disabled={disableDecision || isMutating}
-                          onClick={() => {
-                            const note = window.prompt("Admin note (optional)");
-                            if (note === null) return;
-                            const ok = window.confirm(
-                              "Approve this refund?"
-                            );
-                            if (!ok) return;
-
-                            decideRefundM.mutate({
-                              id: r.id,
-                              decision: "APPROVE",
-                              note: note.trim() ? note.trim() : undefined,
-                            });
-                          }}
+                          onClick={() => openApproveModal(r)}
                         >
                           Approve
                         </button>
@@ -3099,15 +4055,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                         <button
                           className="px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
                           disabled={disableDecision || isMutating}
-                          onClick={() => {
-                            const note =
-                              window.prompt("Reject reason (optional)") || "";
-                            decideRefundM.mutate({
-                              id: r.id,
-                              decision: "REJECT",
-                              note: note || undefined,
-                            });
-                          }}
+                          onClick={() => openRejectModal(r)}
                         >
                           Reject
                         </button>
@@ -3115,9 +4063,17 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                         <button
                           className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 disabled:opacity-50"
                           disabled={isMutating}
-                          onClick={() => markRefundedM.mutate(r.id)}
+                          onClick={() => openPayoutDetailsModal(r)}
                         >
-                          Mark refunded
+                          Payout details / refund
+                        </button>
+
+                        <button
+                          className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 disabled:opacity-50"
+                          disabled={isMutating}
+                          onClick={() => reconcileRefundM.mutate(r.id)}
+                        >
+                          Fix / Reconcile
                         </button>
                       </div>
                     </td>

@@ -155,11 +155,11 @@ function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
     String(addr.houseNumber ?? "").trim() ||
-      String(addr.streetName ?? "").trim() ||
-      String(addr.city ?? "").trim() ||
-      String(addr.state ?? "").trim() ||
-      String(addr.country ?? "").trim() ||
-      String(addr.postCode ?? "").trim()
+    String(addr.streetName ?? "").trim() ||
+    String(addr.city ?? "").trim() ||
+    String(addr.state ?? "").trim() ||
+    String(addr.country ?? "").trim() ||
+    String(addr.postCode ?? "").trim()
   );
 }
 
@@ -391,16 +391,16 @@ export default function SupplierDashboard() {
 
       const businessFieldsPresent = Boolean(
         String(supplierMe?.legalName ?? "").trim() &&
-          String(supplierMe?.registrationNumber ?? "").trim() &&
-          String(supplierMe?.registrationType ?? "").trim() &&
-          String(supplierMe?.registrationDate ?? "").trim() &&
-          String(supplierMe?.registrationCountryCode ?? "").trim() &&
-          String(supplierMe?.natureOfBusiness ?? "").trim() &&
-          (
-            isRegisteredBusiness(supplierMe?.registrationType)
-              ? String(supplierMe?.registeredBusinessName ?? "").trim()
-              : true
-          )
+        String(supplierMe?.registrationNumber ?? "").trim() &&
+        String(supplierMe?.registrationType ?? "").trim() &&
+        String(supplierMe?.registrationDate ?? "").trim() &&
+        String(supplierMe?.registrationCountryCode ?? "").trim() &&
+        String(supplierMe?.natureOfBusiness ?? "").trim() &&
+        (
+          isRegisteredBusiness(supplierMe?.registrationType)
+            ? String(supplierMe?.registeredBusinessName ?? "").trim()
+            : true
+        )
       );
 
       const addressDone =
@@ -426,14 +426,14 @@ export default function SupplierDashboard() {
       const nextPath = !contactDone
         ? "/supplier/verify-contact"
         : !businessDone
-        ? "/supplier/onboarding"
-        : !addressDone
-        ? "/supplier/onboarding/address"
-        : !docsDone
-        ? "/supplier/onboarding/documents"
-        : !docsVerifiedDone
-        ? "/supplier/onboarding/documents"
-        : "/supplier";
+          ? "/supplier/onboarding"
+          : !addressDone
+            ? "/supplier/onboarding/address"
+            : !docsDone
+              ? "/supplier/onboarding/documents"
+              : !docsVerifiedDone
+                ? "/supplier/onboarding/documents"
+                : "/supplier";
 
       return {
         authMe,
@@ -642,9 +642,8 @@ export default function SupplierDashboard() {
                               key={s.id}
                               type="button"
                               onClick={() => selectSupplier(s.id)}
-                              className={`w-full text-left px-4 py-3 border-b last:border-b-0 hover:bg-black/5 transition ${
-                                active ? "bg-emerald-50" : "bg-white"
-                              }`}
+                              className={`w-full text-left px-4 py-3 border-b last:border-b-0 hover:bg-black/5 transition ${active ? "bg-emerald-50" : "bg-white"
+                                }`}
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <div className="min-w-0">
@@ -684,6 +683,12 @@ export default function SupplierDashboard() {
 
                   <Link
                     to="/supplier/verify-contact"
+                    state={{
+                      fromOnboardingTab: true,
+                      skipAutoFinalize: true,
+                      returnTo: "/supplier",
+                      nextAfterVerify: "/supplier",
+                    }}
                     className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                   >
                     Contact step <BadgeCheck size={14} />
@@ -859,11 +864,10 @@ export default function SupplierDashboard() {
                       >
                         <div className="flex items-center gap-3">
                           <div
-                            className={`inline-flex h-8 w-8 items-center justify-center rounded-full ${
-                              item.done
+                            className={`inline-flex h-8 w-8 items-center justify-center rounded-full ${item.done
                                 ? "bg-emerald-100 text-emerald-700"
                                 : "bg-amber-100 text-amber-700"
-                            }`}
+                              }`}
                           >
                             {item.done ? <CheckCircle2 size={16} /> : <ArrowRight size={16} />}
                           </div>
@@ -871,11 +875,10 @@ export default function SupplierDashboard() {
                         </div>
 
                         <span
-                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            item.done
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.done
                               ? "bg-emerald-100 text-emerald-700"
                               : "bg-amber-100 text-amber-700"
-                          }`}
+                            }`}
                         >
                           {item.done ? "Done" : "Pending"}
                         </span>

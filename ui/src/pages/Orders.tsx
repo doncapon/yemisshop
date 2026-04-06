@@ -62,45 +62,10 @@ type PurchaseOrderRow = {
   subtotal?: number | string | null;
   platformFee?: number | string | null;
   createdAt?: string | null;
-  payoutStatus?: string | null;
+  deliveredAt?: string | null;
+  deliveryOtpVerifiedAt?: string | null;
   paidOutAt?: string | null;
-};
-
-type PaymentRow = {
-  id: string;
-  status: string;
-  provider?: string | null;
-  reference?: string | null;
-  amount?: number | string | null;
-  createdAt?: string;
-  allocations?: SupplierAllocationRow[];
-};
-
-type OrderItem = {
-  id: string;
-  productId?: string | null;
-  title?: string | null;
-  unitPrice?: number | string | null;
-  quantity?: number | string | null;
-  lineTotal?: number | string | null;
-  status?: string | null;
-  product?: { title?: string | null } | null;
-  chosenSupplierUnitPrice?: number | string | null;
-  selectedOptions?: Array<{ attribute?: string; value?: string }> | any;
-  variant?: {
-    id: string;
-    sku?: string | null;
-    imagesJson?: string[] | null;
-  } | null;
-
-  qty?: number | string | null;
-  price?: number | string | null;
-  total?: number | string | null;
-  subtotal?: number | string | null;
-  productTitle?: string | null;
-  options?: any;
-  selectedOptionsJson?: any;
-  productVariant?: any;
+  payoutStatus?: string | null;
 };
 
 type OrderRow = {
@@ -115,6 +80,7 @@ type OrderRow = {
   commsCostTotal?: number | string | null;
   commissionTotal?: number | string | null;
   createdAt?: string;
+  complaintWindowDays?: number | null;
   items?: OrderItem[];
   payment?: PaymentRow | null;
   payments?: PaymentRow[];
@@ -134,6 +100,57 @@ type OrderRow = {
   };
   user?: { email?: string | null } | null;
   purchaseOrders?: PurchaseOrderRow[];
+};
+type PaymentRow = {
+  id: string;
+  status: string;
+  provider?: string | null;
+  reference?: string | null;
+  amount?: number | string | null;
+  createdAt?: string;
+  allocations?: SupplierAllocationRow[];
+};
+
+type OrderItem = {
+  id: string;
+  productId?: string | null;
+  title?: string | null;
+  unitPrice?: number | string | null;
+  quantity?: number | string | null;
+  lineTotal?: number | string | null;
+  status?: string | null;
+  product?: {
+    id?: string | null;
+    title?: string | null;
+    slug?: string | null;
+    href?: string | null;
+    url?: string | null;
+    path?: string | null;
+    image?: string | null;
+    imagesJson?: string[] | null;
+  } | null;
+  chosenSupplierId?: string | null;
+  chosenSupplierUnitPrice?: number | string | null;
+  selectedOptions?: Array<{ attribute?: string; value?: string }> | any;
+  variant?: {
+    id: string;
+    productId?: string | null;
+    sku?: string | null;
+    imagesJson?: string[] | null;
+  } | null;
+
+  qty?: number | string | null;
+  price?: number | string | null;
+  total?: number | string | null;
+  subtotal?: number | string | null;
+  productTitle?: string | null;
+  options?: any;
+  selectedOptionsJson?: any;
+  productVariant?: any;
+
+  href?: string | null;
+  url?: string | null;
+  path?: string | null;
 };
 
 type OrdersEnvelope = {
@@ -170,12 +187,27 @@ type RefundReason =
   | "CHANGED_MIND"
   | "OTHER";
 
+type OrderFilterStatus =
+  | "ALL"
+  | "PENDING"
+  | "AWAITING FULFILLMENT"
+  | "DELIVERED"
+  | "FAILED"
+  | "CANCELED"
+  | "REFUNDED";
+
 type RefundDraft = {
   orderId: string;
+  purchaseOrderId: string;
+  supplierId?: string | null;
+  supplierName?: string | null;
   reason: RefundReason;
   message: string;
   mode: "ALL" | "SOME";
   selectedItemIds: Record<string, boolean>;
+  selectedQtyByItemId: Record<string, number>;
+  evidenceByItemId: Record<string, string[]>;
+  uploadingByItemId: Record<string, boolean>;
   busy: boolean;
   error?: string | null;
 };
@@ -200,35 +232,235 @@ type RefundItemRow = {
 type RefundRow = {
   id: string;
   orderId?: string | null;
+  purchaseOrderId?: string | null;
+  supplierId?: string | null;
   status?: string | null;
+
   reason?: string | null;
-  message?: string | null;
-  createdAt?: string | null;
   meta?: any | null;
-  evidenceUrls?: string[];
+
+  itemsAmount?: number | string | null;
+  taxAmount?: number | string | null;
+  serviceFeeBaseAmount?: number | string | null;
+  serviceFeeCommsAmount?: number | string | null;
+  serviceFeeGatewayAmount?: number | string | null;
+  totalAmount?: number | string | null;
+
+  createdAt?: string | null;
+  requestedAt?: string | null;
+  processedAt?: string | null;
+  paidAt?: string | null;
+  adminResolvedAt?: string | null;
+  supplierRespondedAt?: string | null;
+
+  supplierNote?: string | null;
+  supplierResponse?: string | null;
+  adminNote?: string | null;
+  adminDecision?: string | null;
+  provider?: string | null;
+  providerReference?: string | null;
+  providerStatus?: string | null;
+
   supplier?: { id: string; name?: string | null } | null;
   purchaseOrder?: { id: string; status?: string | null; payoutStatus?: string | null } | null;
   events?: RefundEventRow[];
   items?: RefundItemRow[];
+  evidenceUrls?: string[];
 };
 
+const REFUND_REASONS_REQUIRING_EVIDENCE = new Set<RefundReason>([
+  "DAMAGED",
+  "WRONG_ITEM",
+  "NOT_AS_DESCRIBED",
+  "OTHER",
+]);
+
+function refundReasonRequiresEvidence(reason?: RefundReason | string | null): boolean {
+  return REFUND_REASONS_REQUIRING_EVIDENCE.has(
+    String(reason || "").trim().toUpperCase() as RefundReason
+  );
+}
+
+function normalizeUploadedUrls(payload: any): string[] {
+  const raw =
+    payload?.urls ??
+    payload?.files ??
+    payload?.data ??
+    payload?.items ??
+    payload?.uploads ??
+    [];
+
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+
+  return list
+    .map((item: any) => {
+      if (typeof item === "string") return item;
+      return (
+        item?.url ??
+        item?.secure_url ??
+        item?.src ??
+        item?.path ??
+        item?.location ??
+        item?.uploadedUrl ??
+        null
+      );
+    })
+    .filter((v: any): v is string => !!String(v || "").trim())
+    .map((v: string) => String(v).trim());
+}
+
 /* ---------------- Refund normalization ---------------- */
+function normalizeRefunds(payload: any): RefundRow[] {
+  const list =
+    Array.isArray(payload?.data) ? payload.data :
+      Array.isArray(payload) ? payload :
+        payload ? [payload] :
+          [];
+
+  return list.map((item: any) => normalizeRefund(item));
+}
+
+function getSelectedRefundItemIds(draft: RefundDraft, items: OrderItem[]): string[] {
+  if (draft.mode === "ALL") {
+    return items.map((it) => String(it.id)).filter(Boolean);
+  }
+
+  return Object.keys(draft.selectedItemIds || {}).filter((id) => draft.selectedItemIds[id]);
+}
+
+function hasEvidenceForItem(draft: RefundDraft, itemId: string): boolean {
+  return Array.isArray(draft.evidenceByItemId?.[itemId]) && draft.evidenceByItemId[itemId].length > 0;
+}
+
+function allSelectedItemsHaveEvidence(draft: RefundDraft, items: OrderItem[]): boolean {
+  const selectedIds = getSelectedRefundItemIds(draft, items);
+  if (!selectedIds.length) return false;
+  return selectedIds.every((id) => hasEvidenceForItem(draft, id));
+}
+
+function getOrderItemQty(it: OrderItem): number {
+  return Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
+}
+
+function clampRefundQty(raw: any, max: number): number {
+  const n = Math.floor(Number(raw) || 0);
+  if (n < 0) return 0;
+  if (n > max) return max;
+  return n;
+}
+
+function getSelectedRefundLines(
+  draft: RefundDraft,
+  items: OrderItem[]
+): Array<{ itemId: string; qty: number }> {
+  if (draft.mode === "ALL") {
+    return items
+      .map((it) => {
+        const itemId = String(it.id || "").trim();
+        const maxQty = getOrderItemQty(it);
+        return itemId ? { itemId, qty: maxQty } : null;
+      })
+      .filter((row): row is { itemId: string; qty: number } => !!row && row.qty > 0);
+  }
+
+  return items
+    .map((it) => {
+      const itemId = String(it.id || "").trim();
+      const checked = !!draft.selectedItemIds?.[itemId];
+      const maxQty = getOrderItemQty(it);
+      const qty = clampRefundQty(draft.selectedQtyByItemId?.[itemId], maxQty);
+
+      if (!itemId || !checked || qty <= 0) return null;
+      return { itemId, qty };
+    })
+    .filter((row): row is { itemId: string; qty: number } => !!row);
+}
+
+function getSelectedRefundItemIdsFromLines(
+  draft: RefundDraft,
+  items: OrderItem[]
+): string[] {
+  return getSelectedRefundLines(draft, items).map((row) => row.itemId);
+}
+
+function allSelectedRefundQtyValid(draft: RefundDraft, items: OrderItem[]): boolean {
+  const lines = getSelectedRefundLines(draft, items);
+  if (!lines.length) return false;
+
+  const itemMap = new Map(items.map((it) => [String(it.id), it]));
+  return lines.every((row) => {
+    const it = itemMap.get(row.itemId);
+    if (!it) return false;
+    const maxQty = getOrderItemQty(it);
+    return row.qty > 0 && row.qty <= maxQty;
+  });
+}
+
+function allSelectedItemsHaveEvidenceForLines(draft: RefundDraft, items: OrderItem[]): boolean {
+  const selectedIds = getSelectedRefundItemIdsFromLines(draft, items);
+  if (!selectedIds.length) return false;
+  return selectedIds.every((id) => hasEvidenceForItem(draft, id));
+}
+
 function normalizeRefund(r: any): RefundRow {
   const evidenceUrls =
-    (Array.isArray(r?.meta?.evidenceUrls) && r.meta.evidenceUrls) ||
-    (Array.isArray(r?.meta?.images) && r.meta.images) ||
-    [];
+    Array.isArray(r?.evidenceUrls)
+      ? r.evidenceUrls
+      : Array.isArray(r?.meta?.evidenceUrls)
+        ? r.meta.evidenceUrls
+        : [];
 
   return {
     id: String(r?.id ?? ""),
-    orderId: r?.orderId ? String(r.orderId) : null,
+    orderId: r?.orderId ? String(r.orderId) : r?.order?.id ? String(r.order.id) : null,
+    purchaseOrderId:
+      r?.purchaseOrderId
+        ? String(r.purchaseOrderId)
+        : r?.purchaseOrder?.id
+          ? String(r.purchaseOrder.id)
+          : null,
+    supplierId:
+      r?.supplierId
+        ? String(r.supplierId)
+        : r?.supplier?.id
+          ? String(r.supplier.id)
+          : null,
+
     status: r?.status ?? null,
     reason: r?.reason ?? null,
-    message: r?.message ?? null,
-    createdAt: r?.createdAt ?? null,
     meta: r?.meta ?? null,
+
+    itemsAmount: r?.itemsAmount ?? null,
+    taxAmount: r?.taxAmount ?? null,
+    serviceFeeBaseAmount: r?.serviceFeeBaseAmount ?? null,
+    serviceFeeCommsAmount: r?.serviceFeeCommsAmount ?? null,
+    serviceFeeGatewayAmount: r?.serviceFeeGatewayAmount ?? null,
+    totalAmount: r?.totalAmount ?? null,
+
+    createdAt: r?.createdAt ?? null,
+    requestedAt: r?.requestedAt ?? null,
+    processedAt: r?.processedAt ?? null,
+    paidAt: r?.paidAt ?? null,
+    adminResolvedAt: r?.adminResolvedAt ?? null,
+    supplierRespondedAt: r?.supplierRespondedAt ?? null,
+
+    supplierNote: r?.supplierNote ?? null,
+    supplierResponse: r?.supplierResponse ?? null,
+    adminNote: r?.adminNote ?? null,
+    adminDecision: r?.adminDecision ?? null,
+    provider: r?.provider ?? null,
+    providerReference: r?.providerReference ?? null,
+    providerStatus: r?.providerStatus ?? null,
+
     evidenceUrls,
-    supplier: r?.supplier ? { id: String(r.supplier.id ?? ""), name: r.supplier.name ?? null } : null,
+
+    supplier: r?.supplier
+      ? {
+        id: String(r.supplier.id ?? ""),
+        name: r.supplier.name ?? null,
+      }
+      : null,
+
     purchaseOrder: r?.purchaseOrder
       ? {
         id: String(r.purchaseOrder.id ?? ""),
@@ -236,6 +468,7 @@ function normalizeRefund(r: any): RefundRow {
         payoutStatus: r.purchaseOrder.payoutStatus ?? null,
       }
       : null,
+
     events: Array.isArray(r?.events)
       ? r.events.map((e: any) => ({
         id: String(e?.id ?? ""),
@@ -244,6 +477,7 @@ function normalizeRefund(r: any): RefundRow {
         createdAt: e?.createdAt ?? null,
       }))
       : [],
+
     items: Array.isArray(r?.items)
       ? r.items.map((it: any) => ({
         id: String(it?.id ?? ""),
@@ -260,12 +494,121 @@ function normalizeRefund(r: any): RefundRow {
   };
 }
 
-function normalizeRefunds(payload: any): RefundRow[] {
-  const list =
-    (payload && Array.isArray(payload.data) && payload.data) ||
-    (Array.isArray(payload) && payload) ||
-    [];
-  return list.map(normalizeRefund);
+function upper(v: any) {
+  return String(v || "").trim().toUpperCase();
+}
+
+function firstValidDate(...values: any[]): string | null {
+  for (const raw of values) {
+    if (!raw) continue;
+    const d = new Date(String(raw));
+    if (!Number.isNaN(+d)) return d.toISOString();
+  }
+  return null;
+}
+
+function latestMatchingRefundEventDate(refund: RefundRow, patterns: string[]): string | null {
+  const events = Array.isArray(refund.events) ? refund.events : [];
+  const hits = events
+    .filter((e) => {
+      const hay = `${e?.type || ""} ${e?.message || ""}`.toUpperCase();
+      return patterns.some((p) => hay.includes(p));
+    })
+    .map((e) => {
+      const raw = e?.createdAt;
+      if (!raw) return null;
+      const d = new Date(String(raw));
+      return Number.isNaN(+d) ? null : d;
+    })
+    .filter((d): d is Date => !!d)
+    .sort((a, b) => b.getTime() - a.getTime());
+
+  return hits.length ? hits[0].toISOString() : null;
+}
+
+function pickMoney(...values: any[]): number {
+  for (const v of values) {
+    const n = fmtN(v);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+function getRefundItemsAmount(refund: RefundRow): number {
+  return fmtN(refund.itemsAmount);
+}
+
+function getRefundTaxAmount(refund: RefundRow): number {
+  return fmtN(refund.taxAmount);
+}
+
+function getRefundServiceFeeAmount(refund: RefundRow): number {
+  return (
+    fmtN(refund.serviceFeeBaseAmount) +
+    fmtN(refund.serviceFeeCommsAmount) +
+    fmtN(refund.serviceFeeGatewayAmount)
+  );
+}
+
+function getRefundAmount(refund: RefundRow): number {
+  return fmtN(refund.totalAmount);
+}
+
+function getRefundPaidOutAt(refund: RefundRow): string | null {
+  return refund.paidAt || null;
+}
+
+function isRefundPaidToCustomer(refund: RefundRow): boolean {
+  return !!refund.paidAt || upper(refund.status) === "REFUNDED";
+}
+
+function isRefundOpenStatus(status?: string | null): boolean {
+  return [
+    "REQUESTED",
+    "SUPPLIER_REVIEW",
+    "SUPPLIER_ACCEPTED",
+    "SUPPLIER_REJECTED",
+    "ESCALATED",
+    "APPROVED",
+  ].includes(upper(status));
+}
+
+function getRefundFinancialLabel(refund: RefundRow): string {
+  if (refund.paidAt) return "Paid to customer";
+  if (upper(refund.status) === "REFUNDED") return "Refunded";
+  if (isRefundOpenStatus(refund.status)) return "In progress";
+  if (upper(refund.status) === "REJECTED") return "Rejected";
+  if (upper(refund.status) === "CLOSED") return "Closed";
+  return upper(refund.status || "—").replace(/_/g, " ");
+}
+
+
+function getRefundTaxPolicyLabel() {
+  return "VAT is already included in supplier item prices and is not refunded separately.";
+}
+function getRefundsForPurchaseOrder(po: PurchaseOrderRow, refunds: RefundRow[]): RefundRow[] {
+  const poId = String(po?.id || "").trim();
+  if (!poId) return [];
+
+  return refunds.filter((r) => {
+    const refundPoId = String(r.purchaseOrderId ?? r.purchaseOrder?.id ?? r.meta?.purchaseOrderId ?? "").trim();
+    return refundPoId === poId;
+  });
+}
+
+function getRefundsForOrder(order: OrderRow, refunds: RefundRow[]): RefundRow[] {
+  const orderId = String(order?.id || "").trim();
+  const poIds = new Set(
+    (Array.isArray(order?.purchaseOrders) ? order.purchaseOrders : [])
+      .map((po) => String(po?.id || "").trim())
+      .filter(Boolean)
+  );
+
+  return refunds.filter((r) => {
+    const refundOrderId = String(r.orderId ?? r.meta?.orderId ?? "").trim();
+    const refundPoId = String(r.purchaseOrderId ?? r.purchaseOrder?.id ?? r.meta?.purchaseOrderId ?? "").trim();
+    return refundOrderId === orderId || (refundPoId && poIds.has(refundPoId));
+  });
 }
 
 /* ---------------- Utils ---------------- */
@@ -274,6 +617,299 @@ const ngn = new Intl.NumberFormat("en-NG", {
   currency: "NGN",
   maximumFractionDigits: 2,
 });
+
+
+
+function getComplaintWindowDays(details: OrderRow): number | null {
+  const candidates = [
+    details?.complaintWindowDays,
+    (details as any)?.refundRequestWindowDays,
+    (details as any)?.refund_window_days,
+    (details as any)?.meta?.complaintWindowDays,
+    (details as any)?.meta?.refundRequestWindowDays,
+    (details as any)?.settings?.complaintWindowDays,
+  ];
+
+  for (const raw of candidates) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) {
+      return Math.floor(n);
+    }
+  }
+
+  return null;
+}
+
+function isPurchaseOrderDeliveredForRefund(po: PurchaseOrderRow | null | undefined): boolean {
+  if (!po) return false;
+
+  const poStatus = String(po.status || "").trim().toUpperCase();
+  const deliveredAt = po.deliveredAt ? new Date(String(po.deliveredAt)) : null;
+  const otpVerifiedAt = po.deliveryOtpVerifiedAt ? new Date(String(po.deliveryOtpVerifiedAt)) : null;
+
+  const hasDeliveredDate =
+    !!deliveredAt && !Number.isNaN(+deliveredAt);
+
+  const hasOtpDeliveredDate =
+    !!otpVerifiedAt && !Number.isNaN(+otpVerifiedAt);
+
+  if (poStatus === "DELIVERED" && (hasDeliveredDate || hasOtpDeliveredDate)) {
+    return true;
+  }
+
+  if (hasDeliveredDate || hasOtpDeliveredDate) {
+    return true;
+  }
+
+  return false;
+}
+
+function getRefundBaseDate(details: OrderRow): Date | null {
+  const purchaseOrders = Array.isArray(details.purchaseOrders) ? details.purchaseOrders : [];
+  if (!purchaseOrders.length) return null;
+
+  const deliveredDates = purchaseOrders
+    .map((po) => {
+      if (!isPurchaseOrderDeliveredForRefund(po)) return null;
+
+      const raw = po?.deliveredAt || po?.deliveryOtpVerifiedAt || null;
+      if (!raw) return null;
+
+      const d = new Date(String(raw));
+      return Number.isNaN(+d) ? null : d;
+    })
+    .filter((d): d is Date => !!d)
+    .sort((a, b) => b.getTime() - a.getTime());
+
+  if (!deliveredDates.length) {
+    return null;
+  }
+
+  // Use the latest delivered PO so the complaint window starts
+  // after the whole order is effectively delivered.
+  return deliveredDates[0];
+}
+
+function isWithinComplaintWindow(details: OrderRow): boolean {
+  const baseDate = getRefundBaseDate(details);
+  if (!baseDate) return false;
+
+  const windowDays = getComplaintWindowDays(details);
+  if (windowDays == null || windowDays <= 0) return false;
+
+  const cutoff = baseDate.getTime() + windowDays * 24 * 60 * 60 * 1000;
+  return Date.now() <= cutoff;
+}
+
+function hasOpenRefundForPurchaseOrder(purchaseOrderId: string, refunds: RefundRow[]): boolean {
+  const poid = String(purchaseOrderId || "").trim();
+  if (!poid) return false;
+
+  return refunds.some((r) => {
+    const refundPoId = String(
+      r.purchaseOrderId ??
+      r.purchaseOrder?.id ??
+      r.meta?.purchaseOrderId ??
+      ""
+    ).trim();
+
+    if (refundPoId !== poid) return false;
+
+    const st = String(r.status || "").trim().toUpperCase();
+    return [
+      "REQUESTED",
+      "SUPPLIER_REVIEW",
+      "SUPPLIER_ACCEPTED",
+      "SUPPLIER_REJECTED",
+      "ESCALATED",
+      "APPROVED",
+      "PROCESSING",
+    ].includes(st);
+  });
+}
+
+function getItemsForPurchaseOrder(details: OrderRow, po: PurchaseOrderRow): OrderItem[] {
+  const items = Array.isArray(details.items) ? details.items : [];
+  const supplierId = String(po?.supplierId || "").trim();
+  const purchaseOrderId = String(po?.id || "").trim();
+
+  if (!supplierId && !purchaseOrderId) return [];
+
+  return items.filter((it: any) => {
+    const itemSupplierId = String(
+      it?.chosenSupplierId ??
+      it?.supplierId ??
+      it?.supplier?.id ??
+      ""
+    ).trim();
+
+    const itemPoId = String(
+      it?.purchaseOrderId ??
+      it?.poId ??
+      ""
+    ).trim();
+
+    if (purchaseOrderId && itemPoId) {
+      return itemPoId === purchaseOrderId;
+    }
+
+    if (supplierId && itemSupplierId) {
+      return itemSupplierId === supplierId;
+    }
+
+    return false;
+  });
+}
+
+
+function getPurchaseOrderDisplayStatus(po: {
+  status?: string | null;
+  payoutStatus?: string | null;
+}) {
+  const status = String(po?.status || "").toUpperCase();
+  const payoutStatus = String(po?.payoutStatus || "").toUpperCase();
+
+  if (status === "REFUND_REQUESTED" && payoutStatus === "REFUNDED") {
+    return "REFUNDED";
+  }
+
+  return status || "—";
+}
+
+function getRefundBaseDateForPo(po: PurchaseOrderRow | null | undefined): Date | null {
+  if (!po) return null;
+
+  const raw = po.deliveredAt || po.deliveryOtpVerifiedAt || null;
+  if (!raw) return null;
+
+  const d = new Date(String(raw));
+  return Number.isNaN(+d) ? null : d;
+}
+
+function isWithinComplaintWindowForPo(details: OrderRow, po: PurchaseOrderRow): boolean {
+  const baseDate = getRefundBaseDateForPo(po);
+  if (!baseDate) return false;
+
+  const windowDays = getComplaintWindowDays(details);
+  if (windowDays == null || windowDays <= 0) return false;
+
+  const cutoff = baseDate.getTime() + windowDays * 24 * 60 * 60 * 1000;
+  return Date.now() <= cutoff;
+}
+
+function canRequestRefundForPo(
+  details: OrderRow,
+  po: PurchaseOrderRow,
+  latestPayment: PaymentRow | null,
+  refunds: RefundRow[] = []
+): boolean {
+  const orderId = String(details.id || "").trim();
+  const orderStatus = String(details.status || "").trim().toUpperCase();
+  const purchaseOrderId = String(po?.id || "").trim();
+
+  if (!orderId || !purchaseOrderId) return false;
+
+  if (["REFUNDED", "CANCELED", "CANCELLED"].includes(orderStatus)) {
+    return false;
+  }
+
+  const poStatus = String(po?.status || "").trim().toUpperCase();
+  if (["REFUNDED", "CANCELED", "CANCELLED"].includes(poStatus)) {
+    return false;
+  }
+
+  if (hasOpenRefundForPurchaseOrder(purchaseOrderId, refunds)) {
+    return false;
+  }
+
+  const isPaidEffective =
+    isPaidStatus(details.status) ||
+    isPaidStatus(latestPayment?.status);
+
+  if (!isPaidEffective) {
+    return false;
+  }
+
+  if (!isPurchaseOrderDeliveredForRefund(po)) {
+    return false;
+  }
+
+  const poItems = getItemsForPurchaseOrder(details, po);
+  if (!poItems.length) {
+    return false;
+  }
+
+  return isWithinComplaintWindowForPo(details, po);
+}
+
+function hasOpenRefundForOrder(orderId: string, refunds: RefundRow[]): boolean {
+  const oid = String(orderId || "").trim();
+  if (!oid) return false;
+
+  return refunds.some((r) => {
+    if (String(r.orderId || "").trim() !== oid) return false;
+
+    const st = String(r.status || "").trim().toUpperCase();
+    return [
+      "REQUESTED",
+      "SUPPLIER_REVIEW",
+      "SUPPLIER_ACCEPTED",
+      "SUPPLIER_REJECTED",
+      "ESCALATED",
+      "APPROVED",
+      "PROCESSING",
+    ].includes(st);
+  });
+}
+
+function canRequestRefundAsCustomer(
+  details: OrderRow,
+  latestPayment: PaymentRow | null,
+  refunds: RefundRow[] = []
+): boolean {
+  const orderId = String(details.id || "").trim();
+  const orderStatus = String(details.status || "").trim().toUpperCase();
+
+  if (!orderId) return false;
+
+  if (["REFUNDED", "CANCELED", "CANCELLED"].includes(orderStatus)) {
+    return false;
+  }
+
+  if (hasOpenRefundForOrder(orderId, refunds)) {
+    return false;
+  }
+
+  const isPaidEffective =
+    isPaidStatus(details.status) ||
+    isPaidStatus(latestPayment?.status);
+
+  if (!isPaidEffective) {
+    return false;
+  }
+
+  const purchaseOrders = Array.isArray(details.purchaseOrders) ? details.purchaseOrders : [];
+  if (!purchaseOrders.length) {
+    return false;
+  }
+
+  // Be strict: if any PO is not delivered yet, do not show refund request.
+  const allPurchaseOrdersDelivered = purchaseOrders.every((po) =>
+    isPurchaseOrderDeliveredForRefund(po)
+  );
+
+  if (!allPurchaseOrdersDelivered) {
+    return false;
+  }
+
+  const complaintWindowDays = getComplaintWindowDays(details);
+  if (complaintWindowDays == null || complaintWindowDays <= 0) {
+    return false;
+  }
+
+  return isWithinComplaintWindow(details);
+}
+
 
 const fmtN = (n?: number | string | null) => {
   if (n == null) return 0;
@@ -297,6 +933,40 @@ const fmtDate = (s?: string | null) => {
     });
 };
 
+function getPurchaseOrderDeliveryDate(po?: PurchaseOrderRow | null): Date | null {
+  if (!po) return null;
+
+  const raw = po.deliveredAt || po.deliveryOtpVerifiedAt || null;
+  if (!raw) return null;
+
+  const d = new Date(String(raw));
+  return Number.isNaN(+d) ? null : d;
+}
+
+function getPurchaseOrderDeliveryDisplay(po?: PurchaseOrderRow | null): string | null {
+  const d = getPurchaseOrderDeliveryDate(po);
+  return d ? fmtDate(d.toISOString()) : null;
+}
+
+function getOrderFinalDeliveryDate(order?: OrderRow | null): Date | null {
+  if (!order) return null;
+
+  const purchaseOrders = Array.isArray(order.purchaseOrders) ? order.purchaseOrders : [];
+  if (!purchaseOrders.length) return null;
+
+  const deliveredDates = purchaseOrders
+    .map((po) => getPurchaseOrderDeliveryDate(po))
+    .filter((d): d is Date => !!d)
+    .sort((a, b) => b.getTime() - a.getTime());
+
+  return deliveredDates.length ? deliveredDates[0] : null;
+}
+
+function getOrderFinalDeliveryDisplay(order?: OrderRow | null): string | null {
+  const d = getOrderFinalDeliveryDate(order);
+  return d ? fmtDate(d.toISOString()) : null;
+}
+
 const todayYMD = () => {
   const d = new Date();
   const y = d.getFullYear();
@@ -308,38 +978,159 @@ const todayYMD = () => {
 const toYMD = (s?: string) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "");
 
 /* ---------------- Shared helpers ---------------- */
+function firstNonEmptyString(...values: any[]): string {
+  for (const value of values) {
+    const s = String(value ?? "").trim();
+    if (s) return s;
+  }
+  return "";
+}
+
+function safePathFromUrlLike(input: string): string {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+
+  if (raw.startsWith("/")) return raw;
+
+  try {
+    const u = new URL(raw);
+    return `${u.pathname || ""}${u.search || ""}${u.hash || ""}`;
+  } catch {
+    return raw;
+  }
+}
+
+/* ---------------- Shared helpers ---------------- */
 function getProductHref(it: OrderItem): string {
-  const productId = String(it.productId || "").trim();
-  return productId ? `/products/${encodeURIComponent(productId)}` : "";
+  const directHref = firstNonEmptyString(
+    it.href,
+    it.url,
+    it.path,
+    it.product?.href,
+    it.product?.url,
+    it.product?.path
+  );
+
+  if (directHref) {
+    return safePathFromUrlLike(directHref);
+  }
+
+  const productRef = firstNonEmptyString(
+    it.productId,
+    it.product?.id,
+    it.product?.slug,
+    it.variant?.productId,
+    it.productVariant?.productId,
+    it.productVariant?.product?.id,
+    it.productVariant?.product?.slug
+  );
+
+  if (!productRef) return "";
+
+  const params = new URLSearchParams();
+
+  const variantId = firstNonEmptyString(
+    it.variant?.id,
+    it.productVariant?.id
+  );
+  if (variantId) params.set("variantId", variantId);
+
+  const selectedOptions = normalizeSelectedOptionsForDisplay(
+    it.selectedOptions ?? it.options ?? it.selectedOptionsJson
+  );
+  if (selectedOptions.length) {
+    params.set("selectedOptions", JSON.stringify(selectedOptions));
+  }
+
+  const qs = params.toString();
+  return `/products/${encodeURIComponent(productRef)}${qs ? `?${qs}` : ""}`;
+}
+
+
+
+function getFirstImageFromOrderItem(it: OrderItem): string | null {
+  const candidates: any[] = [
+    it.product?.image,
+    ...(Array.isArray(it.variant?.imagesJson) ? it.variant.imagesJson : []),
+    ...(Array.isArray(it.product?.imagesJson) ? it.product.imagesJson : []),
+    it.productVariant?.image,
+    ...(Array.isArray(it.productVariant?.imagesJson) ? it.productVariant.imagesJson : []),
+    ...(Array.isArray(it.productVariant?.images) ? it.productVariant.images : []),
+  ];
+
+  for (const raw of candidates) {
+    const s = String(raw || "").trim();
+    if (!s) continue;
+
+    // If image is already absolute, keep it
+    if (/^https?:\/\//i.test(s)) return s;
+
+    // Keep root-relative paths too; cart page can resolve them later
+    if (s.startsWith("/")) return s;
+
+    // Common fallback for bare upload paths
+    return `/${s.replace(/^\/+/, "")}`;
+  }
+
+  return null;
+}
+
+function buildOptionsKey(
+  selectedOptions: Array<{ attribute: string; value: string }>
+): string {
+  return [...(selectedOptions || [])]
+    .map((opt) => {
+      const attribute = String(opt.attribute || "").trim();
+      const value = String(opt.value || "").trim();
+      return attribute || value ? `${attribute}:${value}` : "";
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+    .join("|");
 }
 
 function buildBuyAgainCartLine(it: OrderItem) {
   const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
   const unitPrice = fmtN(it.unitPrice ?? it.price);
-  const title = (it.title || it.product?.title || "Product").toString();
+  const title = (it.title || it.product?.title || "Product").toString().trim();
 
   const selectedOptions = normalizeSelectedOptionsForDisplay(
     it.selectedOptions ?? it.options ?? it.selectedOptionsJson
   );
 
-  const variantId = it.variant?.id ? String(it.variant.id) : undefined;
-  const variantSku = it.variant?.sku ?? undefined;
+  const productId = firstNonEmptyString(
+    it.productId,
+    it.product?.id,
+    it.variant?.productId,
+    it.productVariant?.productId,
+    it.productVariant?.product?.id
+  );
+
+  const variantId = firstNonEmptyString(
+    it.variant?.id,
+    it.productVariant?.id
+  ) || undefined;
+
+  const imageSnapshot = getFirstImageFromOrderItem(it);
+  const optionsKey = variantId ? buildOptionsKey(selectedOptions) : "";
 
   return {
     kind: variantId ? ("VARIANT" as const) : ("BASE" as const),
-    productId: String(it.productId || ""),
-    title,
-    qty,
-    unitPrice,
+    productId,
     variantId,
-    variantSku,
+    qty,
+    optionsKey,
+
     selectedOptions,
+    titleSnapshot: title,
+    imageSnapshot,
+    unitPriceCache: unitPrice,
   };
 }
 
 function isPaidStatus(status?: string | null): boolean {
-  const s = String(status || "").toUpperCase();
-  return ["PAID", "VERIFIED", "SUCCESS", "SUCCESSFUL", "COMPLETED"].includes(s);
+  const s = String(status || "").trim().toUpperCase();
+  return ["PAID", "VERIFIED", "SUCCESS", "SUCCESSFUL", "COMPLETED", "FUNDED"].includes(s);
 }
 
 function latestPaymentOf(o: OrderRow): PaymentRow | null {
@@ -388,11 +1179,14 @@ function cryptoFallbackId(it: any) {
     return String(Math.random()).slice(2);
   }
 }
-
 function normalizeItem(it: any): OrderItem {
   const id = String(it?.id ?? it?.orderItemId ?? it?.lineId ?? cryptoFallbackId(it));
 
-  const quantity = it?.quantity ?? it?.qty ?? it?.count ?? (it?.lineQuantity != null ? it.lineQuantity : undefined);
+  const quantity =
+    it?.quantity ??
+    it?.qty ??
+    it?.count ??
+    (it?.lineQuantity != null ? it.lineQuantity : undefined);
 
   const unitPrice =
     it?.unitPrice ??
@@ -402,40 +1196,98 @@ function normalizeItem(it: any): OrderItem {
     it?.unit_amount_value ??
     undefined;
 
-  const lineTotal = it?.lineTotal ?? it?.total ?? it?.subtotal ?? it?.line_amount ?? undefined;
+  const lineTotal =
+    it?.lineTotal ??
+    it?.total ??
+    it?.subtotal ??
+    it?.line_amount ??
+    undefined;
 
-  const product = it?.product ?? it?.Product ?? null;
-  const productTitle = it?.productTitle ?? it?.title ?? product?.title ?? null;
+  const product = it?.product ?? it?.Product ?? it?.itemProduct ?? null;
+  const rawVariant = it?.variant ?? it?.productVariant ?? it?.Variant ?? null;
 
-  const variant = it?.variant ?? it?.productVariant ?? it?.Variant ?? null;
+  const resolvedProductId = firstNonEmptyString(
+    it?.productId,
+    product?.id,
+    rawVariant?.productId,
+    it?.productVariant?.productId,
+    it?.product?.productId,
+    it?.Product?.id
+  ) || null;
 
-  let selectedOptions: any = it?.selectedOptions ?? it?.options ?? it?.selectedOptionsJson ?? null;
+  const productTitle =
+    it?.productTitle ??
+    it?.title ??
+    product?.title ??
+    product?.name ??
+    null;
+
+  let selectedOptions: any =
+    it?.selectedOptions ??
+    it?.options ??
+    it?.selectedOptionsJson ??
+    it?.variantOptions ??
+    null;
+
   if (typeof selectedOptions === "string") {
     try {
       selectedOptions = JSON.parse(selectedOptions);
     } catch {
-      // ignore
+      // ignore invalid JSON
     }
   }
 
   return {
     id,
-    productId: it?.productId ?? null,
+    productId: resolvedProductId,
     title: it?.title ?? productTitle ?? null,
     unitPrice: unitPrice ?? null,
     quantity: quantity ?? null,
     lineTotal: lineTotal ?? null,
     status: it?.status ?? null,
-    product: product ? { title: product?.title ?? null } : null,
-    chosenSupplierUnitPrice: it?.chosenSupplierUnitPrice ?? it?.supplierUnitPrice ?? null,
-    selectedOptions,
-    variant: variant
+
+    product: product
       ? {
-        id: String(variant?.id ?? ""),
-        sku: variant?.sku ?? null,
-        imagesJson: variant?.imagesJson ?? variant?.images ?? null,
+        id: product?.id ? String(product.id) : null,
+        title: product?.title ?? product?.name ?? null,
+        slug: product?.slug ?? null,
+        href: product?.href ?? null,
+        url: product?.url ?? null,
+        path: product?.path ?? null,
+        image:
+          product?.image ??
+          product?.imageUrl ??
+          product?.thumbnail ??
+          null,
+        imagesJson: product?.imagesJson ?? product?.images ?? null,
       }
       : null,
+
+    chosenSupplierId: it?.chosenSupplierId ?? it?.supplierId ?? null,
+    chosenSupplierUnitPrice: it?.chosenSupplierUnitPrice ?? it?.supplierUnitPrice ?? null,
+    selectedOptions,
+
+    variant: rawVariant
+      ? {
+        id: String(rawVariant?.id ?? ""),
+        productId: rawVariant?.productId ? String(rawVariant.productId) : null,
+        sku: rawVariant?.sku ?? null,
+        imagesJson: rawVariant?.imagesJson ?? rawVariant?.images ?? null,
+      }
+      : null,
+
+    qty: it?.qty ?? null,
+    price: it?.price ?? null,
+    total: it?.total ?? null,
+    subtotal: it?.subtotal ?? null,
+    productTitle: productTitle ?? null,
+    options: it?.options ?? null,
+    selectedOptionsJson: it?.selectedOptionsJson ?? null,
+    productVariant: it?.productVariant ?? null,
+
+    href: it?.href ?? it?.url ?? it?.path ?? null,
+    url: it?.url ?? null,
+    path: it?.path ?? null,
   };
 }
 
@@ -469,6 +1321,8 @@ function normalizeOrder(raw: any): OrderRow {
     subtotal: po?.subtotal ?? null,
     platformFee: po?.platformFee ?? null,
     createdAt: po?.createdAt ?? null,
+    deliveredAt: po?.deliveredAt ?? null,
+    deliveryOtpVerifiedAt: po?.deliveryOtpVerifiedAt ?? null,
     payoutStatus: po?.payoutStatus ?? null,
     paidOutAt: po?.paidOutAt ?? null,
   }));
@@ -521,6 +1375,15 @@ function normalizeOrder(raw: any): OrderRow {
     subtotal: raw?.subtotal ?? raw?.subTotal ?? raw?.itemsSubtotal ?? null,
     tax: raw?.tax ?? raw?.vat ?? null,
     createdAt: raw?.createdAt ?? raw?.created_at ?? raw?.placedAt ?? null,
+    complaintWindowDays:
+      raw?.complaintWindowDays ??
+      raw?.refundRequestWindowDays ??
+      raw?.refund_window_days ??
+      raw?.meta?.complaintWindowDays ??
+      raw?.meta?.refundRequestWindowDays ??
+      raw?.refundMeta?.complaintWindowDays ??
+      raw?.settings?.complaintWindowDays ??
+      null,
     items,
     payments: payments.length
       ? payments.map((p) => ({
@@ -768,16 +1631,6 @@ function orderCommsCost(o: OrderRow): number {
   return 0;
 }
 
-function canRequestRefundAsCustomer(details: OrderRow, latestPayment: PaymentRow | null): boolean {
-  const st = String(details.status || "").toUpperCase();
-  if (["REFUNDED", "CANCELED", "CANCELLED"].includes(st)) return false;
-
-  const isPaidEffective = isPaidStatus(details.status) || isPaidStatus(latestPayment?.status);
-  if (!isPaidEffective) return false;
-
-  return true;
-}
-
 function normalizeSelectedOptionsForDisplay(input: any): Array<{ attribute: string; value: string }> {
   let raw = input;
 
@@ -963,10 +1816,9 @@ const OrdersFilterBar = React.memo(function OrdersFilterBar({
 }: {
   qInput: string;
   setQInput: React.Dispatch<React.SetStateAction<string>>;
-  statusFilter: "ALL" | "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED";
-  setStatusFilter: React.Dispatch<
-    React.SetStateAction<"ALL" | "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED">
-  >;
+  statusFilter: OrderFilterStatus;
+  setStatusFilter: React.Dispatch<React.SetStateAction<OrderFilterStatus>>;
+
   from: string;
   setFrom: React.Dispatch<React.SetStateAction<string>>;
   to: string;
@@ -1048,8 +1900,9 @@ const OrdersFilterBar = React.memo(function OrdersFilterBar({
             className={`w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
           >
             <option value="ALL">All</option>
-            <option value="PENDING">Pending</option>
-            <option value="PAID">Paid</option>
+            <option value="DELIVERED">Delivered</option>
+            <option value="PENDING">Pending/Created</option>
+            <option value="AWAITING FULFILLMENT">Awaiting Fulfillment/Paid</option>
             <option value="FAILED">Failed</option>
             <option value="CANCELED">Canceled</option>
             <option value="REFUNDED">Refunded</option>
@@ -1151,6 +2004,84 @@ const OrdersFilterBar = React.memo(function OrdersFilterBar({
   );
 });
 
+
+function getOrderFilterBucket(
+  o: OrderRow
+): Exclude<OrderFilterStatus, "ALL"> {
+  const orderStatus = String(o.status || "").trim().toUpperCase();
+  const latestPayment = latestPaymentOf(o);
+  const paymentStatus = String(latestPayment?.status || "").trim().toUpperCase();
+
+  const purchaseOrders = Array.isArray(o.purchaseOrders) ? o.purchaseOrders : [];
+  const hasPurchaseOrders = purchaseOrders.length > 0;
+
+  const poStatuses = purchaseOrders.map((po) => String(po.status || "").trim().toUpperCase());
+
+  const hasReleasedPayout = purchaseOrders.some((po) => {
+    const payout = String(po.payoutStatus || "").trim().toUpperCase();
+    return payout === "RELEASED" || payout === "PAID";
+  });
+
+  const allPurchaseOrdersDelivered =
+    hasPurchaseOrders &&
+    purchaseOrders.every((po) => isPurchaseOrderDeliveredForRefund(po));
+
+  const anyPurchaseOrderInFulfillment = purchaseOrders.some((po) => {
+    const s = String(po.status || "").trim().toUpperCase();
+    return [
+      "PENDING",
+      "CONFIRMED",
+      "PROCESSING",
+      "PACKED",
+      "SHIPPED",
+      "OUT_FOR_DELIVERY",
+    ].includes(s);
+  });
+
+  const isRefunded =
+    orderStatus === "REFUNDED" ||
+    paymentStatus === "REFUNDED";
+
+  if (isRefunded) return "REFUNDED";
+
+  const isCanceled =
+    ["CANCELED", "CANCELLED"].includes(orderStatus);
+
+  if (isCanceled) return "CANCELED";
+
+  const isFailed =
+    ["FAILED", "FAILURE", "ABANDONED"].includes(paymentStatus) ||
+    ["PAYMENT_FAILED", "FAILED"].includes(orderStatus);
+
+  if (isFailed) return "FAILED";
+
+  const isDelivered =
+    orderStatus === "DELIVERED" ||
+    allPurchaseOrdersDelivered ||
+    hasReleasedPayout;
+
+  if (isDelivered) return "DELIVERED";
+
+  const isPaidEffective =
+    isPaidStatus(orderStatus) ||
+    isPaidStatus(paymentStatus) ||
+    orderStatus === "FUNDED";
+
+  const isAwaitingFulfillment =
+    isPaidEffective &&
+    (
+      ["FUNDED", "CONFIRMED", "PROCESSING", "PACKED", "SHIPPED", "OUT_FOR_DELIVERY"].includes(orderStatus) ||
+      anyPurchaseOrderInFulfillment ||
+      (hasPurchaseOrders && !allPurchaseOrdersDelivered)
+    );
+
+  if (isAwaitingFulfillment) return "AWAITING FULFILLMENT";
+
+  return "PENDING";
+}
+
+
+
 /* ---------------- Page ---------------- */
 export default function OrdersPage() {
   const nav = useNavigate();
@@ -1167,9 +2098,10 @@ export default function OrdersPage() {
   const [qInput, setQInput] = useState(initialQ);
   const [q, setQ] = useState(initialQ);
 
-  const [statusFilter, setStatusFilter] = useState<
-    "ALL" | "PENDING" | "PAID" | "FAILED" | "CANCELED" | "REFUNDED"
-  >(((searchParams.get("status") || "ALL").toUpperCase() as any) || "ALL");
+  const [statusFilter, setStatusFilter] = useState<OrderFilterStatus>(
+    (((searchParams.get("status") || "ALL").toUpperCase() as OrderFilterStatus) || "ALL")
+  );
+
   const [from, setFrom] = useState(searchParams.get("from") || "");
   const [to, setTo] = useState(searchParams.get("to") || "");
   const [minTotal, setMinTotal] = useState(searchParams.get("minTotal") || "");
@@ -1213,6 +2145,9 @@ export default function OrdersPage() {
   const storeUserId = useAuthStore((s) => s.user?.id ?? null);
   const authHydrated = useAuthStore((s) => s.hydrated);
   const [manualRefreshing, setManualRefreshing] = useState(false);
+
+  const orderAnchorRefs = useRef<Record<string, HTMLElement | null>>({});
+  const pendingAnchorOrderIdRef = useRef<string | null>(null);
 
   const meQ = useQuery({
     queryKey: ["me-min"],
@@ -1313,6 +2248,7 @@ export default function OrdersPage() {
     else next.delete("q");
 
     next.delete("orderId");
+    next.delete("open");
 
     if (from) next.set("from", from);
     else next.delete("from");
@@ -1331,9 +2267,6 @@ export default function OrdersPage() {
 
     next.set("page", String(page));
 
-    if (expandedId) next.set("open", expandedId);
-    else next.delete("open");
-
     const currentStr = current.toString();
     const nextStr = next.toString();
 
@@ -1348,7 +2281,7 @@ export default function OrdersPage() {
         page,
       });
 
-      setSearchParams(next, { replace: true });
+      setSearchParams(next, { replace: true, preventScrollReset: true });
     }
   }, [
     location.search,
@@ -1359,7 +2292,6 @@ export default function OrdersPage() {
     maxTotal,
     statusFilter,
     page,
-    expandedId,
     setSearchParams,
   ]);
 
@@ -1418,16 +2350,20 @@ export default function OrdersPage() {
     enabled: queriesEnabled,
     placeholderData: (prev) => prev,
     queryFn: async (): Promise<OrdersEnvelope> => {
+      const shouldClientFilterStatus = statusFilter !== "ALL";
+
+      const requestPage = shouldClientFilterStatus ? 1 : page;
+      const requestPageSize = shouldClientFilterStatus ? 500 : PAGE_SIZE;
+
       const params = new URLSearchParams();
-      params.set("page", String(page));
-      params.set("pageSize", String(PAGE_SIZE));
-      params.set("limit", String(PAGE_SIZE));
+      params.set("page", String(requestPage));
+      params.set("pageSize", String(requestPageSize));
+      params.set("limit", String(requestPageSize));
       params.set("sortBy", sort.key);
       params.set("sortDir", sort.dir);
 
       const qv = q.trim();
       if (qv) params.set("q", qv);
-      if (statusFilter !== "ALL") params.set("status", statusFilter);
       if (toYMD(from)) params.set("from", toYMD(from)!);
       if (toYMD(to)) params.set("to", toYMD(to)!);
       if (minTotal.trim()) params.set("minTotal", minTotal.trim());
@@ -1435,7 +2371,21 @@ export default function OrdersPage() {
 
       const url = isAdmin ? "/api/orders" : "/api/orders/mine";
       const res = await api.get(`${url}?${params.toString()}`, AXIOS_COOKIE_CFG);
-      return normalizeOrdersEnvelope(res.data, page, PAGE_SIZE);
+
+      const normalized = normalizeOrdersEnvelope(res.data, requestPage, requestPageSize);
+
+      if (shouldClientFilterStatus) {
+        return {
+          ...normalized,
+          page: 1,
+          pageSize: requestPageSize,
+          total: normalized.rows.length,
+          totalPages: Math.max(1, Math.ceil(normalized.rows.length / requestPageSize)),
+          serverPagination: false,
+        };
+      }
+
+      return normalized;
     },
     staleTime: 15_000,
     retry: false,
@@ -1475,13 +2425,8 @@ export default function OrdersPage() {
     const qpMinTotal = sp.get("minTotal") || "";
     const qpMaxTotal = sp.get("maxTotal") || "";
     const qpStatus =
-      (sp.get("status") || "ALL").toUpperCase() as
-      | "ALL"
-      | "PENDING"
-      | "PAID"
-      | "FAILED"
-      | "CANCELED"
-      | "REFUNDED";
+      ((sp.get("status") || "ALL").toUpperCase() as OrderFilterStatus);
+
     const qpPage = Math.max(1, Number(sp.get("page") || 1) || 1);
 
     const sig = JSON.stringify({
@@ -1512,10 +2457,13 @@ export default function OrdersPage() {
   }, [location.search]);
 
   /* ---- auto-open exact orderId from URL ---- */
+
   const didAutoOpenRef = useRef(false);
+
   useEffect(() => {
     if (!queriesEnabled) return;
     if (didAutoOpenRef.current) return;
+
     const oid = (searchParams.get("orderId") || "").trim();
     if (!oid) return;
     if (!serverRows.length) return;
@@ -1523,29 +2471,36 @@ export default function OrdersPage() {
     const exact = serverRows.find((o) => String(o.id) === oid);
     if (!exact) return;
 
-    const sp = new URLSearchParams(searchParams);
-    sp.set("open", oid);
-    sp.set("q", oid);
-    sp.delete("orderId");
-
     didAutoOpenRef.current = true;
-    setSearchParams(sp, { replace: true });
     setExpandedId(oid);
-  }, [serverRows, searchParams, setSearchParams, queriesEnabled]);
+  }, [serverRows, searchParams, queriesEnabled]);
 
   const onBuyAgain = (it: OrderItem) => {
-    const productId = String(it.productId || "").trim();
+    const productId = firstNonEmptyString(
+      it.productId,
+      it.product?.id,
+      it.variant?.productId,
+      it.productVariant?.productId,
+      it.productVariant?.product?.id
+    );
 
     if (!productId) {
-      showErrorModal("Unavailable", "This item no longer has a product link, so it cannot be bought again.");
+      showErrorModal(
+        "Unavailable",
+        "This item no longer has a valid product reference, so it cannot be bought again."
+      );
       return;
     }
 
     try {
-      upsertCartLine(buildBuyAgainCartLine(it) as any);
+      const line = buildBuyAgainCartLine(it);
+      upsertCartLine(line as any);
       nav("/checkout");
     } catch (e: any) {
-      showErrorModal("Could not add item", e?.message || "Could not prepare this item for checkout.");
+      showErrorModal(
+        "Could not add item",
+        e?.message || "Could not prepare this item for checkout."
+      );
     }
   };
 
@@ -1579,20 +2534,34 @@ export default function OrdersPage() {
     retry: false,
   });
 
-  const refundsQ = useQuery({
-    queryKey: ["refunds", "mine"],
-    enabled: queriesEnabled && !isAdmin,
+  const refundsQ = useQuery<RefundRow[]>({
+    queryKey: ["refunds", isAdmin ? "all" : "mine"],
+    enabled: queriesEnabled,
     queryFn: async () => {
-      const { data } = await api.get("/api/refunds/mine", AXIOS_COOKIE_CFG);
-      return normalizeRefunds(data);
+      const tryUrls = isAdmin
+        ? ["/api/refunds", "/api/admin/refunds"]
+        : ["/api/refunds/mine", "/api/refunds"];
+
+      let lastErr: any = null;
+      for (const url of tryUrls) {
+        try {
+          const { data } = await api.get(url, AXIOS_COOKIE_CFG);
+          return normalizeRefunds(data);
+        } catch (e: any) {
+          lastErr = e;
+          if (isAuthError(e)) throw e;
+        }
+      }
+
+      console.warn("Refund fetch failed", lastErr);
+      return [] as RefundRow[];
     },
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     retry: false,
   });
 
-  const refunds = refundsQ.data || [];
-
+  const refunds: RefundRow[] = Array.isArray(refundsQ.data) ? refundsQ.data : [];
   /* ---------------- Filter Bar helpers ---------------- */
   const clearFilters = useCallback(() => {
     searchFocusedRef.current = false;
@@ -1616,9 +2585,8 @@ export default function OrdersPage() {
     sp.delete("maxTotal");
     sp.delete("status");
     sp.set("page", "1");
-    setSearchParams(sp, { replace: true });
+    setSearchParams(sp, { replace: true, preventScrollReset: true });
   }, [searchParams, setSearchParams]);
-
   const pricingSettingsQ = useQuery({
     queryKey: ["admin", "settings", "pricing-public-orders"],
     enabled: queriesEnabled && isMetricsRole,
@@ -1657,10 +2625,6 @@ export default function OrdersPage() {
 
   /* ---------------- Derived: filtered + sorted ---------------- */
   const filteredSorted = useMemo(() => {
-    if (serverPagination) {
-      return serverRows;
-    }
-
     const qnorm = q.trim().toLowerCase();
     const dateFrom = from ? new Date(from).getTime() : null;
     const dateTo = to ? new Date(to + "T23:59:59.999").getTime() : null;
@@ -1672,18 +2636,22 @@ export default function OrdersPage() {
         const pool: string[] = [];
         pool.push(o.id || "");
         if (o.userEmail) pool.push(o.userEmail);
+
         (o.items || []).forEach((it) => {
           if (it.title) pool.push(String(it.title));
           if (it.product?.title) pool.push(String(it.product.title));
         });
-        const lp = (Array.isArray(o.payments) && o.payments[0]) || o.payment;
+
+        const lp = latestPaymentOf(o);
         if (lp?.reference) pool.push(lp.reference);
+
         const hit = pool.some((s) => s.toLowerCase().includes(qnorm));
         if (!hit) return false;
       }
 
       if (statusFilter !== "ALL") {
-        if (String(o.status || "").toUpperCase() !== statusFilter) return false;
+        const bucket = getOrderFilterBucket(o);
+        if (bucket !== statusFilter) return false;
       }
 
       if (from || to) {
@@ -1702,29 +2670,35 @@ export default function OrdersPage() {
     const dir = sort.dir === "asc" ? 1 : -1;
     const ordered = [...list].sort((a, b) => {
       const s = sort.key;
+
       if (s === "date") {
         const av = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const bv = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return (av - bv) * dir;
       }
+
       if (s === "total") return (fmtN(a.total) - fmtN(b.total)) * dir;
-      if (s === "items") return (((a.items || []).length - (b.items || []).length || 0) * dir);
+      if (s === "items") return ((a.items || []).length - (b.items || []).length) * dir;
+
       if (s === "status") {
-        return (
-          String(a.status || "").localeCompare(String(b.status || ""), undefined, { sensitivity: "base" }) * dir
-        );
+        const aBucket = getOrderFilterBucket(a);
+        const bBucket = getOrderFilterBucket(b);
+        return aBucket.localeCompare(bBucket, undefined, { sensitivity: "base" }) * dir;
       }
+
       if (s === "user") {
         return (
-          String(a.userEmail || "").localeCompare(String(b.userEmail || ""), undefined, { sensitivity: "base" }) * dir
+          String(a.userEmail || "").localeCompare(String(b.userEmail || ""), undefined, {
+            sensitivity: "base",
+          }) * dir
         );
       }
+
       return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: "base" }) * dir;
     });
 
     return ordered;
-  }, [serverPagination, serverRows, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
-
+  }, [serverRows, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
   useEffect(() => {
     if (ignoreNextStateToUrlRef.current) {
       ignoreNextStateToUrlRef.current = false;
@@ -1761,14 +2735,11 @@ export default function OrdersPage() {
     ignoreNextUrlSyncRef.current = true;
     setExpandedId(null);
     setPage(p);
-    window.scrollTo({ top: 0, behavior: "smooth" });
   }, [page]);
 
-
   useEffect(() => {
-    if (serverPagination) return;
     setPage((prev) => (prev === 1 ? prev : 1));
-  }, [serverPagination, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
+  }, [q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
 
   const totalItems = serverPagination ? serverEnvelope?.total || 0 : filteredSorted.length;
 
@@ -1783,6 +2754,52 @@ export default function OrdersPage() {
     totalItems === 0
       ? 0
       : Math.min(totalItems, (currentPage - 1) * PAGE_SIZE + PAGE_SIZE);
+
+  const visibleRefunds = useMemo(() => {
+    const visibleOrderIds = new Set(filteredSorted.map((o) => String(o.id || "").trim()));
+    const visiblePoIds = new Set(
+      filteredSorted.flatMap((o) =>
+        (Array.isArray(o.purchaseOrders) ? o.purchaseOrders : [])
+          .map((po) => String(po.id || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    return refunds.filter((r) => {
+      const orderId = String(r.orderId ?? "").trim();
+      const poId = String(r.purchaseOrderId ?? r.purchaseOrder?.id ?? "").trim();
+      return (orderId && visibleOrderIds.has(orderId)) || (poId && visiblePoIds.has(poId));
+    });
+  }, [refunds, filteredSorted]);
+
+  const refundMetrics = useMemo(() => {
+    let totalRefunds = 0;
+    let totalPaidToCustomer = 0;
+    let openCount = 0;
+    let paidToCustomerCount = 0;
+
+    for (const r of visibleRefunds) {
+      const amount = getRefundAmount(r);
+      totalRefunds += amount;
+
+      if (isRefundOpenStatus(r.status)) {
+        openCount += 1;
+      }
+
+      if (isRefundPaidToCustomer(r)) {
+        totalPaidToCustomer += amount;
+        paidToCustomerCount += 1;
+      }
+    }
+
+    return {
+      count: visibleRefunds.length,
+      totalRefunds,
+      totalPaidToCustomer,
+      openCount,
+      paidToCustomerCount,
+    };
+  }, [visibleRefunds]);
 
   const paginated = useMemo(() => {
     if (serverPagination) return filteredSorted;
@@ -1830,7 +2847,6 @@ export default function OrdersPage() {
     if (!isMetricsRole) return null;
 
     let revenuePaid = 0;
-    let refundsAmt = 0;
     let supplierBaseRevenue = 0;
     let supplierPayouts = 0;
     let commissionRevenue = 0;
@@ -1858,12 +2874,16 @@ export default function OrdersPage() {
       serviceRevenue += serviceFee;
     }
 
-    const revenueNet = revenuePaid - refundsAmt;
-    const grossProfit = commissionRevenue + serviceRevenue;
+    const refundsTotal = refundMetrics.totalRefunds;
+    const refundsPaidToCustomer = refundMetrics.totalPaidToCustomer;
+
+    const revenueNet = revenuePaid - refundsPaidToCustomer;
+    const grossProfit = commissionRevenue + serviceRevenue - refundsPaidToCustomer;
 
     return {
       revenuePaid,
-      refunds: refundsAmt,
+      refundsTotal,
+      refundsPaidToCustomer,
       revenueNet,
       supplierBaseRevenue,
       supplierPayouts,
@@ -1871,7 +2891,7 @@ export default function OrdersPage() {
       serviceRevenue,
       grossProfit,
     };
-  }, [filteredSorted, isMetricsRole, marginPercent]);
+  }, [filteredSorted, isMetricsRole, marginPercent, refundMetrics]);
 
   const grossProfit = useMemo(() => {
     if (!isMetricsRole) return 0;
@@ -1879,7 +2899,14 @@ export default function OrdersPage() {
   }, [isMetricsRole, aggregates]);
 
   /* ---------------- Actions ---------------- */
-  const onToggle = (id: string) => setExpandedId((curr) => (curr === id ? null : id));
+  const onToggle = useCallback((id: string) => {
+    setExpandedId((curr) => {
+      const next = curr === id ? null : id;
+      pendingAnchorOrderIdRef.current = curr === id ? null : id;
+      return next;
+    });
+  }, []);
+
   const closeOtp = () => setOtpModal({ open: false });
 
   const otpReqKey = (orderId: string, purpose: OtpPurpose) => `otp:req:${orderId}:${purpose}`;
@@ -1905,6 +2932,41 @@ export default function OrdersPage() {
       return null;
     }
   };
+
+  useEffect(() => {
+    const id = pendingAnchorOrderIdRef.current;
+    if (!id) return;
+
+    if (!expandedId || expandedId !== id) {
+      pendingAnchorOrderIdRef.current = null;
+      return;
+    }
+
+    const el = orderAnchorRefs.current[id];
+    if (!el) return;
+
+    pendingAnchorOrderIdRef.current = null;
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const rect = el.getBoundingClientRect();
+        const viewportH = window.innerHeight || 0;
+
+        // Only nudge when the clicked order row/card is already on screen.
+        const isVisible =
+          rect.bottom > 0 &&
+          rect.top < viewportH;
+
+        if (!isVisible) return;
+
+        // Always move DOWN a bit so the expanded content below comes into view.
+        window.scrollBy({
+          top: 140,
+          behavior: "smooth",
+        });
+      });
+    });
+  }, [expandedId]);
 
   const savePendingOtp = (
     orderId: string,
@@ -2002,12 +3064,23 @@ export default function OrdersPage() {
 
   const canCancel = (details: OrderRow, latestPayment: PaymentRow | null) => {
     const st = String(details.status || "").toUpperCase();
-    const isPaidEffective = isPaidStatus(details.status) || isPaidStatus(latestPayment?.status);
+    const paymentStatus = String(latestPayment?.status || "").toUpperCase();
+    const isPaidEffective =
+      isPaidStatus(details.status) || isPaidStatus(latestPayment?.status);
 
     if (isPaidEffective) return false;
     if (["CANCELED", "CANCELLED", "REFUNDED"].includes(st)) return false;
 
-    return ["PENDING", "CREATED"].includes(st);
+    if (!["PENDING", "CREATED"].includes(st)) return false;
+
+    if (
+      paymentStatus &&
+      !["PENDING", "CREATED", "INITIATED"].includes(paymentStatus)
+    ) {
+      return false;
+    }
+
+    return true;
   };
 
   const onCancel = async (orderId: string) => {
@@ -2069,16 +3142,44 @@ export default function OrdersPage() {
   };
 
   /* ---------------- Customer Refund ---------------- */
-  const submitCustomerRefund = async (draft: RefundDraft) => {
+  const submitCustomerRefund = async (draft: RefundDraft, items: OrderItem[]) => {
+    const selectedLines = getSelectedRefundLines(draft, items);
+    const selectedItemIds = selectedLines.map((row) => row.itemId);
+
+    if (!selectedLines.length) {
+      throw new Error("Please select at least one item quantity to refund.");
+    }
+
     const payload: any = {
       orderId: draft.orderId,
+      purchaseOrderId: draft.purchaseOrderId,
       reason: draft.reason,
       message: draft.message,
+      note: draft.message,
       mode: draft.mode,
+
+      // New preferred payload
+      itemQuantities: selectedLines.map((row) => ({
+        itemId: row.itemId,
+        qty: row.qty,
+      })),
+
+      // Legacy compatibility
+      itemIds: selectedItemIds,
     };
 
-    if (draft.mode === "SOME") {
-      payload.itemIds = Object.keys(draft.selectedItemIds || {}).filter((id) => draft.selectedItemIds[id]);
+    const evidence = selectedLines
+      .map((row) => ({
+        itemId: row.itemId,
+        qty: row.qty,
+        urls: Array.isArray(draft.evidenceByItemId?.[row.itemId])
+          ? draft.evidenceByItemId[row.itemId]
+          : [],
+      }))
+      .filter((row) => row.urls.length > 0);
+
+    if (evidence.length > 0) {
+      payload.evidence = evidence;
     }
 
     const tryUrls = ["/api/refunds", "/api/refunds/request", "/api/orders/refund-request"];
@@ -2086,7 +3187,10 @@ export default function OrdersPage() {
     let lastErr: any = null;
     for (const url of tryUrls) {
       try {
-        await api.post(url, payload, { ...AXIOS_COOKIE_CFG, headers: { "Content-Type": "application/json" } });
+        await api.post(url, payload, {
+          ...AXIOS_COOKIE_CFG,
+          headers: { "Content-Type": "application/json" },
+        });
         return true;
       } catch (e: any) {
         lastErr = e;
@@ -2098,18 +3202,40 @@ export default function OrdersPage() {
     throw lastErr || new Error("Could not submit refund request");
   };
 
-  const onCustomerRefund = (details: OrderRow) => {
+  const onCustomerRefund = (details: OrderRow, po: PurchaseOrderRow) => {
     if (isAdmin) return;
 
     const orderId = String(details.id || "");
-    if (!orderId) return;
+    const purchaseOrderId = String(po?.id || "");
+    const supplierId = String(po?.supplierId || "").trim() || null;
+    const supplierName = po?.supplierName ?? null;
+
+    if (!orderId || !purchaseOrderId) return;
+
+    const poItems = getItemsForPurchaseOrder(details, po);
+
+    const initialSelectedItemIds = poItems.reduce<Record<string, boolean>>((acc, it) => {
+      acc[String(it.id)] = true;
+      return acc;
+    }, {});
+
+    const initialSelectedQtyByItemId = poItems.reduce<Record<string, number>>((acc, it) => {
+      acc[String(it.id)] = getOrderItemQty(it);
+      return acc;
+    }, {});
 
     const initial: RefundDraft = {
       orderId,
+      purchaseOrderId,
+      supplierId,
+      supplierName,
       reason: "NOT_RECEIVED",
       message: "",
       mode: "ALL",
-      selectedItemIds: {},
+      selectedItemIds: initialSelectedItemIds,
+      selectedQtyByItemId: initialSelectedQtyByItemId,
+      evidenceByItemId: {},
+      uploadingByItemId: {},
       busy: false,
       error: null,
     };
@@ -2117,29 +3243,129 @@ export default function OrdersPage() {
     const RefundModal = () => {
       const [draft, setDraft] = useState<RefundDraft>(initial);
 
-      const items = Array.isArray(details.items) ? details.items : [];
+      const items = poItems;
       const canPickSome = items.length > 0;
+      const needsEvidence = refundReasonRequiresEvidence(draft.reason);
+      const selectedLines = getSelectedRefundLines(draft, items);
+      const selectedItemIds = selectedLines.map((row) => row.itemId);
+      const allRequiredEvidenceProvided =
+        !needsEvidence || allSelectedItemsHaveEvidenceForLines(draft, items);
+      const hasValidSelectedQty = allSelectedRefundQtyValid(draft, items);
 
-      const toggleItem = (id: string) => {
+      const toggleItem = (id: string, checked?: boolean) => {
+        setDraft((s) => {
+          const nextChecked = typeof checked === "boolean" ? checked : !s.selectedItemIds[id];
+          const currentQty = s.selectedQtyByItemId?.[id] ?? 0;
+          const item = items.find((x) => String(x.id) === String(id));
+          const maxQty = item ? getOrderItemQty(item) : 1;
+
+          return {
+            ...s,
+            selectedItemIds: { ...s.selectedItemIds, [id]: nextChecked },
+            selectedQtyByItemId: {
+              ...s.selectedQtyByItemId,
+              [id]: nextChecked ? Math.max(1, clampRefundQty(currentQty || 1, maxQty)) : 0,
+            },
+            error: null,
+          };
+        });
+      };
+
+      const changeItemQty = (id: string, nextRaw: any) => {
+        setDraft((s) => {
+          const item = items.find((x) => String(x.id) === String(id));
+          const maxQty = item ? getOrderItemQty(item) : 1;
+          const nextQty = clampRefundQty(nextRaw, maxQty);
+
+          return {
+            ...s,
+            selectedQtyByItemId: {
+              ...s.selectedQtyByItemId,
+              [id]: nextQty,
+            },
+            selectedItemIds: {
+              ...s.selectedItemIds,
+              [id]: nextQty > 0,
+            },
+            error: null,
+          };
+        });
+      };
+
+      const onPickEvidenceFilesForItem = async (itemId: string, fileList: FileList | null) => {
+        const files = Array.from(fileList || []).filter(Boolean);
+        if (!files.length) return;
+
+        try {
+          setDraft((s) => ({
+            ...s,
+            uploadingByItemId: { ...s.uploadingByItemId, [itemId]: true },
+            error: null,
+          }));
+
+          const imageFiles = files.filter((f) => String(f.type || "").startsWith("image/"));
+          if (!imageFiles.length) {
+            throw new Error("Please select image files only.");
+          }
+
+          const urls = await uploadRefundEvidence(imageFiles);
+
+          setDraft((s) => ({
+            ...s,
+            uploadingByItemId: { ...s.uploadingByItemId, [itemId]: false },
+            evidenceByItemId: {
+              ...s.evidenceByItemId,
+              [itemId]: Array.from(
+                new Set([
+                  ...((s.evidenceByItemId && s.evidenceByItemId[itemId]) || []),
+                  ...urls,
+                ])
+              ),
+            },
+          }));
+        } catch (e: any) {
+          setDraft((s) => ({
+            ...s,
+            uploadingByItemId: { ...s.uploadingByItemId, [itemId]: false },
+            error: e?.response?.data?.error || e?.message || "Could not upload evidence",
+          }));
+        }
+      };
+
+      const removeEvidenceForItemAt = (itemId: string, idx: number) => {
         setDraft((s) => ({
           ...s,
-          selectedItemIds: { ...s.selectedItemIds, [id]: !s.selectedItemIds[id] },
+          evidenceByItemId: {
+            ...s.evidenceByItemId,
+            [itemId]: ((s.evidenceByItemId && s.evidenceByItemId[itemId]) || []).filter((_, i) => i !== idx),
+          },
         }));
       };
 
-      const pickedCount = Object.keys(draft.selectedItemIds).filter((k) => draft.selectedItemIds[k]).length;
+      const totalRefundQty = selectedLines.reduce((sum, row) => sum + row.qty, 0);
 
       return (
         <div className="space-y-3">
           <div className="text-xs text-ink-soft">
-            Requesting refund for order <span className="font-mono">{orderId}</span>
+            Refund for order <span className="font-mono">{orderId}</span>
+          </div>
+
+          <div className="text-xs text-ink-soft">
+            Purchase order: <span className="font-mono">{purchaseOrderId}</span>
+            {supplierName ? <> • Supplier: <span className="font-medium text-zinc-700">{supplierName}</span></> : null}
           </div>
 
           <div>
             <label className={T_LABEL}>Reason</label>
             <select
               value={draft.reason}
-              onChange={(e) => setDraft((s) => ({ ...s, reason: e.target.value as RefundReason }))}
+              onChange={(e) =>
+                setDraft((s) => ({
+                  ...s,
+                  reason: e.target.value as RefundReason,
+                  error: null,
+                }))
+              }
               className={`mt-1 w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
             >
               <option value="NOT_RECEIVED">Not received</option>
@@ -2149,6 +3375,12 @@ export default function OrdersPage() {
               <option value="CHANGED_MIND">Changed mind</option>
               <option value="OTHER">Other</option>
             </select>
+
+            {needsEvidence ? (
+              <div className="mt-1 text-xs text-amber-700">
+                Evidence images are required for each selected item.
+              </div>
+            ) : null}
           </div>
 
           <div>
@@ -2162,52 +3394,220 @@ export default function OrdersPage() {
             />
           </div>
 
+          <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-800">
+            {getRefundTaxPolicyLabel()}
+          </div>
+
           {canPickSome && (
             <div className="space-y-2">
               <label className={T_LABEL}>Refund scope</label>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "ALL"
+                    ? "bg-zinc-900 text-white border-zinc-900"
+                    : `bg-white ${SILVER_BORDER}`
                     }`}
-                  onClick={() => setDraft((s) => ({ ...s, mode: "ALL" }))}
+                  onClick={() =>
+                    setDraft((s) => ({
+                      ...s,
+                      mode: "ALL",
+                      selectedItemIds: items.reduce<Record<string, boolean>>((acc, it) => {
+                        acc[String(it.id)] = true;
+                        return acc;
+                      }, {}),
+                      selectedQtyByItemId: items.reduce<Record<string, number>>((acc, it) => {
+                        acc[String(it.id)] = getOrderItemQty(it);
+                        return acc;
+                      }, {}),
+                      error: null,
+                    }))
+                  }
                 >
-                  All items
+                  All PO items
                 </button>
+
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "SOME"
+                    ? "bg-zinc-900 text-white border-zinc-900"
+                    : `bg-white ${SILVER_BORDER}`
                     }`}
-                  onClick={() => setDraft((s) => ({ ...s, mode: "SOME" }))}
+                  onClick={() =>
+                    setDraft((s) => ({
+                      ...s,
+                      mode: "SOME",
+                      error: null,
+                    }))
+                  }
                 >
-                  Select items
+                  Select items / qty
                 </button>
               </div>
 
+              <div className="rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+                Selected refund quantity: <b>{totalRefundQty}</b>
+              </div>
+
               {draft.mode === "SOME" && (
-                <div className={`rounded-xl ${SILVER_BORDER} p-2 max-h-48 overflow-auto`}>
-                  {items.map((it) => (
-                    <label key={it.id} className="flex items-start gap-2 py-1 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={!!draft.selectedItemIds[it.id]}
-                        onChange={() => toggleItem(it.id)}
-                        className="mt-1"
-                      />
-                      <span className="min-w-0">
-                        <span className="block truncate">{(it.title || it.product?.title || "—").toString()}</span>
-                        <span className="block text-xs text-ink-soft">
-                          Qty {String(it.quantity ?? 1)} • {ngn.format(fmtN(it.unitPrice))}
-                        </span>
-                      </span>
-                    </label>
-                  ))}
+                <div className={`rounded-xl ${SILVER_BORDER} p-2 max-h-72 overflow-auto`}>
+                  {items.map((it) => {
+                    const itemId = String(it.id);
+                    const maxQty = getOrderItemQty(it);
+                    const checked = !!draft.selectedItemIds[itemId];
+                    const qty = clampRefundQty(draft.selectedQtyByItemId?.[itemId], maxQty);
+                    const title = (it.title || it.product?.title || "—").toString();
+
+                    return (
+                      <div key={itemId} className="rounded-lg border border-zinc-200/70 bg-white px-3 py-2 mb-2 last:mb-0">
+                        <div className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => toggleItem(itemId, e.target.checked)}
+                            className="mt-1"
+                          />
+
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-zinc-900 truncate">{title}</div>
+                            <div className="text-xs text-ink-soft">
+                              Ordered qty {maxQty} • {ngn.format(fmtN(it.unitPrice))}
+                            </div>
+                          </div>
+
+                          <div className="shrink-0 w-[110px]">
+                            <label className="block text-[10px] text-zinc-500 mb-1">Refund qty</label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={maxQty}
+                              value={checked ? qty : 0}
+                              disabled={!checked}
+                              onChange={(e) => changeItemQty(itemId, e.target.value)}
+                              className={`w-full rounded-lg border px-2 py-1.5 text-sm ${!checked ? "bg-zinc-100 text-zinc-400" : "bg-white"}`}
+                            />
+                          </div>
+                        </div>
+
+                        {checked && qty > 0 ? (
+                          <div className="mt-2 text-[11px] text-emerald-700">
+                            Refunding {qty} of {maxQty}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
-              {draft.mode === "SOME" && pickedCount === 0 && (
-                <div className="text-xs text-amber-700">Pick at least one item.</div>
+              {draft.mode === "SOME" && !hasValidSelectedQty && (
+                <div className="text-xs text-amber-700">
+                  Select at least one item and set a refund quantity greater than 0.
+                </div>
               )}
+            </div>
+          )}
+
+          {needsEvidence && selectedItemIds.length > 0 && (
+            <div className="space-y-2">
+              <label className={T_LABEL}>
+                Item evidence <span className="text-rose-600">*</span>
+              </label>
+
+              <div className="space-y-3">
+                {items
+                  .filter((it) => selectedItemIds.includes(String(it.id)))
+                  .map((it) => {
+                    const itemId = String(it.id);
+                    const itemTitle = (it.title || it.product?.title || "—").toString();
+                    const urls = draft.evidenceByItemId?.[itemId] || [];
+                    const uploading = !!draft.uploadingByItemId?.[itemId];
+                    const selectedQty =
+                      draft.mode === "ALL"
+                        ? getOrderItemQty(it)
+                        : clampRefundQty(draft.selectedQtyByItemId?.[itemId], getOrderItemQty(it));
+
+                    return (
+                      <div key={itemId} className={`rounded-xl ${SILVER_BORDER} p-3 bg-zinc-50`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-zinc-900 truncate">{itemTitle}</div>
+                            <div className="text-xs text-ink-soft">
+                              Refund qty {selectedQty} of {getOrderItemQty(it)} • {ngn.format(fmtN(it.unitPrice))}
+                            </div>
+                          </div>
+
+                          <div className="shrink-0">
+                            {urls.length > 0 ? (
+                              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                                Evidence added
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                                Required
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <label className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-[11px] sm:text-xs hover:bg-black/5">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              className="hidden"
+                              onChange={(e) => {
+                                void onPickEvidenceFilesForItem(itemId, e.target.files);
+                                e.currentTarget.value = "";
+                              }}
+                              disabled={uploading || draft.busy}
+                            />
+                            {uploading ? "Uploading…" : "Add images"}
+                          </label>
+
+                          <div className={`${T_XS} text-ink-soft`}>
+                            Upload at least one image for this item
+                          </div>
+                        </div>
+
+                        {urls.length > 0 && (
+                          <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                            {urls.map((url, idx) => (
+                              <div
+                                key={`${itemId}-${url}-${idx}`}
+                                className="relative overflow-hidden rounded-xl border border-zinc-200 bg-white"
+                              >
+                                <a href={url} target="_blank" rel="noreferrer" className="block">
+                                  <img
+                                    src={url}
+                                    alt={`Evidence ${idx + 1}`}
+                                    className="h-24 w-full object-cover"
+                                  />
+                                </a>
+
+                                <button
+                                  type="button"
+                                  onClick={() => removeEvidenceForItemAt(itemId, idx)}
+                                  disabled={draft.busy || uploading}
+                                  className="absolute right-1 top-1 rounded-md bg-black/70 px-2 py-1 text-[10px] font-medium text-white hover:bg-black/80 disabled:opacity-50"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {urls.length === 0 && !uploading && (
+                          <div className="mt-2 text-xs text-rose-600">
+                            Please upload at least one image for this item.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
             </div>
           )}
 
@@ -2226,18 +3626,41 @@ export default function OrdersPage() {
               className={`rounded-xl bg-zinc-900 text-white px-3 py-2 ${BTN} disabled:opacity-50`}
               disabled={
                 draft.busy ||
+                Object.values(draft.uploadingByItemId || {}).some(Boolean) ||
                 !draft.orderId ||
-                (draft.mode === "SOME" && canPickSome && pickedCount === 0)
+                !draft.purchaseOrderId ||
+                !hasValidSelectedQty ||
+                (needsEvidence && !allRequiredEvidenceProvided)
               }
               onClick={async () => {
                 try {
+                  if (!hasValidSelectedQty) {
+                    setDraft((s) => ({
+                      ...s,
+                      error: "Please select at least one item quantity to refund.",
+                    }));
+                    return;
+                  }
+
+                  if (needsEvidence && !allRequiredEvidenceProvided) {
+                    setDraft((s) => ({
+                      ...s,
+                      error: "Please upload at least one evidence image for each selected item.",
+                    }));
+                    return;
+                  }
+
                   setDraft((s) => ({ ...s, busy: true, error: null }));
 
-                  await submitCustomerRefund(draft);
+                  await submitCustomerRefund(draft, items);
 
                   closeModal();
-                  showSuccessModal("Refund requested", "Your refund request has been submitted. We’ll notify you with updates.");
+                  showSuccessModal(
+                    "Refund requested",
+                    "Your refund request has been submitted for this supplier shipment."
+                  );
                   refundsQ.refetch?.();
+                  orderDetailQ.refetch?.();
                 } catch (e: any) {
                   if (isAuthError(e)) {
                     nav("/login", { replace: true, state: { from: location.pathname + location.search } });
@@ -2319,6 +3742,134 @@ export default function OrdersPage() {
     }
   };
 
+
+  const uploadRefundEvidence = useCallback(async (files: File[]) => {
+    if (!files.length) return [];
+
+    const form = new FormData();
+    for (const file of files) {
+      form.append("files", file);
+    }
+
+    const res = await api.post("/api/uploads", form, {
+      ...AXIOS_COOKIE_CFG,
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    });
+
+    const urls = normalizeUploadedUrls(res.data);
+    if (!urls.length) {
+      throw new Error("Upload succeeded but no file URL was returned.");
+    }
+
+    return urls;
+  }, []);
+
+  const openRefundsSummary = useCallback(() => {
+    const rows = [...visibleRefunds].sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+
+    openModal({
+      title: isAdmin ? "Refunds summary" : "My refunds",
+      size: "lg",
+      message: (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className={`${CARD_XL} p-3`}>
+              <div className={`${T_SM} text-ink-soft`}>Total refunds</div>
+              <div className="font-semibold">{ngn.format(refundMetrics.totalRefunds)}</div>
+              <div className={`${T_XS} text-ink-soft`}>{refundMetrics.count} refund(s)</div>
+            </div>
+
+            <div className={`${CARD_XL} p-3`}>
+              <div className={`${T_SM} text-ink-soft`}>Paid to customer</div>
+              <div className="font-semibold">{ngn.format(refundMetrics.totalPaidToCustomer)}</div>
+              <div className={`${T_XS} text-ink-soft`}>{refundMetrics.paidToCustomerCount} settled</div>
+            </div>
+
+            <div className={`${CARD_XL} p-3`}>
+              <div className={`${T_SM} text-ink-soft`}>Open refunds</div>
+              <div className="font-semibold">{refundMetrics.openCount}</div>
+              <div className={`${T_XS} text-ink-soft`}>Still in progress</div>
+            </div>
+          </div>
+
+          <div className={`overflow-hidden ${CARD_XL}`}>
+            <div className="px-4 py-3 border-b border-zinc-200/70 flex items-center justify-between">
+              <div className="text-sm font-semibold text-ink">Refund entries</div>
+              <div className={`${T_XS} text-ink-soft`}>
+                Customer payout is based on refund paidAt / REFUNDED status
+              </div>
+            </div>
+
+            <div className="divide-y divide-zinc-200/70 max-h-[60vh] overflow-auto">
+              {rows.length === 0 && (
+                <div className="px-4 py-5 text-sm text-ink-soft">No refunds in this filtered view.</div>
+              )}
+
+              {rows.map((r) => {
+                const amount = getRefundAmount(r);
+                const paidOutAt = getRefundPaidOutAt(r);
+
+                return (
+                  <div key={r.id} className="px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-zinc-900">
+                          Refund <span className="font-mono">{r.id}</span>
+                        </div>
+                        <div className={`${T_XS} text-ink-soft`}>
+                          Order: <span className="font-mono">{r.orderId || "—"}</span>
+                          {" • "}
+                          PO: <span className="font-mono">{r.purchaseOrderId || r.purchaseOrder?.id || "—"}</span>
+                          {r.supplier?.name ? <> {" • "} Supplier: <b>{r.supplier.name}</b></> : null}
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="font-semibold">{ngn.format(amount)}</div>
+                        <div className={`${T_XS} text-ink-soft`}>{getRefundFinancialLabel(r)}</div>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <span className="inline-flex items-center rounded-full border border-zinc-200/80 bg-zinc-50 px-2 py-0.5 text-[10px] font-semibold text-zinc-700">
+                        Status: {String(r.status || "—").replace(/_/g, " ")}
+                      </span>
+
+                      {paidOutAt ? (
+                        <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                          Customer paid: {fmtDate(paidOutAt)}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                          Customer payout pending
+                        </span>
+                      )}
+                    </div>
+                    {(r.reason || r.adminNote || r.supplierNote || r.supplierResponse) && (
+                      <div className={`mt-2 ${T_XS} text-zinc-600`}>
+                        {r.reason ? <b>{String(r.reason).replace(/_/g, " ")}</b> : null}
+                        {r.reason && (r.adminNote || r.supplierNote || r.supplierResponse) ? " • " : null}
+                        {r.adminNote || r.supplierNote || r.supplierResponse || ""}
+                      </div>
+                    )}
+
+                    <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-800">
+                      {getRefundTaxPolicyLabel()}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ),
+    });
+  }, [visibleRefunds, refundMetrics, isAdmin, openModal]);
+
   /* ---------------- Redirects ---------------- */
   if (mustLogin || mustLoginFromData) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
@@ -2327,30 +3878,67 @@ export default function OrdersPage() {
     return <Navigate to="/supplier/orders" replace />;
   }
 
+
+  function canShowCancelButtonForUser(
+    order: OrderRow,
+    latestPayment: PaymentRow | null,
+    isAdmin: boolean
+  ) {
+    if (!canCancel(order, latestPayment)) return false;
+
+    if (isAdmin) return true;
+
+    const purchaseOrders = Array.isArray(order?.purchaseOrders)
+      ? order.purchaseOrders
+      : [];
+
+    if (!purchaseOrders.length) {
+      return true;
+    }
+
+    const hasAdvancedPo = purchaseOrders.some((po) => {
+      const poStatus = String(po?.status ?? "").toUpperCase();
+      return !["PENDING", "CREATED", "CANCELED", "CANCELLED"].includes(poStatus);
+    });
+
+    if (hasAdvancedPo) return false;
+
+    return true;
+  }
+
+  const canViewSupplierIdentity = isAdmin || isSuperAdmin;
+
   /* ---------------- Render ---------------- */
   return (
     <SiteLayout>
-      <div className={`max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 md:py-6 ${T_BASE}`}>
-        <div className="mb-3 flex items-start justify-between gap-2">
+      <div className={`max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 ${T_BASE}`}>
+        <div className="mb-3 md:mb-4 flex flex-col gap-3 min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between">
           <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-semibold text-ink">
+            <h1 className="text-[28px] leading-[1.05] sm:text-2xl md:text-3xl font-semibold text-ink">
               {isAdmin ? "All Orders" : "My Orders"}
             </h1>
-            <p className={`mt-1 ${T_SM} text-ink-soft`}>
+            <p className={`mt-1 max-w-[22rem] ${T_SM} text-ink-soft`}>
               {isAdmin ? "Manage all customer orders." : "Your recent purchase history."}
             </p>
           </div>
 
-          <div className="flex items-center gap-2 min-[768px]:hidden">
+          <div className="grid grid-cols-3 gap-2 min-[768px]:hidden">
             <button
               onClick={() => setFiltersOpen(true)}
-              className={`rounded-xl ${SILVER_BORDER} px-3 py-2 ${BTN_XS} bg-white ${SILVER_SHADOW_SM}`}
+              className={`min-w-0 rounded-2xl ${SILVER_BORDER} px-3 py-3 ${BTN_XS} bg-white ${SILVER_SHADOW_SM} font-medium`}
             >
               Filters
             </button>
             <button
+              onClick={openRefundsSummary}
+              className={`min-w-0 rounded-2xl ${SILVER_BORDER} px-3 py-3 ${BTN_XS} bg-white ${SILVER_SHADOW_SM} font-medium`}
+              disabled={!queriesEnabled}
+            >
+              Refunds{refundMetrics.count ? ` (${refundMetrics.count})` : ""}
+            </button>
+            <button
               onClick={handleRefresh}
-              className={`rounded-xl ${SILVER_BORDER} px-3 py-2 ${BTN_XS} bg-white ${SILVER_SHADOW_SM}`}
+              className={`min-w-0 rounded-2xl ${SILVER_BORDER} px-3 py-3 ${BTN_XS} bg-white ${SILVER_SHADOW_SM} font-medium`}
               disabled={!queriesEnabled}
             >
               Refresh
@@ -2390,21 +3978,22 @@ export default function OrdersPage() {
           />
         </div>
 
-        {!isAdmin && (
+        <div className="hidden min-[768px]:flex items-center gap-2">
           <button
-            className={`hidden min-[768px]:inline-flex items-center gap-2 rounded-lg ${SILVER_BORDER} bg-white hover:bg-black/5 px-3 py-2 ${BTN} ${SILVER_SHADOW_SM}`}
-            onClick={() => openModal({ title: "Refunds", message: "Open refunds modal here." })}
+            className={`inline-flex items-center gap-2 rounded-lg ${SILVER_BORDER} bg-white hover:bg-black/5 px-3 py-2 ${BTN} ${SILVER_SHADOW_SM}`}
+            onClick={openRefundsSummary}
             disabled={!queriesEnabled}
           >
-            My Refunds{refunds.length ? ` (${refunds.length})` : ""}
+            {isAdmin ? "Refunds" : "My Refunds"}
+            {refundMetrics.count ? ` (${refundMetrics.count})` : ""}
           </button>
-        )}
+        </div>
 
         {filtersOpen && (
           <div className="fixed inset-0 z-40 min-[768px]:hidden">
             <div className="absolute inset-0 bg-black/40" onClick={() => setFiltersOpen(false)} />
             <div className={`absolute inset-y-0 left-0 w-[84%] max-w-xs p-4 ${CARD_2XL} rounded-none rounded-r-2xl`}>
-              <div className="flex items-center justify-between mb-3">
+              <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold">Filter orders</h2>
                 <button
                   onClick={() => setFiltersOpen(false)}
@@ -2451,7 +4040,15 @@ export default function OrdersPage() {
               <div className={`${T_SM} text-ink-soft`}>Revenue (net)</div>
               <div className="font-semibold">{ngn.format(aggregates.revenueNet)}</div>
               <div className={`${T_XS} text-ink-soft`}>
-                Paid {ngn.format(aggregates.revenuePaid)} • Refunds {ngn.format(aggregates.refunds)}
+                Paid {ngn.format(aggregates.revenuePaid)} • Paid refunds {ngn.format(aggregates.refundsPaidToCustomer)}
+              </div>
+            </div>
+
+            <div className={`${CARD_XL} p-3`}>
+              <div className={`${T_SM} text-ink-soft`}>Total Refunds</div>
+              <div className="font-semibold">{ngn.format(aggregates.refundsTotal)}</div>
+              <div className={`${T_XS} text-ink-soft`}>
+                Paid out {ngn.format(aggregates.refundsPaidToCustomer)} • {refundMetrics.count} refund(s)
               </div>
             </div>
 
@@ -2464,18 +4061,10 @@ export default function OrdersPage() {
             </div>
 
             <div className={`${CARD_XL} p-3`}>
-              <div className={`${T_SM} text-ink-soft`}>Service Fee Revenue</div>
-              <div className="font-semibold">{ngn.format(aggregates.serviceRevenue)}</div>
-              <div className={`${T_XS} text-ink-soft`}>
-                Counted as platform profit
-              </div>
-            </div>
-
-            <div className={`${CARD_XL} p-3`}>
               <div className={`${T_SM} text-ink-soft`}>Platform Profit</div>
               <div className="font-semibold">{ngn.format(grossProfit)}</div>
               <div className={`${T_XS} text-ink-soft`}>
-                Commission + service fee
+                Commission + service fee - paid refunds
               </div>
             </div>
           </div>
@@ -2559,10 +4148,14 @@ export default function OrdersPage() {
 
                     const canShowReceipt = !!receiptKey && isPaidEffective;
                     const canCancelThis = canCancel(details, latestPayment);
+                    const canShowCancelThis = canShowCancelButtonForUser(details, latestPayment, isAdmin);
 
                     return (
                       <React.Fragment key={o.id}>
                         <tr
+                          ref={(node) => {
+                            orderAnchorRefs.current[o.id] = node;
+                          }}
                           className={`hover:bg-black/5 cursor-pointer ${isOpen ? "bg-amber-50/50" : ""}`}
                           onClick={() => onToggle(o.id)}
                           aria-expanded={isOpen}
@@ -2606,7 +4199,7 @@ export default function OrdersPage() {
                           <td className="px-3 py-3">{ngn.format(fmtN(details.total))}</td>
 
                           <td className="px-3 py-3">
-                            <StatusDot label={details.status || "—"} />
+                            <StatusDot label={getOrderFilterBucket(details)} />
                           </td>
 
                           <td className="px-3 py-3">{fmtDate(details.createdAt)}</td>
@@ -2640,7 +4233,12 @@ export default function OrdersPage() {
                                       <span className="font-mono">{details.id}</span>
                                     </div>
                                     <div className="text-ink-soft">
-                                      Placed: {fmtDate(details.createdAt)} • Status: <b>{details.status}</b>
+                                      Placed: {fmtDate(details.createdAt)} • Status: <b>{getOrderFilterBucket(details)}</b>
+                                      {getOrderFinalDeliveryDisplay(details) ? (
+                                        <>
+                                          {" "}• Delivered: <b>{getOrderFinalDeliveryDisplay(details)}</b>
+                                        </>
+                                      ) : null}
                                     </div>
                                     {latestPayment && (
                                       <div className="text-ink-soft">
@@ -2655,18 +4253,29 @@ export default function OrdersPage() {
                                       </div>
                                     )}
 
-                                    {isMetricsRole && (
-                                      <div className="mt-2 rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
-                                        <div className="font-semibold text-zinc-900 mb-1">Platform profit</div>
-                                        <div>Supplier base: {ngn.format(orderSupplierBasePriceTotal(details))}</div>
-                                        <div>Supplier payout: {ngn.format(orderSupplierPayoutTotal(details))}</div>
-                                        <div>Commission: {ngn.format(orderCommissionRevenue(details, marginPercent))}</div>
-                                        <div>Service fee: {ngn.format(orderServiceRevenue(details))}</div>
-                                        <div className="font-semibold text-zinc-900">
-                                          Profit: {ngn.format(computeOrderPlatformProfit(details, marginPercent))}
+                                    {isMetricsRole && (() => {
+                                      const orderRefunds = getRefundsForOrder(details, refunds);
+                                      const orderRefundPaid = orderRefunds.reduce(
+                                        (sum, r) => sum + (isRefundPaidToCustomer(r) ? getRefundAmount(r) : 0),
+                                        0
+                                      );
+                                      const orderRefundImpact = orderRefundPaid;
+                                      const orderBaseProfit = computeOrderPlatformProfit(details, marginPercent);
+
+                                      return (
+                                        <div className="rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+                                          <div className="font-semibold text-zinc-900 mb-1">Platform profit</div>
+                                          <div>Commission: {ngn.format(orderCommissionRevenue(details, marginPercent))}</div>
+                                          <div>Service fee: {ngn.format(orderServiceRevenue(details))}</div>
+                                          <div>Gateway: {ngn.format(orderGatewayCost(details))}</div>
+                                          <div>Comms: {ngn.format(orderCommsCost(details))}</div>
+                                          <div>Refund paid to customer: {ngn.format(orderRefundPaid)}</div>
+                                          <div className="font-semibold text-zinc-900">
+                                            Profit: {ngn.format(orderBaseProfit - orderRefundImpact)}
+                                          </div>
                                         </div>
-                                      </div>
-                                    )}
+                                      );
+                                    })()}
                                   </div>
 
                                   <div className="flex flex-wrap gap-2">
@@ -2682,19 +4291,7 @@ export default function OrdersPage() {
                                       </button>
                                     )}
 
-                                    {!isAdmin && canRequestRefundAsCustomer(details, latestPayment) && (
-                                      <button
-                                        className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onCustomerRefund(details);
-                                        }}
-                                      >
-                                        Request refund
-                                      </button>
-                                    )}
-
-                                    {canCancelThis && (
+                                    {canShowCancelThis && (
                                       <button
                                         className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-rose-600 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                                         onClick={(e) => {
@@ -2760,40 +4357,94 @@ export default function OrdersPage() {
                                 {Array.isArray(details.purchaseOrders) && details.purchaseOrders.length > 0 && (
                                   <div className={`mt-4 overflow-hidden ${CARD_XL}`}>
                                     <div className="px-4 py-3 border-b border-zinc-200/70 flex items-center justify-between">
-                                      <div className="text-sm font-semibold text-ink">Supplier fulfillment</div>
+                                      <div className="text-sm font-semibold text-ink">
+                                        {canViewSupplierIdentity ? "Supplier fulfillment" : "Delivery status"}
+                                      </div>
                                       <div className="text-xs text-ink-soft">
-                                        {getOrderSupplierSummary(details).count} supplier(s)
+                                        {canViewSupplierIdentity
+                                          ? `${getOrderSupplierSummary(details).count} supplier(s)`
+                                          : "Latest delivery and refund updates"}
                                       </div>
                                     </div>
 
                                     <div className="divide-y divide-zinc-200/70">
                                       {details.purchaseOrders.map((po) => {
                                         const supplierPaid = isPurchaseOrderSupplierPaid(po, details);
+                                        const canRefundThisPo =
+                                          !isAdmin && canRequestRefundForPo(details, po, latestPayment, refunds);
+
+                                        const poHasOpenRefund = hasOpenRefundForPurchaseOrder(String(po.id || ""), refunds);
+                                        const poRefunds = getRefundsForPurchaseOrder(po, refunds);
+                                        const poRefundPaidAt = poRefunds
+                                          .map((r) => getRefundPaidOutAt(r))
+                                          .filter(Boolean)
+                                          .sort()
+                                          .reverse()[0] || null;
+
                                         return (
-                                          <div key={po.id} className="px-4 py-3 flex flex-wrap items-center gap-2 text-xs text-zinc-700">
-                                            <span className="font-medium text-zinc-900">
-                                              {po.supplierName || po.supplierId || "Supplier"}
-                                            </span>
-                                            <span>•</span>
-                                            <span>
-                                              PO: <span className="font-mono">{po.id}</span>
-                                            </span>
-                                            {po.status ? (
-                                              <>
-                                                <span>•</span>
-                                                <span>Status: <b>{po.status}</b></span>
-                                              </>
-                                            ) : null}
-                                            {po.payoutStatus && isAdmin ? (
-                                              <>
-                                                <span>•</span>
-                                                <span>Payout: <b>{po.payoutStatus}</b></span>
-                                              </>
-                                            ) : null}
-                                            {supplierPaid ? (
-                                              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                                                Supplier paid
+                                          <div
+                                            key={po.id}
+                                            className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-700"
+                                          >
+                                            <div className="flex flex-wrap items-center gap-2">
+                                              <span className="font-medium text-zinc-900">
+                                                {canViewSupplierIdentity ? (po.supplierName || po.supplierId || "Supplier") : "Order update"}
                                               </span>
+                                                 {canViewSupplierIdentity && <><span>•</span>
+                                           
+                                              <span>
+
+                                                PO: <span className="font-mono">{po.id}</span>
+                                              </span></>
+                                              }
+                                              {getPurchaseOrderDeliveryDisplay(po) ? (
+                                                <>
+                                                  <span>•</span>
+                                                  <span>
+                                                    Delivered: <b>{getPurchaseOrderDeliveryDisplay(po)}</b>
+                                                  </span>
+                                                </>
+                                              ) : null}
+                                              {po.status ? (
+                                                <>
+                                                  <span>•</span>
+                                                  <span>{getPurchaseOrderDisplayStatus(po)}</span>
+                                                </>
+                                              ) : null}
+                                              {po.payoutStatus && isAdmin ? (
+                                                <>
+                                                  <span>•</span>
+                                                  <span>Payout: <b>{po.payoutStatus}</b></span>
+                                                </>
+                                              ) : null}
+                                              {supplierPaid && canViewSupplierIdentity ? (
+                                                <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                                                  Supplier paid
+                                                </span>
+                                              ) : null}
+                                              {poHasOpenRefund ? (
+                                                <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">
+                                                  Refund in progress
+                                                </span>
+                                              ) : null}
+
+                                              {poRefundPaidAt ? (
+                                                <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                                                  Customer refunded
+                                                </span>
+                                              ) : null}
+                                            </div>
+
+                                            {canRefundThisPo ? (
+                                              <button
+                                                className="rounded-lg border border-zinc-200/80 px-3 py-2 text-xs hover:bg-black/5 text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  onCustomerRefund(details, po);
+                                                }}
+                                              >
+                                                Request refund
+                                              </button>
                                             ) : null}
                                           </div>
                                         );
@@ -2830,60 +4481,78 @@ export default function OrdersPage() {
                                       const options = normalizeSelectedOptionsForDisplay(
                                         it.selectedOptions ?? it.options ?? it.selectedOptionsJson
                                       );
+                                      const productHref = getProductHref(it);
+                                      const thumb = getFirstImageFromOrderItem(it);
 
                                       return (
                                         <div key={it.id} className="px-4 py-4">
                                           <div className="flex items-start justify-between gap-4">
-                                            <div className="min-w-0 flex-1">
-                                              {it.productId ? (
-                                                <Link
-                                                  to={getProductHref(it)}
-                                                  onClick={(e) => e.stopPropagation()}
-                                                  className="inline-flex items-center gap-1.5 font-semibold text-blue-600 break-words underline decoration-blue-400 underline-offset-2 hover:text-blue-700 hover:decoration-blue-600 transition"
-                                                >
-                                                  {itemTitle}
-                                                  <svg
-                                                    xmlns="http://www.w3.org/2000/svg"
-                                                    viewBox="0 0 24 24"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    strokeWidth="2"
-                                                    className="w-3.5 h-3.5 opacity-70"
-                                                  >
-                                                    <path d="M7 17L17 7" />
-                                                    <path d="M7 7h10v10" />
-                                                  </svg>
-                                                </Link>
-                                              ) : (
-                                                <div className="font-medium text-ink break-words">{itemTitle}</div>
-                                              )}
-
-                                              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
-                                                <span>Qty: {qty}</span>
-                                                <span>•</span>
-                                                <span>Unit: {ngn.format(unit)}</span>
-                                                {it.variant?.sku ? (
-                                                  <>
-                                                    <span>•</span>
-                                                    <span>SKU: {it.variant.sku}</span>
-                                                  </>
-                                                ) : null}
+                                            <div className="min-w-0 flex flex-1 items-start gap-3">
+                                              <div className="shrink-0">
+                                                {thumb ? (
+                                                  <img
+                                                    src={thumb}
+                                                    alt={itemTitle}
+                                                    className="h-14 w-14 rounded-xl border border-zinc-200/80 bg-zinc-50 object-cover"
+                                                  />
+                                                ) : (
+                                                  <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-zinc-200/80 bg-zinc-50 text-[10px] text-zinc-400">
+                                                    No image
+                                                  </div>
+                                                )}
                                               </div>
 
-                                              {options.length > 0 && (
-                                                <div className="mt-2 flex flex-wrap gap-2">
-                                                  {options.map((opt, idx) => (
-                                                    <span
-                                                      key={`${it.id}-opt-${idx}`}
-                                                      className="inline-flex items-center rounded-full border border-zinc-200/80 bg-zinc-50 px-2.5 py-1 text-[11px] text-zinc-700"
+                                              <div className="min-w-0 flex-1">
+                                                {productHref ? (
+                                                  <Link
+                                                    to={productHref}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    className="inline-flex items-center gap-1.5 font-semibold text-blue-600 break-words underline decoration-blue-400 underline-offset-2 hover:text-blue-700 hover:decoration-blue-600 transition"
+                                                  >
+                                                    {itemTitle}
+                                                    <svg
+                                                      xmlns="http://www.w3.org/2000/svg"
+                                                      viewBox="0 0 24 24"
+                                                      fill="none"
+                                                      stroke="currentColor"
+                                                      strokeWidth="2"
+                                                      className="w-3.5 h-3.5 opacity-70"
                                                     >
-                                                      {opt.attribute && opt.value
-                                                        ? `${opt.attribute}: ${opt.value}`
-                                                        : opt.attribute || opt.value}
-                                                    </span>
-                                                  ))}
+                                                      <path d="M7 17L17 7" />
+                                                      <path d="M7 7h10v10" />
+                                                    </svg>
+                                                  </Link>
+                                                ) : (
+                                                  <div className="font-medium text-ink break-words">{itemTitle}</div>
+                                                )}
+
+                                                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+                                                  <span>Qty: {qty}</span>
+                                                  <span>•</span>
+                                                  <span>Unit: {ngn.format(unit)}</span>
+                                                  {it.variant?.sku ? (
+                                                    <>
+                                                      <span>•</span>
+                                                      <span>SKU: {it.variant.sku}</span>
+                                                    </>
+                                                  ) : null}
                                                 </div>
-                                              )}
+
+                                                {options.length > 0 && (
+                                                  <div className="mt-2 flex flex-wrap gap-2">
+                                                    {options.map((opt, idx) => (
+                                                      <span
+                                                        key={`${it.id}-opt-${idx}`}
+                                                        className="inline-flex items-center rounded-full border border-zinc-200/80 bg-zinc-50 px-2.5 py-1 text-[11px] text-zinc-700"
+                                                      >
+                                                        {opt.attribute && opt.value
+                                                          ? `${opt.attribute}: ${opt.value}`
+                                                          : opt.attribute || opt.value}
+                                                      </span>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                              </div>
                                             </div>
 
                                             <div className="shrink-0 text-right min-w-[132px]">
@@ -2929,7 +4598,7 @@ export default function OrdersPage() {
         </div>
 
         {/* Mobile Orders list */}
-        <div className="mt-4 space-y-2.5 md:hidden">
+        <div className="mt-3 space-y-3 md:hidden">
           {loading && (
             <>
               <SkeletonRow mode="card" />
@@ -2947,7 +4616,8 @@ export default function OrdersPage() {
           {!loading &&
             paginated.map((o) => {
               const isOpen = expandedId === o.id;
-              const details: OrderRow = isOpen && (orderDetailQ.data as any)?.id === o.id ? (orderDetailQ.data as any) : o;
+              const details: OrderRow =
+                isOpen && (orderDetailQ.data as any)?.id === o.id ? (orderDetailQ.data as any) : o;
 
               const latestPayment = latestPaymentOf(details);
               const receiptKey = receiptKeyFromPayment(latestPayment);
@@ -2957,80 +4627,112 @@ export default function OrdersPage() {
                 !isPaidEffective && ["PENDING", "CREATED"].includes(String(details.status || "").toUpperCase());
 
               const firstItemTitle = details.items?.[0]?.title || details.items?.[0]?.product?.title || "";
+              const canShowCancelThis = canShowCancelButtonForUser(details, latestPayment, isAdmin);
 
               return (
                 <div
                   key={o.id}
-                  className={`${CARD_2XL} p-3 flex flex-col gap-2`}
-                  onClick={() => setExpandedId((curr) => (curr === o.id ? null : o.id))}
+                  ref={(node) => {
+                    orderAnchorRefs.current[o.id] = node;
+                  }}
+                  className={`${CARD_2XL} overflow-hidden`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className={T_LABEL}>Order ID</div>
-                      <div className="font-mono text-[11px] sm:text-xs truncate">{details.id}</div>
-                    </div>
-                    <div className="shrink-0">
-                      <StatusDot label={details.status || "—"} />
-                    </div>
-                  </div>
-
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className={`${T_SM} text-ink-soft truncate`}>
-                        {firstItemTitle
-                          ? firstItemTitle.toString().slice(0, 44) +
-                          (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
-                          : isOpen && orderDetailQ.isFetching
-                            ? "Loading items…"
-                            : `${details.items?.length || 0} item(s)`}
+                  <div
+                    key={o.id}
+                    className={`${CARD_2XL} p-3 flex flex-col gap-2`}
+                    onClick={() => setExpandedId((curr) => (curr === o.id ? null : o.id))}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[10px] uppercase tracking-wide text-ink-soft">Order ID</div>
+                        <div className="mt-0.5 font-mono text-[11px] leading-5 text-ink truncate">
+                          {details.id}
+                        </div>
                       </div>
-                      <div className={`${T_XS} text-ink-soft`}>Placed {fmtDate(details.createdAt)}</div>
+                      <div className="shrink-0">
+                        <StatusDot label={getOrderFilterBucket(details)} />
+                      </div>
                     </div>
 
-                    <div className="text-right shrink-0">
-                      <div className={T_LABEL}>Total</div>
-                      <div className="font-semibold text-[13px] sm:text-sm">{ngn.format(fmtN(details.total))}</div>
+                    <div className="mt-3 grid grid-cols-[1fr_auto] gap-3 items-start">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium text-ink leading-5 break-words">
+                          {firstItemTitle
+                            ? firstItemTitle.toString().slice(0, 52) +
+                            (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
+                            : isOpen && orderDetailQ.isFetching
+                              ? "Loading items…"
+                              : `${details.items?.length || 0} item(s)`}
+                        </div>
+                        <div className="mt-1 text-[11px] leading-5 text-ink-soft">
+                          Placed {fmtDate(details.createdAt)}
+                        </div>
+                        {getOrderFinalDeliveryDisplay(details) ? (
+                          <div className="text-[11px] leading-5 text-ink-soft">
+                            Delivered {getOrderFinalDeliveryDisplay(details)}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="text-[10px] uppercase tracking-wide text-ink-soft">Total</div>
+                        <div className="mt-0.5 text-[18px] font-semibold text-ink">
+                          {ngn.format(fmtN(details.total))}
+                        </div>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                    {isPendingOrCreated && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {isPendingOrCreated && (
+                        <button
+                          className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[11px] font-medium shadow-[0_10px_24px_rgba(16,185,129,0.18)]"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onPay(details.id);
+                          }}
+                        >
+                          Pay
+                        </button>
+                      )}
+
+                      {canShowCancelThis && (
+                        <button
+                          className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-medium text-rose-700"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onCancel(details.id);
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      )}
+
+                      {receiptKey && isPaidEffective && (
+                        <button
+                          className={`rounded-xl ${SILVER_BORDER} bg-white px-3 py-2 text-[11px] font-medium ${SILVER_SHADOW_SM}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            viewReceipt(receiptKey);
+                          }}
+                        >
+                          Receipt
+                        </button>
+                      )}
+
                       <button
-                        className={`rounded-lg bg-emerald-600 text-white px-3 py-1.5 ${BTN_XS} shadow-[0_10px_24px_rgba(16,185,129,0.18)]`}
+                        className={`rounded-xl ${SILVER_BORDER} bg-white px-3 py-2 text-[11px] font-medium hover:bg-black/5`}
                         onClick={(e) => {
                           e.stopPropagation();
-                          onPay(details.id);
+                          onToggle(details.id);
                         }}
                       >
-                        Pay
+                        {isOpen ? "Hide details" : "Details"}
                       </button>
-                    )}
-
-                    {receiptKey && isPaidEffective && (
-                      <button
-                        className={`rounded-lg ${SILVER_BORDER} px-3 py-1.5 ${BTN_XS} bg-white ${SILVER_SHADOW_SM}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          viewReceipt(receiptKey);
-                        }}
-                      >
-                        Receipt
-                      </button>
-                    )}
-
-                    <button
-                      className={`rounded-lg ${SILVER_BORDER} px-3 py-1.5 ${BTN_XS} bg-white hover:bg-black/5`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggle(details.id);
-                      }}
-                    >
-                      {isOpen ? "Hide" : "Details"}
-                    </button>
+                    </div>
                   </div>
 
                   {isMetricsRole && (
-                    <div className="rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+                    <div className="border-t border-zinc-200/70 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
                       <div className="font-semibold text-zinc-900 mb-1">Platform profit</div>
                       <div>Commission: {ngn.format(orderCommissionRevenue(details, marginPercent))}</div>
                       <div>Service fee: {ngn.format(orderServiceRevenue(details))}</div>
@@ -3043,23 +4745,60 @@ export default function OrdersPage() {
                   )}
 
                   {isOpen && (
-                    <div className="mt-1.5 border-t border-zinc-200/70 pt-2 space-y-1.5">
+                    <div className="border-t border-zinc-200/70 bg-white px-3 py-3 space-y-3">
                       {Array.isArray(details.purchaseOrders) && details.purchaseOrders.length > 0 && (
-                        <div className="rounded-lg border border-zinc-200/80 bg-zinc-50 px-2.5 py-2">
-                          <div className="text-[11px] font-semibold text-zinc-900 mb-1">Supplier fulfillment</div>
-                          <div className="space-y-1">
+                        <div className="rounded-2xl border border-zinc-200/80 bg-zinc-50 p-3">
+                          <div className="mb-2 text-[11px] font-semibold text-zinc-900"> {canViewSupplierIdentity ? "Supplier fulfillment" : "Delivery status"}</div>
+                          <div className="space-y-2">
                             {details.purchaseOrders.map((po) => {
                               const supplierPaid = isPurchaseOrderSupplierPaid(po, details);
+                              const canRefundThisPo =
+                                !isAdmin && canRequestRefundForPo(details, po, latestPayment, refunds);
+
+                              const poHasOpenRefund = hasOpenRefundForPurchaseOrder(String(po.id || ""), refunds);
+                              const poRefunds = getRefundsForPurchaseOrder(po, refunds);
+                              const poRefundPaidAt = poRefunds
+                                .map((r) => getRefundPaidOutAt(r))
+                                .filter(Boolean)
+                                .sort()
+                                .reverse()[0] || null;
+
                               return (
-                                <div key={po.id} className="text-[10px] text-zinc-700 flex flex-wrap items-center gap-1.5">
-                                  <span className="font-medium text-zinc-900">{po.supplierName || po.supplierId || "Supplier"}</span>
-                                  <span>•</span>
-                                  <span>{po.status || "—"}</span>
-                                  {supplierPaid ? (
-                                    <>
-                                      <span>•</span>
-                                      <span className="font-semibold text-emerald-700">Supplier paid</span>
-                                    </>
+                                <div key={po.id} className="rounded-xl border border-zinc-200/70 bg-white px-3 py-2">
+                                  <div className="text-[10px] leading-5 text-zinc-700">
+                                    <div className="font-medium text-zinc-900">
+                                      {canViewSupplierIdentity ? (po.supplierName || po.supplierId || "Supplier") : "Order update"}
+                                    </div>
+                                    <div className="mt-0.5">
+                                      PO: <span className="font-mono">{po.id}</span>
+                                    </div>
+                                    {getPurchaseOrderDeliveryDisplay(po) ? (
+                                      <div>Delivered: {getPurchaseOrderDeliveryDisplay(po)}</div>
+                                    ) : null}
+                                    <div>{getPurchaseOrderDisplayStatus(po)}</div>
+                                    {supplierPaid ? (
+                                      <div className="font-semibold text-emerald-700">Supplier paid</div>
+                                    ) : null}
+                                    {poHasOpenRefund ? (
+                                      <div className="font-semibold text-indigo-700">Refund in progress</div>
+                                    ) : null}
+                                    {poRefundPaidAt ? (
+                                      <div className="font-semibold text-emerald-700">Customer refunded</div>
+                                    ) : null}
+                                  </div>
+
+                                  {canRefundThisPo ? (
+                                    <div className="mt-2 flex justify-end">
+                                      <button
+                                        className={`rounded-lg ${SILVER_BORDER} px-3 py-1.5 ${BTN_XS} bg-white hover:bg-black/5 text-indigo-700`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onCustomerRefund(details, po);
+                                        }}
+                                      >
+                                        Request refund
+                                      </button>
+                                    </div>
                                   ) : null}
                                 </div>
                               );
@@ -3068,93 +4807,124 @@ export default function OrdersPage() {
                         </div>
                       )}
 
-                      {(details.items || []).map((it) => {
-                        const itemTitle = (it.title || it.product?.title || "—").toString();
-                        const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
-                        const total =
-                          it.lineTotal != null || it.total != null || it.subtotal != null
-                            ? fmtN(it.lineTotal ?? it.total ?? it.subtotal)
-                            : fmtN(it.unitPrice ?? it.price) * qty;
-                        const options = normalizeSelectedOptionsForDisplay(
-                          it.selectedOptions ?? it.options ?? it.selectedOptionsJson
-                        );
+                      <div className="rounded-2xl border border-zinc-200/80 bg-zinc-50 overflow-hidden">
+                        <div className="flex items-center justify-between border-b border-zinc-200/70 px-3 py-2.5">
+                          <div className="text-[11px] font-semibold text-ink">Order items</div>
+                          <div className="text-[10px] text-ink-soft">
+                            {Array.isArray(details.items) ? details.items.length : 0} item(s)
+                          </div>
+                        </div>
 
-                        return (
-                          <div key={it.id} className="min-w-0 flex-1 bg-blue-50/40 rounded-md px-2 py-1">
-                            <div className="flex justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                {it.productId ? (
-                                  <Link
-                                    to={getProductHref(it)}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="inline-flex items-center gap-1.5 font-semibold text-blue-600 text-[12px] sm:text-xs break-words underline decoration-blue-400 underline-offset-2 active:scale-[0.98] transition"
-                                  >
-                                    {itemTitle}
-                                    <svg
-                                      xmlns="http://www.w3.org/2000/svg"
-                                      viewBox="0 0 24 24"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      strokeWidth="2"
-                                      className="w-3 h-3 opacity-70"
-                                    >
-                                      <path d="M7 17L17 7" />
-                                      <path d="M7 7h10v10" />
-                                    </svg>
-                                  </Link>
-                                ) : (
-                                  <div className="font-medium text-ink text-[11px] sm:text-xs break-words">{itemTitle}</div>
-                                )}
+                        <div className="space-y-2 p-2">
+                          {orderDetailQ.isFetching && (!details.items || details.items.length === 0) && (
+                            <div className="px-2 py-3 text-[11px] text-ink-soft">Loading order items…</div>
+                          )}
 
-                                <div className={`${T_XS} text-ink-soft mt-0.5`}>
-                                  Qty {qty} • {ngn.format(fmtN(it.unitPrice ?? it.price))}
-                                  {it.variant?.sku ? ` • SKU ${it.variant.sku}` : ""}
+                          {(!details.items || details.items.length === 0) && !orderDetailQ.isFetching && (
+                            <div className="px-2 py-3 text-[11px] text-ink-soft">No items found for this order.</div>
+                          )}
+
+                          {(details.items || []).map((it) => {
+                            const itemTitle = (it.title || it.product?.title || "—").toString();
+                            const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
+                            const total =
+                              it.lineTotal != null || it.total != null || it.subtotal != null
+                                ? fmtN(it.lineTotal ?? it.total ?? it.subtotal)
+                                : fmtN(it.unitPrice ?? it.price) * qty;
+                            const options = normalizeSelectedOptionsForDisplay(
+                              it.selectedOptions ?? it.options ?? it.selectedOptionsJson
+                            );
+                            const productHref = getProductHref(it);
+                            const thumb = getFirstImageFromOrderItem(it);
+
+                            return (
+                              <div key={it.id} className="rounded-xl border border-zinc-200/70 bg-white p-2.5">
+                                <div className="flex items-start gap-2.5">
+                                  <div className="shrink-0">
+                                    {thumb ? (
+                                      <img
+                                        src={thumb}
+                                        alt={itemTitle}
+                                        className="h-12 w-12 rounded-lg border border-zinc-200/80 bg-white object-cover"
+                                      />
+                                    ) : (
+                                      <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-zinc-200/80 bg-white text-[9px] text-zinc-400">
+                                        No image
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="min-w-0 flex-1">
+                                    {productHref ? (
+                                      <Link
+                                        to={productHref}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="inline-flex items-center gap-1 text-[12px] font-semibold text-blue-600 break-words underline decoration-blue-400 underline-offset-2"
+                                      >
+                                        {itemTitle}
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          viewBox="0 0 24 24"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          strokeWidth="2"
+                                          className="w-3 h-3 opacity-70"
+                                        >
+                                          <path d="M7 17L17 7" />
+                                          <path d="M7 7h10v10" />
+                                        </svg>
+                                      </Link>
+                                    ) : (
+                                      <div className="text-[12px] font-medium text-ink break-words">
+                                        {itemTitle}
+                                      </div>
+                                    )}
+
+                                    <div className="mt-1 text-[10px] leading-5 text-ink-soft">
+                                      Qty {qty} • {ngn.format(fmtN(it.unitPrice ?? it.price))}
+                                      {it.variant?.sku ? ` • SKU ${it.variant.sku}` : ""}
+                                    </div>
+
+                                    {options.length > 0 && (
+                                      <div className="mt-2 flex flex-wrap gap-1.5">
+                                        {options.map((opt, idx) => (
+                                          <span
+                                            key={`${it.id}-mobile-opt-${idx}`}
+                                            className="inline-flex items-center rounded-full border border-zinc-200/80 bg-zinc-50 px-2 py-0.5 text-[10px] text-zinc-700"
+                                          >
+                                            {opt.attribute && opt.value
+                                              ? `${opt.attribute}: ${opt.value}`
+                                              : opt.attribute || opt.value}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+
+                                    <div className="mt-2 flex items-center justify-between gap-2">
+                                      <div className="text-[11px]">
+                                        <div className="text-zinc-500">Total</div>
+                                        <div className="font-semibold text-ink">{ngn.format(total)}</div>
+                                      </div>
+
+                                      {it.productId && (
+                                        <button
+                                          className={`rounded-lg ${SILVER_BORDER} bg-white px-3 py-1.5 text-[11px] font-medium hover:bg-black/5`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onBuyAgain(it);
+                                          }}
+                                        >
+                                          Buy Again
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
-
-                              <div className="shrink-0 text-right">
-                                <div className={`${T_XS} text-ink-soft`}>Total</div>
-                                <div className="font-semibold text-[11px] sm:text-xs">{ngn.format(total)}</div>
-                              </div>
-                            </div>
-
-                            {options.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                {options.map((opt, idx) => (
-                                  <span
-                                    key={`${it.id}-mobile-opt-${idx}`}
-                                    className="inline-flex items-center rounded-full border border-zinc-200/80 bg-white px-2 py-0.5 text-[10px] text-zinc-700"
-                                  >
-                                    {opt.attribute && opt.value
-                                      ? `${opt.attribute}: ${opt.value}`
-                                      : opt.attribute || opt.value}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-
-                            {it.productId && (
-                              <div className="mt-2 flex justify-end">
-                                <button
-                                  className={`rounded-lg ${SILVER_BORDER} px-3 py-1.5 ${BTN_XS} bg-white hover:bg-black/5`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onBuyAgain(it);
-                                  }}
-                                >
-                                  Buy Again
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-
-                      {(!details.items || details.items.length === 0) && (
-                        <div className={`${T_XS} text-ink-soft`}>
-                          {orderDetailQ.isFetching ? "Loading order items…" : "No items found for this order."}
+                            );
+                          })}
                         </div>
-                      )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -3276,7 +5046,6 @@ export default function OrdersPage() {
     </SiteLayout>
   );
 }
-
 /* ---------------- Small bits ---------------- */
 function SkeletonRow({
   cols = 5,

@@ -172,6 +172,31 @@ function normRole(role: unknown) {
   return r;
 }
 
+function getTempVerifyToken() {
+  try {
+    return localStorage.getItem("tempToken") || "";
+  } catch {
+    return "";
+  }
+}
+
+function hasTempVerifySession() {
+  return !!String(getTempVerifyToken()).trim();
+}
+
+function normalizePathname(path: string) {
+  const p = String(path || "").trim();
+  if (!p) return "/";
+  if (p === "/") return "/";
+  return p.replace(/\/+$/, "") || "/";
+}
+
+function isPublicSupplierPath(pathname: string) {
+  const p = normalizePathname(pathname);
+  return p === "/register-supplier" || p === "/supplier/verify-contact";
+}
+
+
 function getAuthUserKey(user: any) {
   const id = String(user?.id ?? "").trim();
   const email = String(user?.email ?? "").trim().toLowerCase();
@@ -283,11 +308,11 @@ function hasAddress(addr: any) {
   if (!addr) return false;
   return Boolean(
     String(addr.houseNumber ?? "").trim() ||
-      String(addr.streetName ?? "").trim() ||
-      String(addr.city ?? "").trim() ||
-      String(addr.state ?? "").trim() ||
-      String(addr.country ?? "").trim() ||
-      String(addr.postCode ?? "").trim()
+    String(addr.streetName ?? "").trim() ||
+    String(addr.city ?? "").trim() ||
+    String(addr.state ?? "").trim() ||
+    String(addr.country ?? "").trim() ||
+    String(addr.postCode ?? "").trim()
   );
 }
 
@@ -385,9 +410,7 @@ function useSupplierStageState(): SupplierStageState {
           supplierRes.data ??
           {}) as SupplierMeLite;
 
-        const docsRaw = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
-        const docs = Array.isArray(docsRaw) ? (docsRaw as SupplierDocumentLite[]) : [];
-
+        const docs = normalizeSupplierDocsLite((docsRes as any)?.data);
         const supplierApproved = isSupplierEffectivelyApproved(supplierMe);
 
         const contactDone =
@@ -398,12 +421,12 @@ function useSupplierStageState(): SupplierStageState {
           Boolean(
             String(
               supplierMe?.legalName ??
-                supplierMe?.businessName ??
-                supplierMe?.name ??
-                ""
+              supplierMe?.businessName ??
+              supplierMe?.name ??
+              ""
             ).trim() &&
-              String(supplierMe?.registrationType ?? "").trim() &&
-              String(supplierMe?.registrationCountryCode ?? "").trim()
+            String(supplierMe?.registrationType ?? "").trim() &&
+            String(supplierMe?.registrationCountryCode ?? "").trim()
           );
 
         const addressDone =
@@ -422,9 +445,10 @@ function useSupplierStageState(): SupplierStageState {
         const docsDone =
           supplierApproved || requiredKinds.every((kind) => docSatisfied(docs, kind));
 
-        const nextPath = supplierApproved
-          ? null
-          : getSupplierNextPath({
+        const nextPath =
+          supplierApproved || (contactDone && businessDone && addressDone && docsDone)
+            ? null
+            : getSupplierNextPath({
               contactDone,
               businessDone,
               addressDone,
@@ -439,7 +463,7 @@ function useSupplierStageState(): SupplierStageState {
           businessDone,
           addressDone,
           docsDone,
-          onboardingDone: supplierApproved || !nextPath,
+          onboardingDone: supplierApproved || (contactDone && businessDone && addressDone && docsDone),
           nextPath,
         });
       } catch {
@@ -473,6 +497,37 @@ function SupplierStageProvider({ children }: { children: React.ReactNode }) {
     <SupplierStageContext.Provider value={stage}>
       {children}
     </SupplierStageContext.Provider>
+  );
+}
+
+
+function SupplierVerifyContactRouteGuard() {
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const user = useAuthStore((s) => s.user);
+  const location = useLocation();
+
+  if (!hydrated) {
+    return <RouteFallback label="Loading verification…" />;
+  }
+
+  // Full session already exists
+  if (user?.id) {
+    return <SupplierVerifyContact />;
+  }
+
+  // Temporary verification session exists
+  if (hasTempVerifySession()) {
+    return <SupplierVerifyContact />;
+  }
+
+  return (
+    <Navigate
+      to={`/login?from=${encodeURIComponent(
+        `${location.pathname}${location.search}`
+      )}`}
+      replace
+      state={{ from: `${location.pathname}${location.search}` }}
+    />
   );
 }
 
@@ -671,6 +726,45 @@ function RoleDashboardRoute() {
   return <UserDashboard />;
 }
 
+function normalizeSupplierDocsLite(raw: unknown): SupplierDocumentLite[] {
+  const source = raw as
+    | {
+      data?: {
+        data?: SupplierDocumentLite[];
+        documents?: SupplierDocumentLite[];
+      } | SupplierDocumentLite[];
+      documents?: SupplierDocumentLite[];
+    }
+    | SupplierDocumentLite[]
+    | null;
+
+  const candidates: unknown[] = [
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: unknown }).data &&
+      typeof (source as { data?: unknown }).data === "object" &&
+      (source as { data?: { data?: SupplierDocumentLite[] } }).data?.data
+      : undefined,
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: { documents?: SupplierDocumentLite[] } }).data?.documents
+      : undefined,
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: unknown }).data
+      : undefined,
+    source && typeof source === "object" && "documents" in source
+      ? (source as { documents?: SupplierDocumentLite[] }).documents
+      : undefined,
+    source,
+  ];
+
+  for (const item of candidates) {
+    if (Array.isArray(item)) {
+      return item as SupplierDocumentLite[];
+    }
+  }
+
+  return [];
+}
+
 /** Role-aware landing page */
 function HomeRoute() {
   const user = useAuthStore((s) => s.user);
@@ -683,6 +777,10 @@ function HomeRoute() {
 
   const isAuthed = !!user?.id;
   const r = normRole(user?.role);
+
+  if (!isAuthed && hasTempVerifySession()) {
+    return <Navigate to="/supplier/verify-contact" replace />;
+  }
 
   if (isAuthed && r === "SUPPLIER") {
     if (stage.loading) {
@@ -697,7 +795,6 @@ function HomeRoute() {
 
   return <Catalog />;
 }
-
 function defaultAuthedPathForRole(role: unknown) {
   const r = normRole(role);
   if (r === "SUPPLIER") return "/supplier";
@@ -908,7 +1005,7 @@ export default function App() {
   useEffect(() => {
     try {
       toast.dismiss();
-    } catch {}
+    } catch { }
 
     const b = document.body;
     const h = document.documentElement;
@@ -929,7 +1026,7 @@ export default function App() {
 
     try {
       (document.activeElement as any)?.blur?.();
-    } catch {}
+    } catch { }
   }, [loc.pathname, loc.search]);
 
   useEffect(() => {
@@ -964,7 +1061,7 @@ export default function App() {
           "auth:timedOutReturnTo",
           previousPath.startsWith("/checkout") ? "/cart" : previousPath
         );
-      } catch {}
+      } catch { }
     }
 
     prevAuthedRef.current = false;
@@ -975,16 +1072,17 @@ export default function App() {
     if (!hydrated || user === undefined) return;
     if (isAuthed) return;
 
-    const p = loc.pathname;
+    const p = normalizePathname(loc.pathname);
+    const hasTempVerify = hasTempVerifySession();
 
-    const publicSupplierPaths = new Set([
-      "/register-supplier",
-      "/supplier/verify-contact",
-    ]);
+    // Allow supplier verify page when temp verification token exists.
+    if (p === "/supplier/verify-contact" && hasTempVerify) {
+      return;
+    }
 
     const isProtectedSupplierPath =
       (p === "/supplier" || p.startsWith("/supplier/")) &&
-      !publicSupplierPaths.has(p);
+      !isPublicSupplierPath(p);
 
     const isProtectedPath =
       p === "/checkout" ||
@@ -1008,7 +1106,7 @@ export default function App() {
 
     try {
       sessionStorage.setItem("auth:returnTo", returnTarget);
-    } catch {}
+    } catch { }
 
     const qp = encodeURIComponent(returnTarget);
 
@@ -1017,14 +1115,13 @@ export default function App() {
       state: { from: returnTarget },
     });
   }, [hydrated, user, isAuthed, loc.pathname, loc.search, nav]);
-
   useEffect(() => {
     try {
       const saved = sessionStorage.getItem("auth:returnTo");
       if (saved && saved.startsWith("/checkout")) {
         sessionStorage.setItem("auth:returnTo", "/cart");
       }
-    } catch {}
+    } catch { }
   }, [loc.pathname]);
 
   useEffect(() => {
@@ -1041,7 +1138,7 @@ export default function App() {
       timedOutUserKey = sessionStorage.getItem("auth:timedOutUserKey") || "";
       timedOutReturnTo = sessionStorage.getItem("auth:timedOutReturnTo") || "";
       genericReturnTo = sessionStorage.getItem("auth:returnTo") || "";
-    } catch {}
+    } catch { }
 
     const hasTimedOutUser = !!timedOutUserKey;
     const sameTimedOutUser =
@@ -1063,7 +1160,7 @@ export default function App() {
       sessionStorage.removeItem("auth:returnTo");
       sessionStorage.removeItem("auth:timedOutReturnTo");
       sessionStorage.removeItem("auth:timedOutUserKey");
-    } catch {}
+    } catch { }
 
     nav(target, { replace: true });
   }, [hydrated, isAuthed, user, loc.pathname, nav]);
@@ -1324,7 +1421,10 @@ export default function App() {
                     }
                   />
 
-                  <Route path="/supplier/verify-contact" element={<SupplierVerifyContact />} />
+                  <Route
+                    path="/supplier/verify-contact"
+                    element={<SupplierVerifyContactRouteGuard />}
+                  />
 
                   <Route
                     path="/supplier/onboarding"

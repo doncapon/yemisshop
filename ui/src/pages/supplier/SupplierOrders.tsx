@@ -1,4 +1,3 @@
-// src/pages/supplier/SupplierOrders.tsx
 import React, { useMemo, useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Link, useParams, useSearchParams } from "react-router-dom";
@@ -30,6 +29,7 @@ import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 import { AssignRiderControl } from "../../components/supplier/AssignRiderControl";
+import { useSupplierVerificationGate } from "../../hooks/useSupplierVerificationGate";
 
 function Card({
   children,
@@ -58,6 +58,13 @@ type AddressLike = {
   lga?: string | null;
   landmark?: string | null;
   directionsNote?: string | null;
+};
+
+type PricingSnapshot = {
+  supplierGrossUnitCost?: number | null;
+  marginPercent?: number | null;
+  supplierMarginAmount?: number | null;
+  supplierNetUnitPayable?: number | null;
 };
 
 type OrderItem = {
@@ -154,9 +161,16 @@ function badgeClass(status: string) {
     return "bg-emerald-50 text-emerald-700 border-emerald-200";
   }
   if (
-    ["CONFIRMED", "PACKED", "FUNDED", "CREATED", "PENDING", "PROCESSING"].includes(
-      s
-    )
+    [
+      "CONFIRMED",
+      "PACKED",
+      "FUNDED",
+      "CREATED",
+      "PENDING",
+      "PROCESSING",
+      "AWAITING_FULFILLMENT",
+      "AWAITING_FULFILMENT",
+    ].includes(s)
   ) {
     return "bg-amber-50 text-amber-700 border-amber-200";
   }
@@ -195,9 +209,50 @@ function formatAddress(a?: AddressLike | null) {
   return parts.length ? parts.join(", ") : "—";
 }
 
+function parseSelectedOptions(selectedOptions: any): any[] {
+  if (!selectedOptions) return [];
+  if (Array.isArray(selectedOptions)) return selectedOptions;
+  if (typeof selectedOptions === "object" && Array.isArray(selectedOptions?.raw)) {
+    return selectedOptions.raw;
+  }
+  if (typeof selectedOptions === "string") {
+    try {
+      const parsed = JSON.parse(selectedOptions);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.raw)) return parsed.raw;
+      return [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function getPricingSnapshot(selectedOptions: any): PricingSnapshot | null {
+  if (!selectedOptions) return null;
+
+  if (typeof selectedOptions === "object" && selectedOptions?.pricingSnapshot) {
+    return selectedOptions.pricingSnapshot as PricingSnapshot;
+  }
+
+  if (typeof selectedOptions === "string") {
+    try {
+      const parsed = JSON.parse(selectedOptions);
+      if (parsed && typeof parsed === "object" && parsed.pricingSnapshot) {
+        return parsed.pricingSnapshot as PricingSnapshot;
+      }
+    } catch {
+      //
+    }
+  }
+
+  return null;
+}
+
 function supplierOptionsLabel(selectedOptions: any) {
-  if (!Array.isArray(selectedOptions) || !selectedOptions.length) return "";
-  return selectedOptions
+  const arr = parseSelectedOptions(selectedOptions);
+  if (!Array.isArray(arr) || !arr.length) return "";
+  return arr
     .map((o) => {
       const a = o?.attribute || "Attribute";
       const v = o?.value || o?.name || "Value";
@@ -220,7 +275,13 @@ function normStatus(s?: string | null) {
 function toFlowBaseStatus(raw?: string | null) {
   const s = normStatus(raw);
   if (s === "CANCELLED") return "CANCELED";
-  if (["CREATED", "FUNDED", "PROCESSING"].includes(s)) return "PENDING";
+  if (
+    ["CREATED", "FUNDED", "PROCESSING", "AWAITING_FULFILLMENT", "AWAITING_FULFILMENT"].includes(
+      s
+    )
+  ) {
+    return "PENDING";
+  }
   if (s === "OUT_FOR_DELIVERY") return "SHIPPED";
   return s || "PENDING";
 }
@@ -261,6 +322,50 @@ export default function SupplierOrders() {
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
   const isRider = role === "SUPPLIER_RIDER";
   const isSupplierUser = role === "SUPPLIER";
+
+  const verificationQ = useSupplierVerificationGate(hydrated && isSupplierUser);
+  const verificationGate = verificationQ.data?.gate;
+
+  const onboardingBlocked =
+    isSupplierUser &&
+    !verificationQ.isLoading &&
+    !!verificationGate &&
+    verificationGate.isLocked;
+
+  const onboardingProgressItems = verificationGate?.progressItems ?? [];
+
+  const onboardingPct = useMemo(() => {
+    if (!onboardingProgressItems.length) return 0;
+    const done = onboardingProgressItems.filter((x: any) => x.done).length;
+    return Math.round((done / onboardingProgressItems.length) * 100);
+  }, [onboardingProgressItems]);
+
+  const nextStepLabel = useMemo(() => {
+    const gate = verificationGate;
+    if (!gate) return "Continue verification";
+
+    if (!gate.contactDone) return "Continue contact verification";
+    if (!gate.businessDone) return "Continue business onboarding";
+    if (!gate.addressDone) return "Continue address setup";
+    if (gate.hasPendingRequiredDoc) return "Check document re-verification";
+    return "Continue document upload";
+  }, [verificationGate]);
+
+  const lockReason =
+    onboardingBlocked
+      ? verificationGate?.lockReason ||
+        "Your updated documents are currently under review. Payout and payout-related actions stay locked until re-verification is completed."
+      : undefined;
+
+  const ridersLocked =
+    onboardingBlocked &&
+    !!verificationGate?.hasPendingRequiredDoc;
+
+  const ridersLockReason =
+    ridersLocked
+      ? verificationGate?.lockReason ||
+        "Your updated documents are under review. Rider management is locked until verification is completed."
+      : undefined;
 
   const urlSupplierId = useMemo(() => {
     const v = normStr(searchParams.get("supplierId"));
@@ -335,6 +440,7 @@ export default function SupplierOrders() {
 
   const [deliveryOtpToken, setDeliveryOtpToken] = useState<Record<string, string>>({});
   const [deliveryOtpAutoRequested, setDeliveryOtpAutoRequested] = useState<Record<string, boolean>>({});
+
   const [riderView, setRiderView] = useState<"active" | "delivered">("active");
 
   const [deliveryOtpCode, setDeliveryOtpCode] = useState<Record<string, string>>({});
@@ -370,6 +476,8 @@ export default function SupplierOrders() {
   const filterStatuses = [
     "CREATED",
     "FUNDED",
+    "AWAITING_FULFILLMENT",
+    "AWAITING_FULFILMENT",
     "CONFIRMED",
     "PACKED",
     "SHIPPED",
@@ -383,9 +491,10 @@ export default function SupplierOrders() {
     Record<string, { type: "info" | "error"; text?: React.ReactNode }>
   >({});
   const [payoutPendingByPo, setPayoutPendingByPo] = useState<Record<string, boolean>>({});
-  const payoutBankDetailsLink = withSupplierCtx(
-    "/supplier/settings?focus=payout-bank-details#payout-bank-details"
-  );
+
+  const payoutBankDetailsLink = onboardingBlocked
+    ? (verificationGate?.nextPath || "/supplier/verify-contact")
+    : withSupplierCtx("/supplier/settings?focus=payout-bank-details#payout-bank-details");
 
   const PAGE_SIZES = [10, 20, 50, 100] as const;
   const [pageSize, setPageSize] = useState<number>(20);
@@ -650,12 +759,14 @@ export default function SupplierOrders() {
           type: "error",
           text: isPayoutNotReady ? (
             <span>
-              Supplier is not payout-ready.{" "}
+              {onboardingBlocked
+                ? "Payout actions are locked while your updated documents are under review. "
+                : "Supplier is not payout-ready. "}
               <Link
                 to={payoutBankDetailsLink}
                 className="underline font-semibold text-rose-700 hover:text-rose-800"
               >
-                Add payout bank details
+                {onboardingBlocked ? "Continue verification" : "Add payout bank details"}
               </Link>
             </span>
           ) : (
@@ -722,12 +833,14 @@ export default function SupplierOrders() {
             type: "error",
             text: isPayoutNotReady ? (
               <span>
-                Supplier is not payout-ready (missing bank details or payouts disabled).{" "}
+                {onboardingBlocked
+                  ? "Payout actions are locked while your updated documents are under review. "
+                  : "Supplier is not payout-ready (missing bank details or payouts disabled). "}
                 <Link
                   to={payoutBankDetailsLink}
                   className="underline font-semibold text-rose-700 hover:text-rose-800"
                 >
-                  Add payout bank details
+                  {onboardingBlocked ? "Continue verification" : "Add payout bank details"}
                 </Link>
               </span>
             ) : (
@@ -849,6 +962,8 @@ export default function SupplierOrders() {
   });
 
   function canAttemptReleasePayout(o: SupplierOrder) {
+    if (onboardingBlocked) return false;
+
     const poId = String(o.purchaseOrderId || "").trim();
     if (!poId) return false;
 
@@ -862,6 +977,7 @@ export default function SupplierOrders() {
 
   function shouldShowReleasePayout(o: SupplierOrder) {
     if (isRider) return false;
+    if (onboardingBlocked) return false;
 
     const poId = String(o.purchaseOrderId || "").trim();
     if (!poId) return false;
@@ -953,15 +1069,25 @@ export default function SupplierOrders() {
                 Overview <ArrowRight size={14} />
               </Link>
 
-              {(isSupplierUser || isAdmin) && (
-                <Link
-                  to={withSupplierCtx("/supplier/riders")}
-                  className="inline-flex items-center justify-center gap-2 rounded-full bg-white/15 text-white px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/30 hover:bg-white/20"
-                  title="Invite and manage riders"
-                >
-                  <Users size={14} /> Riders
-                </Link>
-              )}
+              {(isSupplierUser || isAdmin) &&
+                (ridersLocked ? (
+                  <button
+                    type="button"
+                    disabled
+                    title={ridersLockReason}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white/10 text-white/70 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/20 cursor-not-allowed opacity-70"
+                  >
+                    <Users size={14} /> Riders locked
+                  </button>
+                ) : (
+                  <Link
+                    to={withSupplierCtx("/supplier/riders")}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white/15 text-white px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/30 hover:bg-white/20"
+                    title="Invite and manage riders"
+                  >
+                    <Users size={14} /> Riders
+                  </Link>
+                ))}
             </div>
 
             {!hydrated ? (
@@ -988,6 +1114,83 @@ export default function SupplierOrders() {
             )}
           </div>
         </div>
+
+        {onboardingBlocked && (
+          <div className="mt-4 sm:mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <div className="font-semibold">Verification in progress</div>
+                <div className="mt-1 text-amber-800">
+                  Your updated documents are currently under review. Order visibility remains available,
+                  but payout-related actions and further payout bank-detail changes stay locked until re-verification is completed.
+                </div>
+
+                {verificationGate?.hasPendingRequiredDoc && (
+                  <div className="mt-3 rounded-xl border border-amber-300 bg-white/70 px-3 py-2 text-[12px] text-amber-900">
+                    Product, payout, withdrawal, and payout-release actions stay locked until all required documents are approved.
+                  </div>
+                )}
+
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
+                  <div
+                    className="h-full rounded-full bg-amber-500 transition-all"
+                    style={{ width: `${onboardingPct}%` }}
+                  />
+                </div>
+
+                <div className="mt-2 text-[12px] text-amber-800">
+                  Progress: <b>{onboardingPct}%</b>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {onboardingProgressItems.map((item: any) => (
+                    <span
+                      key={item.key}
+                      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        item.done ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
+                      }`}
+                    >
+                      {item.label}: {item.done ? "Done" : "Pending"}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="mt-3 text-[12px] text-amber-800">
+                  Supplier status: <b>{String(verificationGate?.supplierStatus ?? "PENDING")}</b>
+                  {" • "}
+                  KYC: <b>{String(verificationGate?.kycStatus ?? "PENDING")}</b>
+                </div>
+              </div>
+
+              <div className="shrink-0">
+                <Link
+                  to={verificationGate?.nextPath || "/supplier/verify-contact"}
+                  className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                >
+                  {nextStepLabel}
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </div>
+
+              {ridersLocked && (
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  <b>Rider management locked:</b> You cannot add or assign riders while your required
+                  verification documents are pending review.
+                </div>
+              )}
+
+              <div className="shrink-0">
+                <Link
+                  to={verificationGate?.nextPath || "/supplier/verify-contact"}
+                  className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                >
+                  {nextStepLabel}
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
           <Card className="lg:col-span-2">
@@ -1161,11 +1364,24 @@ export default function SupplierOrders() {
                 const supplierStatusRaw = normStatus(o.supplierStatus || "PENDING");
                 const supplierFlowBase = toFlowBaseStatus(supplierStatusRaw);
 
-                const supplierTotal = items.reduce((sum, it) => {
-                  const unit = Number(it.chosenSupplierUnitPrice ?? 0);
+                const supplierTotal =
+                  o.supplierAmount != null
+                    ? Number(o.supplierAmount)
+                    : items.reduce((sum, it) => {
+                        const netUnit = Number(it.chosenSupplierUnitPrice ?? 0);
+                        const qty = Number(it.quantity ?? 0);
+                        return sum + netUnit * qty;
+                      }, 0);
+
+                const grossSupplierTotal = items.reduce((sum, it) => {
+                  const snap = getPricingSnapshot(it.selectedOptions);
+                  const grossUnit =
+                    Number(snap?.supplierGrossUnitCost ?? it.chosenSupplierUnitPrice ?? 0) || 0;
                   const qty = Number(it.quantity ?? 0);
-                  return sum + unit * qty;
+                  return sum + grossUnit * qty;
                 }, 0);
+
+                const deductedMarginTotal = Math.max(0, grossSupplierTotal - supplierTotal);
 
                 const allowed = allowedStatusOptions(supplierStatusRaw);
                 const isTerminal = ["DELIVERED", "CANCELED"].includes(supplierFlowBase);
@@ -1194,7 +1410,13 @@ export default function SupplierOrders() {
                   !isAdmin &&
                   !isRider &&
                   !isTerminal &&
-                  ["PENDING", "CONFIRMED", "PACKED"].includes(supplierFlowBase);
+                  [
+                    "PENDING",
+                    "AWAITING_FULFILLMENT",
+                    "AWAITING_FULFILMENT",
+                    "CONFIRMED",
+                    "PACKED",
+                  ].includes(supplierStatusRaw || supplierFlowBase);
 
                 const canConfirmDelivery =
                   !!poId &&
@@ -1278,8 +1500,12 @@ export default function SupplierOrders() {
 
                       {(isSupplierUser || isAdmin) && (
                         <div className="text-[12px] font-semibold text-zinc-900">
-                          Supplier total:{" "}
-                          <span className="text-zinc-900">{moneyNgn(supplierTotal)}</span>
+                          Amount payable: <span className="text-zinc-900">{moneyNgn(supplierTotal)}</span>
+                          {deductedMarginTotal > 0 ? (
+                            <span className="ml-2 text-zinc-500 font-normal">
+                              (gross {moneyNgn(grossSupplierTotal)} • margin deducted {moneyNgn(deductedMarginTotal)})
+                            </span>
+                          ) : null}
                         </div>
                       )}
 
@@ -1330,7 +1556,9 @@ export default function SupplierOrders() {
                             className="inline-flex col-span-2 sm:col-span-1 items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                             title={
                               !canAttemptPayout
-                                ? "Available when DELIVERED + OTP verified"
+                                ? onboardingBlocked
+                                  ? lockReason
+                                  : "Available when DELIVERED + OTP verified"
                                 : "Release payout"
                             }
                           >
@@ -1372,7 +1600,7 @@ export default function SupplierOrders() {
                               </span>
                             </span>
                             <span>
-                              Supplier amount:{" "}
+                              Net payable subtotal:{" "}
                               <span className="text-zinc-700 font-semibold">
                                 {moneyNgn(o.supplierAmount ?? o.poSubtotal ?? null)}
                               </span>
@@ -1389,13 +1617,21 @@ export default function SupplierOrders() {
                         {(isSupplierUser || isAdmin) &&
                           normStatus(o.supplierStatus) === "SHIPPED" &&
                           o.purchaseOrderId && (
-                            <div className="mb-3">
+                            <div className="mb-3 space-y-2">
+                              {ridersLocked && (
+                                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                                  Rider assignment is locked while supplier verification documents are under review.
+                                </div>
+                              )}
+
                               <AssignRiderControl
                                 purchaseOrderId={o.purchaseOrderId}
                                 currentRiderId={o.riderId ?? null}
                                 disabled={
+                                  ridersLocked ||
                                   normStatus(o.supplierStatus) === "DELIVERED" ||
-                                  normStatus(o.supplierStatus) === "CANCELED"
+                                  normStatus(o.supplierStatus) === "CANCELED" ||
+                                  normStatus(o.supplierStatus) === "CANCELLED"
                                 }
                               />
                             </div>
@@ -1662,10 +1898,26 @@ export default function SupplierOrders() {
                           {items.map((it) => {
                             const qty = Number(it.quantity ?? 0);
                             const optLabel = supplierOptionsLabel(it.selectedOptions);
-                            const supplierCost =
-                              it.chosenSupplierUnitPrice != null
-                                ? Number(it.chosenSupplierUnitPrice) * qty
-                                : null;
+
+                            const snap = getPricingSnapshot(it.selectedOptions);
+                            const grossUnit =
+                              snap?.supplierGrossUnitCost != null
+                                ? Number(snap.supplierGrossUnitCost)
+                                : Number(it.chosenSupplierUnitPrice ?? 0);
+
+                            const netUnit = Number(it.chosenSupplierUnitPrice ?? 0);
+
+                            const grossLine = grossUnit * qty;
+                            const netLine =
+                              it.chosenSupplierUnitPrice != null ? netUnit * qty : null;
+
+                            const marginPercent =
+                              snap?.marginPercent != null ? Number(snap.marginPercent) : null;
+
+                            const marginAmount =
+                              snap?.supplierMarginAmount != null
+                                ? Number(snap.supplierMarginAmount) * qty
+                                : grossLine - (netLine ?? 0);
 
                             return (
                               <div key={it.id} className="rounded-xl border bg-zinc-50 p-3">
@@ -1678,15 +1930,35 @@ export default function SupplierOrders() {
                                 </div>
 
                                 {!isRider && (
-                                  <div className="text-[11px] text-zinc-500 mt-2">
-                                    Retail: <b>{moneyNgn(Number(it.unitPrice ?? 0))}</b> • Line:{" "}
-                                    <b>{moneyNgn(Number(it.lineTotal ?? 0))}</b>
-                                    {supplierCost != null ? (
-                                      <>
-                                        {" "}
-                                        • Your cost: <b>{moneyNgn(supplierCost)}</b>
-                                      </>
-                                    ) : null}
+                                  <div className="text-[11px] text-zinc-500 mt-2 space-y-1">
+                                    <div>
+                                      Retail: <b>{moneyNgn(Number(it.unitPrice ?? 0))}</b> • Retail line:{" "}
+                                      <b>{moneyNgn(Number(it.lineTotal ?? 0))}</b>
+                                    </div>
+
+                                    <div>
+                                      Gross supplier price: <b>{moneyNgn(grossUnit)}</b>
+                                      {" • "}
+                                      Gross line: <b>{moneyNgn(grossLine)}</b>
+                                    </div>
+
+                                    <div>
+                                      Margin deducted:
+                                      {" "}
+                                      <b>
+                                        {marginPercent != null
+                                          ? `${marginPercent}%`
+                                          : "—"}
+                                      </b>
+                                      {" • "}
+                                      Amount: <b>{moneyNgn(marginAmount)}</b>
+                                    </div>
+
+                                    <div className="text-zinc-700">
+                                      Net payable: <b>{moneyNgn(netUnit)}</b>
+                                      {" • "}
+                                      Net payable line: <b>{moneyNgn(netLine)}</b>
+                                    </div>
                                   </div>
                                 )}
                               </div>

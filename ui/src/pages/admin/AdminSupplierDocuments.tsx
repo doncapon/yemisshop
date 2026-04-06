@@ -302,10 +302,12 @@ function normaliseDetailResponse(data: SupplierDetailResponse | undefined): Supp
                 ? Number(data?.pageCount)
                 : Math.ceil(
                     (Number.isFinite(data?.total) ? Number(data?.total) : documents.length) /
-                        Math.max(
-                            1,
-                            Number.isFinite(data?.pageSize) ? Number(data?.pageSize) : DOCUMENTS_PAGE_SIZE
-                        )
+                    Math.max(
+                        1,
+                        Number.isFinite(data?.pageSize)
+                            ? Number(data?.pageSize)
+                            : DOCUMENTS_PAGE_SIZE
+                    )
                 )
         ),
         hasNextPage: typeof data?.hasNextPage === "boolean" ? data.hasNextPage : false,
@@ -317,6 +319,48 @@ function normaliseDetailResponse(data: SupplierDetailResponse | undefined): Supp
         documents,
         documentsPagination,
     };
+}
+
+function deriveSummaryKycStatus(row: SupplierSummaryRow): SummaryStatus | string {
+    const requiredKinds = Array.isArray(row.requiredKinds) ? row.requiredKinds : [];
+    const summary = Array.isArray(row.summary) ? row.summary : [];
+
+    const requiredSummary = requiredKinds.length
+        ? requiredKinds.map((kind) => summary.find((item) => item.kind === kind) || {
+            kind,
+            present: false,
+            status: "MISSING" as SummaryStatus,
+        })
+        : summary;
+
+    const statuses = requiredSummary.map((item) => String(item.status || "").toUpperCase());
+
+    if (statuses.some((s) => s === "REJECTED")) return "REJECTED";
+    if (statuses.some((s) => s === "PENDING")) return "PENDING";
+    if (statuses.some((s) => s === "MISSING")) return "PENDING";
+    if (requiredSummary.length > 0 && statuses.every((s) => s === "APPROVED")) return "APPROVED";
+
+    return String(row.kycStatus || "").toUpperCase() || "PENDING";
+}
+
+function deriveDetailKycStatus(
+    detail: SupplierDetail | null,
+    latestByKind: Map<SupplierDocumentKind, SupplierDocument>
+) {
+    if (!detail) return "PENDING";
+
+    const requiredKinds = Array.isArray(detail.requiredKinds) ? detail.requiredKinds : [];
+    const statuses = requiredKinds.map((kind) => {
+        const doc = latestByKind.get(kind);
+        return doc ? String(doc.status || "").toUpperCase() : "MISSING";
+    });
+
+    if (statuses.some((s) => s === "REJECTED")) return "REJECTED";
+    if (statuses.some((s) => s === "PENDING")) return "PENDING";
+    if (statuses.some((s) => s === "MISSING")) return "PENDING";
+    if (requiredKinds.length > 0 && statuses.every((s) => s === "APPROVED")) return "APPROVED";
+
+    return String(detail.kycStatus || "").toUpperCase() || "PENDING";
 }
 
 function InlinePreview({ doc }: { doc: SupplierDocument }) {
@@ -479,7 +523,9 @@ function StatCard({
                 <div className={`rounded-2xl p-3 ${toneMap[tone]}`}>{icon}</div>
                 <div className="min-w-0">
                     <div className="text-xs font-medium text-zinc-500">{label}</div>
-                    <div className="mt-1 text-2xl font-semibold tracking-tight text-zinc-900">{value}</div>
+                    <div className="mt-1 text-2xl font-semibold tracking-tight text-zinc-900">
+                        {value}
+                    </div>
                 </div>
             </div>
         </div>
@@ -499,6 +545,14 @@ function InfoTile({
             <div className="mt-2 text-sm font-semibold text-zinc-900">{value}</div>
         </div>
     );
+}
+
+
+function hasActiveFilters(
+    query: string,
+    statusFilter: "ALL" | "PENDING" | "APPROVED" | "REJECTED" | "MISSING"
+) {
+    return query.trim().length > 0 || statusFilter !== "ALL";
 }
 
 export default function AdminSupplierDocuments() {
@@ -522,6 +576,7 @@ export default function AdminSupplierDocuments() {
     const [reviewingDocId, setReviewingDocId] = useState<string | null>(null);
     const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
     const [query, setQuery] = useState("");
+    const [debouncedQuery, setDebouncedQuery] = useState("");
     const [statusFilter, setStatusFilter] = useState<
         "ALL" | "PENDING" | "APPROVED" | "REJECTED" | "MISSING"
     >("ALL");
@@ -534,34 +589,83 @@ export default function AdminSupplierDocuments() {
     const [supplierPage, setSupplierPage] = useState(1);
     const [documentsPage, setDocumentsPage] = useState(1);
 
+    useEffect(() => {
+        const id = window.setTimeout(() => {
+            setDebouncedQuery(query.trim());
+        }, 300);
+
+        return () => window.clearTimeout(id);
+    }, [query]);
+
+    useEffect(() => {
+        setSupplierPage(1);
+    }, [debouncedQuery, statusFilter]);
+
     const loadList = useCallback(async () => {
         try {
             setLoadingList(true);
             setListError(null);
 
-            const { data } = await api.get<SupplierListResponse>("/api/admin/supplier-documents", {
-                withCredentials: true,
-                params: {
+            const searchActive = hasActiveFilters(debouncedQuery, statusFilter);
+
+            if (searchActive) {
+                let nextPage = 1;
+                let allItems: SupplierSummaryRow[] = [];
+                let totalFromServer = 0;
+                let hasNext = true;
+
+                while (hasNext) {
+                    const { data } = await api.get<SupplierListResponse>("/api/admin/supplier-documents", {
+                        withCredentials: true,
+                        params: {
+                            page: nextPage,
+                            pageSize: SUPPLIERS_PAGE_SIZE,
+                        },
+                    });
+
+                    const parsed = normaliseListResponse(data);
+                    allItems = [...allItems, ...parsed.items];
+                    totalFromServer = parsed.total;
+                    hasNext = !!parsed.hasNextPage && nextPage < parsed.pageCount;
+                    nextPage += 1;
+
+                    if (!parsed.items.length) break;
+                }
+
+                setRows(allItems);
+                setListPagination({
+                    total: totalFromServer || allItems.length,
                     page: supplierPage,
                     pageSize: SUPPLIERS_PAGE_SIZE,
-                },
-            });
+                    pageCount: Math.max(1, Math.ceil(allItems.length / SUPPLIERS_PAGE_SIZE)),
+                    hasNextPage: false,
+                    hasPrevPage: supplierPage > 1,
+                });
+            } else {
+                const { data } = await api.get<SupplierListResponse>("/api/admin/supplier-documents", {
+                    withCredentials: true,
+                    params: {
+                        page: supplierPage,
+                        pageSize: SUPPLIERS_PAGE_SIZE,
+                    },
+                });
 
-            const parsed = normaliseListResponse(data);
-            setRows(parsed.items);
-            setListPagination({
-                total: parsed.total,
-                page: parsed.page,
-                pageSize: parsed.pageSize,
-                pageCount: parsed.pageCount,
-                hasNextPage: parsed.hasNextPage,
-                hasPrevPage: parsed.hasPrevPage,
-            });
+                const parsed = normaliseListResponse(data);
+                setRows(parsed.items);
+                setListPagination({
+                    total: parsed.total,
+                    page: parsed.page,
+                    pageSize: parsed.pageSize,
+                    pageCount: parsed.pageCount,
+                    hasNextPage: parsed.hasNextPage,
+                    hasPrevPage: parsed.hasPrevPage,
+                });
 
-            setSelectedSupplierId((prev) => {
-                if (prev && parsed.items.some((item) => item.id === prev)) return prev;
-                return parsed.items[0]?.id || null;
-            });
+                setSelectedSupplierId((prev) => {
+                    if (prev && parsed.items.some((item) => item.id === prev)) return prev;
+                    return parsed.items[0]?.id || null;
+                });
+            }
         } catch (e: any) {
             setListError(
                 e?.response?.data?.error ||
@@ -580,36 +684,39 @@ export default function AdminSupplierDocuments() {
         } finally {
             setLoadingList(false);
         }
-    }, [supplierPage]);
+    }, [supplierPage, debouncedQuery, statusFilter]);
 
-    const loadDetail = useCallback(async (supplierId: string) => {
-        try {
-            setDetailLoading(true);
-            setDetailError(null);
+    const loadDetail = useCallback(
+        async (supplierId: string) => {
+            try {
+                setDetailLoading(true);
+                setDetailError(null);
 
-            const { data } = await api.get<SupplierDetailResponse>(
-                `/api/admin/supplier-documents/${supplierId}`,
-                {
-                    withCredentials: true,
-                    params: {
-                        page: documentsPage,
-                        pageSize: DOCUMENTS_PAGE_SIZE,
-                    },
-                }
-            );
+                const { data } = await api.get<SupplierDetailResponse>(
+                    `/api/admin/supplier-documents/${supplierId}`,
+                    {
+                        withCredentials: true,
+                        params: {
+                            page: documentsPage,
+                            pageSize: DOCUMENTS_PAGE_SIZE,
+                        },
+                    }
+                );
 
-            setDetail(normaliseDetailResponse(data));
-        } catch (e: any) {
-            setDetailError(
-                e?.response?.data?.error ||
-                e?.response?.data?.message ||
-                "Could not load supplier document details."
-            );
-            setDetail(null);
-        } finally {
-            setDetailLoading(false);
-        }
-    }, [documentsPage]);
+                setDetail(normaliseDetailResponse(data));
+            } catch (e: any) {
+                setDetailError(
+                    e?.response?.data?.error ||
+                    e?.response?.data?.message ||
+                    "Could not load supplier document details."
+                );
+                setDetail(null);
+            } finally {
+                setDetailLoading(false);
+            }
+        },
+        [documentsPage]
+    );
 
     useEffect(() => {
         loadList();
@@ -623,10 +730,17 @@ export default function AdminSupplierDocuments() {
         loadDetail(selectedSupplierId);
     }, [selectedSupplierId, loadDetail]);
 
-    const filteredRows = useMemo(() => {
-        const q = query.trim().toLowerCase();
+    const rowsWithComputedKyc = useMemo(() => {
+        return rows.map((row) => ({
+            ...row,
+            computedKycStatus: deriveSummaryKycStatus(row),
+        }));
+    }, [rows]);
 
-        return rows.filter((row) => {
+    const filteredRows = useMemo(() => {
+        const q = debouncedQuery.trim().toLowerCase();
+
+        return rowsWithComputedKyc.filter((row) => {
             const text = [
                 row.businessName,
                 row.user?.email,
@@ -635,6 +749,7 @@ export default function AdminSupplierDocuments() {
                 row.registrationType,
                 row.status,
                 row.kycStatus,
+                row.computedKycStatus,
             ]
                 .filter(Boolean)
                 .join(" ")
@@ -646,23 +761,43 @@ export default function AdminSupplierDocuments() {
                 statusFilter === "ALL"
                     ? true
                     : statusFilter === "APPROVED"
-                        ? row.readyForApproval || row.summary.some((x) => x.status === "APPROVED")
+                        ? row.computedKycStatus === "APPROVED" || row.readyForApproval
                         : statusFilter === "PENDING"
-                            ? row.pendingCount > 0
+                            ? row.computedKycStatus === "PENDING"
                             : statusFilter === "REJECTED"
-                                ? row.rejectedCount > 0
+                                ? row.computedKycStatus === "REJECTED"
                                 : row.missingCount > 0;
 
             return matchesQuery && matchesStatus;
         });
-    }, [rows, query, statusFilter]);
+    }, [rowsWithComputedKyc, debouncedQuery, statusFilter]);
+
+    const searchActive = hasActiveFilters(debouncedQuery, statusFilter);
+
+    const pagedFilteredRows = useMemo(() => {
+        if (!searchActive) return filteredRows;
+
+        const start = (supplierPage - 1) * SUPPLIERS_PAGE_SIZE;
+        return filteredRows.slice(start, start + SUPPLIERS_PAGE_SIZE);
+    }, [filteredRows, supplierPage, searchActive]);
+
+    const effectiveSupplierPageCount = useMemo(() => {
+        if (!searchActive) return listPagination.pageCount;
+        return Math.max(1, Math.ceil(filteredRows.length / SUPPLIERS_PAGE_SIZE));
+    }, [searchActive, listPagination.pageCount, filteredRows.length]);
+
+    const effectiveSupplierTotal = useMemo(() => {
+        return searchActive ? filteredRows.length : listPagination.total;
+    }, [searchActive, filteredRows.length, listPagination.total]);
 
     useEffect(() => {
-        if (filteredRows.length === 0) return;
-        if (!selectedSupplierId || !filteredRows.some((r) => r.id === selectedSupplierId)) {
-            setSelectedSupplierId(filteredRows[0].id);
+        const source = searchActive ? pagedFilteredRows : filteredRows;
+        if (source.length === 0) return;
+
+        if (!selectedSupplierId || !source.some((r) => r.id === selectedSupplierId)) {
+            setSelectedSupplierId(source[0].id);
         }
-    }, [filteredRows, selectedSupplierId]);
+    }, [filteredRows, pagedFilteredRows, selectedSupplierId, searchActive]);
 
     useEffect(() => {
         setDocumentsPage(1);
@@ -671,17 +806,37 @@ export default function AdminSupplierDocuments() {
     const stats = useMemo(() => {
         return {
             total: listPagination.total,
-            pending: rows.filter((r) => r.pendingCount > 0).length,
-            rejected: rows.filter((r) => r.rejectedCount > 0).length,
-            missing: rows.filter((r) => r.missingCount > 0).length,
-            ready: rows.filter((r) => r.readyForApproval).length,
+            pending: rowsWithComputedKyc.filter((r) => r.computedKycStatus === "PENDING").length,
+            rejected: rowsWithComputedKyc.filter((r) => r.computedKycStatus === "REJECTED").length,
+            missing: rowsWithComputedKyc.filter((r) => r.missingCount > 0).length,
+            ready: rowsWithComputedKyc.filter((r) => r.readyForApproval).length,
         };
-    }, [rows, listPagination.total]);
+    }, [rowsWithComputedKyc, listPagination.total]);
 
-    const reviewDocument = async (
-        documentId: string,
-        status: "APPROVED" | "REJECTED"
-    ) => {
+    const latestByKind = useMemo(() => {
+        return detail ? latestDocsByKind(detail.documents || []) : new Map();
+    }, [detail]);
+
+    const computedDetailKycStatus = useMemo(() => {
+        return deriveDetailKycStatus(detail, latestByKind);
+    }, [detail, latestByKind]);
+
+    const computedAllRequiredApproved = useMemo(() => {
+        if (!detail) return false;
+        if (!Array.isArray(detail.requiredKinds) || detail.requiredKinds.length === 0) return false;
+
+        return detail.requiredKinds.every((kind) => {
+            const doc = latestByKind.get(kind);
+            return String(doc?.status || "").toUpperCase() === "APPROVED";
+        });
+    }, [detail, latestByKind]);
+
+    const extraDocuments = useMemo(() => {
+        if (!detail) return [];
+        return detail.documents.filter((d) => !detail.requiredKinds.includes(d.kind));
+    }, [detail]);
+
+    const reviewDocument = async (documentId: string, status: "APPROVED" | "REJECTED") => {
         try {
             setReviewingDocId(documentId);
             setDetailError(null);
@@ -788,15 +943,6 @@ export default function AdminSupplierDocuments() {
         }
     };
 
-    const latestByKind = useMemo(() => {
-        return detail ? latestDocsByKind(detail.documents || []) : new Map();
-    }, [detail]);
-
-    const extraDocuments = useMemo(() => {
-        if (!detail) return [];
-        return detail.documents.filter((d) => !detail.requiredKinds.includes(d.kind));
-    }, [detail]);
-
     const pageWrap = "min-h-[100dvh] bg-gradient-to-b from-zinc-50 via-white to-zinc-50";
     const shell =
         "rounded-[30px] border border-white/70 bg-white/90 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur";
@@ -888,7 +1034,7 @@ export default function AdminSupplierDocuments() {
                                                 <input
                                                     value={query}
                                                     onChange={(e) => setQuery(e.target.value)}
-                                                    placeholder="Filter current page..."
+                                                    placeholder="Search supplier by email, name, or business..."
                                                     className={`${input} pl-10`}
                                                 />
                                             </div>
@@ -898,11 +1044,11 @@ export default function AdminSupplierDocuments() {
                                                 onChange={(e) =>
                                                     setStatusFilter(
                                                         e.target.value as
-                                                            | "ALL"
-                                                            | "PENDING"
-                                                            | "APPROVED"
-                                                            | "REJECTED"
-                                                            | "MISSING"
+                                                        | "ALL"
+                                                        | "PENDING"
+                                                        | "APPROVED"
+                                                        | "REJECTED"
+                                                        | "MISSING"
                                                     )
                                                 }
                                                 className={input}
@@ -933,11 +1079,11 @@ export default function AdminSupplierDocuments() {
                                                 </div>
                                             ) : filteredRows.length === 0 ? (
                                                 <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-8 text-center text-sm text-zinc-500">
-                                                    No suppliers matched your filters on this page.
+                                                    No suppliers matched your filters.
                                                 </div>
                                             ) : (
                                                 <div className="space-y-3">
-                                                    {filteredRows.map((row) => {
+                                                    {(searchActive ? pagedFilteredRows : filteredRows).map((row) => {
                                                         const selected = selectedSupplierId === row.id;
 
                                                         return (
@@ -945,11 +1091,10 @@ export default function AdminSupplierDocuments() {
                                                                 key={row.id}
                                                                 type="button"
                                                                 onClick={() => setSelectedSupplierId(row.id)}
-                                                                className={`w-full rounded-[22px] border p-4 text-left transition ${
-                                                                    selected
-                                                                        ? "border-zinc-900 bg-zinc-900 text-white shadow-lg"
-                                                                        : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
-                                                                }`}
+                                                                className={`w-full rounded-[22px] border p-4 text-left transition ${selected
+                                                                    ? "border-zinc-900 bg-zinc-900 text-white shadow-lg"
+                                                                    : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
+                                                                    }`}
                                                             >
                                                                 <div className="flex items-start justify-between gap-3">
                                                                     <div className="min-w-0">
@@ -957,58 +1102,63 @@ export default function AdminSupplierDocuments() {
                                                                             {row.businessName || "Unnamed supplier"}
                                                                         </div>
                                                                         <div
-                                                                            className={`mt-1 truncate text-sm ${
-                                                                                selected ? "text-zinc-300" : "text-zinc-500"
-                                                                            }`}
+                                                                            className={`mt-1 truncate text-sm ${selected ? "text-zinc-300" : "text-zinc-500"
+                                                                                }`}
                                                                         >
                                                                             {row.user?.email || "No email"}
                                                                         </div>
                                                                     </div>
 
                                                                     <Eye
-                                                                        className={`mt-0.5 h-4 w-4 shrink-0 ${
-                                                                            selected ? "text-white" : "text-zinc-500"
-                                                                        }`}
+                                                                        className={`mt-0.5 h-4 w-4 shrink-0 ${selected ? "text-white" : "text-zinc-500"
+                                                                            }`}
                                                                     />
                                                                 </div>
 
                                                                 <div className="mt-3 flex flex-wrap gap-2">
                                                                     <span
-                                                                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                                                                            selected ? "bg-white/10 text-white" : statusChip(row.kycStatus)
-                                                                        }`}
+                                                                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${selected
+                                                                            ? "bg-white/10 text-white"
+                                                                            : statusChip(row.computedKycStatus)
+                                                                            }`}
                                                                     >
-                                                                        KYC: {row.kycStatus || "—"}
+                                                                        KYC: {row.computedKycStatus || "—"}
                                                                     </span>
 
                                                                     <span
-                                                                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                                                                            selected ? "bg-white/10 text-white" : statusChip(row.status)
-                                                                        }`}
+                                                                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${selected ? "bg-white/10 text-white" : statusChip(row.status)
+                                                                            }`}
                                                                     >
                                                                         Status: {row.status || "—"}
                                                                     </span>
                                                                 </div>
 
                                                                 <div
-                                                                    className={`mt-4 grid grid-cols-4 gap-2 rounded-2xl px-1 text-[11px] ${
-                                                                        selected ? "text-zinc-200" : "text-zinc-600"
-                                                                    }`}
+                                                                    className={`mt-4 grid grid-cols-4 gap-2 rounded-2xl px-1 text-[11px] ${selected ? "text-zinc-200" : "text-zinc-600"
+                                                                        }`}
                                                                 >
                                                                     <div>
-                                                                        <div className="text-sm font-semibold">{row.approvedCount}</div>
+                                                                        <div className="text-sm font-semibold">
+                                                                            {row.approvedCount}
+                                                                        </div>
                                                                         <div>Approved</div>
                                                                     </div>
                                                                     <div>
-                                                                        <div className="text-sm font-semibold">{row.pendingCount}</div>
+                                                                        <div className="text-sm font-semibold">
+                                                                            {row.pendingCount}
+                                                                        </div>
                                                                         <div>Pending</div>
                                                                     </div>
                                                                     <div>
-                                                                        <div className="text-sm font-semibold">{row.rejectedCount}</div>
+                                                                        <div className="text-sm font-semibold">
+                                                                            {row.rejectedCount}
+                                                                        </div>
                                                                         <div>Rejected</div>
                                                                     </div>
                                                                     <div>
-                                                                        <div className="text-sm font-semibold">{row.missingCount}</div>
+                                                                        <div className="text-sm font-semibold">
+                                                                            {row.missingCount}
+                                                                        </div>
                                                                         <div>Missing</div>
                                                                     </div>
                                                                 </div>
@@ -1022,16 +1172,16 @@ export default function AdminSupplierDocuments() {
                                         {!loadingList && (
                                             <div className="flex flex-col gap-3 border-t border-zinc-200 pt-4">
                                                 <div className="text-xs text-zinc-500">
-                                                    {listPagination.total > 0
+                                                    {effectiveSupplierTotal > 0
                                                         ? `Showing ${rangeStart(
-                                                            listPagination.page,
-                                                            listPagination.pageSize,
-                                                            listPagination.total
+                                                            supplierPage,
+                                                            SUPPLIERS_PAGE_SIZE,
+                                                            effectiveSupplierTotal
                                                         )}–${rangeEnd(
-                                                            listPagination.page,
-                                                            listPagination.pageSize,
-                                                            listPagination.total
-                                                        )} of ${listPagination.total} suppliers`
+                                                            supplierPage,
+                                                            SUPPLIERS_PAGE_SIZE,
+                                                            effectiveSupplierTotal
+                                                        )} of ${effectiveSupplierTotal} suppliers`
                                                         : "No suppliers"}
                                                 </div>
 
@@ -1039,15 +1189,28 @@ export default function AdminSupplierDocuments() {
                                                     <button
                                                         type="button"
                                                         onClick={() => setSupplierPage((p) => Math.max(1, p - 1))}
-                                                        disabled={!listPagination.hasPrevPage}
+                                                        disabled={supplierPage <= 1}
                                                         className={secondaryBtn}
                                                     >
                                                         Prev
                                                     </button>
 
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setSupplierPage((p) =>
+                                                                Math.min(effectiveSupplierPageCount, p + 1)
+                                                            )
+                                                        }
+                                                        disabled={supplierPage >= effectiveSupplierPageCount}
+                                                        className={secondaryBtn}
+                                                    >
+                                                        Next
+                                                    </button>
+
                                                     <div className="text-sm text-zinc-700">
-                                                        Page <span className="font-semibold">{listPagination.page}</span> of{" "}
-                                                        <span className="font-semibold">{listPagination.pageCount}</span>
+                                                        Page <span className="font-semibold">{supplierPage}</span> of{" "}
+                                                        <span className="font-semibold">{effectiveSupplierPageCount}</span>
                                                     </div>
 
                                                     <button
@@ -1098,7 +1261,8 @@ export default function AdminSupplierDocuments() {
                                                         </h2>
                                                         <p className="mt-1 text-sm text-zinc-600">
                                                             {detail.user?.firstName || detail.user?.lastName
-                                                                ? `${detail.user?.firstName || ""} ${detail.user?.lastName || ""}`.trim()
+                                                                ? `${detail.user?.firstName || ""} ${detail.user?.lastName || ""
+                                                                    }`.trim()
                                                                 : "No contact name"}
                                                             {detail.user?.email ? ` • ${detail.user.email}` : ""}
                                                         </p>
@@ -1114,16 +1278,16 @@ export default function AdminSupplierDocuments() {
                                                         </span>
                                                         <span
                                                             className={`rounded-full px-3 py-1.5 text-xs font-semibold ${statusChip(
-                                                                detail.kycStatus
+                                                                computedDetailKycStatus
                                                             )}`}
                                                         >
-                                                            KYC: {detail.kycStatus || "—"}
+                                                            KYC: {computedDetailKycStatus || "—"}
                                                         </span>
                                                     </div>
                                                 </div>
 
-                                                {detail.allRequiredApproved &&
-                                                    String(detail.kycStatus || "").toUpperCase() !== "APPROVED" && (
+                                                {computedAllRequiredApproved &&
+                                                    computedDetailKycStatus !== "APPROVED" && (
                                                         <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
                                                             All required documents are approved. This supplier is now ready for
                                                             final admin approval.
@@ -1145,12 +1309,12 @@ export default function AdminSupplierDocuments() {
                                                     />
                                                     <InfoTile
                                                         label="Required docs approved"
-                                                        value={detail.allRequiredApproved ? "Yes" : "No"}
+                                                        value={computedAllRequiredApproved ? "Yes" : "No"}
                                                     />
                                                     <InfoTile
                                                         label="Final supplier state"
                                                         value={
-                                                            detail.allRequiredApproved
+                                                            computedAllRequiredApproved
                                                                 ? "Ready for admin decision"
                                                                 : "Waiting for all required docs"
                                                         }
@@ -1217,7 +1381,9 @@ export default function AdminSupplierDocuments() {
                                                                                                         <div className="mt-1 text-xs text-zinc-500">
                                                                                                             Size: {humanFileSize(doc.size)} • Uploaded:{" "}
                                                                                                             {doc.uploadedAt
-                                                                                                                ? new Date(doc.uploadedAt).toLocaleString()
+                                                                                                                ? new Date(
+                                                                                                                    doc.uploadedAt
+                                                                                                                ).toLocaleString()
                                                                                                                 : "—"}
                                                                                                         </div>
                                                                                                     </>
@@ -1226,9 +1392,10 @@ export default function AdminSupplierDocuments() {
 
                                                                                             <div className="shrink-0">
                                                                                                 <span
-                                                                                                    className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
-                                                                                                        doc ? statusChip(doc.status) : statusChip("MISSING")
-                                                                                                    }`}
+                                                                                                    className={`rounded-full px-3 py-1.5 text-xs font-semibold ${doc
+                                                                                                        ? statusChip(doc.status)
+                                                                                                        : statusChip("MISSING")
+                                                                                                        }`}
                                                                                                 >
                                                                                                     {doc?.status || "MISSING"}
                                                                                                 </span>
@@ -1237,7 +1404,9 @@ export default function AdminSupplierDocuments() {
 
                                                                                         {doc?.note ? (
                                                                                             <div className="mt-3 rounded-2xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
-                                                                                                <span className="font-semibold">Review note:</span>{" "}
+                                                                                                <span className="font-semibold">
+                                                                                                    Review note:
+                                                                                                </span>{" "}
                                                                                                 {doc.note}
                                                                                             </div>
                                                                                         ) : null}
@@ -1277,8 +1446,8 @@ export default function AdminSupplierDocuments() {
 
                                                                                         {!canInlinePreview(doc) && (
                                                                                             <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                                                                                                This file type may not preview inline in the browser.
-                                                                                                Use Open file or Download.
+                                                                                                This file type may not preview inline in the
+                                                                                                browser. Use Open file or Download.
                                                                                             </div>
                                                                                         )}
 
@@ -1299,7 +1468,9 @@ export default function AdminSupplierDocuments() {
                                                                                             <div className="flex flex-wrap gap-2 xl:justify-end">
                                                                                                 <button
                                                                                                     type="button"
-                                                                                                    onClick={() => reviewDocument(doc.id, "APPROVED")}
+                                                                                                    onClick={() =>
+                                                                                                        reviewDocument(doc.id, "APPROVED")
+                                                                                                    }
                                                                                                     disabled={reviewingDocId === doc.id}
                                                                                                     className="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                                                                                                 >
@@ -1313,7 +1484,9 @@ export default function AdminSupplierDocuments() {
 
                                                                                                 <button
                                                                                                     type="button"
-                                                                                                    onClick={() => reviewDocument(doc.id, "REJECTED")}
+                                                                                                    onClick={() =>
+                                                                                                        reviewDocument(doc.id, "REJECTED")
+                                                                                                    }
                                                                                                     disabled={reviewingDocId === doc.id}
                                                                                                     className="inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
                                                                                                 >
@@ -1377,7 +1550,9 @@ export default function AdminSupplierDocuments() {
                                                                                 <div className="mt-1 text-xs text-zinc-500">
                                                                                     {humanFileSize(doc.size)}
                                                                                     {doc.uploadedAt
-                                                                                        ? ` • Uploaded ${new Date(doc.uploadedAt).toLocaleString()}`
+                                                                                        ? ` • Uploaded ${new Date(
+                                                                                            doc.uploadedAt
+                                                                                        ).toLocaleString()}`
                                                                                         : ""}
                                                                                 </div>
                                                                             </div>
@@ -1433,6 +1608,26 @@ export default function AdminSupplierDocuments() {
                                                             <div className="mt-5 flex items-center justify-between gap-2 border-t border-zinc-200 pt-4">
                                                                 <button
                                                                     type="button"
+                                                                    onClick={() => setSupplierPage((p) => Math.max(1, p - 1))}
+                                                                    disabled={supplierPage <= 1}
+                                                                    className={secondaryBtn}
+                                                                >
+                                                                    Prev
+                                                                </button>
+
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() =>
+                                                                        setSupplierPage((p) =>
+                                                                            Math.min(effectiveSupplierPageCount, p + 1)
+                                                                        )
+                                                                    }
+                                                                    disabled={supplierPage >= effectiveSupplierPageCount}
+                                                                    className={secondaryBtn}
+                                                                >
+                                                                    Next
+                                                                </button>    <button
+                                                                    type="button"
                                                                     onClick={() => setDocumentsPage((p) => Math.max(1, p - 1))}
                                                                     disabled={!documentPagination.hasPrevPage}
                                                                     className={secondaryBtn}
@@ -1441,8 +1636,8 @@ export default function AdminSupplierDocuments() {
                                                                 </button>
 
                                                                 <div className="text-sm text-zinc-700">
-                                                                    Page <span className="font-semibold">{documentPagination.page}</span> of{" "}
-                                                                    <span className="font-semibold">{documentPagination.pageCount}</span>
+                                                                    Page <span className="font-semibold">{supplierPage}</span> of{" "}
+                                                                    <span className="font-semibold">{effectiveSupplierPageCount}</span>
                                                                 </div>
 
                                                                 <button
@@ -1478,7 +1673,7 @@ export default function AdminSupplierDocuments() {
                                                                     Readiness
                                                                 </div>
                                                                 <div className="mt-2 text-sm font-semibold text-zinc-900">
-                                                                    {detail.allRequiredApproved
+                                                                    {computedAllRequiredApproved
                                                                         ? "Ready for admin decision"
                                                                         : "Waiting for all required docs"}
                                                                 </div>
@@ -1497,10 +1692,15 @@ export default function AdminSupplierDocuments() {
                                                                     </div>
                                                                     <div>
                                                                         <div className="font-semibold text-zinc-900">
-                                                                            {detail.requiredKinds.filter((kind) => {
-                                                                                const doc = latestByKind.get(kind);
-                                                                                return String(doc?.status || "").toUpperCase() === "APPROVED";
-                                                                            }).length}
+                                                                            {
+                                                                                detail.requiredKinds.filter((kind) => {
+                                                                                    const doc = latestByKind.get(kind);
+                                                                                    return (
+                                                                                        String(doc?.status || "").toUpperCase() ===
+                                                                                        "APPROVED"
+                                                                                    );
+                                                                                }).length
+                                                                            }
                                                                         </div>
                                                                         <div className="text-zinc-500">Approved</div>
                                                                     </div>
@@ -1510,7 +1710,10 @@ export default function AdminSupplierDocuments() {
                                                             <button
                                                                 type="button"
                                                                 onClick={approveSupplier}
-                                                                disabled={!detail.allRequiredApproved || supplierActionLoading !== null}
+                                                                disabled={
+                                                                    !computedAllRequiredApproved ||
+                                                                    supplierActionLoading !== null
+                                                                }
                                                                 className="inline-flex w-full items-center justify-center rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                                                             >
                                                                 {supplierActionLoading === "approve" ? (

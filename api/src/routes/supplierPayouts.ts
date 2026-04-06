@@ -4,76 +4,48 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { SupplierPaymentStatus } from "@prisma/client";
 import { paySupplierForPurchaseOrder } from "../services/payout.service.js";
+import { sendMail } from "../lib/email.js";
+import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
 
 const router = Router();
 
 const PAYOUT_EXECUTION_MODE = String(
   process.env.PAYOUT_EXECUTION_MODE ??
-    (String(process.env.NODE_ENV || "").toLowerCase() === "production"
-      ? "provider"
-      : "mock")
+  (String(process.env.NODE_ENV || "").toLowerCase() === "production"
+    ? "provider"
+    : "mock")
 ).toLowerCase();
 
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
 const isSupplier = (role?: string) => role === "SUPPLIER";
 
-const PAYOUT_HOLD_DAYS = Number(process.env.PAYOUT_HOLD_DAYS ?? 14); // 14 days
+const PAYOUT_HOLD_DAYS = Number(process.env.PAYOUT_HOLD_DAYS ?? 14);
 const COMPLAINT_WINDOW_DAYS = Number(process.env.COMPLAINT_WINDOW_DAYS ?? 5);
 
-function asNum(v: any, d = 0) {
+function asNum(v: unknown, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
 }
 
-type SupplierCtx =
-  | {
-      ok: true;
-      supplierId: string;
-      supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
-      impersonating: boolean;
+function round2(n: number) {
+  return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
+}
+
+function grossPayoutAmountFromPO(
+  po?:
+    | {
+      supplierAmount?: number | string | null | { toString(): string };
+      shippingFeeChargedToCustomer?: number | string | null | { toString(): string };
     }
-  | { ok: false; status: number; error: string };
-
-async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
-  const role = req.user?.role;
-  const userId = req.user?.id;
-  if (!userId) return { ok: false, status: 401, error: "Unauthorized" };
-
-  // ADMIN/SUPER_ADMIN view-as supplier
-  if (isAdmin(role)) {
-    const supplierId = String(req.query?.supplierId ?? "").trim();
-    if (!supplierId) {
-      return { ok: false, status: 400, error: "Missing supplierId query param for admin view" };
-    }
-
-    const supplier = await prisma.supplier.findUnique({
-      where: { id: supplierId },
-      select: { id: true, name: true, status: true, userId: true },
-    });
-
-    if (!supplier) return { ok: false, status: 404, error: "Supplier not found" };
-
-    return { ok: true, supplierId: supplier.id, supplier, impersonating: true };
-  }
-
-  // Supplier normal mode
-  if (isSupplier(role)) {
-    const supplier = await prisma.supplier.findFirst({
-      where: { userId },
-      select: { id: true, name: true, status: true, userId: true },
-    });
-    if (!supplier) {
-      return { ok: false, status: 403, error: "Supplier profile not found for this user" };
-    }
-
-    return { ok: true, supplierId: supplier.id, supplier, impersonating: false };
-  }
-
-  return { ok: false, status: 403, error: "Forbidden" };
+    | null
+) {
+  return round2(
+    asNum(po?.supplierAmount, 0) + asNum(po?.shippingFeeChargedToCustomer, 0)
+  );
 }
 
 function toPagination(req: Request) {
-  const q = req.query as any;
+  const q = req.query as Record<string, unknown>;
 
   const rawPage = asNum(q.page, 0);
   const rawPageSize = asNum(q.pageSize, 0);
@@ -139,36 +111,395 @@ async function getSupplierForUser(userId: string) {
   });
 }
 
-function pickRef(x: { purchaseOrderId?: string | null; orderId?: string | null; paymentId?: string | null }) {
+function pickRef(x: {
+  purchaseOrderId?: string | null;
+  orderId?: string | null;
+  paymentId?: string | null;
+}) {
   if (x.purchaseOrderId) return x.purchaseOrderId;
   if (x.orderId) return x.orderId;
   if (x.paymentId) return x.paymentId;
   return "—";
 }
 
+function hasScalarField(modelName: string, fieldName: string): boolean {
+  try {
+    const dmmf =
+      (prisma as any)?._dmmf?.datamodel ??
+      (prisma as any)?._baseDmmf?.datamodel ??
+      (prisma as any)?._engine?.dmmf?.datamodel ??
+      null;
+
+    const model = dmmf?.models?.find((m: any) => m.name === modelName);
+    if (!model) return false;
+
+    return Boolean(
+      model.fields?.some(
+        (f: any) => f.name === fieldName && f.kind === "scalar"
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function formatMoney(amount: number | null | undefined, currency = "NGN") {
+  const value = Number(amount ?? 0);
+  try {
+    return new Intl.NumberFormat("en-NG", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(Number.isFinite(value) ? value : 0);
+  } catch {
+    return `${currency} ${(Number.isFinite(value) ? value : 0).toFixed(2)}`;
+  }
+}
+
+function toE164Maybe(raw?: string | null) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  if (s.startsWith("+")) return s;
+  if (s.startsWith("0") && s.length >= 10) return `+234${s.slice(1)}`;
+  return s;
+}
+
+async function sendSupplierPayoutEmail(args: {
+  to: string;
+  supplierName?: string | null;
+  purchaseOrderId: string;
+  orderId: string;
+  amount?: number | null;
+  currency?: string | null;
+  status: "HELD" | "RELEASED";
+  holdUntil?: Date | string | null;
+}) {
+  const supplierName = String(args.supplierName ?? "").trim() || "Supplier";
+  const currency = String(args.currency ?? "NGN").trim() || "NGN";
+  const amountText = formatMoney(args.amount ?? 0, currency);
+
+  const holdLineHtml =
+    args.status === "HELD"
+      ? `<p><strong>Payout hold until:</strong> ${args.holdUntil ? new Date(args.holdUntil).toLocaleString() : "—"
+      }</p>`
+      : "";
+
+  const holdLineText =
+    args.status === "HELD"
+      ? `Payout hold until: ${args.holdUntil ? new Date(args.holdUntil).toLocaleString() : "—"
+      }`
+      : null;
+
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
+      <h2 style="margin:0 0 8px 0">
+        ${args.status === "HELD" ? "Supplier payout placed on hold" : "Supplier payout released"}
+      </h2>
+      <p>Hello ${supplierName},</p>
+      <p>
+        ${args.status === "HELD"
+      ? "Your payout has been placed on hold after delivery verification."
+      : "Your payout has been released successfully."
+    }
+      </p>
+
+      <div style="margin:16px 0;padding:14px 16px;border:1px solid #e5e7eb;border-radius:12px;background:#fafafa">
+        <p style="margin:0 0 6px 0"><strong>Order ID:</strong> ${args.orderId}</p>
+        <p style="margin:0 0 6px 0"><strong>Purchase Order ID:</strong> ${args.purchaseOrderId}</p>
+        <p style="margin:0 0 6px 0"><strong>Amount:</strong> ${amountText}</p>
+        <p style="margin:0 0 6px 0"><strong>Status:</strong> ${args.status}</p>
+        ${holdLineHtml}
+      </div>
+
+      <p>Thank you,<br/>DaySpring</p>
+    </div>
+  `;
+
+  const text = [
+    args.status === "HELD"
+      ? "Supplier payout placed on hold"
+      : "Supplier payout released",
+    "",
+    `Hello ${supplierName},`,
+    "",
+    args.status === "HELD"
+      ? "Your payout has been placed on hold after delivery verification."
+      : "Your payout has been released successfully.",
+    "",
+    `Order ID: ${args.orderId}`,
+    `Purchase Order ID: ${args.purchaseOrderId}`,
+    `Amount: ${amountText}`,
+    `Status: ${args.status}`,
+    holdLineText,
+    "",
+    "Thank you,",
+    "DaySpring",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return sendMail({
+    to: args.to,
+    subject:
+      args.status === "HELD"
+        ? `Payout on hold for PO ${args.purchaseOrderId}`
+        : `Payout released for PO ${args.purchaseOrderId}`,
+    html,
+    text,
+  });
+}
+
+async function sendSupplierPayoutWhatsapp(args: {
+  to: string;
+  purchaseOrderId: string;
+  amount?: number | null;
+  currency?: string | null;
+  status: "HELD" | "RELEASED";
+}) {
+  const phone = toE164Maybe(args.to);
+  if (!phone) return;
+
+  const currency = String(args.currency ?? "NGN").trim() || "NGN";
+  const amountText = formatMoney(args.amount ?? 0, currency);
+
+  await sendOtpWhatsappViaTermii({
+    to: phone,
+    code: "",
+    brand: "DaySpring",
+    expiresMinutes: 10,
+    purposeLabel:
+      args.status === "HELD"
+        ? `Payout on hold for ${args.purchaseOrderId} (${amountText})`
+        : `Payout released for ${args.purchaseOrderId} (${amountText})`,
+  });
+}
+
+async function getSupplierNotificationContactsTx(tx: any, supplierId: string) {
+  const supplier = await tx.supplier.findUnique({
+    where: { id: String(supplierId) },
+    select: {
+      id: true,
+      name: true,
+      userId: true,
+      contactEmail: true,
+      whatsappPhone: true,
+    },
+  });
+
+  if (!supplier) return null;
+
+  let userEmail: string | null = null;
+  let userPhone: string | null = null;
+
+  if (supplier.userId) {
+    const user = await tx.user.findUnique({
+      where: { id: String(supplier.userId) },
+      select: {
+        email: true,
+        phone: true,
+      },
+    });
+
+    userEmail = user?.email ?? null;
+    userPhone = user?.phone ?? null;
+  }
+
+  const email =
+    String(supplier.contactEmail ?? "").trim() ||
+    String(userEmail ?? "").trim() ||
+    null;
+
+  const phone =
+    String(supplier.whatsappPhone ?? "").trim() ||
+    String(userPhone ?? "").trim() ||
+    null;
+
+  return {
+    supplierId: String(supplier.id),
+    supplierName: String(supplier.name ?? "").trim() || "Supplier",
+    email,
+    phone,
+    contactEmail: String(supplier.contactEmail ?? "").trim() || null,
+    whatsappPhone: String(supplier.whatsappPhone ?? "").trim() || null,
+    userEmail: String(userEmail ?? "").trim() || null,
+    userPhone: String(userPhone ?? "").trim() || null,
+  };
+}
+
+async function notifySupplierPayoutStatusBestEffort(args: {
+  purchaseOrderId: string;
+  status: "HELD" | "RELEASED";
+}) {
+  console.log("[supplier-payout-notify] start", {
+    purchaseOrderId: args.purchaseOrderId,
+    status: args.status,
+  });
+
+  try {
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: String(args.purchaseOrderId) },
+      select: {
+        id: true,
+        orderId: true,
+        supplierId: true,
+        supplierAmount: true,
+        shippingFeeChargedToCustomer: true,
+        payoutHoldUntil: true,
+      },
+    });
+
+    if (!po) {
+      console.warn("[supplier-payout-notify] purchase order not found", {
+        purchaseOrderId: args.purchaseOrderId,
+      });
+      return;
+    }
+
+    const contacts = await prisma.$transaction(async (tx) => {
+      return getSupplierNotificationContactsTx(tx, String(po.supplierId));
+    });
+
+    if (!contacts) {
+      console.warn("[supplier-payout-notify] supplier contacts not found", {
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+      });
+      return;
+    }
+
+    const payoutAmount = grossPayoutAmountFromPO(po);
+
+    console.log("[supplier-payout-notify] resolved-contacts", {
+      purchaseOrderId: po.id,
+      supplierId: po.supplierId,
+      contactEmail: contacts.contactEmail,
+      whatsappPhone: contacts.whatsappPhone,
+      fallbackUserEmail: contacts.userEmail,
+      fallbackUserPhone: contacts.userPhone,
+      chosenEmail: contacts.email,
+      chosenPhone: contacts.phone,
+      payoutAmount,
+    });
+
+    if (contacts.email) {
+      try {
+        await sendSupplierPayoutEmail({
+          to: contacts.email,
+          supplierName: contacts.supplierName,
+          purchaseOrderId: String(po.id),
+          orderId: String(po.orderId),
+          amount: payoutAmount,
+          currency: "NGN",
+          status: args.status,
+          holdUntil: po.payoutHoldUntil ?? null,
+        });
+
+        console.log("[supplier-payout-notify] email sent", {
+          purchaseOrderId: po.id,
+          supplierId: po.supplierId,
+          email: contacts.email,
+          status: args.status,
+          payoutAmount,
+        });
+      } catch (e: any) {
+        console.error("[supplier-payout-notify] email failed", {
+          purchaseOrderId: po.id,
+          supplierId: po.supplierId,
+          email: contacts.email,
+          status: args.status,
+          payoutAmount,
+          message: e?.message,
+          stack: e?.stack,
+        });
+      }
+    } else {
+      console.warn("[supplier-payout-notify] no email resolved", {
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+        contactEmail: contacts.contactEmail,
+        fallbackUserEmail: contacts.userEmail,
+      });
+    }
+
+    if (contacts.phone) {
+      try {
+        await sendSupplierPayoutWhatsapp({
+          to: contacts.phone,
+          purchaseOrderId: String(po.id),
+          amount: payoutAmount,
+          currency: "NGN",
+          status: args.status,
+        });
+
+        console.log("[supplier-payout-notify] whatsapp sent", {
+          purchaseOrderId: po.id,
+          supplierId: po.supplierId,
+          phone: contacts.phone,
+          status: args.status,
+          payoutAmount,
+        });
+      } catch (e: any) {
+        console.error("[supplier-payout-notify] whatsapp failed", {
+          purchaseOrderId: po.id,
+          supplierId: po.supplierId,
+          phone: contacts.phone,
+          status: args.status,
+          payoutAmount,
+          message: e?.message,
+          stack: e?.stack,
+        });
+      }
+    } else {
+      console.warn("[supplier-payout-notify] no phone resolved", {
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+        whatsappPhone: contacts.whatsappPhone,
+        fallbackUserPhone: contacts.userPhone,
+      });
+    }
+  } catch (e: any) {
+    console.error("[supplier-payout-notify] unexpected failure", {
+      purchaseOrderId: args.purchaseOrderId,
+      status: args.status,
+      message: e?.message,
+      stack: e?.stack,
+    });
+  }
+}
+
 /**
  * Core balance calculator:
  * - credits come from allocations that are PAID (released)
  * - debits come from SupplierLedgerEntry rows (refunds / adjustments / withdrawals)
- *
- * IMPORTANT:
- * If you create ledger CREDIT rows on payout release, you MUST NOT also add PAID allocations
- * into credits (or you double-count). This implementation treats ledger credits as manual
- * adjustments ONLY; payout credits come from allocations PAID.
  */
 export async function computeSupplierBalance(supplierId: string) {
-  // ----------------------------
-  // 1) Allocation credits (earned)
-  // ----------------------------
-  const allocGrouped = await prisma.supplierPaymentAllocation.groupBy({
-    by: ["status"],
+  const allocations = await prisma.supplierPaymentAllocation.findMany({
     where: { supplierId },
-    _sum: { amount: true },
+    select: {
+      id: true,
+      status: true,
+      amount: true,
+      purchaseOrderId: true,
+      purchaseOrder: {
+        select: {
+          supplierAmount: true,
+          shippingFeeChargedToCustomer: true,
+        },
+      },
+    },
   });
 
   const sumByStatus: Record<string, number> = {};
-  for (const g of allocGrouped as any[]) {
-    sumByStatus[String(g.status).toUpperCase()] = asNum(g._sum?.amount, 0);
+
+  for (const row of allocations as any[]) {
+    const status = String(row.status || "").toUpperCase();
+
+    const amount =
+      row.purchaseOrderId && row.purchaseOrder
+        ? grossPayoutAmountFromPO(row.purchaseOrder)
+        : asNum(row.amount, 0);
+
+    sumByStatus[status] = round2((sumByStatus[status] || 0) + amount);
   }
 
   const pending = sumByStatus["PENDING"] ?? 0;
@@ -177,9 +508,6 @@ export async function computeSupplierBalance(supplierId: string) {
   const paidOut = sumByStatus["PAID"] ?? 0;
   const failed = sumByStatus["FAILED"] ?? 0;
 
-  // ----------------------------
-  // 2) Ledger adjustments
-  // ----------------------------
   const ledgerGrouped = await prisma.supplierLedgerEntry.groupBy({
     by: ["type"],
     where: { supplierId },
@@ -195,7 +523,11 @@ export async function computeSupplierBalance(supplierId: string) {
     "PENALTY_DEBIT",
   ]);
 
-  const creditTypes = new Set(["CREDIT", "REVERSAL_CREDIT", "ADJUSTMENT_CREDIT"]);
+  const creditTypes = new Set([
+    "CREDIT",
+    "REVERSAL_CREDIT",
+    "ADJUSTMENT_CREDIT",
+  ]);
 
   let ledgerCredits = 0;
   let ledgerDebits = 0;
@@ -207,9 +539,15 @@ export async function computeSupplierBalance(supplierId: string) {
     if (!amt) continue;
 
     const isDebit =
-      debitTypes.has(t) || t.endsWith("_DEBIT") || t.includes("WITHDRAW") || t.includes("REFUND");
+      debitTypes.has(t) ||
+      t.endsWith("_DEBIT") ||
+      t.includes("WITHDRAW") ||
+      t.includes("REFUND");
     const isCredit =
-      creditTypes.has(t) || t.endsWith("_CREDIT") || t.includes("CREDIT") || t.includes("REVERSAL");
+      creditTypes.has(t) ||
+      t.endsWith("_CREDIT") ||
+      t.includes("CREDIT") ||
+      t.includes("REVERSAL");
 
     if (isDebit && !isCredit) {
       if (amt > 0) ledgerDebits += amt;
@@ -227,9 +565,6 @@ export async function computeSupplierBalance(supplierId: string) {
     else ledgerDebits += Math.abs(amt);
   }
 
-  // ----------------------------
-  // 3) Net computation
-  // ----------------------------
   const credits = paidOut + ledgerCredits;
   const debits = ledgerDebits;
 
@@ -244,15 +579,11 @@ export async function computeSupplierBalance(supplierId: string) {
     net,
     availableBalance,
     outstandingDebt,
-
-    // allocation breakdown
     pending,
     approved,
     held,
     paidOut,
     failed,
-
-    // ledger breakdown
     ledgerCredits,
     ledgerDebits,
   };
@@ -270,6 +601,7 @@ async function mockFinalizePayoutForPOTx(
       orderId: true,
       supplierId: true,
       supplierAmount: true,
+      shippingFeeChargedToCustomer: true,
       status: true,
       payoutStatus: true,
       paidOutAt: true,
@@ -308,6 +640,7 @@ async function mockFinalizePayoutForPOTx(
   await assertSupplierPayoutReadyTx(tx, po.supplierId);
 
   const payoutStatus = String(po.payoutStatus || "").toUpperCase();
+  const payoutAmount = grossPayoutAmountFromPO(po);
 
   if (po.paidOutAt || payoutStatus === "RELEASED") {
     return {
@@ -315,6 +648,7 @@ async function mockFinalizePayoutForPOTx(
       mode: "mock",
       alreadyReleased: true,
       releasedAt: po.paidOutAt ?? null,
+      amount: payoutAmount,
     };
   }
 
@@ -367,11 +701,25 @@ async function mockFinalizePayoutForPOTx(
         },
       });
 
+      await tx.supplierPaymentAllocation.updateMany({
+        where: {
+          paymentId: payment.id,
+          purchaseOrderId: po.id,
+          supplierId: po.supplierId,
+        },
+        data: {
+          amount: payoutAmount,
+          status: "PAID" as any,
+          releasedAt: paidAlloc.releasedAt ?? new Date(),
+        },
+      });
+
       return {
         ok: true,
         mode: "mock",
         alreadyReleased: true,
         releasedAt: paidAlloc.releasedAt ?? null,
+        amount: payoutAmount,
       };
     }
 
@@ -385,6 +733,7 @@ async function mockFinalizePayoutForPOTx(
   await tx.supplierPaymentAllocation.update({
     where: { id: alloc.id },
     data: {
+      amount: payoutAmount,
       status: "PAID" as any,
       releasedAt,
       holdUntil: null,
@@ -412,7 +761,7 @@ async function mockFinalizePayoutForPOTx(
     ok: true,
     mode: "mock",
     allocationId: alloc.id,
-    amount: asNum(alloc.amount, 0),
+    amount: payoutAmount,
     releasedAt,
   };
 }
@@ -427,10 +776,15 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     let supplierId: string | null = null;
-    if (isAdmin(role) && req.query?.supplierId) supplierId = String(req.query.supplierId);
-    else if (isSupplier(role)) supplierId = (await getSupplierForUser(String(userId)))?.id ?? null;
+    if (isAdmin(role) && req.query?.supplierId) {
+      supplierId = String(req.query.supplierId);
+    } else if (isSupplier(role)) {
+      supplierId = (await getSupplierForUser(String(userId)))?.id ?? null;
+    }
 
-    if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
+    if (!supplierId) {
+      return res.status(403).json({ error: "Supplier access required" });
+    }
 
     const bal = await computeSupplierBalance(supplierId);
 
@@ -438,19 +792,15 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
       data: {
         supplierId,
         currency: bal.currency,
-
         availableBalance: bal.availableBalance,
         outstandingDebt: bal.outstandingDebt,
-
         credits: bal.credits,
         debits: bal.debits,
-
         pending: bal.pending,
         approved: bal.approved,
         held: bal.held,
         paidOut: bal.paidOut,
         failed: bal.failed,
-
         scheduleNote:
           "Credits come from allocations marked PAID. Debits come from refunds/adjustments in SupplierLedgerEntry. availableBalance = max(0, credits - debits).",
       },
@@ -462,9 +812,7 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
 });
 
 /**
- * GET /api/supplier/payouts/history?page=1&pageSize=20
- * GET /api/supplier/payouts/history?take=20&skip=0
- * Returns allocation rows (credits source).
+ * GET /api/supplier/payouts/history
  */
 router.get("/history", requireAuth, async (req: any, res: Response) => {
   try {
@@ -473,10 +821,15 @@ router.get("/history", requireAuth, async (req: any, res: Response) => {
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     let supplierId: string | null = null;
-    if (isAdmin(role) && req.query?.supplierId) supplierId = String(req.query.supplierId);
-    else if (isSupplier(role)) supplierId = (await getSupplierForUser(String(userId)))?.id ?? null;
+    if (isAdmin(role) && req.query?.supplierId) {
+      supplierId = String(req.query.supplierId);
+    } else if (isSupplier(role)) {
+      supplierId = (await getSupplierForUser(String(userId)))?.id ?? null;
+    }
 
-    if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
+    if (!supplierId) {
+      return res.status(403).json({ error: "Supplier access required" });
+    }
 
     const { take, skip, page, pageSize } = toPagination(req);
     const status = req.query?.status ? String(req.query.status).toUpperCase() : null;
@@ -505,12 +858,24 @@ router.get("/history", requireAuth, async (req: any, res: Response) => {
           releasedAt: true,
           supplierNameSnapshot: true,
           meta: true,
+          purchaseOrder: {
+            select: {
+              supplierAmount: true,
+              shippingFeeChargedToCustomer: true,
+            },
+          },
         },
       }),
     ]);
 
     const mappedRows = (rows as any[]).map((r) => {
       const date = r.releasedAt ?? r.updatedAt ?? r.createdAt;
+
+      const payoutAmount =
+        r.purchaseOrderId && r.purchaseOrder
+          ? grossPayoutAmountFromPO(r.purchaseOrder)
+          : asNum(r.amount, 0);
+
       return {
         id: String(r.id),
         date: date?.toISOString?.() ?? String(date),
@@ -519,7 +884,7 @@ router.get("/history", requireAuth, async (req: any, res: Response) => {
           orderId: r.orderId,
           paymentId: r.paymentId,
         }),
-        amount: asNum(r.amount, 0),
+        amount: payoutAmount,
         status: String(r.status),
         purchaseOrderId: r.purchaseOrderId ?? null,
         orderId: r.orderId ? String(r.orderId) : null,
@@ -544,9 +909,7 @@ router.get("/history", requireAuth, async (req: any, res: Response) => {
 });
 
 /**
- * GET /api/supplier/payouts/ledger?page=1&pageSize=20
- * GET /api/supplier/payouts/ledger?take=20&skip=0
- * Returns ledger debits/credits (refunds & adjustments).
+ * GET /api/supplier/payouts/ledger
  */
 router.get("/ledger", requireAuth, async (req: any, res: Response) => {
   try {
@@ -555,10 +918,15 @@ router.get("/ledger", requireAuth, async (req: any, res: Response) => {
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     let supplierId: string | null = null;
-    if (isAdmin(role) && req.query?.supplierId) supplierId = String(req.query.supplierId);
-    else if (isSupplier(role)) supplierId = (await getSupplierForUser(String(userId)))?.id ?? null;
+    if (isAdmin(role) && req.query?.supplierId) {
+      supplierId = String(req.query.supplierId);
+    } else if (isSupplier(role)) {
+      supplierId = (await getSupplierForUser(String(userId)))?.id ?? null;
+    }
 
-    if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
+    if (!supplierId) {
+      return res.status(403).json({ error: "Supplier access required" });
+    }
 
     const { take, skip, page, pageSize } = toPagination(req);
     const type = req.query?.type ? String(req.query.type).toUpperCase() : null;
@@ -613,25 +981,14 @@ router.get("/ledger", requireAuth, async (req: any, res: Response) => {
   }
 });
 
-/**
- * Allocation eligibility for release:
- * After delivery OTP verify, you set allocations -> APPROVED.
- * Keep PENDING for backward compatibility.
- */
 function allocEligibleStatuses(): SupplierPaymentStatus[] {
   return [SupplierPaymentStatus.APPROVED, SupplierPaymentStatus.PENDING];
 }
 
-function allocReleasedStatus(): SupplierPaymentStatus {
-  return SupplierPaymentStatus.PAID;
-}
-
-/**
- * ✅ IMPORTANT:
- * The system truth for "delivery OTP verified" is now PurchaseOrderDeliveryOtp.verifiedAt,
- * NOT PurchaseOrder.deliveryOtpVerifiedAt (legacy).
- */
-async function getDeliveryOtpVerifiedAtForPO(tx: any, purchaseOrderId: string): Promise<Date | null> {
+async function getDeliveryOtpVerifiedAtForPO(
+  tx: any,
+  purchaseOrderId: string
+): Promise<Date | null> {
   const row = await tx.purchaseOrderDeliveryOtp.findFirst({
     where: { purchaseOrderId, verifiedAt: { not: null } },
     orderBy: { verifiedAt: "desc" },
@@ -640,7 +997,10 @@ async function getDeliveryOtpVerifiedAtForPO(tx: any, purchaseOrderId: string): 
   return row?.verifiedAt ?? null;
 }
 
-async function hasOpenComplaintsForPO(tx: any, purchaseOrderId: string): Promise<boolean> {
+async function hasOpenComplaintsForPO(
+  tx: any,
+  purchaseOrderId: string
+): Promise<boolean> {
   const openRefundRequests = await tx.refundRequest.count({
     where: {
       purchaseOrderId,
@@ -679,12 +1039,14 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
       orderId: true,
       supplierId: true,
       supplierAmount: true,
+      shippingFeeChargedToCustomer: true,
       status: true,
       payoutStatus: true,
       paidOutAt: true,
       payoutHoldUntil: true,
     },
   });
+
   if (!po) throw new Error("PurchaseOrder not found");
 
   const poStatus = String(po.status || "").toUpperCase();
@@ -710,17 +1072,36 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
   await assertSupplierPayoutReadyTx(tx, po.supplierId);
 
   const payoutStatus = String(po.payoutStatus || "").toUpperCase();
+  const payoutAmount = grossPayoutAmountFromPO(po);
 
   if (po.paidOutAt || payoutStatus === "RELEASED") {
-    return { ok: true, alreadyReleased: true, mode: "released" };
+    return {
+      ok: true,
+      alreadyReleased: true,
+      mode: "released",
+      amount: payoutAmount,
+    };
   }
 
   if (payoutStatus === "HELD" && po.payoutHoldUntil) {
+    await tx.supplierPaymentAllocation.updateMany({
+      where: {
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+        status: "HELD" as any,
+      },
+      data: {
+        amount: payoutAmount,
+        holdUntil: po.payoutHoldUntil,
+      } as any,
+    });
+
     return {
       ok: true,
       alreadyHeld: true,
       mode: "held",
       holdUntil: po.payoutHoldUntil,
+      amount: payoutAmount,
     };
   }
 
@@ -760,11 +1141,19 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     });
 
     if (heldAlloc) {
+      await tx.supplierPaymentAllocation.update({
+        where: { id: heldAlloc.id },
+        data: {
+          amount: payoutAmount,
+        } as any,
+      });
+
       return {
         ok: true,
         alreadyHeld: true,
         mode: "held",
         holdUntil: heldAlloc.holdUntil ?? null,
+        amount: payoutAmount,
       };
     }
 
@@ -782,15 +1171,30 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
       await tx.purchaseOrder.update({
         where: { id: po.id },
         data: {
-          payoutStatus: "RELEASED",
+          payoutStatus: "RELEASED" as any,
           ...(po.paidOutAt ? {} : { paidOutAt: paidAlloc.releasedAt ?? new Date() }),
         } as any,
       });
+
+      await tx.supplierPaymentAllocation.updateMany({
+        where: {
+          paymentId: payment.id,
+          purchaseOrderId: po.id,
+          supplierId: po.supplierId,
+        },
+        data: {
+          amount: payoutAmount,
+          status: "PAID" as any,
+          releasedAt: paidAlloc.releasedAt ?? new Date(),
+        },
+      });
+
       return {
         ok: true,
         alreadyReleased: true,
         mode: "released",
         releasedAt: paidAlloc.releasedAt ?? null,
+        amount: payoutAmount,
       };
     }
 
@@ -805,6 +1209,7 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
   await tx.supplierPaymentAllocation.update({
     where: { id: alloc.id },
     data: {
+      amount: payoutAmount,
       status: "HELD" as any,
       holdUntil,
     } as any,
@@ -823,6 +1228,7 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     mode: "held",
     holdUntil,
     complaintWindowDays: COMPLAINT_WINDOW_DAYS,
+    amount: payoutAmount,
   };
 }
 
@@ -844,15 +1250,16 @@ async function assertSupplierPayoutReadyTx(tx: any, supplierId: string) {
   if (!s) throw new Error("Supplier not found");
 
   const enabled = s.isPayoutEnabled !== false;
-
   const accNum = !!(s.accountNumber ?? null);
   const accName = !!(s.accountName ?? null);
   const bank = !!(s.bankCode ?? s.bankName ?? null);
   const country = s.bankCountry == null ? true : !!s.bankCountry;
-
   const verified = s.bankVerificationStatus === "VERIFIED";
+
   if (!(enabled && verified && accNum && accName && bank && country)) {
-    throw new Error("Supplier is not payout-ready (missing bank details or payouts disabled).");
+    throw new Error(
+      "Supplier is not payout-ready (missing bank details or payouts disabled)."
+    );
   }
 }
 
@@ -866,26 +1273,33 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
     const poId = String(req.params.poId);
 
     if (isAdmin(req.user?.role)) {
-      return res
-        .status(403)
-        .json({ error: "Read-only supplier view. Admin payout actions must use admin routes." });
+      return res.status(403).json({
+        error: "Read-only supplier view. Admin payout actions must use admin routes.",
+      });
     }
 
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    if (!isSupplier(role) && !isAdmin(role)) return res.status(403).json({ error: "Forbidden" });
+    if (!isSupplier(role) && !isAdmin(role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     let supplierId: string | null = null;
-    if (isAdmin(role) && req.query.supplierId) supplierId = String(req.query.supplierId);
-    else {
+    if (isAdmin(role) && req.query.supplierId) {
+      supplierId = String(req.query.supplierId);
+    } else {
       const s = await getSupplierForUser(userId);
       supplierId = s?.id ?? null;
     }
-    if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
+
+    if (!supplierId) {
+      return res.status(403).json({ error: "Supplier access required" });
+    }
 
     const po = await prisma.purchaseOrder.findUnique({
       where: { id: poId },
       select: { id: true, supplierId: true, orderId: true },
     });
+
     if (!po) {
       return res.status(404).json({ error: "PurchaseOrder not found" });
     }
@@ -898,6 +1312,18 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
       const out = await prisma.$transaction(async (tx) => {
         return releasePayoutForPOTx(tx, poId);
       });
+
+      if (String(out?.mode || "").toLowerCase() === "held") {
+        await notifySupplierPayoutStatusBestEffort({
+          purchaseOrderId: poId,
+          status: "HELD",
+        });
+      } else if (String(out?.mode || "").toLowerCase() === "released") {
+        await notifySupplierPayoutStatusBestEffort({
+          purchaseOrderId: poId,
+          status: "RELEASED",
+        });
+      }
 
       return res.json({
         ok: true,
@@ -914,6 +1340,11 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
         });
       });
 
+      await notifySupplierPayoutStatusBestEffort({
+        purchaseOrderId: poId,
+        status: "RELEASED",
+      });
+
       return res.json({
         ok: true,
         data: out,
@@ -924,6 +1355,11 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
     const out = await paySupplierForPurchaseOrder(poId, {
       id: req.user?.id,
       role: req.user?.role,
+    });
+
+    await notifySupplierPayoutStatusBestEffort({
+      purchaseOrderId: poId,
+      status: "RELEASED",
     });
 
     return res.json({

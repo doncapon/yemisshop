@@ -13,7 +13,6 @@ import { issueOtp, verifyOtp } from "../lib/otp.js";
 import { Prisma, SupplierType } from "@prisma/client";
 import {
   setAccessTokenCookie,
-  clearAccessTokenCookie,
   clearAuthCookies,
   getAccessTokenCookieName,
 } from "../lib/authCookies.js";
@@ -40,7 +39,7 @@ const RegisterSchema = z
     lastName: z.string().min(1),
     role: z.string().default("SHOPPER"),
 
-    // ✅ optional now
+    // selected dial code from country picker
     dialCode: z.preprocess(
       (v) => {
         const s = String(v ?? "").trim();
@@ -52,7 +51,7 @@ const RegisterSchema = z
         .optional()
     ),
 
-    // ✅ optional now
+    // can be local or user-typed with leading 0 / 00
     localPhone: z.preprocess(
       (v) => {
         const s = String(v ?? "").trim();
@@ -60,9 +59,9 @@ const RegisterSchema = z
       },
       z
         .string()
-        .transform((v) => v.replace(/\D/g, ""))
+        .transform((v) => v.replace(/[^\d+]/g, ""))
         .refine((v) => v.length >= 6, "Please enter a valid phone number")
-        .refine((v) => v.length <= 15, "Please enter a valid phone number")
+        .refine((v) => v.length <= 18, "Please enter a valid phone number")
         .optional()
     ),
 
@@ -83,7 +82,6 @@ const RegisterSchema = z
     const hasDialCode = !!data.dialCode;
     const hasLocalPhone = !!data.localPhone;
 
-    // ✅ if one is provided, the other must also be provided
     if (hasDialCode !== hasLocalPhone) {
       if (!hasDialCode) {
         ctx.addIssue({
@@ -109,9 +107,6 @@ function isPhoneVerificationRequired(user: {
 }) {
   const role = String(user.role ?? "").trim().toUpperCase();
   const hasPhone = !!String(user.phone ?? "").trim();
-
-  // Suppliers still require phone verification.
-  // Shoppers only require phone verification if they actually provided a phone.
   return role === "SUPPLIER" || hasPhone;
 }
 
@@ -134,9 +129,7 @@ async function issueAndEmailEmailVerification(userId: string, email: string) {
     expiresIn: "60m",
   });
 
-  // ✅ MUST hit API route (this router), not UI.
-  let verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
-
+  const verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
   await sendVerifyEmail(email, verifyUrl);
 }
 
@@ -147,21 +140,67 @@ const wrap =
       fn(req, res, next).catch(next);
     };
 
-function toE164(dialCode?: string, local?: string): string | null {
-  const dc = String(dialCode ?? "").trim();
-  const localDigits = String(local ?? "").replace(/\D/g, "");
-
-  if (!dc || !localDigits) return null;
-
-  const normalizedDial = dc.startsWith("+") ? dc : `+${dc}`;
-
-  if (!/^\+\d{1,4}$/.test(normalizedDial)) return null;
-  if (localDigits.length < 6 || localDigits.length > 15) return null;
-
-  return `${normalizedDial}${localDigits}`;
+function normalizeDialCode(input?: string | null): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+  const digits = raw.replace(/[^\d]/g, "");
+  if (!digits || digits.length > 4) return null;
+  return `+${digits}`;
 }
 
+function normalizePhoneToE164(
+  input: unknown,
+  opts?: {
+    dialCode?: string | null;
+    assumeLocalIfNoPlus?: boolean;
+  }
+): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
 
+  const dialCode = normalizeDialCode(opts?.dialCode ?? null);
+  const cleaned = raw.replace(/[^\d+]/g, "");
+
+  // Already international format
+  if (/^\+\d{8,15}$/.test(cleaned)) {
+    return cleaned;
+  }
+
+  // Starts with 00 => remove 00 and add +
+  if (/^00\d{8,15}$/.test(cleaned)) {
+    return `+${cleaned.slice(2)}`;
+  }
+
+  // Starts with 0 => remove 0 and prefix selected country dial code
+  if (/^0\d{6,14}$/.test(cleaned)) {
+    if (!dialCode) return null;
+    return `${dialCode}${cleaned.slice(1)}`;
+  }
+
+  // Plain digits => treat as local if dial code exists
+  if (/^\d{6,15}$/.test(cleaned)) {
+    if (opts?.assumeLocalIfNoPlus === false) {
+      return `+${cleaned}`;
+    }
+    if (!dialCode) return null;
+    return `${dialCode}${cleaned}`;
+  }
+
+  return null;
+}
+
+function getCountryCodeDigitsFromDialCode(dialCode?: string | null): string | null {
+  const dc = normalizeDialCode(dialCode);
+  return dc ? dc.slice(1) : null;
+}
+
+function getNationalNumberFromE164(e164: string, dialCode?: string | null): string | null {
+  const dc = normalizeDialCode(dialCode);
+  if (!dc) return null;
+  if (!e164.startsWith(dc)) return null;
+  const national = e164.slice(dc.length);
+  return national || null;
+}
 
 function normRoleLoose(role: unknown) {
   let r = String(role ?? "").trim().toUpperCase();
@@ -270,7 +309,6 @@ async function createUserSession(req: Request, userId: string, role?: string | n
     (String((req as any).ip ?? "").slice(0, 80) || null);
 
   const deviceName = String(req.headers["x-device-name"] ?? "").slice(0, 120) || null;
-
   const expiresAt = new Date(Date.now() + getSessionTtlDays(role) * 24 * 60 * 60 * 1000);
 
   try {
@@ -292,6 +330,7 @@ async function createUserSession(req: Request, userId: string, role?: string | n
     return "";
   }
 }
+
 async function activateSupplierIfFullyVerified(user: {
   id: string;
   role: any;
@@ -309,9 +348,293 @@ async function activateSupplierIfFullyVerified(user: {
   });
 }
 
+type PhoneConflict =
+  | {
+      entity: "USER";
+      id: string;
+      email?: string | null;
+      role?: string | null;
+      phone: string;
+    }
+  | {
+      entity: "SUPPLIER";
+      id: string;
+      userId?: string | null;
+      name?: string | null;
+      contactEmail?: string | null;
+      phone: string;
+    }
+  | {
+      entity: "SUPPLIER_RIDER";
+      id: string;
+      userId?: string | null;
+      name?: string | null;
+      email?: string | null;
+      role?: string | null;
+      phone: string;
+    }
+  | {
+      entity: "EMPLOYEE";
+      id: string;
+      firstName?: string | null;
+      lastName?: string | null;
+      emailWork?: string | null;
+      emailPersonal?: string | null;
+      phone: string;
+    };
+
+async function findPhoneConflictAcrossBoard(
+  phoneInput: unknown,
+  opts?: {
+    dialCode?: string | null;
+    excludeUserId?: string | null;
+    excludeSupplierId?: string | null;
+    excludeEmployeeId?: string | null;
+  }
+): Promise<PhoneConflict | null> {
+  const normalized = normalizePhoneToE164(phoneInput, { dialCode: opts?.dialCode });
+  if (!normalized) return null;
+
+  const excludeUserId = String(opts?.excludeUserId ?? "").trim() || null;
+  const excludeSupplierId = String(opts?.excludeSupplierId ?? "").trim() || null;
+  const excludeEmployeeId = String(opts?.excludeEmployeeId ?? "").trim() || null;
+
+  const [users, suppliers, riders, employees] = await prisma.$transaction([
+    prisma.user.findMany({
+      where: {
+        phone: { not: null },
+        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+      } as any,
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        phone: true,
+      },
+    }),
+    prisma.supplier.findMany({
+      where: {
+        whatsappPhone: { not: null },
+        ...(excludeSupplierId ? { id: { not: excludeSupplierId } } : {}),
+      } as any,
+      select: {
+        id: true,
+        userId: true,
+        name: true,
+        contactEmail: true,
+        whatsappPhone: true,
+      },
+    }),
+    prisma.supplierRider.findMany({
+      where: {
+        phone: { not: null },
+      } as any,
+      select: {
+        id: true,
+        userId: true,
+        name: true,
+        phone: true,
+        user: {
+          select: {
+            email: true,
+            role: true,
+          },
+        },
+      },
+    }),
+    prisma.employee.findMany({
+      where: {
+        phone: { not: null },
+        ...(excludeEmployeeId ? { id: { not: excludeEmployeeId } } : {}),
+      } as any,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        emailWork: true,
+        emailPersonal: true,
+        phone: true,
+      },
+    }),
+  ]);
+
+  for (const user of users ?? []) {
+    const candidate = normalizePhoneToE164((user as any).phone, { assumeLocalIfNoPlus: false });
+    if (candidate && candidate === normalized) {
+      return {
+        entity: "USER",
+        id: String((user as any).id),
+        email: (user as any).email ?? null,
+        role: (user as any).role ?? null,
+        phone: candidate,
+      };
+    }
+  }
+
+  for (const supplier of suppliers ?? []) {
+    if (excludeUserId && String((supplier as any).userId ?? "") === excludeUserId) continue;
+    const candidate = normalizePhoneToE164((supplier as any).whatsappPhone, {
+      assumeLocalIfNoPlus: false,
+    });
+    if (candidate && candidate === normalized) {
+      return {
+        entity: "SUPPLIER",
+        id: String((supplier as any).id),
+        userId: (supplier as any).userId ?? null,
+        name: (supplier as any).name ?? null,
+        contactEmail: (supplier as any).contactEmail ?? null,
+        phone: candidate,
+      };
+    }
+  }
+
+  for (const rider of riders ?? []) {
+    if (excludeUserId && String((rider as any).userId ?? "") === excludeUserId) continue;
+    const candidate = normalizePhoneToE164((rider as any).phone, {
+      assumeLocalIfNoPlus: false,
+    });
+    if (candidate && candidate === normalized) {
+      return {
+        entity: "SUPPLIER_RIDER",
+        id: String((rider as any).id),
+        userId: (rider as any).userId ?? null,
+        name: (rider as any).name ?? null,
+        email: (rider as any)?.user?.email ?? null,
+        role: (rider as any)?.user?.role ?? null,
+        phone: candidate,
+      };
+    }
+  }
+
+  for (const employee of employees ?? []) {
+    const candidate = normalizePhoneToE164((employee as any).phone, {
+      assumeLocalIfNoPlus: false,
+    });
+    if (candidate && candidate === normalized) {
+      return {
+        entity: "EMPLOYEE",
+        id: String((employee as any).id),
+        firstName: (employee as any).firstName ?? null,
+        lastName: (employee as any).lastName ?? null,
+        emailWork: (employee as any).emailWork ?? null,
+        emailPersonal: (employee as any).emailPersonal ?? null,
+        phone: candidate,
+      };
+    }
+  }
+
+  return null;
+}
+
+function buildPhoneDuplicateError(conflict: PhoneConflict, normalizedPhone: string) {
+  if (conflict.entity === "USER") {
+    return {
+      error: "Phone number already in use.",
+      code: "PHONE_ALREADY_IN_USE",
+      field: "phone",
+      phone: normalizedPhone,
+      conflict: {
+        entity: "USER",
+        role: String(conflict.role ?? "").trim() || null,
+        email: conflict.email ?? null,
+      },
+    };
+  }
+
+  if (conflict.entity === "SUPPLIER") {
+    return {
+      error: "Phone number already in use.",
+      code: "PHONE_ALREADY_IN_USE",
+      field: "phone",
+      phone: normalizedPhone,
+      conflict: {
+        entity: "SUPPLIER",
+        name: conflict.name ?? null,
+        email: conflict.contactEmail ?? null,
+      },
+    };
+  }
+
+  if (conflict.entity === "SUPPLIER_RIDER") {
+    return {
+      error: "Phone number already in use.",
+      code: "PHONE_ALREADY_IN_USE",
+      field: "phone",
+      phone: normalizedPhone,
+      conflict: {
+        entity: "SUPPLIER_RIDER",
+        name: conflict.name ?? null,
+        email: conflict.email ?? null,
+        role: conflict.role ?? null,
+      },
+    };
+  }
+
+  return {
+    error: "Phone number already in use.",
+    code: "PHONE_ALREADY_IN_USE",
+    field: "phone",
+    phone: normalizedPhone,
+    conflict: {
+      entity: "EMPLOYEE",
+      name: [conflict.firstName, conflict.lastName].filter(Boolean).join(" ") || null,
+      email: conflict.emailWork ?? conflict.emailPersonal ?? null,
+    },
+  };
+}
+
+function isPhoneRegistryUniqueError(err: unknown) {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (err.code !== "P2002") return false;
+
+  const targets = Array.isArray((err.meta as any)?.target)
+    ? (err.meta as any).target.map((v: any) => String(v))
+    : [String((err.meta as any)?.target ?? "")];
+
+  return targets.some((t: any) => t.includes("e164"));
+}
+
+async function registerCanonicalPhone(
+  tx: Prisma.TransactionClient,
+  params: {
+    e164: string;
+    dialCode?: string | null;
+    ownerType: "USER";
+    ownerId: string;
+    purpose: string;
+    isVerified?: boolean;
+  }
+) {
+  await tx.phoneRegistry.create({
+    data: {
+      e164: params.e164,
+      countryCode: getCountryCodeDigitsFromDialCode(params.dialCode) ?? undefined,
+      national: getNationalNumberFromE164(params.e164, params.dialCode) ?? undefined,
+      purpose: params.purpose,
+      ownerType: params.ownerType,
+      ownerId: params.ownerId,
+      isVerified: !!params.isVerified,
+    },
+  });
+}
+
+async function markCanonicalPhoneVerified(userId: string, e164?: string | null) {
+  const phone = String(e164 ?? "").trim();
+  if (!phone) return;
+
+  await prisma.phoneRegistry.updateMany({
+    where: {
+      ownerType: "USER",
+      ownerId: userId,
+      e164: phone,
+    },
+    data: {
+      isVerified: true,
+    },
+  });
+}
+
 // ---------------- LOGIN ----------------
-// ✅ Sets HttpOnly cookie + returns profile.
-// UI does NOT need to store token.
 router.post(
   "/login",
   wrap(async (req, res) => {
@@ -432,6 +755,81 @@ router.post(
     clearAuthCookies(res);
     res.setHeader("Cache-Control", "no-store");
     return res.json({ ok: true });
+  })
+);
+
+// ---------------- COMPLETE VERIFIED LOGIN ----------------
+router.post(
+  "/complete-verified-login",
+  requireVerifySession,
+  wrap(async (req, res) => {
+    const userId = String(req.user?.id ?? "").trim();
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const userSelect = {
+      id: true,
+      email: true,
+      role: true,
+      firstName: true,
+      middleName: true,
+      lastName: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true,
+      status: true,
+      phone: true,
+    } satisfies Prisma.UserSelect;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: userSelect,
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const profile = buildPublicProfile(user);
+    const roleNorm = normRoleLoose(user.role);
+
+    const fullyVerified =
+      !!user.emailVerifiedAt &&
+      (!isPhoneVerificationRequired({ role: user.role, phone: user.phone }) ||
+        !!user.phoneVerifiedAt);
+
+    if (!fullyVerified) {
+      return res.status(400).json({
+        error: "Please verify your email and phone before continuing.",
+        profile,
+      });
+    }
+
+    await activateSupplierIfFullyVerified(user as any);
+
+    const sid = await createUserSession(req, user.id, user.role);
+    const ttlDays = getSessionTtlDays(user.role);
+
+    const token = signAccessJwt(
+      {
+        id: user.id,
+        sub: user.id,
+        email: String(user.email ?? ""),
+        role: roleNorm,
+        k: "access",
+        sid: sid || undefined,
+      } as any,
+      `${ttlDays}d`
+    );
+
+    setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.json({
+      ok: true,
+      profile,
+      needsVerification: false,
+    });
   })
 );
 
@@ -560,7 +958,7 @@ router.get("/email-status", async (req, res) => {
   });
 });
 
-// ---------------- PUBLIC resend verification email (JWT link) ----------------
+// ---------------- PUBLIC resend verification email ----------------
 const fmtErr = (e: any) => {
   if (!e) return "Unknown error";
   if (e instanceof Error) return e.message;
@@ -577,7 +975,6 @@ router.post(
     const email = String(req.body?.email ?? "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "email is required" });
 
-    // ✅ Force the type to be the exact shape we need (includes id:string)
     const u = await prisma.user.findUnique({
       where: { email },
       select: {
@@ -611,7 +1008,7 @@ router.post(
 
     try {
       await prisma.user.update({
-        where: { id: u.id }, // ✅ now definitely string
+        where: { id: u.id },
         data: {
           emailVerifyLastSentAt: now,
           emailVerifySendCountDay: (u.emailVerifySendCountDay ?? 0) + 1,
@@ -640,89 +1037,126 @@ router.post(
 
     const existing = await prisma.user.findUnique({
       where: { email: body.email.toLowerCase() },
+      select: { id: true },
     });
     if (existing) return res.status(409).json({ error: "Email already registered" });
 
     const passwordHash = await bcrypt.hash(body.password, 10);
 
-    // ✅ phone is optional now
     let phone: string | null = null;
     if (body.dialCode && body.localPhone) {
-      phone = toE164(body.dialCode, body.localPhone);
+      phone = normalizePhoneToE164(body.localPhone, {
+        dialCode: body.dialCode,
+      });
+
       if (!phone) {
         return res.status(400).json({ error: "Please enter a valid phone number" });
       }
+
+      const conflict = await findPhoneConflictAcrossBoard(phone);
+      if (conflict) {
+        return res.status(409).json(buildPhoneDuplicateError(conflict, phone));
+      }
     }
-
-    const user = await prisma.user.create({
-      data: {
-        email: body.email.toLowerCase(),
-        password: passwordHash,
-        role: "SHOPPER",
-        firstName: body.firstName,
-        middleName: body.middleName,
-        lastName: body.lastName,
-        phone, // ✅ null when omitted
-        status: "PENDING",
-        dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : null,
-      } as any,
-    });
-
-    const result = {
-      message: phone
-        ? "Registered. Verify email and phone number."
-        : "Registered. Verify your email to continue.",
-      tempToken: signJwt({ id: user.id, role: user.role, email: user.email }, "1h"),
-      phoneOtpSent: false,
-      emailSent: false,
-      smsSent: false,
-    };
 
     try {
-      try {
-        await issueAndEmailEmailVerification(user.id, user.email);
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { emailVerifyLastSentAt: new Date(), emailVerifySendCountDay: 1 } as any,
-        });
-        result.emailSent = true;
-      } catch (e) {
-        console.warn("[register] send email verification failed:", (e as any)?.message);
-      }
-
-      // ✅ only send OTP if phone exists
-      if (phone) {
-        const r = await issueOtp({
-          identifier: user.id,
-          userId: user.id,
-          phone,
-          channelPref: "whatsapp",
+      const created = await prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            email: body.email.toLowerCase(),
+            password: passwordHash,
+            role: "SHOPPER",
+            firstName: body.firstName,
+            middleName: body.middleName,
+            lastName: body.lastName,
+            phone,
+            status: "PENDING",
+            dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : null,
+          } as any,
         });
 
-        result.phoneOtpSent = !!r.ok;
-
-        console.log("[register] OTP send result", {
-          userId: user.id,
-          phoneE164: phone,
-          ok: r.ok,
-          error: r.ok ? null : r.error,
-        });
-
-        if (r.ok) {
-          await prisma.user.update({
-            where: { id: user.id },
-            data: {
-              phoneOtpLastSentAt: new Date(),
-              phoneOtpSendCountDay: 1,
-            } as any,
+        if (phone) {
+          await registerCanonicalPhone(tx, {
+            e164: phone,
+            dialCode: body.dialCode,
+            ownerType: "USER",
+            ownerId: user.id,
+            purpose: "PRIMARY",
+            isVerified: false,
           });
         }
-      }
-    } catch (e) {
-      console.warn("[register] post-register side-effects failed (continuing):", (e as any)?.message);
-    }
 
-    return res.status(201).json(result);
+        return user;
+      });
+
+      const result = {
+        message: phone
+          ? "Registered. Verify email and phone number."
+          : "Registered. Verify your email to continue.",
+        tempToken: signJwt(
+          { id: created.id, role: created.role, email: created.email, k: "verify" },
+          "1h"
+        ),
+        phoneOtpSent: false,
+        emailSent: false,
+        smsSent: false,
+      };
+
+      try {
+        try {
+          await issueAndEmailEmailVerification(created.id, created.email);
+          await prisma.user.update({
+            where: { id: created.id },
+            data: { emailVerifyLastSentAt: new Date(), emailVerifySendCountDay: 1 } as any,
+          });
+          result.emailSent = true;
+        } catch (e) {
+          console.warn("[register] send email verification failed:", (e as any)?.message);
+        }
+
+        if (phone) {
+          const r = await issueOtp({
+            identifier: created.id,
+            userId: created.id,
+            phone,
+            channelPref: "whatsapp",
+          });
+
+          result.phoneOtpSent = !!r.ok;
+
+          console.log("[register] OTP send result", {
+            userId: created.id,
+            phoneE164: phone,
+            ok: r.ok,
+            error: r.ok ? null : r.error,
+          });
+
+          if (r.ok) {
+            await prisma.user.update({
+              where: { id: created.id },
+              data: {
+                phoneOtpLastSentAt: new Date(),
+                phoneOtpSendCountDay: 1,
+              } as any,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("[register] post-register side-effects failed (continuing):", (e as any)?.message);
+      }
+
+      return res.status(201).json(result);
+    } catch (err) {
+      if (isPhoneRegistryUniqueError(err)) {
+        return res.status(409).json({
+          error: "Phone number already in use.",
+          code: "PHONE_ALREADY_IN_USE",
+          field: "phone",
+          phone,
+        });
+      }
+      throw err;
+    }
   })
 );
 
@@ -732,18 +1166,10 @@ router.get("/verify-email", async (req, res) => {
   if (!raw) return res.status(400).send("Missing token");
 
   const now = new Date();
-
-  // ✅ IMPORTANT:
-  // - Use FRONTEND_URL for redirecting users back to the UI (NOT the API domain).
-  // - Keep APP_URL free to mean whatever you want, but FRONTEND_URL should be the UI origin.
-  const UI_URL = String(
-    process.env.APP_URL || // fallback for older envs
-      "https://dayspringhouse.com"
-  ).replace(/\/$/, "");
+  const UI_URL = String(process.env.APP_URL || "https://dayspringhouse.com").replace(/\/$/, "");
 
   const redirectUi = (params: Record<string, string>) => {
     const qp = new URLSearchParams(params);
-    // ✅ redirect to UI verify page
     return res.redirect(302, `${UI_URL}/verify?${qp.toString()}`);
   };
 
@@ -797,7 +1223,6 @@ router.get("/verify-email", async (req, res) => {
 
     await activateSupplierIfFullyVerified(nextUser);
 
-    // ✅ DO NOT send the token back to the UI (safer + avoids confusion)
     return redirectUi({
       ok: "1",
       e: email,
@@ -805,7 +1230,6 @@ router.get("/verify-email", async (req, res) => {
       phoneOk: nextUser.phoneVerifiedAt ? "1" : "0",
     });
   } catch {
-    // legacy fallback (kept from your code)
     const legacy = await prisma.user.findFirst({
       where: {
         emailVerifyToken: raw,
@@ -875,7 +1299,6 @@ router.get("/verify-email", async (req, res) => {
 
     await activateSupplierIfFullyVerified(nextUser);
 
-    // ✅ token not returned to UI
     return redirectUi({
       ok: "1",
       e: email,
@@ -954,29 +1377,6 @@ router.get("/reset-token/validate", async (req, res, next) => {
   }
 });
 
-function normalizePhoneToE164(input: unknown, defaultCountryCode = "234"): string | null {
-  const raw = String(input ?? "").trim();
-  if (!raw) return null;
-
-  const cleaned = raw.replace(/[^\d+]/g, "");
-
-  if (/^\+\d{8,15}$/.test(cleaned)) return cleaned;
-
-  if (/^00\d{8,15}$/.test(cleaned)) {
-    return `+${cleaned.slice(2)}`;
-  }
-
-  if (/^0\d{7,14}$/.test(cleaned)) {
-    return `+${defaultCountryCode}${cleaned.slice(1)}`;
-  }
-
-  if (/^\d{8,15}$/.test(cleaned)) {
-    return `+${cleaned}`;
-  }
-
-  return null;
-}
-
 // ---------------- OTP Verification (phone) ----------------
 router.post("/verify-otp", requireVerifySession, async (req, res) => {
   const userId = req.user?.id;
@@ -992,7 +1392,7 @@ router.post("/verify-otp", requireVerifySession, async (req, res) => {
 
     const existing = await prisma.user.findUnique({
       where: { id: userId },
-      select: { emailVerifiedAt: true, role: true } as any,
+      select: { emailVerifiedAt: true, role: true, phone: true } as any,
     });
 
     const now = new Date();
@@ -1016,6 +1416,7 @@ router.post("/verify-otp", requireVerifySession, async (req, res) => {
       } as any,
     });
 
+    await markCanonicalPhoneVerified(String((updated as any).id), String((updated as any).phone ?? ""));
     await activateSupplierIfFullyVerified(updated as any);
 
     return res.json({
@@ -1038,7 +1439,7 @@ router.post("/verify-otp", requireVerifySession, async (req, res) => {
 });
 
 // ---------------- Resend OTP (phone) ----------------
-router.post("/resend-otp", requireAuth, async (req, res) => {
+router.post("/resend-otp", requireVerifySession, async (req, res) => {
   try {
     const userId = String(req.user?.id || "");
     if (!userId) {
@@ -1046,7 +1447,7 @@ router.post("/resend-otp", requireAuth, async (req, res) => {
     }
 
     const requestedPhone = String(req.body?.phone ?? "").trim();
-    const normalizedRequestedPhone = requestedPhone ? normalizePhoneToE164(requestedPhone) : null;
+    const requestedDialCode = String(req.body?.dialCode ?? "").trim();
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -1060,22 +1461,33 @@ router.post("/resend-otp", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    let phoneE164 = normalizedRequestedPhone;
+    const normalizedRequestedPhone = requestedPhone
+      ? normalizePhoneToE164(requestedPhone, {
+          dialCode: requestedDialCode || undefined,
+        })
+      : null;
 
-    if (!phoneE164) {
-      const rawPhone = String(user.phone || "").trim();
-      if (!rawPhone) {
-        return res.status(400).json({
-          error: "No phone number is available for OTP delivery.",
-        });
-      }
+    const storedPhoneE164 = normalizePhoneToE164(user.phone, {
+      assumeLocalIfNoPlus: false,
+    });
 
-      phoneE164 = normalizePhoneToE164(rawPhone);
+    if (requestedPhone && !normalizedRequestedPhone) {
+      return res.status(400).json({
+        error: "Phone number must be in a valid format and include a valid selected country dial code when local.",
+      });
     }
+
+    if (normalizedRequestedPhone && storedPhoneE164 && normalizedRequestedPhone !== storedPhoneE164) {
+      return res.status(400).json({
+        error: "Requested phone number does not match the phone number saved on this account.",
+      });
+    }
+
+    const phoneE164 = normalizedRequestedPhone || storedPhoneE164;
 
     if (!phoneE164) {
       return res.status(400).json({
-        error: "Phone number must be in a valid international format.",
+        error: "No phone number is available for OTP delivery.",
       });
     }
 
@@ -1127,20 +1539,21 @@ const CacCompanyTypeEnum = z.enum([
 
 const registerSupplierSchema = z.object({
   role: z.literal("SUPPLIER").optional(),
-
   businessName: z.string().min(1, "Business name is required"),
   legalName: z.string().nullable().optional(),
-
   registrationType: z.enum(["INDIVIDUAL", "REGISTERED_BUSINESS"]).nullable().optional(),
   registrationCountryCode: z.string().trim().min(2).max(8).nullable().optional(),
-
   supplierType: z.enum(["PHYSICAL", "ONLINE"]),
-
   contactFirstName: z.string().min(1, "First name is required"),
   contactLastName: z.string().min(1, "Last name is required"),
   contactEmail: z.string().email("Valid email is required"),
-  contactPhone: z.string().min(6, "Valid phone number is required"),
-
+  contactDialCode: z.string().trim().refine((v) => /^\+\d{1,4}$/.test(v), "Invalid country dial code"),
+  contactPhone: z
+    .string()
+    .trim()
+    .transform((v) => v.replace(/[^\d+]/g, ""))
+    .refine((v) => v.length >= 6, "Valid phone number is required")
+    .refine((v) => v.length <= 18, "Valid phone number is required"),
   password: z
     .string()
     .min(8, "Password must be at least 8 characters")
@@ -1238,15 +1651,29 @@ router.post("/register-supplier", async (req, res) => {
       contactLastName,
       contactEmail,
       contactPhone,
+      contactDialCode,
       password,
     } = parsed;
 
     const emailLower = contactEmail.trim().toLowerCase();
-    const phone = String(contactPhone ?? "").trim();
+    const normalizedPhone = normalizePhoneToE164(contactPhone, {
+      dialCode: contactDialCode,
+    });
     const trimmedBusinessName = businessName.trim();
     const trimmedLegalName = String(legalName ?? "").trim() || null;
 
-    // 1) conflicts
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        error: "Valid phone number is required",
+        field: "contactPhone",
+      });
+    }
+
+    const phoneConflict = await findPhoneConflictAcrossBoard(normalizedPhone);
+    if (phoneConflict) {
+      return res.status(409).json(buildPhoneDuplicateError(phoneConflict, normalizedPhone));
+    }
+
     const existingUser = await prisma.user.findUnique({
       where: { email: emailLower },
       select: { id: true },
@@ -1258,7 +1685,6 @@ router.post("/register-supplier", async (req, res) => {
       });
     }
 
-    // Supplier.name is unique in your schema, so keep it unique
     let supplierName = trimmedBusinessName;
     const existingExactName = await prisma.supplier.findUnique({
       where: { name: supplierName },
@@ -1281,113 +1707,127 @@ router.post("/register-supplier", async (req, res) => {
       }
     }
 
-    // 2) create user
     const passwordHash = await bcrypt.hash(password, 10);
 
-    const user = await prisma.user.create({
-      data: {
-        email: emailLower,
-        password: passwordHash,
-        role: "SUPPLIER",
-        firstName: contactFirstName.trim(),
-        lastName: contactLastName.trim(),
-        phone: phone || null,
-        status: "PENDING",
-      },
-      select: {
-        id: true,
-        role: true,
-        email: true,
-        phone: true,
-      },
-    });
-
-    // 3) create supplier aligned to Prisma schema
-    const supplier = await prisma.supplier.create({
-      data: {
-        userId: user.id,
-
-        // canonical public/store name
-        name: supplierName,
-
-        // supplier contact
-        contactEmail: emailLower,
-        whatsappPhone: phone || null,
-
-        // supplier type
-        type: SupplierType.PHYSICAL,
-
-        // onboarding / registration identity
-        legalName: trimmedLegalName,
-        registeredBusinessName:
-          registrationType === "REGISTERED_BUSINESS" ? trimmedBusinessName : null,
-        registrationType: registrationType ?? null,
-        registrationCountryCode:
-          String(registrationCountryCode ?? "").trim().toUpperCase() || null,
-
-        // statuses
-        status: "PENDING_VERIFICATION",
-        kycStatus: "PENDING",
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    // 4) send email verification + WhatsApp OTP (best-effort)
-    const result = {
-      message: "Supplier registered. Please verify email and WhatsApp number to continue.",
-      supplierId: supplier.id,
-      tempToken: signJwt(
-        { id: user.id, role: user.role, email: user.email, k: "verify" },
-        "1h"
-      ),
-      emailSent: false,
-      phoneOtpSent: false,
-    };
-
     try {
-      await issueAndEmailEmailVerification(user.id, user.email);
-      result.emailSent = true;
-
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          emailVerifyLastSentAt: new Date(),
-          emailVerifySendCountDay: 1,
-        },
-      });
-    } catch {
-      // ignore - do not fail signup
-    }
-
-    try {
-      const phoneE164 = String(user.phone || "").trim();
-      if (phoneE164 && phoneE164.startsWith("+")) {
-        const r = await issueOtp({
-          identifier: user.id,
-          userId: user.id,
-          phone: phoneE164,
-          channelPref: "whatsapp",
+      const created = await prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            email: emailLower,
+            password: passwordHash,
+            role: "SUPPLIER",
+            firstName: contactFirstName.trim(),
+            lastName: contactLastName.trim(),
+            phone: normalizedPhone,
+            status: "PENDING",
+          },
+          select: {
+            id: true,
+            role: true,
+            email: true,
+            phone: true,
+          },
         });
 
-        result.phoneOtpSent = !!r.ok;
+        // Canonical uniqueness row is attached to USER.
+        // Supplier.whatsappPhone mirrors the same phone but is not separately registered.
+        await registerCanonicalPhone(tx, {
+          e164: normalizedPhone,
+          dialCode: contactDialCode,
+          ownerType: "USER",
+          ownerId: user.id,
+          purpose: "PRIMARY",
+          isVerified: false,
+        });
 
-        if (r.ok) {
-          await prisma.user.update({
-            where: { id: user.id },
-            data: {
-              phoneOtpLastSentAt: new Date(),
-              phoneOtpSendCountDay: 1,
-            },
-          });
-        }
+        const supplier = await tx.supplier.create({
+          data: {
+            userId: user.id,
+            name: supplierName,
+            contactEmail: emailLower,
+            whatsappPhone: normalizedPhone,
+            type: SupplierType.PHYSICAL,
+            legalName: trimmedLegalName,
+            registeredBusinessName:
+              registrationType === "REGISTERED_BUSINESS" ? trimmedBusinessName : null,
+            registrationType: registrationType ?? null,
+            registrationCountryCode:
+              String(registrationCountryCode ?? "").trim().toUpperCase() || null,
+            status: "PENDING_VERIFICATION",
+            kycStatus: "PENDING",
+          },
+          select: {
+            id: true,
+          },
+        });
+
+        return { user, supplier };
+      });
+
+      const result = {
+        message: "Supplier registered. Please verify email and WhatsApp number to continue.",
+        supplierId: created.supplier.id,
+        tempToken: signJwt(
+          { id: created.user.id, role: created.user.role, email: created.user.email, k: "verify" },
+          "1h"
+        ),
+        emailSent: false,
+        phoneOtpSent: false,
+      };
+
+      try {
+        await issueAndEmailEmailVerification(created.user.id, created.user.email);
+        result.emailSent = true;
+
+        await prisma.user.update({
+          where: { id: created.user.id },
+          data: {
+            emailVerifyLastSentAt: new Date(),
+            emailVerifySendCountDay: 1,
+          },
+        });
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore - do not fail signup
-    }
 
-    return res.status(201).json(result);
+      try {
+        const phoneE164 = String(created.user.phone || "").trim();
+        if (phoneE164 && phoneE164.startsWith("+")) {
+          const r = await issueOtp({
+            identifier: created.user.id,
+            userId: created.user.id,
+            phone: phoneE164,
+            channelPref: "whatsapp",
+          });
+
+          result.phoneOtpSent = !!r.ok;
+
+          if (r.ok) {
+            await prisma.user.update({
+              where: { id: created.user.id },
+              data: {
+                phoneOtpLastSentAt: new Date(),
+                phoneOtpSendCountDay: 1,
+              },
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      return res.status(201).json(result);
+    } catch (err) {
+      if (isPhoneRegistryUniqueError(err)) {
+        return res.status(409).json({
+          error: "Phone number already in use.",
+          code: "PHONE_ALREADY_IN_USE",
+          field: "contactPhone",
+          phone: normalizedPhone,
+        });
+      }
+      throw err;
+    }
   } catch (err: any) {
     console.error("[register-supplier] error", err);
 
@@ -1410,3 +1850,19 @@ router.post("/register-supplier", async (req, res) => {
 });
 
 export default router;
+
+// model PhoneRegistry {
+//   id          String   @id @default(cuid())
+//   e164        String   @unique
+//   countryCode String?
+//   national    String?
+//   purpose     String?
+//   ownerType   String
+//   ownerId     String
+//   isVerified  Boolean  @default(false)
+//   createdAt   DateTime @default(now())
+//   updatedAt   DateTime @updatedAt
+
+//   @@index([ownerType, ownerId])
+//   @@index([countryCode])
+// }

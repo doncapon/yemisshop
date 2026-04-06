@@ -24,6 +24,7 @@ import {
 } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
 import { hasSuccessfulPaymentForOrderTx, markPendingPaymentsCanceledTx, restoreOrderInventoryTx } from "../services/orderInventory.service.js";
+import { sendSupplierPurchaseOrderEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -154,6 +155,10 @@ function truthySetting(v: any) {
 
 type SelectedShippingQuoteMap = Record<string, SelectedShippingQuote>;
 
+function productCheckoutReadyRelationFilter() {
+  return { is: { status: "LIVE", isDeleted: false } } as const;
+}
+
 async function getSelectedShippingQuotesTx(
   tx: any,
   args: { shippingQuoteIds?: string[] | null; shippingQuoteId?: string | null; userId: string }
@@ -197,18 +202,6 @@ async function getSelectedShippingQuotesTx(
       pricingMetaJson: true,
     },
   });
-
-  function normalizeRequestedKind(line: any): "BASE" | "VARIANT" {
-    const raw = String(line?.kind ?? "").trim().toUpperCase();
-    if (raw === "VARIANT") return "VARIANT";
-    if (raw === "BASE") return "BASE";
-
-    if (line?.variantId != null && String(line.variantId).trim()) {
-      return "VARIANT";
-    }
-
-    return "BASE";
-  }
 
   if (rows.length !== uniqueIds.length) {
     throw new Error("One or more selected shipping quotes were not found.");
@@ -297,6 +290,41 @@ function isSavedShippingAddressVerifiedForCheckout(args: {
   }
 
   return false;
+}
+
+
+const COMPLAINT_WINDOW_DAYS = Number(process.env.COMPLAINT_WINDOW_DAYS ?? 5);
+
+async function getComplaintWindowDaysTx(tx: any): Promise<number> {
+  const raw =
+    (await readSettingValueTx(tx, "complaintWindowDays")) ??
+    (await readSettingValueTx(tx, "refundRequestWindowDays")) ??
+    (await readSettingValueTx(tx, "COMPLAINT_WINDOW_DAYS")) ??
+    process.env.COMPLAINT_WINDOW_DAYS ??
+    5;
+
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 5;
+  return Math.max(0, Math.floor(n));
+}
+
+function addDays(d: Date, days: number) {
+  return new Date(d.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function isWithinComplaintWindow(
+  baseDate: Date | string | null | undefined,
+  windowDays: number
+) {
+  if (!baseDate) return false;
+
+  const dt = baseDate instanceof Date ? baseDate : new Date(baseDate);
+  if (Number.isNaN(+dt)) return false;
+
+  if (!Number.isFinite(windowDays) || windowDays <= 0) return false;
+
+  const cutoff = addDays(dt, windowDays);
+  return now() <= cutoff;
 }
 
 async function getUserShippingAddressForCheckoutTx(
@@ -1060,15 +1088,11 @@ async function fetchActiveBaseOffersTx(
       where: {
         productId: where.productId,
         isActive: true,
+        inStock: true,
         availableQty: { gt: 0 },
         basePrice: { gt: 0 },
-        product: {
-          status: "LIVE",
-          isDeleted: false,
-        },
-        supplier: {
-          ...checkoutReadySupplierWhere(),
-        },
+        product: productCheckoutReadyRelationFilter(),
+        supplier: supplierCheckoutReadyRelationFilter(),
       },
       select: {
         id: true,
@@ -1123,6 +1147,7 @@ async function fetchActiveBaseOffersTx(
         productId: where.productId,
         variantId: null,
         isActive: true,
+        inStock: true,
         availableQty: { gt: 0 },
         unitPrice: { gt: 0 },
       },
@@ -1450,12 +1475,262 @@ async function fetchActiveOffersTx(
   return sortOffersCheapestFirst(legacyOut);
 }
 
+async function explainUnavailableLineTx(
+  tx: any,
+  args: {
+    productId: string;
+    variantId: string | null;
+    explicitOfferId?: string | null;
+    productTitle: string;
+    optionsLabel?: string;
+  }
+): Promise<string> {
+  const suffix = `${args.productTitle}${args.optionsLabel ?? ""}`;
+
+  const explainBaseRow = (row: any) => {
+    if (!row) return null;
+
+    if (String(row.productId ?? "") !== String(args.productId)) {
+      return `Selected offer for ${suffix} belongs to a different product.`;
+    }
+    if (row.product?.isDeleted) {
+      return `${suffix} is deleted and cannot be purchased.`;
+    }
+    if (String(row.product?.status ?? "").toUpperCase() !== "LIVE") {
+      return `${suffix} is not LIVE for checkout.`;
+    }
+    if (row.isActive !== true) {
+      return `The selected base offer for ${suffix} is inactive.`;
+    }
+    if (row.inStock !== true) {
+      return `The selected base offer for ${suffix} is marked out of stock.`;
+    }
+    if (!(Number(row.availableQty ?? 0) > 0)) {
+      return `The selected base offer for ${suffix} has no available quantity.`;
+    }
+    if (!(Number(row.basePrice ?? 0) > 0)) {
+      return `The selected base offer for ${suffix} has no valid price.`;
+    }
+    if (String(row.supplier?.status ?? "").toUpperCase() !== "ACTIVE") {
+      return `Supplier "${row.supplier?.name ?? "Unknown supplier"}" is not ACTIVE for checkout.`;
+    }
+    return `The selected base offer for ${suffix} is not checkout-eligible.`;
+  };
+
+  const explainVariantRow = (row: any) => {
+    if (!row) return null;
+
+    const rowProductId = String(
+      row.variant?.productId ?? row.productId ?? ""
+    );
+
+    if (rowProductId !== String(args.productId)) {
+      return `Selected offer for ${suffix} belongs to a different product.`;
+    }
+    if (args.variantId && String(row.variantId ?? "") !== String(args.variantId)) {
+      return `Selected offer for ${suffix} belongs to a different variant.`;
+    }
+    if (row.product?.isDeleted) {
+      return `${suffix} is deleted and cannot be purchased.`;
+    }
+    if (String(row.product?.status ?? "").toUpperCase() !== "LIVE") {
+      return `${suffix} is not LIVE for checkout.`;
+    }
+    if (row.isActive !== true) {
+      return `The selected variant offer for ${suffix} is inactive.`;
+    }
+    if (row.inStock !== true) {
+      return `The selected variant offer for ${suffix} is marked out of stock.`;
+    }
+    if (!(Number(row.availableQty ?? 0) > 0)) {
+      return `The selected variant offer for ${suffix} has no available quantity.`;
+    }
+    if (!(Number(row.unitPrice ?? 0) > 0)) {
+      return `The selected variant offer for ${suffix} has no valid price.`;
+    }
+    if (String(row.supplier?.status ?? "").toUpperCase() !== "ACTIVE") {
+      return `Supplier "${row.supplier?.name ?? "Unknown supplier"}" is not ACTIVE for checkout.`;
+    }
+    return `The selected variant offer for ${suffix} is not checkout-eligible.`;
+  };
+
+  if (args.explicitOfferId) {
+    const [explicitVariant, explicitBase, explicitLegacy] = await Promise.all([
+      tx.supplierVariantOffer.findUnique({
+        where: { id: String(args.explicitOfferId) },
+        select: {
+          id: true,
+          productId: true,
+          variantId: true,
+          isActive: true,
+          inStock: true,
+          availableQty: true,
+          unitPrice: true,
+          supplier: { select: { id: true, name: true, status: true } },
+          variant: { select: { productId: true } },
+          product: { select: { status: true, isDeleted: true } },
+        } as any,
+      }).catch(() => null),
+
+      tx.supplierProductOffer.findUnique({
+        where: { id: String(args.explicitOfferId) },
+        select: {
+          id: true,
+          productId: true,
+          isActive: true,
+          inStock: true,
+          availableQty: true,
+          basePrice: true,
+          supplier: { select: { id: true, name: true, status: true } },
+          product: { select: { status: true, isDeleted: true } },
+        } as any,
+      }).catch(() => null),
+
+      (tx.supplierOffer?.findFirst?.({
+        where: { id: String(args.explicitOfferId) },
+        select: {
+          id: true,
+          productId: true,
+          variantId: true,
+          isActive: true,
+          inStock: true,
+          availableQty: true,
+          unitPrice: true,
+          supplierId: true,
+        } as any,
+      }) ?? Promise.resolve(null)).catch(() => null),
+    ]);
+
+    if (explicitVariant) {
+      return explainVariantRow(explicitVariant) ?? `Selected offer for ${suffix} is not available.`;
+    }
+
+    if (explicitBase) {
+      return explainBaseRow(explicitBase) ?? `Selected offer for ${suffix} is not available.`;
+    }
+
+    if (explicitLegacy) {
+      if (String(explicitLegacy.productId ?? "") !== String(args.productId)) {
+        return `Selected offer for ${suffix} belongs to a different product.`;
+      }
+      if (args.variantId && String(explicitLegacy.variantId ?? "") !== String(args.variantId)) {
+        return `Selected offer for ${suffix} belongs to a different variant.`;
+      }
+      if (explicitLegacy.isActive !== true) {
+        return `The selected legacy offer for ${suffix} is inactive.`;
+      }
+      if (explicitLegacy.inStock !== true) {
+        return `The selected legacy offer for ${suffix} is marked out of stock.`;
+      }
+      if (!(Number(explicitLegacy.availableQty ?? 0) > 0)) {
+        return `The selected legacy offer for ${suffix} has no available quantity.`;
+      }
+      if (!(Number(explicitLegacy.unitPrice ?? 0) > 0)) {
+        return `The selected legacy offer for ${suffix} has no valid price.`;
+      }
+    }
+  }
+
+  if (args.variantId) {
+    const rawVariantOffers = await tx.supplierVariantOffer.findMany({
+      where: {
+        productId: String(args.productId),
+        variantId: String(args.variantId),
+      } as any,
+      select: {
+        id: true,
+        productId: true,
+        variantId: true,
+        isActive: true,
+        inStock: true,
+        availableQty: true,
+        unitPrice: true,
+        supplier: { select: { id: true, name: true, status: true } },
+        product: { select: { status: true, isDeleted: true } },
+      } as any,
+      take: 10,
+    }).catch(() => []);
+
+    if (rawVariantOffers.length) {
+      const firstReason =
+        rawVariantOffers.map(explainVariantRow).find(Boolean) ?? null;
+      if (firstReason) return firstReason;
+      return `Variant offers exist for ${suffix}, but none are checkout-eligible.`;
+    }
+
+    return `No persisted variant offer exists for ${suffix}.`;
+  }
+
+  const rawBaseOffers = await tx.supplierProductOffer.findMany({
+    where: {
+      productId: String(args.productId),
+    } as any,
+    select: {
+      id: true,
+      productId: true,
+      isActive: true,
+      inStock: true,
+      availableQty: true,
+      basePrice: true,
+      supplier: { select: { id: true, name: true, status: true } },
+      product: { select: { status: true, isDeleted: true } },
+    } as any,
+    take: 10,
+  }).catch(() => []);
+
+  if (rawBaseOffers.length) {
+    const firstReason =
+      rawBaseOffers.map(explainBaseRow).find(Boolean) ?? null;
+    if (firstReason) return firstReason;
+    return `Base offers exist for ${suffix}, but none are checkout-eligible.`;
+  }
+
+  const rawLegacyBase =
+    (await (tx.supplierOffer?.findMany?.({
+      where: {
+        productId: String(args.productId),
+        variantId: null,
+      },
+      select: {
+        id: true,
+        productId: true,
+        variantId: true,
+        isActive: true,
+        inStock: true,
+        availableQty: true,
+        unitPrice: true,
+        supplierId: true,
+      } as any,
+      take: 10,
+    }) ?? Promise.resolve([])).catch(() => [])) ?? [];
+
+  if (rawLegacyBase.length) {
+    const first = rawLegacyBase[0];
+    if (first.isActive !== true) {
+      return `Legacy base offer for ${suffix} is inactive.`;
+    }
+    if (first.inStock !== true) {
+      return `Legacy base offer for ${suffix} is marked out of stock.`;
+    }
+    if (!(Number(first.availableQty ?? 0) > 0)) {
+      return `Legacy base offer for ${suffix} has no available quantity.`;
+    }
+    if (!(Number(first.unitPrice ?? 0) > 0)) {
+      return `Legacy base offer for ${suffix} has no valid price.`;
+    }
+  }
+
+  return `No persisted supplier offers exist for ${suffix}.`;
+}
+
 /* ---------------- Stock decrement (atomic) ---------------- */
 async function flushTouchedProductsTx(tx: any, touchedProductIds: Set<string>) {
-  for (const productId of touchedProductIds) {
-    await recomputeProductStockTx(tx, productId);
-    await syncProductInStockCacheTx(tx, productId);
-  }
+  await Promise.all(
+    Array.from(touchedProductIds).map(async (productId) => {
+      await recomputeProductStockTx(tx, productId);
+      await syncProductInStockCacheTx(tx, productId);
+    })
+  );
 }
 
 async function attachShippingQuotesToOrderTx(
@@ -1787,9 +2062,12 @@ async function ensurePurchaseOrdersForOrderTx(
     if (!sid) continue;
 
     const qty = Math.max(0, Number(it.quantity ?? 0));
+
+    // NET payable to supplier
     const supplierUnit = money(it.chosenSupplierUnitPrice);
     const supplierLine = round2(supplierUnit * qty);
 
+    // What customer paid for this line
     const customerUnit = money(it.unitPrice);
     const customerLine = round2(
       it.lineTotal != null ? money(it.lineTotal) : customerUnit * qty
@@ -1810,6 +2088,8 @@ async function ensurePurchaseOrdersForOrderTx(
   }
 
   const supplierIds = Array.from(bySupplier.keys());
+
+  if (!supplierIds.length) return [];
 
   const suppliers = await tx.supplier.findMany({
     where: { id: { in: supplierIds } },
@@ -1895,6 +2175,8 @@ async function ensurePurchaseOrdersForOrderTx(
 
     const supplierAmount = round2(g.supplierAmount);
     const customerSubtotal = round2(g.customerSubtotal);
+
+    // margin = customer paid - supplier payable
     const platformFee = round2(Math.max(0, customerSubtotal - supplierAmount));
 
     const directQuote = quotes[sid] ?? null;
@@ -1994,28 +2276,72 @@ async function ensurePurchaseOrdersForOrderTx(
   return createdPOs;
 }
 
-function resolveMarginPercentForItem(settings: CheckoutSettingsSnapshot): number {
+export function resolveMarginPercentForItem(settings: CheckoutSettingsSnapshot): number {
   const cfg = getMarginConfig(settings);
 
-  // default platform margin
-  let margin = cfg.defaultPercent;
+  let margin = Number(cfg.defaultPercent ?? 0);
+  if (!Number.isFinite(margin) || margin < 0) margin = 0;
 
-  // safety guard
-  if (!Number.isFinite(margin) || margin < 0) {
-    margin = 0;
-  }
-
-  // never exceed configured max
   margin = Math.min(margin, cfg.maxMarginPct);
-
   return margin;
 }
 
 function getMarginConfig(settings: CheckoutSettingsSnapshot) {
   return {
-    defaultPercent: Math.min(settings.marginPercent, settings.maxMarginPct),
-    minMarginNGN: settings.minMarginNGN,
-    maxMarginPct: settings.maxMarginPct,
+    defaultPercent: Math.min(
+      Math.max(0, Number(settings.marginPercent ?? 0)),
+      Math.max(0, Number(settings.maxMarginPct ?? 100))
+    ),
+    minMarginNGN: Math.max(0, Number(settings.minMarginNGN ?? 0)),
+    maxMarginPct: Math.max(0, Number(settings.maxMarginPct ?? 100)),
+  };
+}
+
+/**
+ * IMPORTANT:
+ * Margin deduction for supplier payout must be based on the supplier cost,
+ * NOT the retail/customer price.
+ *
+ * Example:
+ * supplier cost = 16500
+ * marginPercent = 10
+ * supplier net payable = 14850
+ */
+function computeSupplierNetPayableFromSupplierCost(
+  settings: CheckoutSettingsSnapshot,
+  args: {
+    supplierUnitCost: number;
+    productId: string;
+    variantId: string | null;
+  }
+) {
+  const supplierUnitCost = round2(Number(args.supplierUnitCost ?? 0));
+  if (!(supplierUnitCost > 0)) {
+    throw new Error(
+      `Invalid supplier unit cost for product ${args.productId}${args.variantId ? ` variant ${args.variantId}` : ""
+      }.`
+    );
+  }
+
+  const marginPercent = resolveMarginPercentForItem(settings);
+
+  // Your requested rule:
+  // amount payable = supplier cost - (marginPercent% of supplier cost)
+  const marginAmount = round2(supplierUnitCost * (marginPercent / 100));
+  const supplierNetUnitPayable = round2(supplierUnitCost - marginAmount);
+
+  if (supplierNetUnitPayable < 0) {
+    throw new Error(
+      `Computed supplier net payable is negative for product ${args.productId}${args.variantId ? ` variant ${args.variantId}` : ""
+      }.`
+    );
+  }
+
+  return {
+    marginPercent,
+    supplierGrossUnitCost: supplierUnitCost,
+    supplierMarginAmount: marginAmount,
+    supplierNetUnitPayable,
   };
 }
 
@@ -2192,6 +2518,57 @@ function normalizeRequestedKind(line: any): "BASE" | "VARIANT" {
   }
 
   return "BASE";
+}
+
+function fireAndForgetOrderPostCommit(args: {
+  orderId: string;
+  total: number;
+  userId: string;
+}) {
+  void (async () => {
+    try {
+      await notifyUser(
+        args.userId,
+        {
+          type: NotificationType.ORDER_PLACED,
+          title: "Order placed",
+          body: `Your order ${args.orderId} has been created.`,
+          data: {
+            orderId: args.orderId,
+            total: args.total,
+          },
+        },
+        prisma as any
+      );
+    } catch (notifyErr) {
+      console.error("Failed to notify user after order create:", notifyErr);
+    }
+
+    try {
+      await notifyAdmins(
+        {
+          type: NotificationType.ORDER_PLACED,
+          title: "New order created",
+          body: `Order ${args.orderId} was created with total ₦${args.total}.`,
+          data: {
+            orderId: args.orderId,
+            total: args.total,
+          },
+        },
+        prisma as any
+      );
+    } catch (notifyErr) {
+      console.error("Failed to notify admins after order create:", notifyErr);
+    }
+
+    try {
+      await prisma.$transaction(async (tx: any) => {
+        await clearActiveCartForUserTx(tx, args.userId);
+      });
+    } catch (cartErr) {
+      console.error("Failed to clear active cart after order create:", cartErr);
+    }
+  })();
 }
 
 
@@ -2688,7 +3065,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           });
 
           if (!candidates.length) {
-            throw new Error(`No active supplier offers for: ${productTitle}${optionsLabel}.`);
+            const exactReason = await explainUnavailableLineTx(tx, {
+              productId,
+              variantId,
+              explicitOfferId,
+              productTitle,
+              optionsLabel,
+            });
+
+            throw new Error(exactReason);
           }
 
           const totalAvailable = candidates.reduce(
@@ -2747,12 +3132,18 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           }
 
           const orderItemRows = allocations.map((alloc) => {
-            const supplierUnitCost = round2(Number(alloc.supplierUnitCost || 0));
-            if (!(supplierUnitCost > 0)) {
+            const supplierUnitCostGross = round2(Number(alloc.supplierUnitCost || 0));
+            if (!(supplierUnitCostGross > 0)) {
               throw new Error(
                 `Missing supplier unit cost for ${productTitle}${optionsLabel}.`
               );
             }
+
+            const pricing = computeSupplierNetPayableFromSupplierCost(settings, {
+              supplierUnitCost: supplierUnitCostGross,
+              productId,
+              variantId,
+            });
 
             return {
               orderId: order.id,
@@ -2761,12 +3152,37 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               chosenSupplierProductOfferId: alloc.supplierProductOfferId,
               chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
               chosenSupplierId: alloc.supplierId,
-              chosenSupplierUnitPrice: supplierUnitCost,
+
+              // IMPORTANT:
+              // Freeze NET payable here so all downstream PO/allocation/payout logic
+              // uses the already-deducted amount.
+              chosenSupplierUnitPrice: pricing.supplierNetUnitPayable,
+
               title: productTitle,
               unitPrice: round2(Number(checkoutUnit)),
               quantity: alloc.qty,
               lineTotal: round2(Number(checkoutUnit) * alloc.qty),
-              selectedOptions: variantId ? selectedOptions ?? null : null,
+
+              selectedOptions:
+                variantId
+                  ? {
+                    raw: selectedOptions ?? null,
+                    pricingSnapshot: {
+                      supplierGrossUnitCost: pricing.supplierGrossUnitCost,
+                      marginPercent: pricing.marginPercent,
+                      supplierMarginAmount: pricing.supplierMarginAmount,
+                      supplierNetUnitPayable: pricing.supplierNetUnitPayable,
+                    },
+                  }
+                  : {
+                    raw: null,
+                    pricingSnapshot: {
+                      supplierGrossUnitCost: pricing.supplierGrossUnitCost,
+                      marginPercent: pricing.marginPercent,
+                      supplierMarginAmount: pricing.supplierMarginAmount,
+                      supplierNetUnitPayable: pricing.supplierNetUnitPayable,
+                    },
+                  },
             };
           });
 
@@ -2790,13 +3206,19 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               variantId,
               productTitle,
               qtyNeeded,
-              allocations: orderItemRows.map((r) => ({
-                supplierId: r.chosenSupplierId,
-                qty: r.quantity,
-                supplierUnitCost: r.chosenSupplierUnitPrice,
-                finalCustomerUnit: r.unitPrice,
-                lineTotal: r.lineTotal,
-              })),
+              allocations: orderItemRows.map((r: any) => {
+                const snap = r?.selectedOptions?.pricingSnapshot ?? null;
+                return {
+                  supplierId: r.chosenSupplierId,
+                  qty: r.quantity,
+                  supplierGrossUnitCost: snap?.supplierGrossUnitCost ?? null,
+                  marginPercent: snap?.marginPercent ?? null,
+                  supplierMarginAmount: snap?.supplierMarginAmount ?? null,
+                  supplierNetUnitPayable: r.chosenSupplierUnitPrice,
+                  finalCustomerUnit: r.unitPrice,
+                  lineTotal: r.lineTotal,
+                };
+              }),
               pricingSource: "CHECKOUT_PRICE",
             }
           );
@@ -2939,68 +3361,22 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       },
       {
         isolationLevel: "ReadCommitted" as any,
-        maxWait: 5_000,
-        timeout: 20_000,
+        maxWait: 10_000,
+        timeout: 45_000,
       }
     );
 
     const created = txResult.response;
 
-    try {
-      await notifyUser(
-        txResult.postCommit.userId,
-        {
-          type: NotificationType.ORDER_PLACED,
-          title: "Order placed",
-          body: `Your order ${txResult.postCommit.orderId} has been created.`,
-          data: {
-            orderId: txResult.postCommit.orderId,
-            total: txResult.postCommit.total,
-          },
-        },
-        prisma as any
-      );
-    } catch (notifyErr) {
-      console.error("Failed to notify user after order create:", notifyErr);
-    }
+    res.status(201).json({ data: created });
 
-    try {
-      await notifySuppliersForOrderTx(prisma as any, txResult.postCommit.orderId, {
-        type: NotificationType.PURCHASE_ORDER_CREATED,
-        title: "New order received",
-        body: `You have received a new purchase order for order ${txResult.postCommit.orderId}.`,
-        data: { total: txResult.postCommit.total },
-      });
-    } catch (notifyErr) {
-      console.error("Failed to notify suppliers after order create:", notifyErr);
-    }
+    fireAndForgetOrderPostCommit({
+      orderId: txResult.postCommit.orderId,
+      total: txResult.postCommit.total,
+      userId: txResult.postCommit.userId,
+    });
 
-    try {
-      await notifyAdmins(
-        {
-          type: NotificationType.ORDER_PLACED,
-          title: "New order created",
-          body: `Order ${txResult.postCommit.orderId} was created with total ₦${txResult.postCommit.total}.`,
-          data: {
-            orderId: txResult.postCommit.orderId,
-            total: txResult.postCommit.total,
-          },
-        },
-        prisma as any
-      );
-    } catch (notifyErr) {
-      console.error("Failed to notify admins after order create:", notifyErr);
-    }
-
-    try {
-      await prisma.$transaction(async (tx: any) => {
-        await clearActiveCartForUserTx(tx, txResult.postCommit.userId);
-      });
-    } catch (cartErr) {
-      console.error("Failed to clear active cart after order create:", cartErr);
-    }
-
-    return res.status(201).json({ data: created });
+    return;
   } catch (e: any) {
     console.error("create order failed:", e);
     return res.status(400).json({ error: e?.message || "Could not create order" });
@@ -3038,6 +3414,8 @@ router.post("/refund-request", requireAuth, async (req: any, res) => {
 
   try {
     const out = await prisma.$transaction(async (tx: any) => {
+      const complaintWindowDays = await getComplaintWindowDaysTx(tx);
+
       const orderId = String(req.body?.orderId ?? "").trim();
       if (!orderId) throw new Error("Missing orderId");
 
@@ -3083,6 +3461,8 @@ router.post("/refund-request", requireAuth, async (req: any, res) => {
         select: {
           id: true,
           userId: true,
+          status: true,
+          createdAt: true,
           items: {
             select: {
               id: true,
@@ -3097,12 +3477,44 @@ router.post("/refund-request", requireAuth, async (req: any, res) => {
             select: {
               id: true,
               supplierId: true,
+              status: true,
+              createdAt: true,
+              deliveredAt: true,
+              shippedAt: true,
+              deliveryOtpVerifiedAt: true,
+            },
+          },
+          payments: {
+            orderBy: { createdAt: "desc" },
+            select: {
+              id: true,
+              status: true,
+              createdAt: true,
             },
           },
         },
       });
 
       if (!order) throw new Error("Order not found.");
+
+      const orderStatus = String(order.status ?? "").toUpperCase();
+      const latestPaidPayment = (order.payments || []).find(
+        (p: any) =>
+          ["PAID", "VERIFIED", "SUCCESS", "SUCCESSFUL", "COMPLETED", "FUNDED"].includes(
+            String(p.status ?? "").toUpperCase()
+          )
+      );
+
+      const isPaidEffective =
+        ["PAID", "FUNDED", "COMPLETED"].includes(orderStatus) || !!latestPaidPayment;
+
+      if (!isPaidEffective) {
+        throw new Error("Refund requests are only allowed for paid orders.");
+      }
+
+      if (["REFUNDED", "CANCELED", "CANCELLED"].includes(orderStatus)) {
+        throw new Error("This order is not eligible for refund.");
+      }
 
       let selectedOrderItems = Array.isArray(order.items) ? order.items : [];
 
@@ -3146,6 +3558,56 @@ router.post("/refund-request", requireAuth, async (req: any, res) => {
           (x: any) => String(x.supplierId) === String(supplierId)
         );
         if (po?.id) finalPurchaseOrderId = String(po.id);
+      }
+
+      let refundBaseDate: Date | string | null | undefined = null;
+
+      if (finalPurchaseOrderId) {
+        const matchedPo = (order.purchaseOrders || []).find(
+          (x: any) => String(x.id) === String(finalPurchaseOrderId)
+        );
+
+        if (!matchedPo) {
+          throw new Error("Selected purchase order was not found on this order.");
+        }
+
+        const poStatus = String(matchedPo.status ?? "").toUpperCase();
+
+        refundBaseDate =
+          matchedPo.deliveredAt ??
+          matchedPo.deliveryOtpVerifiedAt ??
+          null;
+
+        if (!refundBaseDate) {
+          throw new Error("Refund requests can only be made after delivery.");
+        }
+
+        if (
+          !["DELIVERED", "REFUND_REQUESTED", "REFUND_REJECTED", "REFUND_APPROVED"].includes(poStatus) &&
+          !matchedPo.deliveredAt &&
+          !matchedPo.deliveryOtpVerifiedAt
+        ) {
+          throw new Error("Refund requests can only be made after delivery.");
+        }
+      } else {
+        const deliveredDates = (order.purchaseOrders || [])
+          .map((po: any) => po?.deliveredAt ?? po?.deliveryOtpVerifiedAt ?? null)
+          .filter(Boolean)
+          .map((x: any) => new Date(x))
+          .filter((d: Date) => !Number.isNaN(+d))
+          .sort((a: Date, b: Date) => a.getTime() - b.getTime());
+
+        if (!deliveredDates.length) {
+          throw new Error("Refund requests can only be made after delivery.");
+        }
+
+        refundBaseDate = deliveredDates[0];
+      }
+
+      if (!isWithinComplaintWindow(refundBaseDate, complaintWindowDays)) {
+        throw new Error(
+          `Refund requests are only allowed within ${complaintWindowDays} days of delivery.`
+        );
       }
 
       const existingRefunds = await tx.refund.findMany({
@@ -3217,6 +3679,8 @@ router.post("/refund-request", requireAuth, async (req: any, res) => {
             purchaseOrderId: finalPurchaseOrderId,
             supplierId,
             itemIds: selectedOrderItems.map((it: any) => String(it.id)),
+            complaintWindowDays,
+            refundBaseDate,
           },
         },
       });
@@ -3237,6 +3701,7 @@ router.post("/refund-request", requireAuth, async (req: any, res) => {
         supplierId,
         purchaseOrderId: finalPurchaseOrderId,
         itemCount: selectedOrderItems.length,
+        complaintWindowDays,
       };
     });
 
@@ -3300,6 +3765,7 @@ router.post("/refund-request", requireAuth, async (req: any, res) => {
         purchaseOrderId: out.purchaseOrderId ?? null,
         supplierId: out.supplierId ?? null,
         itemCount: out.itemCount,
+        complaintWindowDays: out.complaintWindowDays,
       },
     });
   } catch (e: any) {
@@ -3623,6 +4089,101 @@ function makePaginatedResponse<T>(args: {
   };
 }
 
+function fireAndForgetCancelPostCommit(args: {
+  mode: "ORDER_ONLY" | "SUPPLIER_PO" | "ORDER_ALL";
+  orderId: string;
+  orderUserId: string;
+  actorRole: string;
+  supplierId?: string | null;
+  canceledPurchaseOrderIds?: string[];
+  allCanceled?: boolean;
+}) {
+  void (async () => {
+    try {
+      if (args.mode === "SUPPLIER_PO") {
+        await notifyUser(
+          String(args.orderUserId),
+          {
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+            title: "Order update",
+            body: `A supplier canceled part of your order ${args.orderId}.`,
+            data: {
+              orderId: args.orderId,
+              supplierId: args.supplierId ?? null,
+              purchaseOrderIds: args.canceledPurchaseOrderIds ?? [],
+              allCanceled: !!args.allCanceled,
+            },
+          },
+          prisma as any
+        );
+
+        await notifyAdmins(
+          {
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+            title: "Supplier canceled PO",
+            body: `A supplier canceled a purchase order for order ${args.orderId}.`,
+            data: {
+              orderId: args.orderId,
+              supplierId: args.supplierId ?? null,
+              purchaseOrderIds: args.canceledPurchaseOrderIds ?? [],
+              allCanceled: !!args.allCanceled,
+            },
+          },
+          prisma as any
+        );
+
+        return;
+      }
+
+      if (args.mode === "ORDER_ONLY" || args.mode === "ORDER_ALL") {
+        try {
+          await notifyUser(
+            String(args.orderUserId),
+            {
+              type: NotificationType.ORDER_CANCELED,
+              title: "Order canceled",
+              body: `Your order ${args.orderId} has been canceled.`,
+              data: { orderId: args.orderId },
+            },
+            prisma as any
+          );
+        } catch (e) {
+          console.error("cancel post-commit user notify failed:", e);
+        }
+
+        try {
+          await notifyAdmins(
+            {
+              type: NotificationType.ORDER_CANCELED,
+              title: "Order canceled",
+              body: `Order ${args.orderId} was canceled.`,
+              data: { orderId: args.orderId },
+            },
+            prisma as any
+          );
+        } catch (e) {
+          console.error("cancel post-commit admin notify failed:", e);
+        }
+
+        if (args.mode === "ORDER_ALL") {
+          try {
+            await notifySuppliersForOrderTx(prisma as any, args.orderId, {
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+              title: "Order canceled",
+              body: `Order ${args.orderId} was canceled.`,
+              data: { orderId: args.orderId },
+            });
+          } catch (e) {
+            console.error("cancel post-commit supplier notify failed:", e);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("fireAndForgetCancelPostCommit failed:", e);
+    }
+  })();
+}
+
 router.get("/", requireAuth, async (req, res) => {
   try {
     if (!isAdmin((req as any).user?.role)) {
@@ -3783,6 +4344,56 @@ router.get("/", requireAuth, async (req, res) => {
         orderBy: [{ orderId: "asc" }, { id: "asc" }],
       });
 
+      const productIds = Array.from(
+        new Set(
+          allItems
+            .map((it) => String(it.productId || "").trim())
+            .filter(Boolean)
+        )
+      );
+
+      const variantIds = Array.from(
+        new Set(
+          allItems
+            .map((it) => String(it.variantId || "").trim())
+            .filter(Boolean)
+        )
+      );
+
+      const [products, variants] = await Promise.all([
+        productIds.length
+          ? prisma.product.findMany({
+            where: { id: { in: productIds } },
+            select: {
+              id: true,
+              title: true,
+              imagesJson: true,
+            },
+          })
+          : Promise.resolve([]),
+        variantIds.length
+          ? prisma.productVariant.findMany({
+            where: { id: { in: variantIds } },
+            select: {
+              id: true,
+              sku: true,
+              productId: true,
+              imagesJson: true,
+            },
+          })
+          : Promise.resolve([]),
+      ]);
+
+      const productById = new Map<string, any>();
+      for (const p of products as any[]) {
+        productById.set(String(p.id), p);
+      }
+
+      const variantById = new Map<string, any>();
+      for (const v of variants as any[]) {
+        variantById.set(String(v.id), v);
+      }
+
       const uniqPairs: Pair[] = [];
       const seen = new Set<string>();
       for (const it of allItems) {
@@ -3812,11 +4423,27 @@ router.get("/", requireAuth, async (req, res) => {
           ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING"
           : "PENDING";
 
+        const product = productById.get(pid) || null;
+        const variant = vid ? variantById.get(vid) || null : null;
+
+        const variantImages = Array.isArray(variant?.imagesJson)
+          ? variant.imagesJson.filter(Boolean)
+          : [];
+
+        const productImages = Array.isArray(product?.imagesJson)
+          ? product.imagesJson.filter(Boolean)
+          : [];
+
+        const resolvedImage =
+          variantImages[0] ??
+          productImages[0] ??
+          null;
+
         (itemsByOrder[oid] ||= []).push({
           id: it.id,
           productId: it.productId,
           variantId: it.variantId ?? null,
-          title: it.title ?? "—",
+          title: it.title ?? product?.title ?? "—",
           unitPrice,
           quantity,
           lineTotal,
@@ -3829,6 +4456,25 @@ router.get("/", requireAuth, async (req, res) => {
           selectedOptions: it.selectedOptions ?? null,
           currentAvailableQty: availableQty,
           currentInStock: inStock,
+
+          product: product
+            ? {
+              id: String(product.id),
+              title: product.title ?? null,
+              imagesJson: productImages,
+            }
+            : null,
+
+          variant: variant
+            ? {
+              id: String(variant.id),
+              sku: variant.sku ?? null,
+              productId: variant.productId ?? null,
+              imagesJson: variantImages,
+            }
+            : null,
+
+          imageSnapshot: resolvedImage,
         });
       }
     } catch (e) {
@@ -3898,38 +4544,127 @@ router.get("/mine", requireAuth, async (req, res) => {
       return u;
     };
 
-    const [total, baseOrders] = await prisma.$transaction([
-      prisma.order.count({ where }),
-      prisma.order.findMany({
-        where,
-        orderBy,
-        skip: parsed.skip,
-        take: parsed.pageSize,
-        select: {
-          id: true,
-          status: true,
-          subtotal: true,
-          tax: true,
-          total: true,
-          createdAt: true,
-          serviceFeeBase: true,
-          serviceFeeComms: true,
-          serviceFeeGateway: true,
-          shippingFee: true,
-          shippingCurrency: true,
-          shippingRateSource: true,
-          shippingBreakdownJson: true,
-          serviceFeeTotal: true,
-          _count: {
-            select: {
-              items: true,
+    const {
+      complaintWindowDays,
+      total,
+      baseOrders,
+      poRows,
+      allItems,
+    } = await prisma.$transaction(async (tx: any) => {
+      const complaintWindowDays = await getComplaintWindowDaysTx(tx);
+
+      const [total, baseOrders] = await Promise.all([
+        tx.order.count({ where }),
+        tx.order.findMany({
+          where,
+          orderBy,
+          skip: parsed.skip,
+          take: parsed.pageSize,
+          select: {
+            id: true,
+            status: true,
+            subtotal: true,
+            tax: true,
+            total: true,
+            createdAt: true,
+            serviceFeeBase: true,
+            serviceFeeComms: true,
+            serviceFeeGateway: true,
+            shippingFee: true,
+            shippingCurrency: true,
+            shippingRateSource: true,
+            shippingBreakdownJson: true,
+            serviceFeeTotal: true,
+            payments: {
+              orderBy: { createdAt: "desc" },
+              select: {
+                id: true,
+                status: true,
+                provider: true,
+                reference: true,
+                amount: true,
+                createdAt: true,
+              },
+            },
+            purchaseOrders: {
+              orderBy: { createdAt: "asc" },
+              select: {
+                id: true,
+                supplierId: true,
+                status: true,
+                payoutStatus: true,
+                deliveredAt: true,
+                deliveryOtpVerifiedAt: true,
+                shippedAt: true,
+                createdAt: true,
+                supplier: { select: { id: true, name: true } },
+              },
+            },
+            _count: {
+              select: {
+                items: true,
+              },
             },
           },
-        },
-      }),
-    ]);
+        }),
+      ]);
+
+      const orderIds = baseOrders.map((o: any) => o.id);
+
+      if (!orderIds.length) {
+        return {
+          complaintWindowDays,
+          total,
+          baseOrders,
+          poRows: [],
+          allItems: [],
+        };
+      }
+
+      const [poRows, allItems] = await Promise.all([
+        tx.purchaseOrder.findMany({
+          where: { orderId: { in: orderIds } },
+          select: {
+            orderId: true,
+            supplierId: true,
+            status: true,
+            deliveredAt: true,
+            deliveryOtpVerifiedAt: true,
+            createdAt: true,
+          },
+        }),
+        tx.orderItem.findMany({
+          where: { orderId: { in: orderIds } },
+          select: {
+            id: true,
+            orderId: true,
+            productId: true,
+            variantId: true,
+            title: true,
+            unitPrice: true,
+            quantity: true,
+            lineTotal: true,
+            chosenSupplierProductOfferId: true,
+            chosenSupplierVariantOfferId: true,
+            chosenSupplierId: true,
+            chosenSupplierUnitPrice: true,
+            selectedOptions: true,
+          },
+          orderBy: [{ orderId: "asc" }, { id: "asc" }],
+        }),
+      ]);
+
+      return {
+        complaintWindowDays,
+        total,
+        baseOrders,
+        poRows,
+        allItems,
+      };
+    });
 
     const orderIds = baseOrders.map((o: any) => o.id);
+
     if (orderIds.length === 0) {
       return res.json(
         makePaginatedResponse({
@@ -3941,39 +4676,64 @@ router.get("/mine", requireAuth, async (req, res) => {
       );
     }
 
-    const poRows = await prisma.purchaseOrder.findMany({
-      where: { orderId: { in: orderIds } },
-      select: { orderId: true, supplierId: true, status: true },
-    });
-
     const poStatusByOrderSupplier: Record<string, string> = {};
     for (const po of poRows as any[]) {
       poStatusByOrderSupplier[`${String(po.orderId)}::${String(po.supplierId)}`] = String(po.status || "PENDING");
     }
 
-    const allItems = await prisma.orderItem.findMany({
-      where: { orderId: { in: orderIds } },
-      select: {
-        id: true,
-        orderId: true,
-        productId: true,
-        variantId: true,
-        title: true,
-        unitPrice: true,
-        quantity: true,
-        lineTotal: true,
-        chosenSupplierProductOfferId: true,
-        chosenSupplierVariantOfferId: true,
-        chosenSupplierId: true,
-        chosenSupplierUnitPrice: true,
-        selectedOptions: true,
-      },
-      orderBy: [{ orderId: "asc" }, { id: "asc" }],
-    });
+    const productIds = Array.from(
+      new Set(
+        (allItems as any[])
+          .map((it) => String(it.productId || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    const variantIds = Array.from(
+      new Set(
+        (allItems as any[])
+          .map((it) => String(it.variantId || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    const [products, variants] = await Promise.all([
+      productIds.length
+        ? prisma.product.findMany({
+          where: { id: { in: productIds } },
+          select: {
+            id: true,
+            title: true,
+            imagesJson: true,
+          },
+        })
+        : Promise.resolve([]),
+      variantIds.length
+        ? prisma.productVariant.findMany({
+          where: { id: { in: variantIds } },
+          select: {
+            id: true,
+            sku: true,
+            productId: true,
+            imagesJson: true,
+          },
+        })
+        : Promise.resolve([]),
+    ]);
+
+    const productById = new Map<string, any>();
+    for (const p of products as any[]) {
+      productById.set(String(p.id), p);
+    }
+
+    const variantById = new Map<string, any>();
+    for (const v of variants as any[]) {
+      variantById.set(String(v.id), v);
+    }
 
     const uniqPairs: Pair[] = [];
     const seen = new Set<string>();
-    for (const it of allItems) {
+    for (const it of allItems as any[]) {
       const pid = String(it.productId);
       const vid = it.variantId == null ? null : String(it.variantId);
       const k = availKey(pid, vid);
@@ -4002,11 +4762,27 @@ router.get("/mine", requireAuth, async (req, res) => {
         ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING"
         : "PENDING";
 
+      const product = productById.get(pid) || null;
+      const variant = vid ? variantById.get(vid) || null : null;
+
+      const variantImages = Array.isArray(variant?.imagesJson)
+        ? variant.imagesJson.filter(Boolean)
+        : [];
+
+      const productImages = Array.isArray(product?.imagesJson)
+        ? product.imagesJson.filter(Boolean)
+        : [];
+
+      const resolvedImage =
+        variantImages[0] ??
+        productImages[0] ??
+        null;
+
       (itemsByOrder[oid] ||= []).push({
         id: it.id,
         productId: it.productId,
         variantId: it.variantId ?? null,
-        title: it.title ?? "—",
+        title: it.title ?? product?.title ?? "—",
         unitPrice,
         quantity: qty,
         lineTotal,
@@ -4020,6 +4796,25 @@ router.get("/mine", requireAuth, async (req, res) => {
         currentAvailableQty: availableQty,
         currentInStock: inStock,
         selectedOptions: it.selectedOptions ?? null,
+
+        product: product
+          ? {
+            id: String(product.id),
+            title: product.title ?? null,
+            imagesJson: productImages,
+          }
+          : null,
+
+        variant: variant
+          ? {
+            id: String(variant.id),
+            sku: variant.sku ?? null,
+            productId: variant.productId ?? null,
+            imagesJson: variantImages,
+          }
+          : null,
+
+        imageSnapshot: resolvedImage,
       });
     }
 
@@ -4030,12 +4825,37 @@ router.get("/mine", requireAuth, async (req, res) => {
       tax: asNumLocal(o.tax, 0),
       total: asNumLocal(o.total, 0),
       createdAt: o.createdAt?.toISOString?.() ?? o.createdAt,
+      complaintWindowDays,
       items: itemsByOrder[o.id] || [],
       itemsCount: Number(o?._count?.items ?? (itemsByOrder[o.id]?.length || 0)),
       serviceFeeBase: asNumLocal(o.serviceFeeBase, 0),
       serviceFeeComms: asNumLocal(o.serviceFeeComms, 0),
       serviceFeeGateway: asNumLocal(o.serviceFeeGateway, 0),
       serviceFeeTotal: asNumLocal(o.serviceFeeTotal, 0),
+      payments: Array.isArray(o.payments)
+        ? o.payments.map((p: any) => ({
+          id: String(p.id),
+          status: String(p.status ?? ""),
+          provider: p.provider ?? null,
+          reference: p.reference ?? null,
+          amount: p.amount != null ? asNumLocal(p.amount, 0) : null,
+          createdAt: p.createdAt?.toISOString?.() ?? p.createdAt ?? null,
+        }))
+        : [],
+      purchaseOrders: Array.isArray(o.purchaseOrders)
+        ? o.purchaseOrders.map((po: any) => ({
+          id: String(po.id),
+          supplierId: String(po.supplierId),
+          supplierName: po?.supplier?.name ?? null,
+          status: po?.status ?? null,
+          payoutStatus: po?.payoutStatus ?? null,
+          createdAt: po?.createdAt?.toISOString?.() ?? po?.createdAt ?? null,
+          shippedAt: po?.shippedAt?.toISOString?.() ?? po?.shippedAt ?? null,
+          deliveredAt: po?.deliveredAt?.toISOString?.() ?? po?.deliveredAt ?? null,
+          deliveryOtpVerifiedAt:
+            po?.deliveryOtpVerifiedAt?.toISOString?.() ?? po?.deliveryOtpVerifiedAt ?? null,
+        }))
+        : [],
     }));
 
     return res.json(
@@ -4060,23 +4880,42 @@ router.get("/summary", requireAuth, async (req, res) => {
   try {
     const userId = getUserId(req)!;
 
-    const [countAll, paidAgg, latest] = await prisma.$transaction([
+    const [countAll, paidPaymentsAgg, refundedAgg, latest] = await prisma.$transaction([
       prisma.order.count({ where: { userId } }),
-      prisma.order.aggregate({
-        where: { userId, status: { in: ["PAID", "COMPLETED"] } as any },
-        _sum: { total: true },
+
+      prisma.payment.aggregate({
+        where: {
+          order: { userId },
+          status: "PAID" as any,
+        },
+        _sum: { amount: true },
       }),
+
+      prisma.refund.aggregate({
+        where: {
+          requestedByUserId: userId,
+          status: "REFUNDED" as any,
+        },
+        _sum: { totalAmount: true },
+      }),
+
       prisma.order.findMany({
         where: { userId },
-        orderBy: { createdAt: "asc" },
+        orderBy: { createdAt: "desc" },
         take: 5,
         select: { id: true, status: true, total: true, createdAt: true },
       }),
     ]);
 
+    const grossSpent = Number((paidPaymentsAgg as any)._sum.amount ?? 0);
+    const refundedSpent = Number((refundedAgg as any)._sum.totalAmount ?? 0);
+    const totalSpent = Math.max(0, grossSpent - refundedSpent);
+
     res.json({
       ordersCount: countAll,
-      totalSpent: Number((paidAgg as any)._sum.total ?? 0),
+      grossSpent,
+      refundedSpent,
+      totalSpent,
       recent: (latest as any[]).map((o: any) => ({
         id: o.id,
         status: o.status,
@@ -4098,85 +4937,103 @@ router.get("/:id", requireAuth, async (req, res) => {
   try {
     const id = requiredString(req.params.id);
 
-    const order = await prisma.order.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        status: true,
-        subtotal: true,
-        tax: true,
-        total: true,
-        createdAt: true,
+    const {
+      complaintWindowDays,
+      order,
+    } = await prisma.$transaction(async (tx: any) => {
+      const complaintWindowDays = await getComplaintWindowDaysTx(tx);
 
-        serviceFeeBase: true,
-        serviceFeeComms: true,
-        serviceFeeGateway: true,
-        serviceFeeTotal: true,
-        serviceFee: true,
-        shippingFee: true,
-        shippingCurrency: true,
-        shippingRateSource: true,
-        shippingBreakdownJson: true,
-        user: { select: { id: true, email: true } },
+      const order = await tx.order.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          subtotal: true,
+          tax: true,
+          total: true,
+          createdAt: true,
 
-        items: {
-          select: {
-            id: true,
-            orderId: true,
-            productId: true,
-            variantId: true,
-            title: true,
-            unitPrice: true,
-            quantity: true,
-            lineTotal: true,
-            chosenSupplierId: true,
-            chosenSupplierUnitPrice: true,
-            chosenSupplierProductOfferId: true,
-            chosenSupplierVariantOfferId: true,
-            selectedOptions: true,
+          serviceFeeBase: true,
+          serviceFeeComms: true,
+          serviceFeeGateway: true,
+          serviceFeeTotal: true,
+          serviceFee: true,
+          shippingFee: true,
+          shippingCurrency: true,
+          shippingRateSource: true,
+          shippingBreakdownJson: true,
+
+          user: { select: { id: true, email: true } },
+
+          items: {
+            select: {
+              id: true,
+              orderId: true,
+              productId: true,
+              variantId: true,
+              title: true,
+              unitPrice: true,
+              quantity: true,
+              lineTotal: true,
+              chosenSupplierId: true,
+              chosenSupplierUnitPrice: true,
+              chosenSupplierProductOfferId: true,
+              chosenSupplierVariantOfferId: true,
+              selectedOptions: true,
+            },
           },
-        },
 
-        purchaseOrders: {
-          orderBy: { createdAt: "asc" },
-          select: {
-            id: true,
-            supplierId: true,
-            status: true,
-            subtotal: true,
-            platformFee: true,
-            supplierAmount: true,
-            createdAt: true,
-            supplier: { select: { id: true, name: true } },
+          purchaseOrders: {
+            orderBy: { createdAt: "asc" },
+            select: {
+              id: true,
+              supplierId: true,
+              status: true,
+              subtotal: true,
+              platformFee: true,
+              supplierAmount: true,
+              createdAt: true,
+              shippedAt: true,
+              deliveredAt: true,
+              deliveryOtpVerifiedAt: true,
+              payoutStatus: true,
+              paidOutAt: true,
+              supplier: { select: { id: true, name: true } },
+            },
           },
-        },
 
-        payments: {
-          orderBy: { createdAt: "desc" },
-          select: {
-            id: true,
-            status: true,
-            provider: true,
-            channel: true,
-            reference: true,
-            amount: true,
-            feeAmount: true,
-            createdAt: true,
-            allocations: {
-              orderBy: { createdAt: "asc" },
-              select: {
-                id: true,
-                supplierId: true,
-                amount: true,
-                status: true,
-                purchaseOrderId: true,
-                supplierNameSnapshot: true,
-                supplier: { select: { id: true, name: true } },
+          payments: {
+            orderBy: { createdAt: "desc" },
+            select: {
+              id: true,
+              status: true,
+              provider: true,
+              channel: true,
+              reference: true,
+              amount: true,
+              feeAmount: true,
+              createdAt: true,
+              allocations: {
+                orderBy: { createdAt: "asc" },
+                select: {
+                  id: true,
+                  supplierId: true,
+                  amount: true,
+                  status: true,
+                  purchaseOrderId: true,
+                  supplierNameSnapshot: true,
+                  supplier: { select: { id: true, name: true } },
+                },
               },
             },
           },
         },
-      },
+      });
+
+      return {
+        complaintWindowDays,
+        order,
+      };
     });
 
     if (!order) return res.status(404).json({ error: "Order not found" });
@@ -4193,8 +5050,9 @@ router.get("/:id", requireAuth, async (req, res) => {
 
     const toShopperStatus = (s: any) => {
       const u = String(s || "").toUpperCase();
-      if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED")
+      if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED") {
         return "PROCESSING";
+      }
       return u;
     };
 
@@ -4206,9 +5064,61 @@ router.get("/:id", requireAuth, async (req, res) => {
       );
     }
 
+    const rawItems = ((order as any).items || []) as any[];
+
+    const productIds = Array.from(
+      new Set(
+        rawItems
+          .map((it) => String(it.productId || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    const variantIds = Array.from(
+      new Set(
+        rawItems
+          .map((it) => String(it.variantId || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    const [products, variants] = await Promise.all([
+      productIds.length
+        ? prisma.product.findMany({
+          where: { id: { in: productIds } },
+          select: {
+            id: true,
+            title: true,
+            imagesJson: true,
+          },
+        })
+        : Promise.resolve([]),
+      variantIds.length
+        ? prisma.productVariant.findMany({
+          where: { id: { in: variantIds } },
+          select: {
+            id: true,
+            sku: true,
+            productId: true,
+            imagesJson: true,
+          },
+        })
+        : Promise.resolve([]),
+    ]);
+
+    const productById = new Map<string, any>();
+    for (const p of products as any[]) {
+      productById.set(String(p.id), p);
+    }
+
+    const variantById = new Map<string, any>();
+    for (const v of variants as any[]) {
+      variantById.set(String(v.id), v);
+    }
+
     const uniqPairs: Pair[] = [];
     const seen = new Set<string>();
-    for (const it of (order as any).items as any[]) {
+    for (const it of rawItems) {
       const pid = String(it.productId);
       const vid = it.variantId == null ? null : String(it.variantId);
       const k = availKey(pid, vid);
@@ -4217,24 +5127,34 @@ router.get("/:id", requireAuth, async (req, res) => {
         uniqPairs.push({ productId: pid, variantId: vid });
       }
     }
+
     const getAvail = await buildAvailabilityGetter(uniqPairs);
 
     const data = {
       id: (order as any).id,
       userEmail: (order as any).user?.email ?? null,
       status: (order as any).status,
-      subtotal: Number((order as any).subtotal ?? 0),
-      tax: Number((order as any).tax ?? 0),
-      total: Number((order as any).total ?? 0),
+      subtotal: asNumLocal((order as any).subtotal, 0),
+      tax: asNumLocal((order as any).tax, 0),
+      total: asNumLocal((order as any).total, 0),
 
-      serviceFeeBase: Number((order as any).serviceFeeBase ?? 0),
-      serviceFeeComms: Number((order as any).serviceFeeComms ?? 0),
-      serviceFeeGateway: Number((order as any).serviceFeeGateway ?? 0),
-      serviceFeeTotal: Number((order as any).serviceFeeTotal ?? 0),
+      serviceFeeBase: asNumLocal((order as any).serviceFeeBase, 0),
+      serviceFeeComms: asNumLocal((order as any).serviceFeeComms, 0),
+      serviceFeeGateway: asNumLocal((order as any).serviceFeeGateway, 0),
+      serviceFeeTotal: asNumLocal((order as any).serviceFeeTotal, 0),
+      serviceFee: asNumLocal((order as any).serviceFee, 0),
+
+      shippingFee: asNumLocal((order as any).shippingFee, 0),
+      shippingCurrency: (order as any).shippingCurrency ?? "NGN",
+      shippingRateSource: (order as any).shippingRateSource ?? null,
+      shippingBreakdownJson: (order as any).shippingBreakdownJson ?? null,
+
+      complaintWindowDays,
 
       createdAt:
         (order as any).createdAt?.toISOString?.() ?? (order as any).createdAt,
-      items: ((order as any).items as any[]).map((it: any) => {
+
+      items: rawItems.map((it: any) => {
         const pid = String(it.productId);
         const vid = it.variantId == null ? null : String(it.variantId);
         const { availableQty, inStock } = getAvail(pid, vid);
@@ -4244,11 +5164,27 @@ router.get("/:id", requireAuth, async (req, res) => {
           ? poStatusBySupplier.get(supplierId) ?? "PENDING"
           : "PENDING";
 
+        const product = productById.get(pid) || null;
+        const variant = vid ? variantById.get(vid) || null : null;
+
+        const variantImages = Array.isArray(variant?.imagesJson)
+          ? variant.imagesJson.filter(Boolean)
+          : [];
+
+        const productImages = Array.isArray(product?.imagesJson)
+          ? product.imagesJson.filter(Boolean)
+          : [];
+
+        const resolvedImage =
+          variantImages[0] ??
+          productImages[0] ??
+          null;
+
         return {
           id: it.id,
           productId: it.productId,
           variantId: it.variantId ?? null,
-          title: it.title ?? "—",
+          title: it.title ?? product?.title ?? "—",
           unitPrice: asNumLocal(it.unitPrice, 0),
           quantity: asNumLocal(it.quantity, 1),
           lineTotal: asNumLocal(
@@ -4257,30 +5193,89 @@ router.get("/:id", requireAuth, async (req, res) => {
           ),
           status: adminUser ? String(rawPoStatus) : toShopperStatus(rawPoStatus),
           supplierStatusRaw: String(rawPoStatus),
-
-          chosenSupplierProductOfferId:
-            it.chosenSupplierProductOfferId ?? null,
-          chosenSupplierVariantOfferId:
-            it.chosenSupplierVariantOfferId ?? null,
+          chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
+          chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
           chosenSupplierId: it.chosenSupplierId ?? null,
           chosenSupplierUnitPrice:
             it.chosenSupplierUnitPrice != null
               ? asNumLocal(it.chosenSupplierUnitPrice, 0)
               : null,
-
           currentAvailableQty: availableQty,
           currentInStock: inStock,
           selectedOptions: it.selectedOptions ?? null,
+
+          product: product
+            ? {
+              id: String(product.id),
+              title: product.title ?? null,
+              imagesJson: productImages,
+            }
+            : null,
+
+          variant: variant
+            ? {
+              id: String(variant.id),
+              sku: variant.sku ?? null,
+              productId: variant.productId ?? null,
+              imagesJson: variantImages,
+            }
+            : null,
+
+          imageSnapshot: resolvedImage,
         };
       }),
-      payments: (order as any).payments,
-      purchaseOrders: (order as any).purchaseOrders ?? [],
+
+      payments: Array.isArray((order as any).payments)
+        ? ((order as any).payments as any[]).map((p: any) => ({
+          id: String(p.id),
+          status: String(p.status ?? ""),
+          provider: p.provider ?? null,
+          channel: p.channel ?? null,
+          reference: p.reference ?? null,
+          amount: p.amount != null ? asNumLocal(p.amount, 0) : null,
+          feeAmount: p.feeAmount != null ? asNumLocal(p.feeAmount, 0) : null,
+          createdAt: p.createdAt?.toISOString?.() ?? p.createdAt ?? null,
+          allocations: Array.isArray(p.allocations)
+            ? p.allocations.map((a: any) => ({
+              id: String(a.id),
+              supplierId: String(a.supplierId),
+              supplierName:
+                a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+              amount: a.amount != null ? asNumLocal(a.amount, 0) : null,
+              status: a.status ?? null,
+              purchaseOrderId: a.purchaseOrderId ?? null,
+            }))
+            : [],
+        }))
+        : [],
+
+      purchaseOrders: Array.isArray((order as any).purchaseOrders)
+        ? ((order as any).purchaseOrders as any[]).map((po: any) => ({
+          id: String(po.id),
+          supplierId: String(po.supplierId),
+          supplierName: po?.supplier?.name ?? null,
+          status: po?.status ?? null,
+          subtotal: po?.subtotal != null ? asNumLocal(po.subtotal, 0) : null,
+          platformFee: po?.platformFee != null ? asNumLocal(po.platformFee, 0) : null,
+          supplierAmount:
+            po?.supplierAmount != null ? asNumLocal(po.supplierAmount, 0) : null,
+          createdAt: po?.createdAt?.toISOString?.() ?? po?.createdAt ?? null,
+          shippedAt: po?.shippedAt?.toISOString?.() ?? po?.shippedAt ?? null,
+          deliveredAt: po?.deliveredAt?.toISOString?.() ?? po?.deliveredAt ?? null,
+          deliveryOtpVerifiedAt:
+            po?.deliveryOtpVerifiedAt?.toISOString?.() ??
+            po?.deliveryOtpVerifiedAt ??
+            null,
+          payoutStatus: po?.payoutStatus ?? null,
+          paidOutAt: po?.paidOutAt?.toISOString?.() ?? po?.paidOutAt ?? null,
+        }))
+        : [],
     };
 
-    res.json({ data });
+    return res.json({ data });
   } catch (e: any) {
     console.error("get order failed:", e);
-    res.status(500).json({ error: e?.message || "Failed to fetch order" });
+    return res.status(500).json({ error: e?.message || "Failed to fetch order" });
   }
 });
 
@@ -4292,70 +5287,164 @@ router.get("/:orderId/profit", requireSuperAdmin, async (req, res) => {
   try {
     const orderId = requiredString(req.params.orderId);
 
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      select: {
-        id: true,
-        total: true,
-        serviceFeeTotal: true,
-        status: true,
-        createdAt: true,
-      },
-    });
-    if (!order) return res.status(404).json({ error: "Order not found" });
+    const [order, paidPayments, refundedAgg, itemMetrics] = await Promise.all([
+      prisma.order.findUnique({
+        where: { id: orderId },
+        select: {
+          id: true,
+          total: true,
+          subtotal: true,
+          tax: true,
+          shippingFee: true,
+          serviceFeeBase: true,
+          serviceFeeComms: true,
+          serviceFeeGateway: true,
+          serviceFeeTotal: true,
+          status: true,
+          createdAt: true,
+        },
+      }),
 
-    const payments = await prisma.payment.findMany({
-      where: { orderId, status: "PAID" as any },
-      select: { id: true, amount: true, feeAmount: true },
-    });
+      prisma.payment.findMany({
+        where: {
+          orderId,
+          status: "PAID" as any,
+        },
+        select: {
+          id: true,
+          amount: true,
+          feeAmount: true,
+          status: true,
+          createdAt: true,
+          paidAt: true,
+          refundedAt: true,
+        },
+        orderBy: { createdAt: "asc" },
+      }),
 
-    const itemMetrics = await prisma.orderItemProfit.findMany({
-      where: { orderId },
-      orderBy: { computedAt: "desc" },
-      select: {
-        orderItemId: true,
-        qty: true,
-        unitPrice: true,
-        chosenSupplierUnitPrice: true,
-        revenue: true,
-        cogs: true,
-        allocatedGatewayFee: true,
-        allocatedCommsFee: true,
-        allocatedBaseServiceFee: true,
-        profit: true,
-        computedAt: true,
-      },
-    });
+      prisma.refund.aggregate({
+        where: {
+          orderId,
+          status: "REFUNDED" as any,
+        },
+        _sum: {
+          totalAmount: true,
+        },
+      }),
+
+      prisma.orderItemProfit.findMany({
+        where: { orderId },
+        orderBy: { computedAt: "desc" },
+        select: {
+          orderItemId: true,
+          qty: true,
+          unitPrice: true,
+          chosenSupplierUnitPrice: true,
+          revenue: true,
+          cogs: true,
+          allocatedGatewayFee: true,
+          allocatedCommsFee: true,
+          allocatedBaseServiceFee: true,
+          profit: true,
+          computedAt: true,
+        },
+      }),
+    ]);
+
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    const N = (v: any) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
 
     const summary = itemMetrics.reduce(
       (s: any, x: any) => {
-        s.revenue += Number(x.revenue || 0);
-        s.cogs += Number(x.cogs || 0);
-        s.gateway += Number(x.allocatedGatewayFee || 0);
-        s.comms += Number(x.allocatedCommsFee || 0);
-        s.base += Number(x.allocatedBaseServiceFee || 0);
-        s.profit += Number(x.profit || 0);
+        s.revenue += N(x.revenue);
+        s.cogs += N(x.cogs);
+        s.gateway += N(x.allocatedGatewayFee);
+        s.comms += N(x.allocatedCommsFee);
+        s.base += N(x.allocatedBaseServiceFee);
+        s.profit += N(x.profit);
         return s;
       },
       { revenue: 0, cogs: 0, gateway: 0, comms: 0, base: 0, profit: 0 }
     );
 
-    res.json({
+    const paidAmount = paidPayments.reduce(
+      (a: number, p: any) => a + N(p.amount),
+      0
+    );
+
+    const gatewayFeeActual = paidPayments.reduce(
+      (a: number, p: any) => a + N(p.feeAmount),
+      0
+    );
+
+    const refundedAmount = N((refundedAgg as any)?._sum?.totalAmount);
+
+    const orderTotal = N(order.total);
+    const grossRevenue = N(summary.revenue);
+    const grossProfit = N(summary.profit);
+
+    // Realized factor after refunds.
+    // Example:
+    // paid 100k, refunded 20k, order total 100k => factor 0.8
+    // This keeps revenue/profit aligned with partial refunds.
+    const effectiveFactor =
+      orderTotal > 0
+        ? Math.max(0, Math.min(1, (paidAmount - refundedAmount) / orderTotal))
+        : 0;
+
+    const realizedRevenue = grossRevenue * effectiveFactor;
+    const realizedCogs = N(summary.cogs) * effectiveFactor;
+    const realizedGateway = N(summary.gateway) * effectiveFactor;
+    const realizedComms = N(summary.comms) * effectiveFactor;
+    const realizedBase = N(summary.base) * effectiveFactor;
+    const realizedProfit = grossProfit * effectiveFactor;
+
+    return res.json({
       order: {
         id: order.id,
         status: order.status,
-        total: Number(order.total || 0),
-        serviceFeeRecorded: Number((order as any).serviceFeeTotal || 0),
-        paidAmount: payments.reduce(
-          (a: number, p: any) => a + Number(p.amount || 0),
-          0
-        ),
-        gatewayFeeActual: payments.reduce(
-          (a: number, p: any) => a + Number(p.feeAmount || 0),
-          0
-        ),
+        subtotal: N(order.subtotal),
+        tax: N(order.tax),
+        shippingFee: N(order.shippingFee),
+        total: N(order.total),
+        serviceFeeBase: N(order.serviceFeeBase),
+        serviceFeeComms: N(order.serviceFeeComms),
+        serviceFeeGateway: N(order.serviceFeeGateway),
+        serviceFeeRecorded: N(order.serviceFeeTotal),
+        paidAmount,
+        refundedAmount,
+        netPaidAmount: Math.max(0, paidAmount - refundedAmount),
+        gatewayFeeActual,
+        effectiveFactor,
       },
-      summary,
+
+      summary: {
+        // original full-order metrics
+        grossRevenue,
+        grossProfit,
+        cogs: N(summary.cogs),
+        gateway: N(summary.gateway),
+        comms: N(summary.comms),
+        base: N(summary.base),
+
+        // refund impact
+        refundedAmount,
+
+        // realized / refund-adjusted metrics
+        netRevenue: realizedRevenue,
+        netProfit: realizedProfit,
+        netCogs: realizedCogs,
+        netGateway: realizedGateway,
+        netComms: realizedComms,
+        netBase: realizedBase,
+      },
+
       items: itemMetrics,
     });
   } catch (e: any) {
@@ -4628,117 +5717,46 @@ router.post(
       const role = String(req.user?.role ?? "");
       const orderId = String(req.params.orderId);
 
-      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      if (!userId) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
 
       const adminOk = isAdmin(role);
       const supplierOk = isSupplier(role);
 
-      const out = await prisma.$transaction(async (tx) => {
-        const order = await tx.order.findUnique({
-          where: { id: orderId },
-          select: {
-            id: true,
-            userId: true,
-            status: true,
-            total: true,
-            user: { select: { id: true, email: true } },
-          },
-        });
-        if (!order) throw new Error("Order not found");
-
-        if (!adminOk && !supplierOk && String(order.userId) !== String(userId)) {
-          throw new Error("Forbidden");
-        }
-
-        const pos = await tx.purchaseOrder.findMany({
-          where: { orderId },
-          select: { id: true, supplierId: true, status: true },
-        });
-
-        const hasPaid = await hasSuccessfulPaymentForOrderTx(tx, orderId);
-
-        if (!pos.length) {
-          if (!hasPaid) {
-            await restoreOrderInventoryTx(tx, orderId);
-            await markPendingPaymentsCanceledTx(tx, orderId, "Order canceled before payment");
-          }
-
-          await tx.order.update({
+      const out = await prisma.$transaction(
+        async (tx) => {
+          const order = await tx.order.findUnique({
             where: { id: orderId },
-            data: { status: "CANCELED" as any },
+            select: {
+              id: true,
+              userId: true,
+              status: true,
+              total: true,
+              user: { select: { id: true, email: true } },
+            },
           });
 
-          await logOrderActivityTx(
-            tx,
-            orderId,
-            ACT.STATUS_CHANGE as any,
-            "Order canceled"
-          );
+          if (!order) throw new Error("Order not found");
 
-          return {
-            mode: "ORDER_ONLY",
-            orderId,
-            canceled: true,
-            purchaseOrdersCANCELED: 0,
-          };
-        }
-
-        if (supplierOk && !adminOk) {
-          const supplier = await tx.supplier.findFirst({
-            where: { userId },
-            select: { id: true, name: true },
-          });
-          if (!supplier?.id) throw new Error("Supplier access required");
-
-          const myPos = pos.filter(
-            (po: any) => String(po.supplierId) === String(supplier.id)
-          );
-          if (!myPos.length) throw new Error("No purchase order for this supplier");
-
-          for (const po of myPos) {
-            await tx.purchaseOrder.update({
-              where: { id: po.id },
-              data: {
-                status: "CANCELED" as any,
-                canceledAt: new Date(),
-                cancelReason: "SUPPLIER_CANCELED",
-              },
-            });
-
-            await logOrderActivityTx(
-              tx,
-              orderId,
-              ACT.STATUS_CHANGE as any,
-              `Purchase order ${po.id} canceled by supplier`
-            );
-
-            await notifyOneSupplierForPoTx(
-              tx,
-              { orderId, purchaseOrderId: po.id, supplierId: supplier.id },
-              {
-                type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-                title: "Purchase order canceled",
-                body: `Purchase order ${po.id} for order ${orderId} was canceled.`,
-              }
-            );
+          if (!adminOk && !supplierOk && String(order.userId) !== String(userId)) {
+            throw new Error("Forbidden");
           }
 
-          const refreshed = await tx.purchaseOrder.findMany({
+          const pos = await tx.purchaseOrder.findMany({
             where: { orderId },
-            select: { status: true },
+            select: { id: true, supplierId: true, status: true },
           });
 
-          const allCanceled = refreshed.every(
-            (x: any) => String(x.status).toUpperCase() === "CANCELED"
-          );
+          const hasPaid = await hasSuccessfulPaymentForOrderTx(tx, orderId);
 
-          if (allCanceled) {
+          if (!pos.length) {
             if (!hasPaid) {
               await restoreOrderInventoryTx(tx, orderId);
               await markPendingPaymentsCanceledTx(
                 tx,
                 orderId,
-                "All supplier POs canceled before payment"
+                "Order canceled before payment"
               );
             }
 
@@ -4751,114 +5769,180 @@ router.post(
               tx,
               orderId,
               ACT.STATUS_CHANGE as any,
-              "Order canceled (all POs canceled)"
+              "Order canceled"
+            );
+
+            return {
+              mode: "ORDER_ONLY" as const,
+              orderId,
+              canceled: true,
+              purchaseOrdersCANCELED: 0,
+              postCommit: {
+                mode: "ORDER_ONLY" as const,
+                orderId,
+                orderUserId: String(order.userId),
+                actorRole: String(role || "").toUpperCase(),
+                canceledPurchaseOrderIds: [] as string[],
+                allCanceled: true,
+              },
+            };
+          }
+
+          if (supplierOk && !adminOk) {
+            const supplier = await tx.supplier.findFirst({
+              where: { userId },
+              select: { id: true, name: true },
+            });
+
+            if (!supplier?.id) throw new Error("Supplier access required");
+
+            const myPos = pos.filter(
+              (po: any) => String(po.supplierId) === String(supplier.id)
+            );
+
+            if (!myPos.length) throw new Error("No purchase order for this supplier");
+
+            const canceledPurchaseOrderIds: string[] = [];
+
+            for (const po of myPos) {
+              await tx.purchaseOrder.update({
+                where: { id: po.id },
+                data: {
+                  status: "CANCELED" as any,
+                  canceledAt: new Date(),
+                  cancelReason: "SUPPLIER_CANCELED",
+                },
+              });
+
+              canceledPurchaseOrderIds.push(String(po.id));
+
+              await logOrderActivityTx(
+                tx,
+                orderId,
+                ACT.STATUS_CHANGE as any,
+                `Purchase order ${po.id} canceled by supplier`
+              );
+            }
+
+            const refreshed = await tx.purchaseOrder.findMany({
+              where: { orderId },
+              select: { status: true },
+            });
+
+            const allCanceled = refreshed.every(
+              (x: any) => String(x.status).toUpperCase() === "CANCELED"
+            );
+
+            if (allCanceled) {
+              if (!hasPaid) {
+                await restoreOrderInventoryTx(tx, orderId);
+                await markPendingPaymentsCanceledTx(
+                  tx,
+                  orderId,
+                  "All supplier POs canceled before payment"
+                );
+              }
+
+              await tx.order.update({
+                where: { id: orderId },
+                data: { status: "CANCELED" as any },
+              });
+
+              await logOrderActivityTx(
+                tx,
+                orderId,
+                ACT.STATUS_CHANGE as any,
+                "Order canceled (all POs canceled)"
+              );
+            }
+
+            return {
+              mode: "SUPPLIER_PO" as const,
+              orderId,
+              canceled: true,
+              purchaseOrdersCANCELED: myPos.length,
+              postCommit: {
+                mode: "SUPPLIER_PO" as const,
+                orderId,
+                orderUserId: String(order.userId),
+                actorRole: String(role || "").toUpperCase(),
+                supplierId: String(supplier.id),
+                canceledPurchaseOrderIds,
+                allCanceled,
+              },
+            };
+          }
+
+          if (!hasPaid) {
+            await restoreOrderInventoryTx(tx, orderId);
+            await markPendingPaymentsCanceledTx(
+              tx,
+              orderId,
+              "Order canceled before payment"
             );
           }
 
-          try {
-            await notifyUser(
-              String(order.userId),
-              {
-                type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-                title: "Order update",
-                body: `A supplier canceled part of your order ${orderId}.`,
-                data: { orderId },
-              },
-              tx
-            );
+          await tx.order.update({
+            where: { id: orderId },
+            data: { status: "CANCELED" as any },
+          });
 
-            await notifyAdmins(
-              {
-                type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-                title: "Supplier canceled PO",
-                body: `A supplier canceled a purchase order for order ${orderId}.`,
-                data: { orderId },
-              },
-              tx
-            );
-          } catch (e) {
-            console.error("cancel notify (supplier) failed:", e);
-          }
+          await tx.purchaseOrder.updateMany({
+            where: { orderId },
+            data: {
+              status: "CANCELED" as any,
+              canceledAt: new Date(),
+              cancelReason: hasPaid
+                ? "ORDER_CANCELED_AFTER_PAYMENT"
+                : "ORDER_CANCELED_BEFORE_PAYMENT",
+            },
+          });
+
+          await logOrderActivityTx(
+            tx,
+            orderId,
+            ACT.STATUS_CHANGE as any,
+            "Order canceled"
+          );
 
           return {
-            mode: "SUPPLIER_PO",
+            mode: "ORDER_ALL" as const,
             orderId,
             canceled: true,
-            purchaseOrdersCANCELED: myPos.length,
+            purchaseOrdersCANCELED: pos.length,
+            postCommit: {
+              mode: "ORDER_ALL" as const,
+              orderId,
+              orderUserId: String(order.userId),
+              actorRole: String(role || "").toUpperCase(),
+              canceledPurchaseOrderIds: pos.map((po: any) => String(po.id)),
+              allCanceled: true,
+            },
           };
+        },
+        {
+          isolationLevel: "ReadCommitted" as any,
+          maxWait: 10_000,
+          timeout: 45_000,
         }
+      );
 
-        if (!hasPaid) {
-          await restoreOrderInventoryTx(tx, orderId);
-          await markPendingPaymentsCanceledTx(tx, orderId, "Order canceled before payment");
-        }
-
-        await tx.order.update({
-          where: { id: orderId },
-          data: { status: "CANCELED" as any },
-        });
-
-        await tx.purchaseOrder.updateMany({
-          where: { orderId },
-          data: {
-            status: "CANCELED" as any,
-            canceledAt: new Date(),
-            cancelReason: hasPaid ? "ORDER_CANCELED_AFTER_PAYMENT" : "ORDER_CANCELED_BEFORE_PAYMENT",
-          },
-        });
-
-        await logOrderActivityTx(
-          tx,
-          orderId,
-          ACT.STATUS_CHANGE as any,
-          "Order canceled"
-        );
-
-        await notifySuppliersForOrderTx(tx, orderId, {
-          type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
-          title: "Order canceled",
-          body: `Order ${orderId} was canceled.`,
-        });
-
-        try {
-          await notifyUser(
-            String(order.userId),
-            {
-              type: NotificationType.ORDER_CANCELED,
-              title: "Order canceled",
-              body: `Your order ${orderId} has been canceled.`,
-              data: { orderId },
-            },
-            tx
-          );
-
-          await notifyAdmins(
-            {
-              type: NotificationType.ORDER_CANCELED,
-              title: "Order canceled",
-              body: `Order ${orderId} was canceled.`,
-              data: { orderId },
-            },
-            tx
-          );
-        } catch (e) {
-          console.error("cancel notify failed:", e);
-        }
-
-        return {
-          mode: "ORDER_ALL",
-          orderId,
-          canceled: true,
-          purchaseOrdersCANCELED: pos.length,
-        };
+      res.json({
+        ok: true,
+        mode: out.mode,
+        orderId: out.orderId,
+        canceled: out.canceled,
+        purchaseOrdersCANCELED: out.purchaseOrdersCANCELED,
       });
 
-      return res.json({ ok: true, ...out });
+      fireAndForgetCancelPostCommit(out.postCommit);
+      return;
     } catch (e: any) {
       console.error("cancel order failed:", e);
-      return res
-        .status(400)
-        .json({ ok: false, error: e?.message || "Failed to cancel order" });
+      return res.status(400).json({
+        ok: false,
+        error: e?.message || "Failed to cancel order",
+      });
     }
   }
 );
