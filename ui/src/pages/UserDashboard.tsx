@@ -312,7 +312,8 @@ function useViewerMe(onAuthError?: () => void) {
     queryKey: ["me"],
     queryFn: async () => {
       try {
-        return (await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG)).data;
+        const res = (await api.get<any>("/api/auth/me", AXIOS_COOKIE_CFG)).data;
+        return (res?.data ?? res) as MeResponse;
       } catch (e: any) {
         if (isAuthError(e)) onAuthError?.();
         throw e;
