@@ -382,7 +382,8 @@ function useTargetMe(targetUserId: string | null, onAuthError?: () => void) {
     queryFn: async () => {
       if (!targetUserId) {
         try {
-          const raw = (await api.get<any>("/api/auth/me", AXIOS_COOKIE_CFG)).data;
+          const rawResponse = (await api.get<any>("/api/auth/me", AXIOS_COOKIE_CFG)).data;
+          const raw = rawResponse?.data ?? rawResponse;
 
           return {
             id: String(raw?.id ?? ""),
