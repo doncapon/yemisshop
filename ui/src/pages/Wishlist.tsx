@@ -127,11 +127,10 @@ function WishlistPagination({
           <button
             type="button"
             onClick={() => go(1)}
-            className={`rounded-lg px-3 py-2 text-xs font-semibold border ${
-              page === 1
-                ? "bg-zinc-900 text-white border-zinc-900"
-                : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
-            }`}
+            className={`rounded-lg px-3 py-2 text-xs font-semibold border ${page === 1
+              ? "bg-zinc-900 text-white border-zinc-900"
+              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+              }`}
           >
             1
           </button>
@@ -144,11 +143,10 @@ function WishlistPagination({
           key={p}
           type="button"
           onClick={() => go(p)}
-          className={`rounded-lg px-3 py-2 text-xs font-semibold border ${
-            p === page
-              ? "bg-zinc-900 text-white border-zinc-900"
-              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
-          }`}
+          className={`rounded-lg px-3 py-2 text-xs font-semibold border ${p === page
+            ? "bg-zinc-900 text-white border-zinc-900"
+            : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+            }`}
         >
           {p}
         </button>
@@ -160,11 +158,10 @@ function WishlistPagination({
           <button
             type="button"
             onClick={() => go(totalPages)}
-            className={`rounded-lg px-3 py-2 text-xs font-semibold border ${
-              page === totalPages
-                ? "bg-zinc-900 text-white border-zinc-900"
-                : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
-            }`}
+            className={`rounded-lg px-3 py-2 text-xs font-semibold border ${page === totalPages
+              ? "bg-zinc-900 text-white border-zinc-900"
+              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+              }`}
           >
             {totalPages}
           </button>
@@ -416,12 +413,12 @@ function getDisplayRetailPrice(p: CatalogProductLite): number {
     Number(p.offersFrom) > 0
       ? Number(p.offersFrom)
       : Number(p.retailPrice) > 0
-      ? Number(p.retailPrice)
-      : Number(p.autoPrice) > 0
-      ? Number(p.autoPrice)
-      : Number(p.displayBasePrice) > 0
-      ? Number(p.displayBasePrice)
-      : 0;
+        ? Number(p.retailPrice)
+        : Number(p.autoPrice) > 0
+          ? Number(p.autoPrice)
+          : Number(p.displayBasePrice) > 0
+            ? Number(p.displayBasePrice)
+            : 0;
 
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
@@ -463,10 +460,10 @@ async function fetchWishlist(args: {
   const items = Array.isArray((data as any)?.items)
     ? (data as any).items
     : Array.isArray((data as any)?.data)
-    ? (data as any).data
-    : Array.isArray(data)
-    ? (data as any)
-    : [];
+      ? (data as any).data
+      : Array.isArray(data)
+        ? (data as any)
+        : [];
 
   const total = Number((data as any)?.total);
   const currentPage = Number((data as any)?.page);
@@ -497,32 +494,32 @@ async function fetchCatalogProductsLite(): Promise<CatalogProductLite[]> {
   const raw: any[] = Array.isArray(data)
     ? data
     : Array.isArray((data as any)?.data)
-    ? (data as any).data
-    : [];
+      ? (data as any).data
+      : [];
 
   return raw
     .filter((x) => x && x.id != null)
     .map((x) => {
       const variants: VariantLite[] = Array.isArray(x.variants)
         ? x.variants.map((v: any) => ({
-            id: String(v.id),
-            inStock: v.inStock === true,
-            imagesJson: normalizeImages(v.imagesJson),
-            availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
-            offers: Array.isArray(v.offers)
-              ? v.offers.map((o: any) => ({
-                  id: String(o.id),
-                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number.isFinite(Number(o.availableQty))
-                    ? Number(o.availableQty)
-                    : null,
-                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                }))
-              : [],
-          }))
+          id: String(v.id),
+          inStock: v.inStock === true,
+          imagesJson: normalizeImages(v.imagesJson),
+          availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+          offers: Array.isArray(v.offers)
+            ? v.offers.map((o: any) => ({
+              id: String(o.id),
+              supplierId: o.supplierId ?? o.supplier?.id ?? null,
+              isActive: o.isActive === true,
+              inStock: o.inStock === true,
+              availableQty: Number.isFinite(Number(o.availableQty))
+                ? Number(o.availableQty)
+                : null,
+              unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+              basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+            }))
+            : [],
+        }))
         : [];
 
       const baseSource =
@@ -924,7 +921,7 @@ export default function Wishlist() {
                             <button
                               type="button"
                               onClick={() => goToProductWithBack(href)}
-                              className="flex-1 text-xs font-semibold px-3 py-1.5 rounded-lg text-white bg-zinc-900 hover:bg-zinc-800"
+                              className="flex-1 text-xs font-semibold px-3 py-1.5 rounded-full text-white bg-zinc-900 hover:bg-zinc-800"
                             >
                               Choose options
                             </button>
@@ -933,11 +930,10 @@ export default function Wishlist() {
                               type="button"
                               onClick={() => addToCartMut.mutate(it)}
                               disabled={adding}
-                              className={`flex-1 text-xs font-semibold px-3 py-1.5 rounded-lg text-white ${
-                                adding
-                                  ? "bg-zinc-400 cursor-not-allowed"
-                                  : "bg-fuchsia-600 hover:bg-fuchsia-700"
-                              }`}
+                              className={`flex-1 text-xs font-semibold px-3 py-1.5 rounded-full text-white ${adding
+                                ? "bg-zinc-400 cursor-not-allowed"
+                                : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                                }`}
                             >
                               {adding ? "Adding…" : "Add to cart"}
                             </button>
@@ -947,11 +943,10 @@ export default function Wishlist() {
                             type="button"
                             onClick={() => toggleFavMut.mutate(it.productId)}
                             disabled={removing}
-                            className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${
-                              removing
+                            className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${removing
                                 ? "bg-zinc-100 text-zinc-400 cursor-not-allowed"
                                 : "bg-white text-zinc-700 hover:bg-zinc-50"
-                            }`}
+                              }`}
                           >
                             {removing ? "Removing…" : "Remove"}
                           </button>

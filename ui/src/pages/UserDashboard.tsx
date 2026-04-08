@@ -258,13 +258,13 @@ function sinceJoined(iso?: string | null) {
   }
 
   const parts: string[] = [];
-  if (years > 0) parts.push(`${years}y`);
-  if (months > 0) parts.push(`${months}m`);
+  if (years > 0) parts.push(`${years} year${years === 1 ? "" : "s"}`);
+  if (months > 0) parts.push(`${months} month${months === 1 ? "" : "s"}`);
   if (parts.length === 0) {
     const diffDays = Math.max(1, Math.floor((now.getTime() - start.getTime()) / (24 * 3600 * 1000)));
-    parts.push(`${diffDays}d`);
+    parts.push(`${diffDays} day${diffDays === 1 ? "" : "s"}`);
   }
-  return parts.join(" ");
+  return parts.slice(0, 2).join(" ");
 }
 
 function initialsFrom(first?: string | null, last?: string | null, fallback?: string) {
@@ -392,7 +392,7 @@ function useTargetMe(targetUserId: string | null, onAuthError?: () => void) {
             lastName: raw?.lastName ?? null,
             displayName: raw?.displayName ?? null,
             phone: raw?.phone ?? null,
-            joinedAt: raw?.joinedAt ?? raw?.createdAt ?? null,
+            joinedAt: raw?.joinedAt ?? raw?.createdAt ?? raw?.created_at ?? raw?.registeredAt ?? null,
             status: raw?.status ?? null,
             emailVerified: resolveEmailVerified(raw),
             emailVerifiedAt: resolveEmailVerifiedAt(raw),
@@ -1653,9 +1653,23 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                 />
                 <Stat
                   label="Member since"
-                  value={me?.joinedAt ? `${dateFmt(me.joinedAt)} • ${sinceJoined(me.joinedAt)} ago` : "—"}
+                  value={
+                    me?.joinedAt || (me as any)?.createdAt
+                      ? sinceJoined(me?.joinedAt || (me as any)?.createdAt) + " ago"
+                      : meQ.isLoading
+                        ? "…"
+                        : "—"
+                  }
+                  icon={<Clock3 size={16} />}
+                  accent="violet"
                 />
               </div>
+
+              {(me?.joinedAt || (me as any)?.createdAt) && (
+                <p className="mt-1 text-[11px] text-zinc-500 sm:text-xs">
+                  Joined {dateFmt(me?.joinedAt || (me as any)?.createdAt)}
+                </p>
+              )}
 
               {isViewingOtherUser ? (
                 <p className="mt-3 text-[11px] text-zinc-600 sm:text-xs">

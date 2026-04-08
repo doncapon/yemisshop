@@ -2441,12 +2441,38 @@ export default function ProductDetail() {
   const showMainImg = !!currentSrc && !mainIsBroken;
 
   const similarRef = React.useRef<HTMLDivElement | null>(null);
+  const similarDragRef = React.useRef({ isDown: false, startX: 0, scrollLeft: 0 });
 
   const scrollSimilarBy = React.useCallback((dir: -1 | 1) => {
     const el = similarRef.current;
     if (!el) return;
     const step = Math.max(260, Math.floor(el.clientWidth * 0.85));
     el.scrollBy({ left: dir * step, behavior: "smooth" });
+  }, []);
+
+  const onSimilarMouseDown = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = similarRef.current;
+    if (!el) return;
+    similarDragRef.current = { isDown: true, startX: e.pageX - el.offsetLeft, scrollLeft: el.scrollLeft };
+    el.style.cursor = "grabbing";
+    el.style.userSelect = "none";
+  }, []);
+
+  const onSimilarMouseLeaveOrUp = React.useCallback(() => {
+    const el = similarRef.current;
+    if (!el) return;
+    similarDragRef.current.isDown = false;
+    el.style.cursor = "grab";
+    el.style.userSelect = "";
+  }, []);
+
+  const onSimilarMouseMove = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = similarRef.current;
+    if (!el || !similarDragRef.current.isDown) return;
+    e.preventDefault();
+    const x = e.pageX - el.offsetLeft;
+    const walk = (x - similarDragRef.current.startX) * 1.2;
+    el.scrollLeft = similarDragRef.current.scrollLeft - walk;
   }, []);
 
   /* ---------------- Render guards ---------------- */
@@ -2478,14 +2504,14 @@ export default function ProductDetail() {
 
   return (
     <SiteLayout>
-      <div className="bg-gradient-to-b from-zinc-50 to-white -mt-4 md:-mt-6">
+      <div className="bg-gradient-to-b from-white-50 to-white -mt-4 md:-mt-6">
         <div>
           <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pt-0">
             <div className="flex items-center justify-between gap-3">
               <button
                 type="button"
                 onClick={goBack}
-                className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                className={`touch-manipulation text-sm px-3 py-2 rounded-full bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
               >
                 ←
               </button>
@@ -2732,7 +2758,7 @@ export default function ProductDetail() {
                       <button
                         type="button"
                         onClick={() => setSelected(computeBaseSelection())}
-                        className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        className={`text-sm px-3 py-2 rounded-full bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                       >
                         Reset to base
                       </button>
@@ -2740,7 +2766,7 @@ export default function ProductDetail() {
                       <button
                         type="button"
                         onClick={() => setSelected({})}
-                        className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        className={`text-sm px-3 py-2 rounded-full bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                       >
                         Clear selections
                       </button>
@@ -2755,7 +2781,7 @@ export default function ProductDetail() {
                     <button
                       type="button"
                       onClick={() => setQty((q) => Math.max(1, q - 1))}
-                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
+                      className={`h-11 sm:h-10 rounded-full bg-white hover:bg-zinc-50 px-3 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
                     >
                       −
                     </button>
@@ -2785,7 +2811,7 @@ export default function ProductDetail() {
                     <button
                       type="button"
                       onClick={() => setQty((q) => Math.min(maxQty, q + 1))}
-                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
+                      className={`h-11 sm:h-10 rounded-full bg-white hover:bg-zinc-50 px-3 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
                     >
                       +
                     </button>
@@ -2799,7 +2825,7 @@ export default function ProductDetail() {
                           return prev === next ? prev : next;
                         });
                       }}
-                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 px-3 text-sm font-medium ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""}`}
+                      className={`h-11 sm:h-10 rounded-full bg-white hover:bg-zinc-50 px-3 text-sm font-medium ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""}`}
                     >
                       Max
                     </button>
@@ -2811,7 +2837,7 @@ export default function ProductDetail() {
                     type="button"
                     onClick={handleAddToCart}
                     disabled={purchaseMeta.disableAddToCart || isAdding}
-                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
+                    className={`w-full sm:w-auto px-4 py-3 rounded-full font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
                       ? "bg-zinc-300 cursor-not-allowed"
                       : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
                       }`}
@@ -2821,7 +2847,7 @@ export default function ProductDetail() {
 
                   <Link
                     to="/cart"
-                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    className={`w-full sm:w-auto px-4 py-3 rounded-full font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                   >
                     View cart
                   </Link>
@@ -2901,7 +2927,7 @@ export default function ProductDetail() {
                         <button
                           type="submit"
                           disabled={saveReviewMutation.isPending}
-                          className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${saveReviewMutation.isPending
+                          className={`px-3 py-2 rounded-full text-sm font-semibold text-white ${saveReviewMutation.isPending
                             ? "bg-zinc-400 cursor-not-allowed"
                             : "bg-fuchsia-600 hover:bg-fuchsia-700"
                             }`}
@@ -2914,7 +2940,7 @@ export default function ProductDetail() {
                             type="button"
                             onClick={handleResetReview}
                             disabled={deleteReviewMutation.isPending}
-                            className={`px-3 py-2 rounded-xl text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                            className={`px-3 py-2 rounded-full text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                           >
                             {deleteReviewMutation.isPending ? "Resetting…" : "Reset review"}
                           </button>
@@ -2959,14 +2985,14 @@ export default function ProductDetail() {
                     <button
                       type="button"
                       onClick={() => scrollSimilarBy(-1)}
-                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                      className={`rounded-full px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                     >
                       ‹
                     </button>
                     <button
                       type="button"
                       onClick={() => scrollSimilarBy(1)}
-                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                      className={`rounded-full px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                     >
                       ›
                     </button>
@@ -2976,7 +3002,11 @@ export default function ProductDetail() {
                 <div
                   ref={similarRef}
                   className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
-                  style={{ scrollbarWidth: "thin" as any }}
+                  style={{ scrollbarWidth: "thin" as any, cursor: "grab" }}
+                  onMouseDown={onSimilarMouseDown}
+                  onMouseLeave={onSimilarMouseLeaveOrUp}
+                  onMouseUp={onSimilarMouseLeaveOrUp}
+                  onMouseMove={onSimilarMouseMove}
                 >
                   {similarQ.data.map((sp) => {
                     const basePrice =
@@ -3005,7 +3035,7 @@ export default function ProductDetail() {
                       >
                         <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
                           {img ? (
-                            <img src={img} alt={sp.title} className="w-full h-full object-cover" loading="lazy" />
+                            <img src={img} alt={sp.title} className="w-full h-full object-cover pointer-events-none" loading="lazy" draggable={false} />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">No image</div>
                           )}

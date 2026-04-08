@@ -82,7 +82,7 @@ export default function Footer() {
             Quality products from trusted suppliers. Fast delivery. Secure checkout.
           </p>
 
-          {/* Payments (placeholders) */}
+          {/* Payments (placeholders)
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
             <span
               className="h-5 w-9 rounded bg-surface ring-1 ring-[--color-surface-ring]"
@@ -100,7 +100,7 @@ export default function Footer() {
               className="h-5 w-9 rounded bg-surface ring-1 ring-[--color-surface-ring]"
               title="Paystack"
             />
-          </div>
+          </div> */}
         </div>
 
         {/* Links + Newsletter */}
@@ -221,7 +221,7 @@ export default function Footer() {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     // ✅ Prevent iOS Safari zooming by keeping 16px on mobile
-                    className="border rounded-xl px-3 py-2 w-full outline-none focus:ring-2 ring-primary-300 bg-white text-base sm:text-sm"
+                    className="border border-zinc-200 rounded-xl px-3 py-2 w-full outline-none focus:ring-2 ring-primary-300 bg-white text-base sm:text-sm"
                     disabled={submitting}
                   />
                   <button
