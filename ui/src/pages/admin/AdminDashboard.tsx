@@ -1268,7 +1268,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-2">
-                  {!isSuspended ? (
+                  {isSuperAdmin && (!isSuspended ? (
                     <button
                       onClick={() => deactivateUser.mutate(u.id)}
                       className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
@@ -1282,7 +1282,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                     >
                       <RefreshCcw size={16} /> Reactivate
                     </button>
-                  )}
+                  ))}
                   <button
                     onClick={() =>
                       openModal2({ title: "User", message: u.email })
@@ -1360,7 +1360,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                     <td className="px-3 py-3">{fmtDate(u.createdAt)}</td>
                     <td className="px-3 py-3 text-right">
                       <div className="inline-flex flex-wrap items-center gap-2">
-                        {!isSuspended ? (
+                        {isSuperAdmin && (!isSuspended ? (
                           <button
                             onClick={() => deactivateUser.mutate(u.id)}
                             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
@@ -1374,7 +1374,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                           >
                             <RefreshCcw size={16} /> Reactivate
                           </button>
-                        )}
+                        ))}
                       </div>
                     </td>
                   </tr>
@@ -2353,20 +2353,22 @@ function TransactionsSection({
                 </div>
               </div>
 
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => onVerify(t.id)}
-                  className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90"
-                >
-                  Verify
-                </button>
-                <button
-                  onClick={() => onRefund(t.id)}
-                  className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
-                >
-                  Refund
-                </button>
-              </div>
+              {isSuperAdmin && (
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => onVerify(t.id)}
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90"
+                  >
+                    Verify
+                  </button>
+                  <button
+                    onClick={() => onRefund(t.id)}
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                  >
+                    Refund
+                  </button>
+                </div>
+              )}
             </div>
           ))}
       </div>
@@ -2422,6 +2424,7 @@ function TransactionsSection({
                 tx={t}
                 onVerify={() => onVerify(t.id)}
                 onRefund={() => onRefund(t.id)}
+                isSuperAdmin={isSuperAdmin}
               />
             ))}
           </tbody>

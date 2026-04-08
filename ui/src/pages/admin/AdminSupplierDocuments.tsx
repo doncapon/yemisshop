@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
+import { useAuthStore } from "../../store/auth";
 
 type SupplierDocumentKind =
     | "BUSINESS_REGISTRATION_CERTIFICATE"
@@ -556,6 +557,8 @@ function hasActiveFilters(
 }
 
 export default function AdminSupplierDocuments() {
+    const isSuperAdmin = useAuthStore((s) => s.user?.role === "SUPER_ADMIN");
+
     const [loadingList, setLoadingList] = useState(true);
     const [listError, setListError] = useState<string | null>(null);
     const [rows, setRows] = useState<SupplierSummaryRow[]>([]);
@@ -1451,7 +1454,8 @@ export default function AdminSupplierDocuments() {
                                                                                             </div>
                                                                                         )}
 
-                                                                                        <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
+                                                                                        {isSuperAdmin && (
+                                                                                          <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
                                                                                             <textarea
                                                                                                 value={reviewNotes[doc.id] || ""}
                                                                                                 onChange={(e) =>
@@ -1498,7 +1502,8 @@ export default function AdminSupplierDocuments() {
                                                                                                     Reject
                                                                                                 </button>
                                                                                             </div>
-                                                                                        </div>
+                                                                                          </div>
+                                                                                        )}
                                                                                     </>
                                                                                 )}
                                                                             </div>
@@ -1707,36 +1712,44 @@ export default function AdminSupplierDocuments() {
                                                                 </div>
                                                             </div>
 
-                                                            <button
-                                                                type="button"
-                                                                onClick={approveSupplier}
-                                                                disabled={
-                                                                    !computedAllRequiredApproved ||
-                                                                    supplierActionLoading !== null
-                                                                }
-                                                                className="inline-flex w-full items-center justify-center rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
-                                                            >
-                                                                {supplierActionLoading === "approve" ? (
-                                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                                ) : (
-                                                                    <BadgeCheck className="mr-2 h-4 w-4" />
-                                                                )}
-                                                                Approve supplier
-                                                            </button>
+                                                            {isSuperAdmin ? (
+                                                              <>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={approveSupplier}
+                                                                    disabled={
+                                                                        !computedAllRequiredApproved ||
+                                                                        supplierActionLoading !== null
+                                                                    }
+                                                                    className="inline-flex w-full items-center justify-center rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                                                >
+                                                                    {supplierActionLoading === "approve" ? (
+                                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                    ) : (
+                                                                        <BadgeCheck className="mr-2 h-4 w-4" />
+                                                                    )}
+                                                                    Approve supplier
+                                                                </button>
 
-                                                            <button
-                                                                type="button"
-                                                                onClick={rejectSupplier}
-                                                                disabled={supplierActionLoading !== null}
-                                                                className="inline-flex w-full items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-                                                            >
-                                                                {supplierActionLoading === "reject" ? (
-                                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                                ) : (
-                                                                    <XCircle className="mr-2 h-4 w-4" />
-                                                                )}
-                                                                Reject supplier
-                                                            </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={rejectSupplier}
+                                                                    disabled={supplierActionLoading !== null}
+                                                                    className="inline-flex w-full items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                                                >
+                                                                    {supplierActionLoading === "reject" ? (
+                                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                    ) : (
+                                                                        <XCircle className="mr-2 h-4 w-4" />
+                                                                    )}
+                                                                    Reject supplier
+                                                                </button>
+                                                              </>
+                                                            ) : (
+                                                              <p className="text-xs text-zinc-500 text-center pt-2">
+                                                                Only a super admin can approve or reject suppliers.
+                                                              </p>
+                                                            )}
                                                         </div>
                                                     </div>
                                                 </aside>

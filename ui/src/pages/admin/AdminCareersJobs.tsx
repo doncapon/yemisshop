@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tansta
 import { Link } from "react-router-dom";
 import api from "../../api/client";
 import { format } from "date-fns";
+import { useAuthStore } from "../../store/auth";
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -131,6 +132,7 @@ function normalizeJobsResponse(raw: any, fallbackPage: number, fallbackPageSize:
 
 const AdminCareersJobs: React.FC = () => {
   const queryClient = useQueryClient();
+  const isSuperAdmin = useAuthStore((s) => s.user?.role === "SUPER_ADMIN");
 
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [editing, setEditing] = useState<EditingJobState>(null);
@@ -299,13 +301,15 @@ const AdminCareersJobs: React.FC = () => {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
-        >
-          + New Job
-        </button>
+        {isSuperAdmin && (
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
+          >
+            + New Job
+          </button>
+        )}
       </header>
 
       <section className="bg-white rounded-lg shadow-sm p-4 space-y-3">
@@ -474,22 +478,26 @@ const AdminCareersJobs: React.FC = () => {
                         : "—"}
                     </td>
                     <td className="px-3 py-2 align-top text-right text-xs space-x-2">
-                      <button
-                        type="button"
-                        onClick={() => openEdit(job)}
-                        className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
-                      >
-                        Edit
-                      </button>
-                      {!job.isDeleted && (
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(job.id)}
-                          disabled={isDeleting}
-                          className="px-2 py-1 rounded border border-red-200 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
-                        >
-                          Archive
-                        </button>
+                      {isSuperAdmin && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openEdit(job)}
+                            className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
+                          >
+                            Edit
+                          </button>
+                          {!job.isDeleted && (
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(job.id)}
+                              disabled={isDeleting}
+                              className="px-2 py-1 rounded border border-red-200 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
+                            >
+                              Archive
+                            </button>
+                          )}
+                        </>
                       )}
                     </td>
                   </tr>
