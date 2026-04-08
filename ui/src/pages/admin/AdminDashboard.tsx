@@ -1283,14 +1283,12 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                       <RefreshCcw size={16} /> Reactivate
                     </button>
                   ))}
-                  <button
-                    onClick={() =>
-                      openModal2({ title: "User", message: u.email })
-                    }
+                  <Link
+                    to={`/u/${u.id}/dashboard`}
                     className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
                   >
-                    View
-                  </button>
+                    View dashboard
+                  </Link>
                 </div>
               </div>
             );
@@ -1360,6 +1358,12 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                     <td className="px-3 py-3">{fmtDate(u.createdAt)}</td>
                     <td className="px-3 py-3 text-right">
                       <div className="inline-flex flex-wrap items-center gap-2">
+                        <Link
+                          to={`/u/${u.id}/dashboard`}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                        >
+                          View
+                        </Link>
                         {isSuperAdmin && (!isSuspended ? (
                           <button
                             onClick={() => deactivateUser.mutate(u.id)}
@@ -2203,6 +2207,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
               }
               onVerify={verifyPayment.mutate}
               onRefund={refundPayment.mutate}
+              isSuperAdmin={isSuperAdmin}
             />
           )}
         </div>
@@ -2219,6 +2224,7 @@ function TransactionsSection({
   onRefresh,
   onVerify,
   onRefund,
+  isSuperAdmin,
 }: {
   q: string;
   setQ: (v: string) => void;
@@ -2226,6 +2232,7 @@ function TransactionsSection({
   onRefresh: () => void;
   onVerify: (id: string) => void;
   onRefund: (id: string) => void;
+  isSuperAdmin: boolean;
 }) {
   function SectionCard({
     title,

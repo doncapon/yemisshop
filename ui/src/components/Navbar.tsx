@@ -709,15 +709,15 @@ export default function Navbar() {
                     <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
                   )}
 
-                  {isLoggedIn && isSuperAdmin && (
+                  {isLoggedIn && isAdmin && (
                     <IconNavLink to="/supplier" end icon={<CheckCircle2 size={18} />} label="Supplier dashboard" />
                   )}
 
-                  {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
+                  {isLoggedIn && !isSupplier && !isAdmin && !isRider && (
                     <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
                   )}
 
-                  {isLoggedIn && isSuperAdmin && (
+                  {isLoggedIn && isAdmin && (
                     <IconNavLink to="/customer-dashboard" end icon={<User size={18} />} label="Customer dashboard" />
                   )}
 
@@ -1081,7 +1081,15 @@ export default function Navbar() {
                         />
                       )}
 
-                      {isLoggedIn && isSuperAdmin && (
+                      {isLoggedIn && isAdmin && (
+                        <MobileMenuButton
+                          icon={<CheckCircle2 size={18} />}
+                          label="Supplier dashboard"
+                          onClick={() => hardGo("/supplier")}
+                        />
+                      )}
+
+                      {isLoggedIn && isAdmin && (
                         <MobileMenuButton
                           icon={<User size={18} />}
                           label="Customer dashboard"
@@ -1089,7 +1097,7 @@ export default function Navbar() {
                         />
                       )}
 
-                      {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
+                      {isLoggedIn && !isSupplier && !isAdmin && !isRider && (
                         <MobileMenuButton
                           icon={<User size={18} />}
                           label="Dashboard"

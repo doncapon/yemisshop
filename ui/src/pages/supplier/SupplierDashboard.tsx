@@ -210,6 +210,7 @@ export default function SupplierDashboard() {
 
   const roleNorm = normRole(role);
   const isAdmin = roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN";
+  const isSuperAdmin = roleNorm === "SUPER_ADMIN";
   const isRider = roleNorm === "SUPPLIER_RIDER";
   const isSupplier = roleNorm === "SUPPLIER";
 
@@ -965,16 +966,20 @@ export default function SupplierDashboard() {
                 value={`${kpis.shippedToday}`}
                 icon={<Truck size={16} />}
               />
-              <Stat
-                label="Available balance"
-                value={ngn.format(kpis.balance)}
-                icon={<CircleDollarSign size={16} />}
-              />
-              <Stat
-                label="Paid out"
-                value={ngn.format(kpis.paidOutTotal)}
-                icon={<CircleDollarSign size={16} />}
-              />
+              {(isSupplier || isSuperAdmin) && (
+                <Stat
+                  label="Available balance"
+                  value={ngn.format(kpis.balance)}
+                  icon={<CircleDollarSign size={16} />}
+                />
+              )}
+              {(isSupplier || isSuperAdmin) && (
+                <Stat
+                  label="Paid out"
+                  value={ngn.format(kpis.paidOutTotal)}
+                  icon={<CircleDollarSign size={16} />}
+                />
+              )}
               <Stat
                 label="Store rating"
                 value={kpis.rating ? `${kpis.rating.toFixed(1)}` : "—"}

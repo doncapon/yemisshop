@@ -140,6 +140,7 @@ export default function SupplierPayouts() {
   const role = useAuthStore((s: any) => s.user?.role);
   const roleNorm = normRole(role);
   const isAdmin = roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN";
+  const isSuperAdmin = roleNorm === "SUPER_ADMIN";
   const isSupplier = roleNorm === "SUPPLIER";
 
   const verificationQ = useSupplierVerificationGate(hydrated && isSupplier);
@@ -427,64 +428,73 @@ export default function SupplierPayouts() {
         )}
 
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Card
-            className="lg:col-span-1"
-            header={
-              <div className="flex items-center gap-3">
-                <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
-                  <CircleDollarSign size={18} />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-xs text-zinc-500">Available balance</div>
-                  <div className="text-xl font-semibold text-zinc-900">
-                    {summary ? ngn.format(availableBalance) : "—"}
+          {(isSupplier || isSuperAdmin) ? (
+            <Card
+              className="lg:col-span-1"
+              header={
+                <div className="flex items-center gap-3">
+                  <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+                    <CircleDollarSign size={18} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs text-zinc-500">Available balance</div>
+                    <div className="text-xl font-semibold text-zinc-900">
+                      {summary ? ngn.format(availableBalance) : "—"}
+                    </div>
                   </div>
                 </div>
-              </div>
-            }
-          >
-            <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div className="rounded-xl border bg-white p-3">
-                  <div className="text-[11px] text-zinc-500">Credits</div>
-                  <div className="font-semibold text-zinc-900">{summary ? ngn.format(credits) : "—"}</div>
+              }
+            >
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div className="rounded-xl border bg-white p-3">
+                    <div className="text-[11px] text-zinc-500">Credits</div>
+                    <div className="font-semibold text-zinc-900">{summary ? ngn.format(credits) : "—"}</div>
+                  </div>
+                  <div className="rounded-xl border bg-white p-3">
+                    <div className="text-[11px] text-zinc-500">Debits</div>
+                    <div className="font-semibold text-zinc-900">{summary ? ngn.format(debits) : "—"}</div>
+                  </div>
                 </div>
-                <div className="rounded-xl border bg-white p-3">
-                  <div className="text-[11px] text-zinc-500">Debits</div>
-                  <div className="font-semibold text-zinc-900">{summary ? ngn.format(debits) : "—"}</div>
-                </div>
-              </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
-                <div className="rounded-xl border bg-zinc-50 p-3">
-                  <div className="text-zinc-500">Pending</div>
-                  <div className="font-semibold text-zinc-900">{ngn.format(pending)}</div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
+                  <div className="rounded-xl border bg-zinc-50 p-3">
+                    <div className="text-zinc-500">Pending</div>
+                    <div className="font-semibold text-zinc-900">{ngn.format(pending)}</div>
+                  </div>
+                  <div className="rounded-xl border bg-zinc-50 p-3">
+                    <div className="text-zinc-500">Approved</div>
+                    <div className="font-semibold text-zinc-900">{ngn.format(approved)}</div>
+                  </div>
+                  <div className="rounded-xl border bg-zinc-50 p-3">
+                    <div className="text-zinc-500">Held</div>
+                    <div className="font-semibold text-zinc-900">{ngn.format(held)}</div>
+                  </div>
+                  <div className="rounded-xl border bg-zinc-50 p-3">
+                    <div className="text-zinc-500">Paid</div>
+                    <div className="font-semibold text-zinc-900">{ngn.format(paidOut)}</div>
+                  </div>
+                  <div className="rounded-xl border bg-zinc-50 p-3">
+                    <div className="text-zinc-500">Failed</div>
+                    <div className="font-semibold text-zinc-900">{ngn.format(failed)}</div>
+                  </div>
                 </div>
-                <div className="rounded-xl border bg-zinc-50 p-3">
-                  <div className="text-zinc-500">Approved</div>
-                  <div className="font-semibold text-zinc-900">{ngn.format(approved)}</div>
-                </div>
-                <div className="rounded-xl border bg-zinc-50 p-3">
-                  <div className="text-zinc-500">Held</div>
-                  <div className="font-semibold text-zinc-900">{ngn.format(held)}</div>
-                </div>
-                <div className="rounded-xl border bg-zinc-50 p-3">
-                  <div className="text-zinc-500">Paid</div>
-                  <div className="font-semibold text-zinc-900">{ngn.format(paidOut)}</div>
-                </div>
-                <div className="rounded-xl border bg-zinc-50 p-3">
-                  <div className="text-zinc-500">Failed</div>
-                  <div className="font-semibold text-zinc-900">{ngn.format(failed)}</div>
-                </div>
-              </div>
 
-              {outstandingDebt > 0 && (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-                  Outstanding debt: <b>{ngn.format(outstandingDebt)}</b>
-                </div>
-              )}
-            </div>
-          </Card>
+                {outstandingDebt > 0 && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+                    Outstanding debt: <b>{ngn.format(outstandingDebt)}</b>
+                  </div>
+                )}
+              </div>
+            </Card>
+          ) : (
+            <Card className="lg:col-span-1">
+              <div className="flex flex-col items-center justify-center py-8 text-center text-zinc-500 gap-2">
+                <CircleDollarSign size={28} className="text-zinc-300" />
+                <p className="text-sm">Balance details are visible to super admins only.</p>
+              </div>
+            </Card>
+          )}
 
           <Card
             className="lg:col-span-2"
