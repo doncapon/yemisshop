@@ -1597,67 +1597,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
           </div>
         </div>
 
-        {/* KPIs (Overview only) */}
-        {tab === "overview" && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-            <KpiCard
-              title="Users"
-              value={(
-                overview.data?.users.totalUsers ?? 0
-              ).toLocaleString()}
-              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0
-                } Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0
-                } Riders • ${overview.data?.users.totalAdmins ?? 0} Admins • ${overview.data?.users.totalSuperAdmins ?? 0
-                } Super Admins`}
-              Icon={Users}
-            />
-
-            <KpiCardOverview
-              title="Products"
-              total={`${overview.data?.products.total ?? 0} total`}
-              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0
-                } Live`}
-              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0
-                } Rejected`}
-              res={`${overview.data?.products.availability.publishedAvailable ?? 0
-                } Published available`}
-              Icon={PackageCheck}
-            />
-
-            <KpiCard
-              title="Orders Today"
-              value={(overview.data?.ordersToday ?? 0).toLocaleString()}
-              hint="New orders"
-              Icon={CreditCard}
-            />
-
-            <KpiCard
-              title="Revenue Today"
-              value={ngn.format(fmtN(overview.data?.revenueToday))}
-              hint="Last 7 days"
-              Icon={BarChart3}
-              chart={
-                <Sparkline
-                  points={overview.data?.sparklineRevenue7d || []}
-                />
-              }
-            />
-
-            {isSuperAdmin && (
-              <KpiCard
-                title="Platform Profit Today"
-                value={ngn.format(fmtN(overview.data?.profitToday))}
-                hint="Commission + base service fee"
-                Icon={BarChart3}
-                chart={
-                  <Sparkline points={overview.data?.sparklineProfit7d || []} />
-                }
-              />
-            )}
-          </div>
-        )}
-
-        {/* Tabs */}
+                {/* Tabs */}
         <div className="mt-6">
           <div className="rounded-2xl border bg-white p-2 shadow-sm">
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
@@ -1766,6 +1706,66 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
             </div>
           </div>
         </div>
+
+        {/* KPIs (Overview only) */}
+        {tab === "overview" && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            <KpiCard
+              title="Users"
+              value={(
+                overview.data?.users.totalUsers ?? 0
+              ).toLocaleString()}
+              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0
+                } Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0
+                } Riders • ${overview.data?.users.totalAdmins ?? 0} Admins • ${overview.data?.users.totalSuperAdmins ?? 0
+                } Super Admins`}
+              Icon={Users}
+            />
+
+            <KpiCardOverview
+              title="Products"
+              total={`${overview.data?.products.total ?? 0} total`}
+              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0
+                } Live`}
+              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0
+                } Rejected`}
+              res={`${overview.data?.products.availability.publishedAvailable ?? 0
+                } Published available`}
+              Icon={PackageCheck}
+            />
+
+            <KpiCard
+              title="Orders Today"
+              value={(overview.data?.ordersToday ?? 0).toLocaleString()}
+              hint="New orders"
+              Icon={CreditCard}
+            />
+
+            <KpiCard
+              title="Revenue Today"
+              value={ngn.format(fmtN(overview.data?.revenueToday))}
+              hint="Last 7 days"
+              Icon={BarChart3}
+              chart={
+                <Sparkline
+                  points={overview.data?.sparklineRevenue7d || []}
+                />
+              }
+            />
+
+            {isSuperAdmin && (
+              <KpiCard
+                title="Platform Profit Today"
+                value={ngn.format(fmtN(overview.data?.profitToday))}
+                hint="Commission + base service fee"
+                Icon={BarChart3}
+                chart={
+                  <Sparkline points={overview.data?.sparklineProfit7d || []} />
+                }
+              />
+            )}
+          </div>
+        )}
 
         {/* Content */}
         <div className="mt-4 space-y-6">
