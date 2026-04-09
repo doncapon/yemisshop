@@ -12,7 +12,7 @@ import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
 
 // ✅ single source of truth (navbar/cart reads this)
-import { upsertCartLine, toMiniCartRows, readCartLines } from "../utils/cartModel";
+import { upsertCartLine, toMiniCartRows, readCartLines, writeCartLines } from "../utils/cartModel";
 
 /* ---------------- Config ---------------- */
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
@@ -657,6 +657,15 @@ export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const editCartLine = (location.state as any)?.editCartLine as {
+    variantId: string | null;
+    kind: "BASE" | "VARIANT";
+    selectedOptions: any[];
+    needsOptions?: boolean;
+    qty?: number;
+    id?: string;
+    sourceIds?: string[];
+  } | undefined;
 
   const goBack = React.useCallback(() => {
     const state = (location.state as any) || {};
@@ -1155,48 +1164,6 @@ export default function ProductDetail() {
     [axisIds, baseDefaults]
   );
 
-  const [selected, setSelected] = React.useState<Record<string, string>>({});
-  const [qty, setQty] = React.useState<number>(1);
-
-  const computeInitialSelection = React.useCallback(() => {
-    if (!visibleAxes.length) return {};
-
-    if (hasExplicitBaseDefaults) {
-      const out: Record<string, string> = {};
-      for (const ax of visibleAxes) {
-        const v = String(baseDefaults?.[ax.id] ?? "").trim();
-        if (v) out[ax.id] = v;
-      }
-      return out;
-    }
-
-    if (hasBaseOffer) return {};
-
-    if (cheapestOverallOffer?.model === "VARIANT" && cheapestOverallOffer.variantId) {
-      const v = allVariants.find((x) => x.id === cheapestOverallOffer.variantId);
-      if (v) {
-        return buildEffectiveVariantSelectionMap({
-          variant: v,
-          baseDefaults,
-        });
-      }
-    }
-
-    return {};
-  }, [visibleAxes, hasExplicitBaseDefaults, hasBaseOffer, baseDefaults, cheapestOverallOffer, allVariants]);
-
-  React.useEffect(() => {
-    if (!product || !visibleAxes.length) {
-      setSelected({});
-      setQty(1);
-      return;
-    }
-
-    const initial = computeInitialSelection();
-    setSelected(initial);
-    setQty(1);
-  }, [product?.id, visibleAxes.length, computeInitialSelection, product]);
-
   const sellableVariantOptionMaps = React.useMemo(() => {
     const out: Array<{
       variantId: string;
@@ -1227,6 +1194,58 @@ export default function ProductDetail() {
 
     return out;
   }, [allVariants, sellableVariantIds, baseDefaults]);
+
+  const [selected, setSelected] = React.useState<Record<string, string>>({});
+  const [qty, setQty] = React.useState<number>(
+    editCartLine?.qty && editCartLine.qty > 1 ? editCartLine.qty : 1
+  );
+
+  const computeInitialSelection = React.useCallback(() => {
+    if (!visibleAxes.length) return {};
+
+    // When arriving from cart "Choose options / different option", skip base defaults
+    // and immediately land on the first fully purchasable variant so no out-of-stock
+    // option is pre-selected.
+    if (editCartLine && sellableVariantOptionMaps.length > 0) {
+      return sellableVariantOptionMaps[0].map;
+    }
+
+    if (hasExplicitBaseDefaults) {
+      const out: Record<string, string> = {};
+      for (const ax of visibleAxes) {
+        const v = String(baseDefaults?.[ax.id] ?? "").trim();
+        if (v) out[ax.id] = v;
+      }
+      return out;
+    }
+
+    if (hasBaseOffer) return {};
+
+    if (cheapestOverallOffer?.model === "VARIANT" && cheapestOverallOffer.variantId) {
+      const v = allVariants.find((x) => x.id === cheapestOverallOffer.variantId);
+      if (v) {
+        return buildEffectiveVariantSelectionMap({
+          variant: v,
+          baseDefaults,
+        });
+      }
+    }
+
+    return {};
+  }, [editCartLine, sellableVariantOptionMaps, visibleAxes, hasExplicitBaseDefaults, hasBaseOffer, baseDefaults, cheapestOverallOffer, allVariants]);
+
+  React.useEffect(() => {
+    if (!product || !visibleAxes.length) {
+      setSelected({});
+      if (!editCartLine) setQty(1);
+      return;
+    }
+
+    const initial = computeInitialSelection();
+    setSelected(initial);
+    // Preserve cart qty when the user arrived from "Choose options"
+    if (!editCartLine) setQty(1);
+  }, [product?.id, visibleAxes.length, computeInitialSelection, product]);
 
   const buyableBaseSelectionMap = React.useMemo(() => {
     if (!canBuyBase) return null;
@@ -2050,11 +2069,27 @@ export default function ProductDetail() {
       const primaryImg = resolveImageUrl(variantImgRaw) || resolveImageUrl(productImgRaw) || null;
 
       const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
+
+      // Enrich maps from raw variant option data as fallback
+      for (const v of product.variants ?? []) {
+        for (const o of v.options ?? []) {
+          const aId = String(o.attributeId ?? "").trim();
+          const vId = String(o.valueId ?? "").trim();
+          const aName = o.attribute?.name;
+          const vName = o.value?.name;
+          if (aId && aName && !attrNameById.has(aId)) attrNameById.set(aId, aName);
+          if (aId && vId && vName) {
+            if (!valueNameByAttrId.has(aId)) valueNameByAttrId.set(aId, new Map());
+            if (!valueNameByAttrId.get(aId)!.has(vId)) valueNameByAttrId.get(aId)!.set(vId, vName);
+          }
+        }
+      }
+
       const selectedOptionsLabeled = selectedOptionsWire.map(({ attributeId, valueId }) => ({
         attributeId,
-        attribute: attrNameById.get(attributeId) ?? "",
+        attribute: attrNameById.get(attributeId) ?? attributeId,
         valueId,
-        value: valueNameByAttrId.get(attributeId)?.get(valueId) ?? "",
+        value: valueNameByAttrId.get(attributeId)?.get(valueId) ?? valueId,
       }));
 
       const isLoggedIn = !!useAuthStore.getState().user?.id;
@@ -2093,12 +2128,81 @@ export default function ProductDetail() {
         variantId: variantId ?? null,
         kind: lineKind,
         optionsKey,
-        qty: (existingForCombo?.qty ?? 0) + addQty,
+        qty: editCartLine ? addQty : (existingForCombo?.qty ?? 0) + addQty,
         selectedOptions: selectedOptionsLabeled,
         titleSnapshot: product.title ?? null,
         imageSnapshot: primaryImg ?? null,
         unitPriceCache: Number.isFinite(unitPriceClient) ? unitPriceClient : 0,
       });
+
+      const pid = String(product.id);
+      const linesAfterAdd = readCartLines();
+      let cleanedLines = linesAfterAdd;
+
+      const oldServerIds = editCartLine
+        ? [
+          ...new Set(
+            [
+              ...(editCartLine.sourceIds ?? []),
+              ...(editCartLine.id ? [editCartLine.id] : []),
+            ]
+              .map(String)
+              .filter(Boolean)
+          ),
+        ]
+        : [];
+
+      if (editCartLine?.needsOptions) {
+        // Path A — user was editing a needsOptions BASE placeholder.
+        // Local: remove the placeholder line.
+        cleanedLines = cleanedLines.filter(
+          (l) => !(l.productId === pid && l.kind === "BASE" && l.needsOptions === true)
+        );
+        // Server: delete the placeholder row by its id.
+        if (isLoggedIn && oldServerIds.length) {
+          await Promise.all(
+            oldServerIds.map((sid) =>
+              api.delete(`/api/cart/items/${sid}`, AXIOS_COOKIE_CFG).catch(() => { })
+            )
+          );
+        }
+      } else if (editCartLine) {
+        // Path B — user is replacing an existing configured VARIANT line.
+        // Only act if they actually picked something different.
+        const oldVid = editCartLine.variantId;
+        const oldKind = editCartLine.kind;
+        const isReplacing =
+          String(oldVid ?? null) !== String(variantId ?? null) || oldKind !== lineKind;
+
+        if (isReplacing) {
+          // Local: remove the specific old line identified by variantId + kind.
+          cleanedLines = cleanedLines.filter(
+            (l) =>
+              !(
+                l.productId === pid &&
+                String(l.variantId ?? null) === String(oldVid ?? null) &&
+                l.kind === oldKind
+              )
+          );
+          // Server: delete the specific old row by its id.
+          if (isLoggedIn && oldServerIds.length) {
+            await Promise.all(
+              oldServerIds.map((sid) =>
+                api.delete(`/api/cart/items/${sid}`, AXIOS_COOKIE_CFG).catch(() => { })
+              )
+            );
+          }
+        }
+      } else {
+        // Path C — normal add (no edit context). Remove any stale needsOptions placeholder.
+        cleanedLines = cleanedLines.filter(
+          (l) => !(l.productId === pid && l.kind === "BASE" && l.needsOptions === true)
+        );
+      }
+
+      if (cleanedLines.length !== linesAfterAdd.length) {
+        writeCartLines(cleanedLines);
+      }
 
       window.dispatchEvent(new Event("cart:updated"));
 
@@ -2832,6 +2936,16 @@ export default function ProductDetail() {
                   </div>
                 </div>
 
+                {editCartLine && (
+                  <div className="mt-4 flex items-start gap-2 rounded-xl border border-fuchsia-200 bg-fuchsia-50 px-3 py-2.5 text-[12px] text-fuchsia-800">
+                    <span>✏️</span>
+                    <span>
+                      You're editing a cart item. Choose your options below and click{" "}
+                      <strong>Add to cart</strong> — your previous selection will be replaced.
+                    </span>
+                  </div>
+                )}
+
                 <div className="mt-5 flex flex-col sm:flex-row items-center gap-3">
                   <button
                     type="button"
@@ -2842,7 +2956,7 @@ export default function ProductDetail() {
                       : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
                       }`}
                   >
-                    {isAdding ? "Adding…" : "Add to cart"}
+                    {isAdding ? "Updating cart…" : editCartLine ? "Update cart" : "Add to cart"}
                   </button>
 
                   <Link
