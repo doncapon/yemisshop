@@ -500,13 +500,13 @@ export default function Login() {
 
   return (
     <SiteLayout>
-      <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
+      <div className="bg-gradient-to-b from-zinc-50 to-white">
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute -top-28 -right-24 h-[22rem] w-[22rem] rounded-full bg-fuchsia-300/50 blur-3xl opacity-30 sm:h-[26rem] sm:w-[26rem]" />
           <div className="absolute -bottom-32 -left-20 h-[24rem] w-[24rem] rounded-full bg-cyan-300/50 blur-3xl opacity-25 sm:h-[28rem] sm:w-[28rem]" />
         </div>
 
-        <div className="relative grid min-h-[100dvh] items-start px-3 pt-2 pb-4 sm:place-items-center sm:px-4 sm:py-10">
+        <div className="relative flex flex-col items-center px-3 pt-3 pb-6 sm:px-4 sm:pt-4 sm:pb-8">
           <div className="w-full max-w-md">
             <div className="mb-3 text-center sm:mb-6">
               <div className="flex justify-center">
