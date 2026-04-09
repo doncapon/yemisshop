@@ -2,64 +2,239 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. API — typecheck, build, unit + integration tests
+  # ─────────────────────────────────────────────────────────────────────────────
   api-ci:
-    name: API – Install, Typecheck & Build
+    name: API – Typecheck, Build & Test
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./api
+
+    env:
+      NODE_ENV: test
+      JWT_SECRET: test-jwt-secret-ci
+      ACCESS_JWT_SECRET: test-jwt-secret-ci
+      APP_URL: http://localhost:5173
+      RESEND_API_KEY: ""          # keeps email.ts in dry-run/log mode
+      TERMII_SMS_ENABLED: "true"
+      TERMII_WHATSAPP_ENABLED: "false"
+      # Prisma needs a URL even in unit tests (it validates the schema at import time)
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dayspring_test
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dayspring_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: ./api/package-lock.json
 
-      - name: Install deps
+      - name: Install dependencies
         run: npm ci
 
-      # Will pass even if "typecheck" script doesn't exist yet
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Push schema to test DB
+        run: npx prisma db push --skip-generate --accept-data-loss
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dayspring_test
+
       - name: Typecheck
-        run: npm run -s typecheck || echo "no typecheck script; skipping"
+        run: npx tsc --noEmit
 
       - name: Build
         run: npm run build
 
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run integration tests
+        run: npm run test:integration
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage
+          path: api/coverage
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. UI — typecheck, build, unit + component tests
+  # ─────────────────────────────────────────────────────────────────────────────
   ui-ci:
-    name: UI – Install, Typecheck & Build
+    name: UI – Typecheck, Build & Test
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./ui
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: ./ui/package-lock.json
 
-      - name: Install deps
+      - name: Install dependencies
         run: npm ci
 
-      # Same safe typecheck; add "typecheck": "tsc --noEmit" to ui/package.json when ready
       - name: Typecheck
-        run: npm run -s typecheck || echo "no typecheck script; skipping"
+        run: npm run typecheck
 
       - name: Build
         env:
-          # Use your real API URL if you want a stronger build check
           VITE_API_URL: https://api.dayspringhouse.com
         run: npm run build
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run component tests
+        run: npm run test:components
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-coverage
+          path: ui/coverage
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. E2E — Playwright (only on push to main or manual trigger)
+  #    Runs against a real dev server + API booted inside the job.
+  #    Set E2E_* secrets in repo settings for real user credentials.
+  # ─────────────────────────────────────────────────────────────────────────────
+  e2e:
+    name: E2E – Playwright
+    runs-on: ubuntu-latest
+    needs: [api-ci, ui-ci]         # only run if both build + unit tests pass
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
+
+    env:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dayspring_e2e
+      JWT_SECRET: e2e-jwt-secret-ci
+      ACCESS_JWT_SECRET: e2e-jwt-secret-ci
+      APP_URL: http://localhost:5173
+      RESEND_API_KEY: ""
+      TERMII_SMS_ENABLED: "false"
+      TERMII_WHATSAPP_ENABLED: "false"
+      VITE_API_URL: http://localhost:8080
+      # Set these secrets in GitHub repo settings → Secrets and Variables → Actions
+      E2E_SHOPPER_EMAIL: ${{ secrets.E2E_SHOPPER_EMAIL }}
+      E2E_SHOPPER_PASSWORD: ${{ secrets.E2E_SHOPPER_PASSWORD }}
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dayspring_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ./ui/package-lock.json
+
+      - name: Install API deps
+        working-directory: ./api
+        run: npm ci
+
+      - name: Migrate E2E database
+        working-directory: ./api
+        run: |
+          npx prisma generate
+          npx prisma db push --skip-generate --accept-data-loss
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dayspring_e2e
+
+      - name: Start API server
+        working-directory: ./api
+        run: |
+          npm run build
+          node dist/src/server.js &
+          echo "Waiting for API..."
+          npx wait-on http://localhost:8080/api/health --timeout 30000
+
+      - name: Install UI deps
+        working-directory: ./ui
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: ./ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Start UI dev server
+        working-directory: ./ui
+        run: |
+          npm run dev &
+          npx wait-on http://localhost:5173 --timeout 30000
+        env:
+          VITE_API_URL: http://localhost:8080
+
+      - name: Run Playwright E2E tests
+        working-directory: ./ui
+        run: npx playwright test --project=chromium
+        env:
+          E2E_BASE_URL: http://localhost:5173
+          CI: true
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: ui/playwright-report
+          retention-days: 7

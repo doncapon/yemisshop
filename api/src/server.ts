@@ -610,6 +610,11 @@ app.use((err: any, _req: any, res: any, _next: any) => {
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 
-app.listen(PORT, HOST, () => {
-  console.log(`API on http://${HOST}:${PORT}`);
-});
+// Only bind a port when running as the real server (not under test)
+if (process.env.NODE_ENV !== "test") {
+  app.listen(PORT, HOST, () => {
+    console.log(`API on http://${HOST}:${PORT}`);
+  });
+}
+
+export { app };

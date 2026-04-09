@@ -149,7 +149,7 @@ type CatalogPersistedState = {
   inStockOnly: boolean;
   expandedCats: Record<string, boolean>;
   page: number;
-  pageSize: 8 | 12 | 16;
+  pageSize: 8 | 12 | 16 | 24;
 };
 
 type CatalogProductsMeta = {
@@ -224,8 +224,8 @@ function readCatalogState(): CatalogPersistedState | null {
         : "relevance";
 
     const pageSizeRaw = Number(parsed?.pageSize);
-    const pageSize: 8 | 12 | 16 =
-      pageSizeRaw === 8 || pageSizeRaw === 12 || pageSizeRaw === 16 ? pageSizeRaw : 12;
+    const pageSize: 8 | 12 | 16 | 24 =
+      pageSizeRaw === 8 || pageSizeRaw === 12 || pageSizeRaw === 16 || pageSizeRaw === 24 ? pageSizeRaw : 12;
 
     return {
       selectedCategories: Array.isArray(parsed?.selectedCategories)
@@ -1271,6 +1271,7 @@ const ProductCard = memo(
       <Link
         to={`/products/${p.id}`}
         state={{ from: location.pathname }}
+        data-testid="product-card"
         onClick={(e) => {
           if (isFromCardAction(e.target)) {
             e.preventDefault();
@@ -1699,7 +1700,7 @@ export default function Catalog() {
   const normalizedQuery = useMemo(() => norm(query.trim()), [query]);
 
   const [page, setPage] = useState(initialPersisted?.page ?? 1);
-  const [pageSize, setPageSize] = useState<8 | 12 | 16>(12);
+  const [pageSize, setPageSize] = useState<8 | 12 | 16 | 24>(initialPersisted?.pageSize ?? 12);
   const [jumpVal, setJumpVal] = useState<string>("");
 
   const locationStateFrom = `${location.pathname}${location.search}`;
@@ -3072,7 +3073,7 @@ export default function Catalog() {
                 <div className="relative">
                   <select
                     value={pageSize}
-                    onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
+                    onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16 | 24)}
                     className="w-full appearance-none rounded-full border border-zinc-200 bg-white py-2.5 pl-4 pr-11"
                   >
                     <option value={8}>8</option>
@@ -3697,7 +3698,7 @@ export default function Catalog() {
                     <button
                       key={n}
                       type="button"
-                      onClick={() => setPageSize(n)}
+                      onClick={() => setPageSize(n as 8 | 12 | 16 | 24)}
                       className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
                         pageSize === n
                           ? "border-zinc-900 bg-zinc-900 text-white"

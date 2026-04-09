@@ -230,8 +230,9 @@ export default function Register() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div>
-                  <label className={labelBase}>Email</label>
+                  <label htmlFor="register-email" className={labelBase}>Email</label>
                   <input
+                    id="register-email"
                     type="email"
                     value={form.email}
                     onChange={onChange("email")}
