@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(grep -r \"^[[:space:]]*//.*r\\\\.post\\\\|^[[:space:]]*//.*router\\\\.\" /c/workspace/ecommerce/yemisshop/api/src/routes --include=\"*.ts\")",
+      "Bash(ls:*)",
+      "Bash(echo \"EXIT: $?\"22w222222)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(npm install:*)",
+      "Bash(npx vitest:*)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(npm run:*)",
+      "Bash(find \"C:\\\\workspace\\\\ecommerce\\\\yemisshop\\\\ui\\\\src\" -name \"consent*\" -exec cat {} \\\\;)"
+    ]
+  }
+}

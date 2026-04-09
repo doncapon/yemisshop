@@ -53,10 +53,12 @@ export function TransactionRow({
   tx,
   onVerify,
   onRefund,
+  isSuperAdmin,
 }: {
   tx: AdminPayment;
   onVerify: () => void;
   onRefund: () => void;
+  isSuperAdmin?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
@@ -103,26 +105,28 @@ export function TransactionRow({
         <td className="px-3 py-3">{fmtDate(tx.createdAt)}</td>
 
         <td className="px-3 py-3 text-right">
-          <div className="inline-flex items-center gap-2">
-            <button
-              onClick={onVerify}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-              disabled={["PAID", "VERIFIED", "CANCELED", "REFUNDED"].includes(
-                String(tx.status || "").toUpperCase()
-              )}
-              title={tx.status === "PAID" ? "Already verified" : "Verify payment"}
-            >
-              <Check size={16} /> Verify
-            </button>
+          {isSuperAdmin && (
+            <div className="inline-flex items-center gap-2">
+              <button
+                onClick={onVerify}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                disabled={["PAID", "VERIFIED", "CANCELED", "REFUNDED"].includes(
+                  String(tx.status || "").toUpperCase()
+                )}
+                title={tx.status === "PAID" ? "Already verified" : "Verify payment"}
+              >
+                <Check size={16} /> Verify
+              </button>
 
-            <button
-              onClick={onRefund}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
-              title="Refund"
-            >
-              <CreditCard size={16} /> Refund
-            </button>
-          </div>
+              <button
+                onClick={onRefund}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                title="Refund"
+              >
+                <CreditCard size={16} /> Refund
+              </button>
+            </div>
+          )}
         </td>
       </tr>
 

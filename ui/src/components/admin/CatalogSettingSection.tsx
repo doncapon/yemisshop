@@ -334,9 +334,11 @@ function ReadOnlyField({
 function SupplierViewPanel({
   supplier,
   onClose,
+  isSuperAdmin,
 }: {
   supplier: AdminSupplier | null;
   onClose: () => void;
+  isSuperAdmin?: boolean;
 }) {
   if (!supplier) return null;
 
@@ -562,25 +564,31 @@ function SupplierViewPanel({
           <ReadOnlyField label="Bank Code" value={supplier.bankCode} mono />
         </div>
 
-        <div className="col-span-12 md:col-span-6">
-          <ReadOnlyField label="Account Number" value={supplier.accountNumber} mono />
-        </div>
+        {isSuperAdmin && (
+          <div className="col-span-12 md:col-span-6">
+            <ReadOnlyField label="Account Number" value={supplier.accountNumber} mono />
+          </div>
+        )}
 
-        <div className="col-span-12 md:col-span-6">
+        <div className={isSuperAdmin ? "col-span-12 md:col-span-6" : "col-span-12"}>
           <ReadOnlyField label="Account Name" value={supplier.accountName} />
         </div>
 
-        <div className="col-span-12 md:col-span-4">
-          <ReadOnlyField label="API Base URL" value={supplier.apiBaseUrl} />
-        </div>
+        {isSuperAdmin && (
+          <>
+            <div className="col-span-12 md:col-span-4">
+              <ReadOnlyField label="API Base URL" value={supplier.apiBaseUrl} />
+            </div>
 
-        <div className="col-span-6 md:col-span-4">
-          <ReadOnlyField label="API Auth Type" value={supplier.apiAuthType} />
-        </div>
+            <div className="col-span-6 md:col-span-4">
+              <ReadOnlyField label="API Auth Type" value={supplier.apiAuthType} />
+            </div>
 
-        <div className="col-span-6 md:col-span-4">
-          <ReadOnlyField label="API Key / Token" value={maskSecret(supplier.apiKey)} mono />
-        </div>
+            <div className="col-span-6 md:col-span-4">
+              <ReadOnlyField label="API Key / Token" value={maskSecret(supplier.apiKey)} mono />
+            </div>
+          </>
+        )}
 
         {/* Registered address */}
         <div className="col-span-12 mt-2">
@@ -802,6 +810,7 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
         <SupplierViewPanel
           supplier={viewingSupplier}
           onClose={() => setViewingSupplier(null)}
+          isSuperAdmin={canEdit}
         />
       )}
 
@@ -935,86 +944,87 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
                   </td>
 
                   <td className="px-3 py-2 text-right">
-                    {canEdit && (
-                      <div className="inline-flex flex-wrap gap-2 justify-end">
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${s.id}`, {
-                              withCredentials: true,
-                            });
-                            setViewingSupplier(data.data);
-                          }}
-                          className="px-2 py-1 rounded border"
-                          title="View supplier"
-                        >
-                          View
-                        </button>
+                    <div className="inline-flex flex-wrap gap-2 justify-end">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${s.id}`, {
+                            withCredentials: true,
+                          });
+                          setViewingSupplier(data.data);
+                        }}
+                        className="px-2 py-1 rounded border"
+                        title="View supplier"
+                      >
+                        View
+                      </button>
 
-                        {status !== "VERIFIED" && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                bankVerifyM.mutate({
-                                  id: s.id,
-                                  decision: "VERIFIED",
-                                  note: "Verified by admin",
-                                })
-                              }
-                              className="px-2 py-1 rounded bg-emerald-600 text-white disabled:opacity-50"
-                              disabled={!canVerify}
-                              title={!canVerify ? missingReason || "Cannot verify right now" : "Verify bank details"}
-                            >
-                              Verify bank
-                            </button>
+                      {canEdit && (
+                        <>
+                          {status !== "VERIFIED" && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  bankVerifyM.mutate({
+                                    id: s.id,
+                                    decision: "VERIFIED",
+                                    note: "Verified by admin",
+                                  })
+                                }
+                                className="px-2 py-1 rounded bg-emerald-600 text-white disabled:opacity-50"
+                                disabled={!canVerify}
+                                title={!canVerify ? missingReason || "Cannot verify right now" : "Verify bank details"}
+                              >
+                                Verify bank
+                              </button>
 
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const note = window.prompt("Reason for rejection (optional):") || undefined;
-                                bankVerifyM.mutate({ id: s.id, decision: "REJECTED", note });
-                              }}
-                              className="px-2 py-1 rounded bg-amber-600 text-white disabled:opacity-50"
-                              disabled={!canVerify}
-                              title={!canVerify ? missingReason || "Cannot reject right now" : "Reject bank details"}
-                            >
-                              Reject bank
-                            </button>
-                          </>
-                        )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const note = window.prompt("Reason for rejection (optional):") || undefined;
+                                  bankVerifyM.mutate({ id: s.id, decision: "REJECTED", note });
+                                }}
+                                className="px-2 py-1 rounded bg-amber-600 text-white disabled:opacity-50"
+                                disabled={!canVerify}
+                                title={!canVerify ? missingReason || "Cannot reject right now" : "Reject bank details"}
+                              >
+                                Reject bank
+                              </button>
+                            </>
+                          )}
 
-                        <button
-                          type="button"
-                          disabled={!deletable || deleteSupplier.isPending}
-                          onClick={() => {
-                            if (!deletable) return;
+                          <button
+                            type="button"
+                            disabled={!deletable || deleteSupplier.isPending}
+                            onClick={() => {
+                              if (!deletable) return;
 
-                            const ok = window.confirm(
-                              "Delete this supplier permanently? This only works when the supplier has no linked offers, purchase orders, or chosen order items."
-                            );
-                            if (!ok) return;
+                              const ok = window.confirm(
+                                "Delete this supplier permanently? This only works when the supplier has no linked offers, purchase orders, or chosen order items."
+                              );
+                              if (!ok) return;
 
-                            deleteSupplier.mutate(s.id);
-                          }}
-                          className={`px-2 py-1 rounded ${deletable
-                            ? "bg-rose-600 text-white hover:bg-rose-700"
-                            : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
-                            }`}
-                          title={deleteReason}
-                        >
-                          {deletable ? "Delete" : "In use"}
-                        </button>
-                        {!deletable && (
-                          <div className="text-[11px] text-zinc-500 mt-1">
-                            Offers: {Number(s.productOffers ?? 0) + Number(s.variantOffers ?? 0)} •
-                            POs: {Number(s.purchaseOrders ?? 0)} •
-                            Order items: {Number(s.chosenOrderItems ?? 0)}
-                          </div>
-                        )}
-                      </div>
-
-                    )}
+                              deleteSupplier.mutate(s.id);
+                            }}
+                            className={`px-2 py-1 rounded ${deletable
+                              ? "bg-rose-600 text-white hover:bg-rose-700"
+                              : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                              }`}
+                            title={deleteReason}
+                          >
+                            {deletable ? "Delete" : "In use"}
+                          </button>
+                          {!deletable && (
+                            <div className="text-[11px] text-zinc-500 mt-1">
+                              Offers: {Number(s.productOffers ?? 0) + Number(s.variantOffers ?? 0)} •
+                              POs: {Number(s.purchaseOrders ?? 0)} •
+                              Order items: {Number(s.chosenOrderItems ?? 0)}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </td>
 
                 </tr>

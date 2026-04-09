@@ -22,7 +22,7 @@ function loadCartV2(key: string): any[] {
       const arr = legacy ? JSON.parse(legacy) : [];
       return Array.isArray(arr) ? arr : [];
     }
-  } catch {}
+  } catch { }
   return [];
 }
 
@@ -42,7 +42,7 @@ function saveCartV2(key: string, items: any[]) {
 
   try {
     localStorage.removeItem("cart");
-  } catch {}
+  } catch { }
 }
 
 export function mergeGuestCartIntoUserCart(userId: string) {
@@ -75,13 +75,13 @@ export function mergeGuestCartIntoUserCart(userId: string) {
 
     try {
       localStorage.removeItem(GUEST_CART_KEY);
-    } catch {}
+    } catch { }
     try {
       localStorage.removeItem("cart");
-    } catch {}
+    } catch { }
 
     window.dispatchEvent(new Event("cart:updated"));
-  } catch {}
+  } catch { }
 }
 
 export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
@@ -262,10 +262,13 @@ export const useAuthStore = create<AuthState>()(
         sessionExpired: s.sessionExpired,
       }),
       onRehydrateStorage: () => (state) => {
-        // Do not mark hydrated=true here.
-        // Hydrated should mean the live /api/auth/me check has completed.
         if (state) {
           state.bootstrapping = false;
+          // If we have a persisted user, mark hydrated optimistically
+          // so ProtectedRoute doesn't flash-redirect before bootstrap completes.
+          if (state.user?.id) {
+            state.hydrated = true;
+          }
         }
       },
     }

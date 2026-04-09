@@ -1,6 +1,6 @@
 // src/pages/Cart.tsx
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
 import { useAuthStore } from "../store/auth";
@@ -27,6 +27,8 @@ type CartItem = {
   totalPrice: number;
   selectedOptions?: SelectedOption[];
   image?: string;
+  /** True when the item was quick-added from a variant product and still needs options chosen. */
+  needsOptions?: boolean;
 };
 
 type ServerCartItem = {
@@ -283,6 +285,7 @@ function normalizeCartItemLike(item: any): CartItem | null {
     totalPrice: round2(safeUnit * qty),
     selectedOptions: normalizeSelectedOptions(item?.selectedOptions),
     image: resolveImageUrl(item?.image ?? item?.imageSnapshot),
+    needsOptions: item?.needsOptions === true ? true : undefined,
   };
 }
 
@@ -355,6 +358,7 @@ function cartItemsToStorageLines(items: CartItem[]) {
       titleSnapshot: it.title ?? null,
       imageSnapshot: it.image ?? null,
       unitPriceCache: Number.isFinite(Number(it.unitPrice)) ? Number(it.unitPrice) : 0,
+      needsOptions: it.needsOptions === true ? true : undefined,
     }))
     .filter((x) => x.qty > 0);
 }
@@ -510,6 +514,7 @@ async function serverSetQty(item: CartItem, qty: number) {
 ========================================================= */
 
 export default function Cart() {
+  const navigate = useNavigate();
   const authHydrated = useAuthStore((s) => s.hydrated);
   const storeUser = useAuthStore((s) => s.user);
   const isAuthed = !!storeUser?.id;
@@ -519,6 +524,10 @@ export default function Cart() {
   const [qtyNote, setQtyNote] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [hydrated, setHydrated] = useState(false);
+  // productIds confirmed to have variants (fetched lazily for BASE items)
+  const [variantProductIds, setVariantProductIds] = useState<Set<string>>(new Set());
+  // default option labels for the first variant of each variant product
+  const [defaultVariantOptions, setDefaultVariantOptions] = useState<Map<string, string[]>>(new Map());
 
   const isMountedRef = useRef(true);
   const activeRequestIdRef = useRef(0);
@@ -842,7 +851,7 @@ export default function Cart() {
       } catch {
         if (isMountedRef.current && requestId === activeRequestIdRef.current) {
           showQtyNote(sourceKey ?? lineKeyFor(target), "Could not update quantity. Restoring cart.");
-          await loadCart().catch(() => {});
+          await loadCart().catch(() => { });
         }
       }
     },
@@ -878,7 +887,7 @@ export default function Cart() {
         window.dispatchEvent(new Event("cart:updated"));
       } catch {
         if (isMountedRef.current && requestId === activeRequestIdRef.current) {
-          await loadCart().catch(() => {});
+          await loadCart().catch(() => { });
         }
       }
     },
@@ -886,6 +895,70 @@ export default function Cart() {
   );
 
   const visibleCart = useMemo(() => mergeCartItemsByLine(cart), [cart]);
+
+  // Fetch variant info for BASE items so we can show "Choose options" even after
+  // server round-trips (where the client-only needsOptions flag is lost).
+  useEffect(() => {
+    const baseIds = [
+      ...new Set(
+        visibleCart
+          .filter((it) => isBaseLine(it) && !it.variantId)
+          .map((it) => it.productId)
+          .filter((pid) => !variantProductIds.has(pid))
+      ),
+    ];
+    if (!baseIds.length) return;
+
+    let cancelled = false;
+    Promise.all(
+      baseIds.map((pid) =>
+        api
+          .get(`/api/products/${pid}`, { params: { include: "variants" } })
+          .then(({ data }) => {
+            const p = (data as any)?.data ?? data ?? {};
+            const variants = Array.isArray(p.variants) ? p.variants : [];
+            if (!variants.length) return null;
+
+            // Capture the first variant's option labels for default display
+            const firstVariant = variants[0];
+            const opts = Array.isArray(firstVariant?.options) ? firstVariant.options : [];
+            const pills = opts
+              .map((o: any) => {
+                const attr = o?.attribute?.name || (o?.attribute && !isCodeLike(String(o.attribute)) ? String(o.attribute) : "") || "";
+                const val = o?.value?.name || (o?.value?.code && !isCodeLike(String(o.value.code)) ? String(o.value.code) : "") || (o?.value && !isCodeLike(String(o.value)) ? String(o.value) : "") || "";
+                if (!attr && !val) return null;
+                return attr && val ? `${attr}: ${val}` : attr || val;
+              })
+              .filter(Boolean) as string[];
+
+            return { pid, pills };
+          })
+          .catch(() => null)
+      )
+    ).then((results) => {
+      if (cancelled) return;
+      const found = results.filter((r): r is { pid: string; pills: string[] } => !!r);
+      if (found.length) {
+        setVariantProductIds((prev) => {
+          const next = new Set(prev);
+          found.forEach(({ pid }) => next.add(pid));
+          return next;
+        });
+        setDefaultVariantOptions((prev) => {
+          const next = new Map(prev);
+          found.forEach(({ pid, pills }) => {
+            if (pills.length) next.set(pid, pills);
+          });
+          return next;
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleCart]);
 
   const total = useMemo(() => {
     return visibleCart.reduce((sum, it) => {
@@ -973,45 +1046,44 @@ export default function Cart() {
 
                 const displayUnit = Math.max(0, cachedUnit);
                 const displayLineTotal = round2(displayUnit * currentQty);
-                const kindLabel = isBaseLine(it)
-                  ? "Base"
-                  : it.variantId
-                    ? "Variant"
-                    : it.selectedOptions?.length
-                      ? "Configured"
+                const kindLabel = it.variantId
+                  ? "Variant"
+                  : it.selectedOptions?.length
+                    ? "Configured"
+                    : isBaseLine(it)
+                      ? "Base"
                       : "Item";
                 const draft = qtyDraft[key];
                 const inputValue = draft ?? String(currentQty);
                 const displayOptions = normalizeSelectedOptions(it.selectedOptions);
                 const isExpanded = !!expanded[key];
+                const INLINE_LIMIT = 3;
 
-                let optionLabel = displayOptions
+                const isVariantItem = !!it.variantId || it.kind === "VARIANT";
+                // true for configured variants AND for base items from variant products
+                const isVariantProduct =
+                  isVariantItem ||
+                  it.needsOptions === true ||
+                  variantProductIds.has(it.productId);
+
+                const optionPills = displayOptions
                   .map((o) => {
-                    const attr =
-                      o.attribute && !isCodeLike(o.attribute)
-                        ? o.attribute
-                        : o.attributeId && !isCodeLike(o.attributeId)
-                          ? o.attributeId
-                          : "";
+                    const attr = o.attribute && !isCodeLike(o.attribute)
+                      ? o.attribute
+                      : o.attributeId && !isCodeLike(o.attributeId)
+                        ? o.attributeId
+                        : o.attribute || o.attributeId || null;
 
-                    const val =
-                      o.value && !isCodeLike(o.value)
-                        ? o.value
-                        : o.valueId && !isCodeLike(o.valueId)
-                          ? o.valueId
-                          : "";
+                    const val = o.value && !isCodeLike(o.value)
+                      ? o.value
+                      : o.valueId && !isCodeLike(o.valueId)
+                        ? o.valueId
+                        : o.value || o.valueId || null;
 
                     if (!attr && !val) return null;
-                    if (!attr) return val;
-                    if (!val) return attr;
-                    return `${attr}: ${val}`;
+                    return attr && val ? `${attr}: ${val}` : attr || val;
                   })
-                  .filter(Boolean)
-                  .join(" • ");
-
-                if (!optionLabel && !isBaseLine(it)) optionLabel = "Variant selected";
-                else if (!optionLabel && displayOptions.length) optionLabel = "Options saved";
-
+                  .filter((s): s is string => !!s);
                 const commitDraft = () => {
                   const raw = qtyDraft[key];
                   const parsed = raw === "" || raw == null ? 1 : Math.floor(Number(raw));
@@ -1087,15 +1159,91 @@ export default function Cart() {
                             </button>
                           </div>
 
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{kindLabel}</span>
-                          </div>
+                          {(() => {
+                            // For variant products with no user-chosen options, show the default (first) variant's pills
+                            const defaultPills = isVariantProduct && optionPills.length === 0
+                              ? (defaultVariantOptions.get(it.productId) ?? [])
+                              : [];
+                            const activePills = optionPills.length > 0 ? optionPills : defaultPills;
+                            const isDefaultBase = isVariantProduct && optionPills.length === 0;
 
-                          {!!optionLabel && (
-                            <div className="mt-2 text-[12px] max-[360px]:text-[11px] sm:text-xs text-ink-soft leading-snug break-words">
-                              {optionLabel}
-                            </div>
-                          )}
+                            return (
+                              <>
+                                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                  {/* Badge */}
+                                  {!isVariantProduct ? (
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full border border-zinc-200 bg-white text-ink-soft font-medium">
+                                      {kindLabel}
+                                    </span>
+                                  ) : isDefaultBase ? (
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full border border-zinc-200 bg-white text-ink-soft font-medium">
+                                      Base
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full border border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 font-medium">
+                                      {kindLabel === "Base" ? "Variant" : kindLabel}
+                                    </span>
+                                  )}
+
+                                  {/* Inline option pills */}
+                                  {activePills.slice(0, INLINE_LIMIT).map((label, i) => (
+                                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-full border border-zinc-200 bg-zinc-50 text-zinc-700">
+                                      {label}
+                                    </span>
+                                  ))}
+
+                                  {/* "+N more" toggle */}
+                                  {activePills.length > INLINE_LIMIT && (
+                                    <button
+                                      type="button"
+                                      className={`${tap} text-[10px] px-2 py-0.5 rounded-full border border-zinc-300 bg-white text-zinc-500 hover:bg-zinc-100 transition`}
+                                      onClick={() => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))}
+                                    >
+                                      {isExpanded ? "less" : `+${activePills.length - INLINE_LIMIT} more`}
+                                    </button>
+                                  )}
+                                </div>
+
+                                {/* Overflow options (> INLINE_LIMIT) */}
+                                {isExpanded && activePills.length > INLINE_LIMIT && (
+                                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                    {activePills.slice(INLINE_LIMIT).map((label, i) => (
+                                      <span key={i} className="text-[10px] px-2 py-0.5 rounded-full border border-zinc-200 bg-zinc-50 text-zinc-700">
+                                        {label}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Choose / change options — all variant products */}
+                                {isVariantProduct && (
+                                  <div className="mt-2">
+                                    <button
+                                      type="button"
+                                      className={`${tap} text-[11px] hover:underline underline-offset-2 text-fuchsia-700 hover:text-fuchsia-900`}
+                                      onClick={() =>
+                                        navigate(`/products/${it.productId}`, {
+                                          state: {
+                                            editCartLine: {
+                                              variantId: it.variantId ?? null,
+                                              kind: it.kind ?? "BASE",
+                                              selectedOptions: it.selectedOptions ?? [],
+                                              needsOptions: !isVariantItem,
+                                              qty: currentQty,
+                                              id: it.id,
+                                              sourceIds: it.sourceIds ?? [],
+                                            },
+                                          },
+                                        })
+                                      }
+                                    >
+                                      Choose a different option →
+                                    </button>
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
 
                           <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] max-[360px]:text-[11px] sm:text-xs text-ink-soft">
                             <div>
@@ -1103,31 +1251,7 @@ export default function Cart() {
                             </div>
                           </div>
 
-                          {displayOptions.length > 0 && (
-                            <button
-                              className={`${tap} mt-2 text-[11px] text-primary-700 hover:underline`}
-                              onClick={() => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))}
-                              type="button"
-                            >
-                              {isExpanded ? "Hide option details" : "Show option details"}
-                            </button>
-                          )}
                         </div>
-
-                        {isExpanded && displayOptions.length > 0 && (
-                          <div className="mt-2 rounded-xl border bg-white/70 px-3 py-2">
-                            <div className="text-[11px] text-ink-soft space-y-1">
-                              {displayOptions.map((o, idx) => (
-                                <div key={`${o.attributeId}-${o.valueId ?? o.value}-${idx}`}>
-                                  <span className="font-medium text-ink">
-                                    {o.attribute || o.attributeId || "Option"}:
-                                  </span>{" "}
-                                  {o.value || o.valueId || "—"}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
 
                         {qtyNote[key] ? <div className="mt-2 text-[12px] font-semibold text-rose-700">{qtyNote[key]}</div> : null}
 

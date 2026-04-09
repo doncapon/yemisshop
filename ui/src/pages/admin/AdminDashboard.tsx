@@ -1268,7 +1268,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-2">
-                  {!isSuspended ? (
+                  {isSuperAdmin && (!isSuspended ? (
                     <button
                       onClick={() => deactivateUser.mutate(u.id)}
                       className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
@@ -1282,15 +1282,13 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                     >
                       <RefreshCcw size={16} /> Reactivate
                     </button>
-                  )}
-                  <button
-                    onClick={() =>
-                      openModal2({ title: "User", message: u.email })
-                    }
+                  ))}
+                  <Link
+                    to={`/u/${u.id}/dashboard`}
                     className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
                   >
-                    View
-                  </button>
+                    View dashboard
+                  </Link>
                 </div>
               </div>
             );
@@ -1360,7 +1358,13 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                     <td className="px-3 py-3">{fmtDate(u.createdAt)}</td>
                     <td className="px-3 py-3 text-right">
                       <div className="inline-flex flex-wrap items-center gap-2">
-                        {!isSuspended ? (
+                        <Link
+                          to={`/u/${u.id}/dashboard`}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                        >
+                          View
+                        </Link>
+                        {isSuperAdmin && (!isSuspended ? (
                           <button
                             onClick={() => deactivateUser.mutate(u.id)}
                             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
@@ -1374,7 +1378,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                           >
                             <RefreshCcw size={16} /> Reactivate
                           </button>
-                        )}
+                        ))}
                       </div>
                     </td>
                   </tr>
@@ -1597,67 +1601,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
           </div>
         </div>
 
-        {/* KPIs (Overview only) */}
-        {tab === "overview" && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-            <KpiCard
-              title="Users"
-              value={(
-                overview.data?.users.totalUsers ?? 0
-              ).toLocaleString()}
-              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0
-                } Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0
-                } Riders • ${overview.data?.users.totalAdmins ?? 0} Admins • ${overview.data?.users.totalSuperAdmins ?? 0
-                } Super Admins`}
-              Icon={Users}
-            />
-
-            <KpiCardOverview
-              title="Products"
-              total={`${overview.data?.products.total ?? 0} total`}
-              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0
-                } Live`}
-              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0
-                } Rejected`}
-              res={`${overview.data?.products.availability.publishedAvailable ?? 0
-                } Published available`}
-              Icon={PackageCheck}
-            />
-
-            <KpiCard
-              title="Orders Today"
-              value={(overview.data?.ordersToday ?? 0).toLocaleString()}
-              hint="New orders"
-              Icon={CreditCard}
-            />
-
-            <KpiCard
-              title="Revenue Today"
-              value={ngn.format(fmtN(overview.data?.revenueToday))}
-              hint="Last 7 days"
-              Icon={BarChart3}
-              chart={
-                <Sparkline
-                  points={overview.data?.sparklineRevenue7d || []}
-                />
-              }
-            />
-
-            {isSuperAdmin && (
-              <KpiCard
-                title="Platform Profit Today"
-                value={ngn.format(fmtN(overview.data?.profitToday))}
-                hint="Commission + base service fee"
-                Icon={BarChart3}
-                chart={
-                  <Sparkline points={overview.data?.sparklineProfit7d || []} />
-                }
-              />
-            )}
-          </div>
-        )}
-
-        {/* Tabs */}
+                {/* Tabs */}
         <div className="mt-6">
           <div className="rounded-2xl border bg-white p-2 shadow-sm">
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
@@ -1766,6 +1710,66 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
             </div>
           </div>
         </div>
+
+        {/* KPIs (Overview only) */}
+        {tab === "overview" && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            <KpiCard
+              title="Users"
+              value={(
+                overview.data?.users.totalUsers ?? 0
+              ).toLocaleString()}
+              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0
+                } Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0
+                } Riders • ${overview.data?.users.totalAdmins ?? 0} Admins • ${overview.data?.users.totalSuperAdmins ?? 0
+                } Super Admins`}
+              Icon={Users}
+            />
+
+            <KpiCardOverview
+              title="Products"
+              total={`${overview.data?.products.total ?? 0} total`}
+              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0
+                } Live`}
+              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0
+                } Rejected`}
+              res={`${overview.data?.products.availability.publishedAvailable ?? 0
+                } Published available`}
+              Icon={PackageCheck}
+            />
+
+            <KpiCard
+              title="Orders Today"
+              value={(overview.data?.ordersToday ?? 0).toLocaleString()}
+              hint="New orders"
+              Icon={CreditCard}
+            />
+
+            <KpiCard
+              title="Revenue Today"
+              value={ngn.format(fmtN(overview.data?.revenueToday))}
+              hint="Last 7 days"
+              Icon={BarChart3}
+              chart={
+                <Sparkline
+                  points={overview.data?.sparklineRevenue7d || []}
+                />
+              }
+            />
+
+            {isSuperAdmin && (
+              <KpiCard
+                title="Platform Profit Today"
+                value={ngn.format(fmtN(overview.data?.profitToday))}
+                hint="Commission + base service fee"
+                Icon={BarChart3}
+                chart={
+                  <Sparkline points={overview.data?.sparklineProfit7d || []} />
+                }
+              />
+            )}
+          </div>
+        )}
 
         {/* Content */}
         <div className="mt-4 space-y-6">
@@ -2203,6 +2207,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
               }
               onVerify={verifyPayment.mutate}
               onRefund={refundPayment.mutate}
+              isSuperAdmin={isSuperAdmin}
             />
           )}
         </div>
@@ -2219,6 +2224,7 @@ function TransactionsSection({
   onRefresh,
   onVerify,
   onRefund,
+  isSuperAdmin,
 }: {
   q: string;
   setQ: (v: string) => void;
@@ -2226,6 +2232,7 @@ function TransactionsSection({
   onRefresh: () => void;
   onVerify: (id: string) => void;
   onRefund: (id: string) => void;
+  isSuperAdmin: boolean;
 }) {
   function SectionCard({
     title,
@@ -2353,20 +2360,22 @@ function TransactionsSection({
                 </div>
               </div>
 
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => onVerify(t.id)}
-                  className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90"
-                >
-                  Verify
-                </button>
-                <button
-                  onClick={() => onRefund(t.id)}
-                  className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
-                >
-                  Refund
-                </button>
-              </div>
+              {isSuperAdmin && (
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => onVerify(t.id)}
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90"
+                  >
+                    Verify
+                  </button>
+                  <button
+                    onClick={() => onRefund(t.id)}
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                  >
+                    Refund
+                  </button>
+                </div>
+              )}
             </div>
           ))}
       </div>
@@ -2422,6 +2431,7 @@ function TransactionsSection({
                 tx={t}
                 onVerify={() => onVerify(t.id)}
                 onRefund={() => onRefund(t.id)}
+                isSuperAdmin={isSuperAdmin}
               />
             ))}
           </tbody>

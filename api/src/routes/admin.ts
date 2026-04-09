@@ -6,7 +6,6 @@ import { z } from 'zod';
 
 import {
   getOverview,
-  findUsers,
   suspendUser,
   reactivateUser,
 
@@ -32,10 +31,8 @@ r.get('/overview', async (req, res) => {
 });
 
 /* Users & roles */
-r.get('/users', async (req, res) => {
-  const q = String(req.query.q || '');
-  res.json({ data: await findUsers(q) });
-});
+// GET /users is handled by adminUsersRouter (registered separately) for comprehensive
+// name/email/id search. Only the write actions live here.
 
 r.post('/users/:userId/deactivate', requireSuperAdmin, async (req, res) => {
   res.json(await suspendUser(requiredString(req.params.userId)));

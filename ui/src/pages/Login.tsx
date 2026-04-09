@@ -500,13 +500,13 @@ export default function Login() {
 
   return (
     <SiteLayout>
-      <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
+      <div className="bg-gradient-to-b from-zinc-50 to-white">
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute -top-28 -right-24 h-[22rem] w-[22rem] rounded-full bg-fuchsia-300/50 blur-3xl opacity-30 sm:h-[26rem] sm:w-[26rem]" />
           <div className="absolute -bottom-32 -left-20 h-[24rem] w-[24rem] rounded-full bg-cyan-300/50 blur-3xl opacity-25 sm:h-[28rem] sm:w-[28rem]" />
         </div>
 
-        <div className="relative grid min-h-[100dvh] items-start px-3 pt-2 pb-4 sm:place-items-center sm:px-4 sm:py-10">
+        <div className="relative flex flex-col items-center px-3 pt-3 pb-6 sm:px-4 sm:pt-4 sm:pb-8">
           <div className="w-full max-w-md">
             <div className="mb-3 text-center sm:mb-6">
               <div className="flex justify-center">
@@ -610,9 +610,10 @@ export default function Login() {
                 ))}
 
               <div className="space-y-1">
-                <label className="block text-sm font-medium text-zinc-800">Email</label>
+                <label htmlFor="login-email" className="block text-sm font-medium text-zinc-800">Email</label>
                 <div className="relative">
                   <input
+                    id="login-email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@example.com"
@@ -628,7 +629,7 @@ export default function Login() {
 
               <div className="space-y-1">
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                  <label className="block text-sm font-medium leading-tight text-zinc-800">
+                  <label htmlFor="login-password" className="block text-sm font-medium leading-tight text-zinc-800">
                     Password
                   </label>
                   <Link
@@ -641,6 +642,7 @@ export default function Login() {
 
                 <div className="relative">
                   <input
+                    id="login-password"
                     value={password}
                     type={showPassword ? "text" : "password"}
                     onChange={(e) => setPassword(e.target.value)}
@@ -653,7 +655,7 @@ export default function Login() {
                     type="button"
                     onClick={() => setShowPassword((v) => !v)}
                     className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-zinc-300 bg-white/90 shadow-sm transition hover:bg-zinc-50"
-                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    aria-label={showPassword ? "Hide" : "Show"}
                     aria-pressed={showPassword}
                   >
                     <svg viewBox="0 0 24 24" className="h-6 w-6" aria-hidden="true">
@@ -698,7 +700,7 @@ export default function Login() {
                     ? "Logging in…"
                     : cooldown > 0
                       ? `Try again in ${cooldown}s`
-                      : "Login"}
+                      : "Log in"}
               </button>
 
               <div className="pt-0.5 text-center text-sm text-zinc-700">

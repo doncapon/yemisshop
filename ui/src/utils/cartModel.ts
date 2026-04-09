@@ -25,6 +25,8 @@ export type CartLine = {
   titleSnapshot?: string | null;
   imageSnapshot?: string | null;
   unitPriceCache?: number | null;
+  /** True when the item was quick-added from a variant product and still needs options chosen. */
+  needsOptions?: boolean;
 };
 
 /* ------------------------- Normalization helpers ------------------------- */
@@ -147,6 +149,7 @@ function normalizeLine(x: any): CartLine | null {
       x?.unitPriceCache != null && Number.isFinite(Number(x.unitPriceCache))
         ? Number(x.unitPriceCache)
         : null,
+    needsOptions: x?.needsOptions === true ? true : undefined,
   };
 }
 
@@ -203,6 +206,7 @@ function dedupeNormalizedLines(lines: CartLine[]): CartLine[] {
         selectedOptions:
           (out[idx].selectedOptions?.length ? out[idx].selectedOptions : null) ||
           (l.selectedOptions?.length ? l.selectedOptions : undefined),
+        needsOptions: out[idx].needsOptions ?? l.needsOptions,
       };
     } else {
       out.push(l);
@@ -290,6 +294,7 @@ export function upsertCartLine(input: CartLine): CartLine[] {
       // Preserve supplier/offer if the incoming line does not specify them
       supplierId: normalized.supplierId ?? prev.supplierId ?? undefined,
       offerId: normalized.offerId ?? prev.offerId ?? undefined,
+      needsOptions: normalized.needsOptions ?? prev.needsOptions,
     };
   } else {
     next = rows.concat([
@@ -339,6 +344,7 @@ export type CartPageItem = {
   totalPrice: number;
   selectedOptions?: any[];
   image?: string;
+  needsOptions?: boolean;
 };
 
 export function toCartPageItems(
@@ -365,6 +371,7 @@ export function toCartPageItems(
       totalPrice: unit * qty,
       selectedOptions: Array.isArray(x.selectedOptions) ? x.selectedOptions : [],
       image: img,
+      needsOptions: x.needsOptions === true ? true : undefined,
     };
   });
 }

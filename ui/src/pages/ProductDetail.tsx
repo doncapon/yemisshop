@@ -12,7 +12,7 @@ import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
 
 // ✅ single source of truth (navbar/cart reads this)
-import { upsertCartLine, toMiniCartRows, readCartLines } from "../utils/cartModel";
+import { upsertCartLine, toMiniCartRows, readCartLines, writeCartLines } from "../utils/cartModel";
 
 /* ---------------- Config ---------------- */
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
@@ -657,6 +657,15 @@ export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const editCartLine = (location.state as any)?.editCartLine as {
+    variantId: string | null;
+    kind: "BASE" | "VARIANT";
+    selectedOptions: any[];
+    needsOptions?: boolean;
+    qty?: number;
+    id?: string;
+    sourceIds?: string[];
+  } | undefined;
 
   const goBack = React.useCallback(() => {
     const state = (location.state as any) || {};
@@ -1155,48 +1164,6 @@ export default function ProductDetail() {
     [axisIds, baseDefaults]
   );
 
-  const [selected, setSelected] = React.useState<Record<string, string>>({});
-  const [qty, setQty] = React.useState<number>(1);
-
-  const computeInitialSelection = React.useCallback(() => {
-    if (!visibleAxes.length) return {};
-
-    if (hasExplicitBaseDefaults) {
-      const out: Record<string, string> = {};
-      for (const ax of visibleAxes) {
-        const v = String(baseDefaults?.[ax.id] ?? "").trim();
-        if (v) out[ax.id] = v;
-      }
-      return out;
-    }
-
-    if (hasBaseOffer) return {};
-
-    if (cheapestOverallOffer?.model === "VARIANT" && cheapestOverallOffer.variantId) {
-      const v = allVariants.find((x) => x.id === cheapestOverallOffer.variantId);
-      if (v) {
-        return buildEffectiveVariantSelectionMap({
-          variant: v,
-          baseDefaults,
-        });
-      }
-    }
-
-    return {};
-  }, [visibleAxes, hasExplicitBaseDefaults, hasBaseOffer, baseDefaults, cheapestOverallOffer, allVariants]);
-
-  React.useEffect(() => {
-    if (!product || !visibleAxes.length) {
-      setSelected({});
-      setQty(1);
-      return;
-    }
-
-    const initial = computeInitialSelection();
-    setSelected(initial);
-    setQty(1);
-  }, [product?.id, visibleAxes.length, computeInitialSelection, product]);
-
   const sellableVariantOptionMaps = React.useMemo(() => {
     const out: Array<{
       variantId: string;
@@ -1227,6 +1194,58 @@ export default function ProductDetail() {
 
     return out;
   }, [allVariants, sellableVariantIds, baseDefaults]);
+
+  const [selected, setSelected] = React.useState<Record<string, string>>({});
+  const [qty, setQty] = React.useState<number>(
+    editCartLine?.qty && editCartLine.qty > 1 ? editCartLine.qty : 1
+  );
+
+  const computeInitialSelection = React.useCallback(() => {
+    if (!visibleAxes.length) return {};
+
+    // When arriving from cart "Choose options / different option", skip base defaults
+    // and immediately land on the first fully purchasable variant so no out-of-stock
+    // option is pre-selected.
+    if (editCartLine && sellableVariantOptionMaps.length > 0) {
+      return sellableVariantOptionMaps[0].map;
+    }
+
+    if (hasExplicitBaseDefaults) {
+      const out: Record<string, string> = {};
+      for (const ax of visibleAxes) {
+        const v = String(baseDefaults?.[ax.id] ?? "").trim();
+        if (v) out[ax.id] = v;
+      }
+      return out;
+    }
+
+    if (hasBaseOffer) return {};
+
+    if (cheapestOverallOffer?.model === "VARIANT" && cheapestOverallOffer.variantId) {
+      const v = allVariants.find((x) => x.id === cheapestOverallOffer.variantId);
+      if (v) {
+        return buildEffectiveVariantSelectionMap({
+          variant: v,
+          baseDefaults,
+        });
+      }
+    }
+
+    return {};
+  }, [editCartLine, sellableVariantOptionMaps, visibleAxes, hasExplicitBaseDefaults, hasBaseOffer, baseDefaults, cheapestOverallOffer, allVariants]);
+
+  React.useEffect(() => {
+    if (!product || !visibleAxes.length) {
+      setSelected({});
+      if (!editCartLine) setQty(1);
+      return;
+    }
+
+    const initial = computeInitialSelection();
+    setSelected(initial);
+    // Preserve cart qty when the user arrived from "Choose options"
+    if (!editCartLine) setQty(1);
+  }, [product?.id, visibleAxes.length, computeInitialSelection, product]);
 
   const buyableBaseSelectionMap = React.useMemo(() => {
     if (!canBuyBase) return null;
@@ -2050,11 +2069,27 @@ export default function ProductDetail() {
       const primaryImg = resolveImageUrl(variantImgRaw) || resolveImageUrl(productImgRaw) || null;
 
       const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
+
+      // Enrich maps from raw variant option data as fallback
+      for (const v of product.variants ?? []) {
+        for (const o of v.options ?? []) {
+          const aId = String(o.attributeId ?? "").trim();
+          const vId = String(o.valueId ?? "").trim();
+          const aName = o.attribute?.name;
+          const vName = o.value?.name;
+          if (aId && aName && !attrNameById.has(aId)) attrNameById.set(aId, aName);
+          if (aId && vId && vName) {
+            if (!valueNameByAttrId.has(aId)) valueNameByAttrId.set(aId, new Map());
+            if (!valueNameByAttrId.get(aId)!.has(vId)) valueNameByAttrId.get(aId)!.set(vId, vName);
+          }
+        }
+      }
+
       const selectedOptionsLabeled = selectedOptionsWire.map(({ attributeId, valueId }) => ({
         attributeId,
-        attribute: attrNameById.get(attributeId) ?? "",
+        attribute: attrNameById.get(attributeId) ?? attributeId,
         valueId,
-        value: valueNameByAttrId.get(attributeId)?.get(valueId) ?? "",
+        value: valueNameByAttrId.get(attributeId)?.get(valueId) ?? valueId,
       }));
 
       const isLoggedIn = !!useAuthStore.getState().user?.id;
@@ -2093,12 +2128,81 @@ export default function ProductDetail() {
         variantId: variantId ?? null,
         kind: lineKind,
         optionsKey,
-        qty: (existingForCombo?.qty ?? 0) + addQty,
+        qty: editCartLine ? addQty : (existingForCombo?.qty ?? 0) + addQty,
         selectedOptions: selectedOptionsLabeled,
         titleSnapshot: product.title ?? null,
         imageSnapshot: primaryImg ?? null,
         unitPriceCache: Number.isFinite(unitPriceClient) ? unitPriceClient : 0,
       });
+
+      const pid = String(product.id);
+      const linesAfterAdd = readCartLines();
+      let cleanedLines = linesAfterAdd;
+
+      const oldServerIds = editCartLine
+        ? [
+          ...new Set(
+            [
+              ...(editCartLine.sourceIds ?? []),
+              ...(editCartLine.id ? [editCartLine.id] : []),
+            ]
+              .map(String)
+              .filter(Boolean)
+          ),
+        ]
+        : [];
+
+      if (editCartLine?.needsOptions) {
+        // Path A — user was editing a needsOptions BASE placeholder.
+        // Local: remove the placeholder line.
+        cleanedLines = cleanedLines.filter(
+          (l) => !(l.productId === pid && l.kind === "BASE" && l.needsOptions === true)
+        );
+        // Server: delete the placeholder row by its id.
+        if (isLoggedIn && oldServerIds.length) {
+          await Promise.all(
+            oldServerIds.map((sid) =>
+              api.delete(`/api/cart/items/${sid}`, AXIOS_COOKIE_CFG).catch(() => { })
+            )
+          );
+        }
+      } else if (editCartLine) {
+        // Path B — user is replacing an existing configured VARIANT line.
+        // Only act if they actually picked something different.
+        const oldVid = editCartLine.variantId;
+        const oldKind = editCartLine.kind;
+        const isReplacing =
+          String(oldVid ?? null) !== String(variantId ?? null) || oldKind !== lineKind;
+
+        if (isReplacing) {
+          // Local: remove the specific old line identified by variantId + kind.
+          cleanedLines = cleanedLines.filter(
+            (l) =>
+              !(
+                l.productId === pid &&
+                String(l.variantId ?? null) === String(oldVid ?? null) &&
+                l.kind === oldKind
+              )
+          );
+          // Server: delete the specific old row by its id.
+          if (isLoggedIn && oldServerIds.length) {
+            await Promise.all(
+              oldServerIds.map((sid) =>
+                api.delete(`/api/cart/items/${sid}`, AXIOS_COOKIE_CFG).catch(() => { })
+              )
+            );
+          }
+        }
+      } else {
+        // Path C — normal add (no edit context). Remove any stale needsOptions placeholder.
+        cleanedLines = cleanedLines.filter(
+          (l) => !(l.productId === pid && l.kind === "BASE" && l.needsOptions === true)
+        );
+      }
+
+      if (cleanedLines.length !== linesAfterAdd.length) {
+        writeCartLines(cleanedLines);
+      }
 
       window.dispatchEvent(new Event("cart:updated"));
 
@@ -2441,12 +2545,38 @@ export default function ProductDetail() {
   const showMainImg = !!currentSrc && !mainIsBroken;
 
   const similarRef = React.useRef<HTMLDivElement | null>(null);
+  const similarDragRef = React.useRef({ isDown: false, startX: 0, scrollLeft: 0 });
 
   const scrollSimilarBy = React.useCallback((dir: -1 | 1) => {
     const el = similarRef.current;
     if (!el) return;
     const step = Math.max(260, Math.floor(el.clientWidth * 0.85));
     el.scrollBy({ left: dir * step, behavior: "smooth" });
+  }, []);
+
+  const onSimilarMouseDown = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = similarRef.current;
+    if (!el) return;
+    similarDragRef.current = { isDown: true, startX: e.pageX - el.offsetLeft, scrollLeft: el.scrollLeft };
+    el.style.cursor = "grabbing";
+    el.style.userSelect = "none";
+  }, []);
+
+  const onSimilarMouseLeaveOrUp = React.useCallback(() => {
+    const el = similarRef.current;
+    if (!el) return;
+    similarDragRef.current.isDown = false;
+    el.style.cursor = "grab";
+    el.style.userSelect = "";
+  }, []);
+
+  const onSimilarMouseMove = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = similarRef.current;
+    if (!el || !similarDragRef.current.isDown) return;
+    e.preventDefault();
+    const x = e.pageX - el.offsetLeft;
+    const walk = (x - similarDragRef.current.startX) * 1.2;
+    el.scrollLeft = similarDragRef.current.scrollLeft - walk;
   }, []);
 
   /* ---------------- Render guards ---------------- */
@@ -2478,14 +2608,14 @@ export default function ProductDetail() {
 
   return (
     <SiteLayout>
-      <div className="bg-gradient-to-b from-zinc-50 to-white">
+      <div className="bg-gradient-to-b from-white-50 to-white -mt-4 md:-mt-6">
         <div>
-          <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pt-3 md:pt-6">
+          <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 pt-0">
             <div className="flex items-center justify-between gap-3">
               <button
                 type="button"
                 onClick={goBack}
-                className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                className={`touch-manipulation text-sm px-3 py-2 rounded-full bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
               >
                 ←
               </button>
@@ -2504,121 +2634,119 @@ export default function ProductDetail() {
 
           <div className="max-w-6xl mx-auto px-2 sm:px-4 md:px-6 py-3 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 max-[360px]:gap-4">
             {/* LEFT */}
+            {/* LEFT */}
             <div className="space-y-3 md:space-y-5">
-              <div className="relative w-full">
-                <div
-                  className={`relative rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
-                  style={{ aspectRatio: "1 / 1" }}
-                  onMouseEnter={() => showMainImg && setIsZooming(true)}
-                  onMouseLeave={() => setIsZooming(false)}
-                  onMouseMove={handleZoomMove}
-                  onTouchStart={() => showMainImg && setIsZooming(true)}
-                  onTouchMove={handleTouchZoomMove}
-                  onTouchEnd={() => setIsZooming(false)}
-                >
-                  {showMainImg ? (
-                    <>
-                      <img
-                        src={currentSrc}
-                        alt={product.title || "Product image"}
-                        className="w-full h-full object-cover"
-                        loading="eager"
-                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
-                      />
-
-                      {isZooming && (
-                        <div
-                          className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
-                          style={{
-                            left: `${zoomPos.x}%`,
-                            top: `${zoomPos.y}%`,
-                            transform: "translate(-50%, -50%)",
-                          }}
+              <div className="w-full max-w-[420px] sm:max-w-[480px] md:max-w-[540px] lg:max-w-[580px] mx-auto">
+                <div className="relative w-full">
+                  <div
+                    className={`relative h-[250px] sm:h-[300px] md:h-[340px] lg:h-[380px] aspect-square w-full rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
+                    onMouseEnter={() => showMainImg && setIsZooming(true)}
+                    onMouseLeave={() => setIsZooming(false)}
+                    onMouseMove={handleZoomMove}
+                    onTouchStart={() => showMainImg && setIsZooming(true)}
+                    onTouchMove={handleTouchZoomMove}
+                    onTouchEnd={() => setIsZooming(false)}
+                  >
+                    {showMainImg ? (
+                      <>
+                        <img
+                          src={currentSrc}
+                          alt={product.title || "Product image"}
+                          className="w-full h-full object-cover object-top"
+                          loading="eager"
+                          onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
                         />
-                      )}
 
-                      {isZooming && (
-                        <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
-                          <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
-                            <div
-                              className="h-full w-full"
-                              style={{
-                                backgroundImage: `url(${currentSrc})`,
-                                backgroundRepeat: "no-repeat",
-                                backgroundSize: "416%",
-                                backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
-                              }}
-                            />
+                        {isZooming && (
+                          <div
+                            className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
+                            style={{
+                              left: `${zoomPos.x}%`,
+                              top: `${zoomPos.y}%`,
+                              transform: "translate(-50%, -50%)",
+                            }}
+                          />
+                        )}
+
+                        {isZooming && (
+                          <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
+                            <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
+                              <div
+                                className="h-full w-full"
+                                style={{
+                                  backgroundImage: `url(${currentSrc})`,
+                                  backgroundRepeat: "no-repeat",
+                                  backgroundSize: "416%",
+                                  backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
+                                }}
+                              />
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
+                      </>
+                    ) : (
+                      <NoImageBox className="bg-zinc-50" />
+                    )}
+                  </div>
 
-                      <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white">
-                        Zoom
-                      </div>
+                  <span
+                    className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
+                  >
+                    {availabilityBadge.text}
+                  </span>
+
+                  {images.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                        className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
+                        aria-label="Previous image"
+                      >
+                        ‹
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+                        className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
+                        aria-label="Next image"
+                      >
+                        ›
+                      </button>
                     </>
-                  ) : (
-                    <NoImageBox className="bg-zinc-50" />
                   )}
                 </div>
 
-                <span
-                  className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
-                >
-                  {availabilityBadge.text}
-                </span>
-
                 {images.length > 1 && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                      className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
-                      aria-label="Previous image"
-                    >
-                      ‹
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                      className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
-                      aria-label="Next image"
-                    >
-                      ›
-                    </button>
-                  </>
+                  <div className="mt-3 grid grid-cols-5 gap-2 sm:gap-2.5">
+                    {images.map((src, idx) => {
+                      const broken = !!brokenByIndex[idx];
+                      if (!src || broken) return null;
+
+                      const active = idx === mainIndex;
+                      return (
+                        <button
+                          key={`${src}-${idx}`}
+                          type="button"
+                          onClick={() => setMainIndex(idx)}
+                          className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder} ${silverShadowSm}`}
+                          style={{ aspectRatio: "1 / 1" }}
+                          aria-label={`Show image ${idx + 1}`}
+                        >
+                          <img
+                            src={src}
+                            alt=""
+                            aria-hidden="true"
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                            onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
+                          />
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
-
-              {images.length > 1 && (
-                <div className="grid grid-cols-5 gap-2">
-                  {images.map((src, idx) => {
-                    const broken = !!brokenByIndex[idx];
-                    if (!src || broken) return null;
-
-                    const active = idx === mainIndex;
-                    return (
-                      <button
-                        key={`${src}-${idx}`}
-                        type="button"
-                        onClick={() => setMainIndex(idx)}
-                        className={`relative overflow-hidden rounded-xl bg-white ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder} ${silverShadowSm}`}
-                        style={{ aspectRatio: "1 / 1" }}
-                        aria-label={`Show image ${idx + 1}`}
-                      >
-                        <img
-                          src={src}
-                          alt=""
-                          aria-hidden="true"
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                          onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
-                        />
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
 
               <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
                 <h2 className="text-base font-semibold mb-1">Description</h2>
@@ -2734,7 +2862,7 @@ export default function ProductDetail() {
                       <button
                         type="button"
                         onClick={() => setSelected(computeBaseSelection())}
-                        className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        className={`text-sm px-3 py-2 rounded-full bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                       >
                         Reset to base
                       </button>
@@ -2742,7 +2870,7 @@ export default function ProductDetail() {
                       <button
                         type="button"
                         onClick={() => setSelected({})}
-                        className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        className={`text-sm px-3 py-2 rounded-full bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                       >
                         Clear selections
                       </button>
@@ -2757,7 +2885,7 @@ export default function ProductDetail() {
                     <button
                       type="button"
                       onClick={() => setQty((q) => Math.max(1, q - 1))}
-                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
+                      className={`h-11 sm:h-10 rounded-full bg-white hover:bg-zinc-50 px-3 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
                     >
                       −
                     </button>
@@ -2787,7 +2915,7 @@ export default function ProductDetail() {
                     <button
                       type="button"
                       onClick={() => setQty((q) => Math.min(maxQty, q + 1))}
-                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
+                      className={`h-11 sm:h-10 rounded-full bg-white hover:bg-zinc-50 px-3 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
                     >
                       +
                     </button>
@@ -2801,29 +2929,39 @@ export default function ProductDetail() {
                           return prev === next ? prev : next;
                         });
                       }}
-                      className={`h-11 sm:h-10 rounded-xl bg-white hover:bg-zinc-50 px-3 text-sm font-medium ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""}`}
+                      className={`h-11 sm:h-10 rounded-full bg-white hover:bg-zinc-50 px-3 text-sm font-medium ${silverBorder} ${silverShadowSm} ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""}`}
                     >
                       Max
                     </button>
                   </div>
                 </div>
 
+                {editCartLine && (
+                  <div className="mt-4 flex items-start gap-2 rounded-xl border border-fuchsia-200 bg-fuchsia-50 px-3 py-2.5 text-[12px] text-fuchsia-800">
+                    <span>✏️</span>
+                    <span>
+                      You're editing a cart item. Choose your options below and click{" "}
+                      <strong>Add to cart</strong> — your previous selection will be replaced.
+                    </span>
+                  </div>
+                )}
+
                 <div className="mt-5 flex flex-col sm:flex-row items-center gap-3">
                   <button
                     type="button"
                     onClick={handleAddToCart}
                     disabled={purchaseMeta.disableAddToCart || isAdding}
-                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
+                    className={`w-full sm:w-auto px-4 py-3 rounded-full font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
                       ? "bg-zinc-300 cursor-not-allowed"
                       : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
                       }`}
                   >
-                    {isAdding ? "Adding…" : "Add to cart"}
+                    {isAdding ? "Updating cart…" : editCartLine ? "Update cart" : "Add to cart"}
                   </button>
 
                   <Link
                     to="/cart"
-                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    className={`w-full sm:w-auto px-4 py-3 rounded-full font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                   >
                     View cart
                   </Link>
@@ -2903,7 +3041,7 @@ export default function ProductDetail() {
                         <button
                           type="submit"
                           disabled={saveReviewMutation.isPending}
-                          className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${saveReviewMutation.isPending
+                          className={`px-3 py-2 rounded-full text-sm font-semibold text-white ${saveReviewMutation.isPending
                             ? "bg-zinc-400 cursor-not-allowed"
                             : "bg-fuchsia-600 hover:bg-fuchsia-700"
                             }`}
@@ -2916,7 +3054,7 @@ export default function ProductDetail() {
                             type="button"
                             onClick={handleResetReview}
                             disabled={deleteReviewMutation.isPending}
-                            className={`px-3 py-2 rounded-xl text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                            className={`px-3 py-2 rounded-full text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                           >
                             {deleteReviewMutation.isPending ? "Resetting…" : "Reset review"}
                           </button>
@@ -2961,14 +3099,14 @@ export default function ProductDetail() {
                     <button
                       type="button"
                       onClick={() => scrollSimilarBy(-1)}
-                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                      className={`rounded-full px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                     >
                       ‹
                     </button>
                     <button
                       type="button"
                       onClick={() => scrollSimilarBy(1)}
-                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                      className={`rounded-full px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                     >
                       ›
                     </button>
@@ -2978,7 +3116,11 @@ export default function ProductDetail() {
                 <div
                   ref={similarRef}
                   className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
-                  style={{ scrollbarWidth: "thin" as any }}
+                  style={{ scrollbarWidth: "thin" as any, cursor: "grab" }}
+                  onMouseDown={onSimilarMouseDown}
+                  onMouseLeave={onSimilarMouseLeaveOrUp}
+                  onMouseUp={onSimilarMouseLeaveOrUp}
+                  onMouseMove={onSimilarMouseMove}
                 >
                   {similarQ.data.map((sp) => {
                     const basePrice =
@@ -3007,7 +3149,7 @@ export default function ProductDetail() {
                       >
                         <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
                           {img ? (
-                            <img src={img} alt={sp.title} className="w-full h-full object-cover" loading="lazy" />
+                            <img src={img} alt={sp.title} className="w-full h-full object-cover pointer-events-none" loading="lazy" draggable={false} />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">No image</div>
                           )}

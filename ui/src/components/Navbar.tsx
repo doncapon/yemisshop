@@ -250,7 +250,7 @@ function IconNavLink({
       onClick={handleClick}
       className={({ isActive }) => {
         const base =
-          "group relative inline-flex items-center justify-center rounded-xl border px-2.5 py-2 transition select-none";
+          "group relative inline-flex h-10 min-w-[40px] items-center justify-center rounded-full border px-3.5 py-2 transition select-none";
         const active = "bg-zinc-900 text-white border-zinc-900 shadow-sm";
         const idle = "bg-white/80 text-zinc-700 border-zinc-200 hover:bg-zinc-50";
         const dis = "opacity-50 pointer-events-none";
@@ -268,14 +268,13 @@ function IconNavLink({
             grid place-items-center
             rounded-full bg-fuchsia-600 text-white font-semibold leading-none
             w-5 h-5 text-[10px]
-            md:min-w-[20px] md:w-auto md:h-5 md:px-1.5
           "
         >
           {count > 9 ? "9+" : count}
         </span>
       )}
 
-      <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
+      <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-zinc-900 text-white text-[11px] px-2.5 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
         {label}
       </span>
     </NavLink>
@@ -296,7 +295,7 @@ function MobileMenuButton({
   variant?: "default" | "primary" | "danger";
 }) {
   const base =
-    "w-full rounded-2xl border px-4 py-2.5 text-left inline-flex items-center gap-3 transition select-none";
+    "w-full rounded-full border px-4 py-3 text-left inline-flex items-center gap-3 transition select-none";
   const text = "text-[14px] leading-5 font-semibold";
   const iconWrap = "w-5 h-5 inline-flex items-center justify-center shrink-0";
   const rightWrap = "ml-auto shrink-0";
@@ -474,7 +473,6 @@ export default function Navbar() {
       setMergedSessionValue(userId, fingerprint);
       await fetchServerCartQty();
     } catch (e) {
-      // Keep local cart intact if merge fails.
       syncGuestCartQty();
       throw e;
     } finally {
@@ -711,15 +709,15 @@ export default function Navbar() {
                     <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
                   )}
 
-                  {isLoggedIn && isSuperAdmin && (
+                  {isLoggedIn && isAdmin && (
                     <IconNavLink to="/supplier" end icon={<CheckCircle2 size={18} />} label="Supplier dashboard" />
                   )}
 
-                  {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
+                  {isLoggedIn && !isSupplier && !isAdmin && !isRider && (
                     <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
                   )}
 
-                  {isLoggedIn && isSuperAdmin && (
+                  {isLoggedIn && isAdmin && (
                     <IconNavLink to="/customer-dashboard" end icon={<User size={18} />} label="Customer dashboard" />
                   )}
 
@@ -794,7 +792,7 @@ export default function Navbar() {
                   <button
                     type="button"
                     onClick={() => hardGo("/register-supplier")}
-                    className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isSupplierRegisterPage
+                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold border transition ${isSupplierRegisterPage
                       ? "bg-zinc-900 text-white border-zinc-900"
                       : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
@@ -811,7 +809,7 @@ export default function Navbar() {
                       const qp = encodeURIComponent(target);
                       hardGo(`/login?from=${qp}`);
                     }}
-                    className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isLoginPage
+                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold border transition ${isLoginPage
                       ? "bg-zinc-900 text-white border-zinc-900"
                       : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
@@ -824,7 +822,7 @@ export default function Navbar() {
                   <button
                     type="button"
                     onClick={() => hardGo("/register")}
-                    className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isRegisterPage
+                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold border transition ${isRegisterPage
                       ? "bg-zinc-900 text-white border-zinc-900"
                       : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`}
@@ -840,7 +838,7 @@ export default function Navbar() {
                     <button
                       type="button"
                       onClick={() => setMenuOpen((v) => !v)}
-                      className="w-10 h-10 rounded-2xl grid place-items-center border border-zinc-200 bg-white text-zinc-900 font-semibold hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
+                      className="min-w-[44px] h-10 px-3 rounded-full grid place-items-center border border-zinc-200 bg-white text-zinc-900 font-semibold hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
                       aria-label="User menu"
                       title="Account"
                     >
@@ -849,10 +847,10 @@ export default function Navbar() {
 
                     {menuOpen && (
                       <div
-                        className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden"
+                        className="absolute right-0 mt-2 w-64 rounded-3xl border border-zinc-200 bg-white shadow-xl overflow-hidden"
                         role="menu"
                       >
-                        <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
+                        <div className="px-4 py-3 border-b border-zinc-100 bg-zinc-50">
                           <div className="text-xs text-zinc-500">Signed in as</div>
                           <div className="text-sm font-semibold truncate text-zinc-900">
                             {displayName || userEmail || "User"}
@@ -861,10 +859,10 @@ export default function Navbar() {
                         </div>
 
                         {isRider ? (
-                          <nav className="py-1 text-sm">
+                          <nav className="py-2 px-2 text-sm">
                             <button
                               type="button"
-                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                              className="w-full text-left px-3.5 py-2.5 rounded-full hover:bg-zinc-50 transition inline-flex items-center gap-2"
                               onClick={() => hardGo("/supplier/orders")}
                               role="menuitem"
                             >
@@ -872,10 +870,10 @@ export default function Navbar() {
                               Orders
                             </button>
 
-                            <div className="my-1 border-t border-zinc-100" />
+                            <div className="my-2 border-t border-zinc-100" />
                             <button
                               type="button"
-                              className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
+                              className="w-full text-left px-3.5 py-2.5 rounded-full text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
                               onClick={logout}
                               role="menuitem"
                             >
@@ -884,10 +882,10 @@ export default function Navbar() {
                             </button>
                           </nav>
                         ) : (
-                          <nav className="py-1 text-sm">
+                          <nav className="py-2 px-2 text-sm">
                             <button
                               type="button"
-                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                              className="w-full text-left px-3.5 py-2.5 rounded-full hover:bg-zinc-50 transition inline-flex items-center gap-2"
                               onClick={() => hardGo("/profile")}
                               role="menuitem"
                             >
@@ -897,7 +895,7 @@ export default function Navbar() {
 
                             <button
                               type="button"
-                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                              className="w-full text-left px-3.5 py-2.5 rounded-full hover:bg-zinc-50 transition inline-flex items-center gap-2"
                               onClick={() => hardGo("/account/sessions")}
                               role="menuitem"
                             >
@@ -908,7 +906,7 @@ export default function Navbar() {
                             {isSuperAdmin && (
                               <button
                                 type="button"
-                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                                className="w-full text-left px-3.5 py-2.5 rounded-full hover:bg-zinc-50 transition inline-flex items-center gap-2"
                                 onClick={() => hardGo("/customer-dashboard")}
                                 role="menuitem"
                               >
@@ -920,7 +918,7 @@ export default function Navbar() {
                             {!isSupplier && (
                               <button
                                 type="button"
-                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                                className="w-full text-left px-3.5 py-2.5 rounded-full hover:bg-zinc-50 transition inline-flex items-center gap-2"
                                 onClick={() => hardGo("/orders")}
                                 role="menuitem"
                               >
@@ -932,7 +930,7 @@ export default function Navbar() {
                             {!isSupplier && (
                               <button
                                 type="button"
-                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                                className="w-full text-left px-3.5 py-2.5 rounded-full hover:bg-zinc-50 transition inline-flex items-center gap-2"
                                 onClick={() => hardGo(returnsHref)}
                                 role="menuitem"
                               >
@@ -944,7 +942,7 @@ export default function Navbar() {
                             {roleNorm === "SUPER_ADMIN" && (
                               <button
                                 type="button"
-                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                                className="w-full text-left px-3.5 py-2.5 rounded-full hover:bg-zinc-50 transition inline-flex items-center gap-2"
                                 onClick={() => hardGo("/admin/settings")}
                                 role="menuitem"
                               >
@@ -953,10 +951,10 @@ export default function Navbar() {
                               </button>
                             )}
 
-                            <div className="my-1 border-t border-zinc-100" />
+                            <div className="my-2 border-t border-zinc-100" />
                             <button
                               type="button"
-                              className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
+                              className="w-full text-left px-3.5 py-2.5 rounded-full text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
                               onClick={logout}
                               role="menuitem"
                             >
@@ -984,7 +982,7 @@ export default function Navbar() {
                     hardGo("/cart");
                   }}
                   className={({ isActive }) =>
-                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
+                    `relative inline-flex items-center justify-center w-10 h-10 rounded-full border border-zinc-200 bg-white transition ${isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
                     }`
                   }
                   aria-label="Cart"
@@ -992,7 +990,7 @@ export default function Navbar() {
                 >
                   <ShoppingCart size={18} className="pointer-events-none" />
                   {cartQty > 0 && (
-                    <span className="pointer-events-none absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+                    <span className="pointer-events-none absolute -top-1 -right-1 w-5 h-5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
                       {cartQty > 9 ? "9+" : cartQty}
                     </span>
                   )}
@@ -1001,7 +999,7 @@ export default function Navbar() {
 
               <button
                 type="button"
-                className="inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
+                className="inline-flex items-center justify-center w-10 h-10 rounded-full border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
                 aria-label="Open menu"
                 onClick={() => setMobileMoreOpen(true)}
                 title="Menu"
@@ -1083,7 +1081,15 @@ export default function Navbar() {
                         />
                       )}
 
-                      {isLoggedIn && isSuperAdmin && (
+                      {isLoggedIn && isAdmin && (
+                        <MobileMenuButton
+                          icon={<CheckCircle2 size={18} />}
+                          label="Supplier dashboard"
+                          onClick={() => hardGo("/supplier")}
+                        />
+                      )}
+
+                      {isLoggedIn && isAdmin && (
                         <MobileMenuButton
                           icon={<User size={18} />}
                           label="Customer dashboard"
@@ -1091,7 +1097,7 @@ export default function Navbar() {
                         />
                       )}
 
-                      {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
+                      {isLoggedIn && !isSupplier && !isAdmin && !isRider && (
                         <MobileMenuButton
                           icon={<User size={18} />}
                           label="Dashboard"

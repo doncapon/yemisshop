@@ -20,6 +20,7 @@ import {
   ChevronRight,
   ChevronDown,
   Heart,
+  Layers,
 } from "lucide-react";
 
 import SiteLayout from "../layouts/SiteLayout.js";
@@ -148,7 +149,7 @@ type CatalogPersistedState = {
   inStockOnly: boolean;
   expandedCats: Record<string, boolean>;
   page: number;
-  pageSize: 8 | 12 | 16;
+  pageSize: 8 | 12 | 16 | 24;
 };
 
 type CatalogProductsMeta = {
@@ -223,8 +224,8 @@ function readCatalogState(): CatalogPersistedState | null {
         : "relevance";
 
     const pageSizeRaw = Number(parsed?.pageSize);
-    const pageSize: 8 | 12 | 16 =
-      pageSizeRaw === 8 || pageSizeRaw === 12 || pageSizeRaw === 16 ? pageSizeRaw : 12;
+    const pageSize: 8 | 12 | 16 | 24 =
+      pageSizeRaw === 8 || pageSizeRaw === 12 || pageSizeRaw === 16 || pageSizeRaw === 24 ? pageSizeRaw : 12;
 
     return {
       selectedCategories: Array.isArray(parsed?.selectedCategories)
@@ -384,10 +385,6 @@ const toCategoryKey = (v: any): string => {
 };
 
 const toBrandKey = (v: any): string => norm(cleanText(v));
-
-/* =========================================================
-   Stock + offers helpers
-========================================================= */
 
 /* =========================================================
    Stock + offers helpers
@@ -1026,7 +1023,7 @@ function MotionCircleLoader({ label = "Loading…" }: { label?: string }) {
             cy="50"
             r="44"
             fill="none"
-            stroke="rgba(59,130,246,0.95)"
+            stroke="rgba(147,51,234,0.95)"
             strokeWidth="8"
             strokeLinecap="round"
             strokeDasharray="160 120"
@@ -1274,6 +1271,7 @@ const ProductCard = memo(
       <Link
         to={`/products/${p.id}`}
         state={{ from: location.pathname }}
+        data-testid="product-card"
         onClick={(e) => {
           if (isFromCardAction(e.target)) {
             e.preventDefault();
@@ -1360,24 +1358,66 @@ const ProductCard = memo(
             {p._categoryLabel}
           </div>
 
-          <div className="mt-1">
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-sm font-semibold md:text-base">{ngn.format(bestPrice || 0)}</p>
+            {hasVariants && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-fuchsia-200 bg-fuchsia-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-fuchsia-600 md:text-[10px]">
+                <Layers size={9} />
+                Options
+              </span>
+            )}
           </div>
 
           <div className="mt-2">
             {hasVariants ? (
-              <button
-                type="button"
-                data-stop-card-nav="true"
-                className="inline-flex items-center rounded-full bg-black/40 px-2.5 py-1 text-[10px] font-medium text-white transition hover:bg-black/55 md:px-3 md:py-1.5 md:text-xs"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onGoToProduct(p.id);
-                }}
-              >
-                Preview
-              </button>
+              <div data-stop-card-nav="true">
+                {baseQtyInCart > 0 ? (
+                  <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                    <button
+                      type="button"
+                      data-stop-card-nav="true"
+                      aria-label="Decrease quantity"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void onSetCartQty(p, baseQtyInCart - 1);
+                      }}
+                    >
+                      −
+                    </button>
+                    <span className="min-w-[18px] text-center text-[11px] font-semibold md:text-xs">
+                      {baseQtyInCart}
+                    </span>
+                    <button
+                      type="button"
+                      data-stop-card-nav="true"
+                      aria-label="Increase quantity"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void onSetCartQty(p, baseQtyInCart + 1);
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-stop-card-nav="true"
+                    className="inline-flex items-center rounded-full bg-zinc-700 px-2.5 py-1 text-[10px] font-medium text-white shadow-sm transition hover:bg-black/90 md:px-3 md:py-1.5 md:text-xs"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void onSetCartQty(p, 1);
+                    }}
+                  >
+                    Add to cart
+                  </button>
+                )}
+              </div>
 
             ) : (
               <div data-stop-card-nav="true">
@@ -1660,7 +1700,7 @@ export default function Catalog() {
   const normalizedQuery = useMemo(() => norm(query.trim()), [query]);
 
   const [page, setPage] = useState(initialPersisted?.page ?? 1);
-  const [pageSize, setPageSize] = useState<8 | 12 | 16>(initialPersisted?.pageSize ?? 12);
+  const [pageSize, setPageSize] = useState<8 | 12 | 16 | 24>(initialPersisted?.pageSize ?? 12);
   const [jumpVal, setJumpVal] = useState<string>("");
 
   const locationStateFrom = `${location.pathname}${location.search}`;
@@ -2215,7 +2255,7 @@ export default function Catalog() {
     return Array.from(new Set(ids));
   }, []);
 
-  const [favIds, setFavIds] = useState<Set<string>>(new Set());
+
 
   const favQuery = useQuery<string[]>({
     queryKey: ["favorites", "mine", user?.id ?? "anon"],
@@ -2231,12 +2271,9 @@ export default function Catalog() {
     },
   });
 
-  useEffect(() => {
-    if (!hydrated || !isAuthed || isSupplier) {
-      setFavIds(new Set());
-      return;
-    }
-    setFavIds(new Set((favQuery.data ?? []).map(String)));
+  const favIds = useMemo(() => {
+    if (!hydrated || !isAuthed || isSupplier) return new Set<string>();
+    return new Set((favQuery.data ?? []).map(String));
   }, [favQuery.data, hydrated, isAuthed, isSupplier]);
 
   useEffect(() => {
@@ -2259,13 +2296,6 @@ export default function Catalog() {
     onMutate: async ({ productId }) => {
       const pid = String(productId);
 
-      setFavIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(pid)) next.delete(pid);
-        else next.add(pid);
-        return next;
-      });
-
       const key = ["favorites", "mine", user?.id ?? "anon"] as const;
       const prev = qc.getQueryData<string[]>(key) ?? [];
       const next = prev.includes(pid) ? prev.filter((id) => id !== pid) : [...prev, pid];
@@ -2275,22 +2305,12 @@ export default function Catalog() {
     },
 
     onError: (_e, _vars, ctx) => {
-      const restored = ctx?.prev ?? [];
-      setFavIds(new Set(restored.map(String)));
+      const restored = ctx?.prev ?? [];;
       qc.setQueryData(["favorites", "mine", user?.id ?? "anon"], restored);
 
       openModal({
         title: "Wishlist",
         message: "Could not update wishlist. Please try again.",
-      });
-    },
-
-    onSuccess: ({ productId, favorited }) => {
-      setFavIds((prev) => {
-        const next = new Set(prev);
-        if (favorited) next.add(String(productId));
-        else next.delete(String(productId));
-        return next;
       });
     },
 
@@ -2704,9 +2724,10 @@ export default function Catalog() {
         const primaryImg = p._primaryImg ?? null;
         const optionsKey = "";
 
+        const productHasVariants = Array.isArray(p.variants) && p.variants.length > 0;
         const activeBaseOffer = getActiveBaseOffer(p);
 
-        if (qty > 0 && !activeBaseOffer) {
+        if (qty > 0 && !productHasVariants && !activeBaseOffer) {
           openModal({
             title: "Unavailable",
             message: "This item is no longer available to add to cart. Please refresh and try again.",
@@ -2731,6 +2752,7 @@ export default function Catalog() {
           unitPriceCache: Number.isFinite(unitPriceCache) ? unitPriceCache : 0,
           supplierId: activeBaseOffer?.supplierId ?? null,
           offerId: activeBaseOffer?.id ?? undefined,
+          needsOptions: productHasVariants ? true : undefined,
         });
 
         window.dispatchEvent(new Event("cart:updated"));
@@ -2825,6 +2847,13 @@ export default function Catalog() {
     selectedBrands.length > 0 ||
     !inStockOnly;
 
+  const activeFilterCount =
+    selectedCategories.length +
+    selectedBrands.length +
+    selectedBucketIdxs.length +
+    (!inStockOnly ? 1 : 0) +
+    (sortKey !== "relevance" ? 1 : 0);
+
   const hasSearch = !!normalizedDeferredQuery;
   const hasTypedQuery = !!normalizedQuery;
   const shouldShowSuggest = searchFocused && hasTypedQuery;
@@ -2856,7 +2885,8 @@ export default function Catalog() {
 
   /* =========================================================
      Main render
-========================================================= */
+  ========================================================= */
+
   return (
     <SiteLayout>
       <div
@@ -2879,7 +2909,7 @@ export default function Catalog() {
         }}
         onTouchEnd={() => setTouchStartX(null)}
       >
-        <div className="hidden border-b bg-white md:block">
+        <div className="hidden border-b border-zinc-200 bg-white shadow-[0_16px_36px_-18px_rgba(15,23,42,0.28)] md:block">
           <div className="mx-auto max-w-7xl px-4 pb-4 pt-3 md:px-8 md:py-10">
             <div className="flex items-start justify-between gap-6">
               <div className="min-w-0">
@@ -2894,7 +2924,7 @@ export default function Catalog() {
               <button
                 type="button"
                 onClick={() => setRefineOpen(true)}
-                className="hidden items-center gap-2 rounded-full border border-zinc-200 bg-white/90 px-4 py-2 text-sm font-medium text-zinc-800 shadow-sm transition hover:border-zinc-300 active:scale-[0.98] md:inline-flex"
+                className="hidden items-center gap-2 rounded-full border border-zinc-200 bg-white/95 px-5 py-2.5 text-sm font-medium text-zinc-800 shadow-md transition hover:border-zinc-300 hover:shadow-lg active:scale-[0.98] md:inline-flex"
               >
                 <SlidersHorizontal size={18} />
                 Filter categories & brands
@@ -2903,96 +2933,84 @@ export default function Catalog() {
           </div>
         </div>
 
-        <div className="mb-3 md:hidden">
-          <div className="min-w-0">
-            <h1 className="text-lg font-semibold text-zinc-900">Products</h1>
-            <p className="text-xs text-zinc-600">Search and filter quickly.</p>
-          </div>
-        </div>
+        {/* ── Compact sticky mobile toolbar ── */}
+        <div className="sticky top-0 z-30 -mx-2 mb-3 bg-white/95 px-2 pb-2 pt-2 shadow-[0_2px_16px_-4px_rgba(15,23,42,0.1)] backdrop-blur-sm md:hidden">
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => { e.preventDefault(); submitSearch(); }}
+          >
+            {/* Search input */}
+            <div className="relative min-w-0 flex-1">
+              <Search
+                size={14}
+                className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-zinc-400"
+              />
+              <input
+                ref={mobileInputRef}
+                value={query}
+                onChange={(e) => { setQuery(e.target.value); setSearchFocused(true); setActiveIdx(0); }}
+                onFocus={() => setSearchFocused(true)}
+                placeholder="Search products..."
+                className="h-10 w-full rounded-full border border-zinc-200 bg-white pl-8 pr-8 text-[13px] text-zinc-800 placeholder:text-zinc-400 focus:border-fuchsia-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-100"
+                aria-label="Search products"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => { setQuery(""); setSearchFocused(false); }}
+                  className="absolute right-2.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full bg-zinc-200"
+                >
+                  <X size={10} className="text-zinc-600" />
+                </button>
+              )}
+            </div>
 
-        {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
-          <div className="mb-2 flex flex-wrap items-center gap-1.5 md:hidden">
-            {hasSearch && (
-              <span className="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[10px] text-zinc-700 shadow-sm">
-                Search: <span className="font-semibold">{query.trim()}</span>
-              </span>
-            )}
-
-            {anyActiveFilter && (
-              <span className="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[10px] text-zinc-700 shadow-sm">
-                Filters active
-              </span>
-            )}
-
-            {sortKey !== "relevance" && (
-              <span className="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[10px] text-zinc-700 shadow-sm">
-                {sortKey === "price-asc"
-                  ? "Low → High"
-                  : sortKey === "price-desc"
-                    ? "High → Low"
-                    : "Relevance"}
-              </span>
-            )}
-
-            {pageSize !== 12 && (
-              <span className="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[10px] text-zinc-700 shadow-sm">
-                {pageSize}/page
-              </span>
-            )}
-
+            {/* Filter button with active count badge */}
             <button
               type="button"
-              className="ml-auto inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[10px] font-medium text-zinc-700 shadow-sm transition hover:border-zinc-300"
               onClick={() => setRefineOpen(true)}
+              className="relative shrink-0 inline-flex h-10 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3.5 text-[12px] font-medium text-zinc-700 shadow-sm transition active:scale-95"
             >
-              <SlidersHorizontal size={13} />
-              Edit
-            </button>
-          </div>
-        )}
-
-        <div className="mb-3 rounded-2xl border border-zinc-200 bg-white p-2.5 shadow-sm md:hidden">
-          <form
-            className="relative"
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitSearch();
-            }}
-          >
-            <Search
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"
-              size={14}
-            />
-
-            <input
-              ref={mobileInputRef}
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setSearchFocused(true);
-                setActiveIdx(0);
-              }}
-              onFocus={() => setSearchFocused(true)}
-              placeholder="Search products, brands, categories..."
-              className="h-10 w-full rounded-xl border border-zinc-200 bg-white pl-9 pr-20 text-[13px] text-zinc-800 placeholder:text-[12px] placeholder:text-zinc-400 focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-100"
-              aria-label="Search products"
-            />
-
-            <button
-              type="submit"
-              className="absolute right-1.5 top-1/2 inline-flex h-8 -translate-y-1/2 items-center rounded-full bg-zinc-900 px-3 text-[11px] font-medium text-white transition hover:bg-zinc-800"
-            >
-              Search
+              <SlidersHorizontal size={14} />
+              <span>Filter</span>
+              {activeFilterCount > 0 && (
+                <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-fuchsia-600 px-1 text-[9px] font-bold text-white">
+                  {activeFilterCount}
+                </span>
+              )}
             </button>
           </form>
 
+          {/* Active search / sort chips */}
+          {(hasSearch || sortKey !== "relevance") && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {hasSearch && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2.5 py-0.5 text-[10px] text-zinc-700">
+                  "{query.trim()}"
+                  <button type="button" onClick={() => setQuery("")}>
+                    <X size={9} />
+                  </button>
+                </span>
+              )}
+              {sortKey !== "relevance" && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2.5 py-0.5 text-[10px] text-zinc-700">
+                  {sortKey === "price-asc" ? "Price ↑" : "Price ↓"}
+                  <button type="button" onClick={() => setSortKey("relevance")}>
+                    <X size={9} />
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Suggestions dropdown — desktop only; mobile shows results in the grid below */}
           {shouldShowSuggest && (
             <div
               ref={mobileSuggestRef}
-              className="mt-2 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-lg"
+              className="mt-1.5 hidden md:block overflow-hidden rounded-[20px] border border-zinc-200 bg-white shadow-lg"
             >
               {hasSuggestionResults ? (
-                <ul className="max-h-64 overflow-auto p-2">
+                <ul className="max-h-48 overflow-auto p-2">
                   {suggestions.map((p, i) => (
                     <SuggestionItem
                       key={p.id}
@@ -3007,100 +3025,66 @@ export default function Catalog() {
               )}
             </div>
           )}
-
-          <div className="mt-2 grid grid-cols-[minmax(0,1fr)_88px_92px] gap-2">
-            <select
-              value={sortKey}
-              onChange={(e) => setSortKey(e.target.value as SortKey)}
-              className="h-10 min-w-0 rounded-xl border border-zinc-200 bg-white px-3 text-[12px] text-zinc-700"
-            >
-              <option value="relevance">Relevance</option>
-              <option value="price-asc">Low → High</option>
-              <option value="price-desc">High → Low</option>
-            </select>
-
-            <select
-              value={pageSize}
-              onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
-              className="h-10 rounded-xl border border-zinc-200 bg-white px-2 text-[12px] text-zinc-700"
-            >
-              <option value={8}>8</option>
-              <option value={12}>12</option>
-              <option value={16}>16</option>
-            </select>
-
-            <button
-              type="button"
-              onClick={() => setRefineOpen(true)}
-              className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-2 text-[12px] font-medium text-zinc-700 shadow-sm transition hover:border-zinc-300"
-            >
-              <SlidersHorizontal size={13} />
-              Filters
-            </button>
-          </div>
-
-          <div className="mt-2 flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2">
-            <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-700">
-              <input
-                type="checkbox"
-                checked={inStockOnly}
-                onChange={(e) => setInStockOnly(e.target.checked)}
-                className="h-4 w-4 rounded border-zinc-300 accent-purple-600"
-              />
-              In stock only
-            </label>
-
-            <div className="text-[10px] text-zinc-500">
-              {totalProducts} result{totalProducts === 1 ? "" : "s"}
-            </div>
-          </div>
         </div>
 
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
           <aside className="hidden md:block">
-            <div className="sticky top-24 rounded-2xl border border-zinc-200 bg-white/90 p-4">
+            <div className="sticky top-24 rounded-[28px] border border-zinc-200 bg-white/90 p-4 shadow-sm">
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-zinc-900">Filter categories & brands</h3>
-                {(anyActiveFilter || hasSearch) && (
-                  <button
-                    type="button"
-                    className="text-xs font-medium text-fuchsia-700 hover:underline"
-                    onClick={() => {
-                      setQuery("");
-                      setSearchFocused(false);
-                      setActiveIdx(0);
-                      clearFilters();
-                    }}
-                  >
-                    Clear all
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="text-xs font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
+                  disabled={!anyActiveFilter && !hasSearch && sortKey === "relevance" && pageSize === 12}
+                  onClick={() => {
+                    setQuery("");
+                    setSearchFocused(false);
+                    setActiveIdx(0);
+                    setSortKey("relevance");
+                    setPageSize(12);
+                    clearFilters();
+                  }}
+                >
+                  Reset all
+                </button>
               </div>
 
               <div className="mb-3">
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Sort</label>
-                <select
-                  value={sortKey}
-                  onChange={(e) => setSortKey(e.target.value as SortKey)}
-                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2"
-                >
-                  <option value="relevance">Relevance</option>
-                  <option value="price-asc">Price: Low → High</option>
-                  <option value="price-desc">Price: High → Low</option>
-                </select>
+                <div className="relative">
+                  <select
+                    value={sortKey}
+                    onChange={(e) => setSortKey(e.target.value as SortKey)}
+                    className="w-full appearance-none rounded-full border border-zinc-200 bg-white py-2.5 pl-4 pr-11"
+                  >
+                    <option value="relevance">Relevance</option>
+                    <option value="price-asc">Price: Low → High</option>
+                    <option value="price-desc">Price: High → Low</option>
+                  </select>
+                  <ChevronDown
+                    size={16}
+                    className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500"
+                  />
+                </div>
               </div>
 
               <div className="mb-3">
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Per page</label>
-                <select
-                  value={pageSize}
-                  onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
-                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2"
-                >
-                  <option value={8}>8</option>
-                  <option value={12}>12</option>
-                  <option value={16}>16</option>
-                </select>
+                <div className="relative">
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16 | 24)}
+                    className="w-full appearance-none rounded-full border border-zinc-200 bg-white py-2.5 pl-4 pr-11"
+                  >
+                    <option value={8}>8</option>
+                    <option value={12}>12</option>
+                    <option value={24}>24</option>
+                  </select>
+                  <ChevronDown
+                    size={16}
+                    className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500"
+                  />
+                </div>
               </div>
 
               <div className="mb-4">
@@ -3109,7 +3093,7 @@ export default function Catalog() {
                     type="checkbox"
                     checked={inStockOnly}
                     onChange={(e) => setInStockOnly(e.target.checked)}
-                    className="h-3 w-3 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
+                    className="h-3.5 w-3.5 rounded border-zinc-300 accent-purple-600 focus:ring-purple-500"
                   />
                   In stock
                 </label>
@@ -3119,7 +3103,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
                   <button
-                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-[11px] text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
@@ -3137,19 +3121,19 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${checked
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
-                            style={{ paddingLeft: 8 + pad }}
+                            style={{ paddingLeft: 12 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
-                                    ? "text-white/90 hover:bg-white/10"
-                                    : "text-zinc-600 hover:bg-black/5"
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${checked
+                                  ? "text-white/90 hover:bg-white/10"
+                                  : "text-zinc-600 hover:bg-black/5"
                                   }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
@@ -3188,9 +3172,9 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
                           >
                             <span className="truncate">{c.name}</span>
@@ -3213,7 +3197,7 @@ export default function Catalog() {
                   <div className="mb-2 flex items-center justify-between">
                     <h4 className="text-xs font-semibold text-zinc-800">Brands</h4>
                     <button
-                      className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                      className="text-[11px] text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
@@ -3227,9 +3211,9 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
                           >
                             <span className="truncate">{b.name}</span>
@@ -3251,7 +3235,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
                   <button
-                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-[11px] text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedBucketIdxs([])}
                     disabled={selectedBucketIdxs.length === 0}
                   >
@@ -3267,9 +3251,9 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                             }`}
                         >
                           <span>{bucket.label}</span>
@@ -3289,9 +3273,9 @@ export default function Catalog() {
           </aside>
 
           <section className="mt-0 min-w-0">
-            <div className="mb-4 hidden items-start justify-end md:flex">
+            <div className="mb-4 hidden md:block">
               <form
-                className="relative ml-auto w-full max-w-2xl"
+                className="relative w-full"
                 onSubmit={(e) => {
                   e.preventDefault();
                   submitSearch();
@@ -3300,7 +3284,7 @@ export default function Catalog() {
                 {shouldShowSuggest && (
                   <div
                     ref={desktopSuggestRef}
-                    className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl"
+                    className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-2xl"
                   >
                     {hasSuggestionResults ? (
                       <ul className="max-h-[45vh] overflow-auto p-2">
@@ -3320,7 +3304,7 @@ export default function Catalog() {
                 )}
 
                 <Search
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+                  className="absolute left-4 top-1/2 z-10 -translate-y-1/2 text-zinc-500"
                   size={18}
                 />
                 <input
@@ -3357,13 +3341,13 @@ export default function Catalog() {
                     }
                   }}
                   placeholder="Search products, brands, or categories…"
-                  className="w-full rounded-2xl border border-zinc-200 bg-white/90 py-2.5 pl-10 pr-28 backdrop-blur focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
+                  className="h-14 w-full rounded-full border border-zinc-200 bg-white/95 pl-11 pr-40 text-[15px] text-zinc-800 backdrop-blur focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
                   aria-label="Search products"
                 />
 
                 <button
                   type="submit"
-                  className="absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center rounded-full bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-800"
+                  className="absolute right-2 top-1/2 inline-flex h-11 min-w-[128px] -translate-y-1/2 items-center justify-center rounded-full bg-zinc-900 px-6 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800"
                 >
                   Search
                 </button>
@@ -3374,7 +3358,7 @@ export default function Catalog() {
               <p className="text-sm text-zinc-600">No products match your filters.</p>
             ) : (
               <>
-                <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-4 md:gap-4">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-3 md:gap-4 lg:grid-cols-4">
                   {pageItems.map((p) => {
                     const fav = isFav(p.id);
                     const bestPrice = p._displayPrice;
@@ -3382,7 +3366,7 @@ export default function Catalog() {
                     const activeBaseOffer = hasVariants ? null : getActiveBaseOffer(p);
                     const inStock = p._availableNow;
                     const baseQtyInCart = cartQtyMap.get(String(p.id)) ?? 0;
-                    const canAdjustBaseQty = hasVariants ? false : !!activeBaseOffer;
+                    const canAdjustBaseQty = hasVariants ? true : !!activeBaseOffer;
 
                     return (
                       <ProductCard
@@ -3412,7 +3396,7 @@ export default function Catalog() {
                 </div>
 
                 <div className="mt-5 md:mt-8">
-                  <div className="rounded-xl border border-zinc-200 bg-white/85 p-2 shadow-sm backdrop-blur md:hidden">
+                  <div className="rounded-[24px] border border-zinc-200 bg-white/85 p-2 shadow-sm backdrop-blur md:hidden">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0 text-[10px] font-semibold tracking-tight text-zinc-800">
                         Showing {displayFrom}-{displayTo} of {totalProducts} products
@@ -3429,7 +3413,7 @@ export default function Catalog() {
                         disabled={!canGoPrev}
                         aria-label="First page"
                         title="First page"
-                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="h-8 rounded-full border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         «
                       </button>
@@ -3439,7 +3423,7 @@ export default function Catalog() {
                         disabled={!canGoPrev}
                         aria-label="Previous page"
                         title="Previous page"
-                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="h-8 rounded-full border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         ‹
                       </button>
@@ -3449,7 +3433,7 @@ export default function Catalog() {
                         disabled={!canGoNext}
                         aria-label="Next page"
                         title="Next page"
-                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="h-8 rounded-full border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         ›
                       </button>
@@ -3459,7 +3443,7 @@ export default function Catalog() {
                         disabled={!canGoNext}
                         aria-label="Last page"
                         title="Last page"
-                        className="h-7 rounded-md border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="h-8 rounded-full border border-zinc-200 bg-white text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         »
                       </button>
@@ -3473,7 +3457,7 @@ export default function Catalog() {
                         if (Number.isFinite(n)) goTo(n);
                       }}
                     >
-                      <label className="shrink-0 text-[9px] font-semibold tracking-tight text-zinc-700">
+                      <label className="shrink-0 whitespace-nowrap text-[9px] font-semibold tracking-tight text-zinc-700">
                         Go to
                       </label>
                       <input
@@ -3485,7 +3469,7 @@ export default function Catalog() {
                         value={jumpVal}
                         onChange={(e) => setJumpVal(e.target.value)}
                         placeholder={`${currentPage}`}
-                        className="h-7 w-full min-w-0 rounded-md border border-zinc-200 bg-white px-2 text-[10px] font-semibold focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-100"
+                        className="h-8 w-full min-w-0 rounded-full border border-zinc-200 bg-white px-3 text-[10px] font-semibold focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-100"
                         aria-label="Jump to page"
                       />
                       <button
@@ -3496,7 +3480,7 @@ export default function Catalog() {
                           Number(jumpVal) < 1 ||
                           Number(jumpVal) > totalPages
                         }
-                        className="h-7 shrink-0 rounded-md bg-zinc-900 px-2.5 text-[10px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
+                        className="h-8 shrink-0 rounded-full bg-zinc-900 px-3 text-[10px] font-semibold text-white transition disabled:opacity-40 active:scale-[0.99]"
                       >
                         Go
                       </button>
@@ -3523,19 +3507,19 @@ export default function Catalog() {
                           if (Number.isFinite(n)) goTo(n);
                         }}
                       >
-                        <label className="text-sm text-zinc-700">Go to</label>
+                        <label className="whitespace-nowrap text-sm text-zinc-700">Go to</label>
                         <input
                           type="number"
                           min={1}
                           max={totalPages}
                           value={jumpVal}
                           onChange={(e) => setJumpVal(e.target.value)}
-                          className="w-20 rounded-xl border border-zinc-200 bg-white px-3 py-1.5"
+                          className="w-20 rounded-full border border-zinc-200 bg-white px-4 py-2"
                           aria-label="Jump to page"
                         />
                         <button
                           type="submit"
-                          className="rounded-xl border border-zinc-200 bg-white px-3 py-1.5 hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-50"
+                          className="rounded-full border border-zinc-200 bg-white px-4 py-2 hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-50"
                           disabled={
                             isPageFetching ||
                             !jumpVal ||
@@ -3550,7 +3534,7 @@ export default function Catalog() {
                       <div className="flex items-center gap-1 sm:gap-2">
                         <button
                           type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:py-1.5 sm:text-xs"
+                          className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:text-xs"
                           onClick={() => goTo(1)}
                           disabled={!canGoPrev}
                         >
@@ -3559,7 +3543,7 @@ export default function Catalog() {
 
                         <button
                           type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:py-1.5 sm:text-xs"
+                          className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:text-xs"
                           onClick={() => goTo(currentPage - 1)}
                           disabled={!canGoPrev}
                         >
@@ -3578,9 +3562,9 @@ export default function Catalog() {
                                   type="button"
                                   onClick={() => goTo(n)}
                                   disabled={isPageFetching || n === currentPage}
-                                  className={`rounded-xl px-3 py-1.5 text-xs disabled:cursor-not-allowed ${n === currentPage
-                                      ? "border border-zinc-900 bg-zinc-900 text-white"
-                                      : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-40"
+                                  className={`rounded-full px-3.5 py-1.5 text-xs disabled:cursor-not-allowed ${n === currentPage
+                                    ? "border border-zinc-900 bg-zinc-900 text-white"
+                                    : "border border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-40"
                                     }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
@@ -3593,7 +3577,7 @@ export default function Catalog() {
 
                         <button
                           type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:py-1.5 sm:text-xs"
+                          className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:text-xs"
                           onClick={() => goTo(currentPage + 1)}
                           disabled={!canGoNext}
                         >
@@ -3602,7 +3586,7 @@ export default function Catalog() {
 
                         <button
                           type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-2 py-1 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:py-1.5 sm:text-xs"
+                          className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[10px] hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 sm:text-xs"
                           onClick={() => goTo(totalPages)}
                           disabled={!canGoNext}
                         >
@@ -3656,31 +3640,100 @@ export default function Catalog() {
                 <button
                   type="button"
                   onClick={closeRefine}
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-zinc-100 text-zinc-700 transition active:scale-95"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-zinc-100 text-zinc-700 transition active:scale-95"
                   aria-label="Close filters panel"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              {(anyActiveFilter || hasSearch) && (
-                <div className="flex items-center justify-end">
-                  <button
-                    type="button"
-                    className="text-[12px] font-medium text-fuchsia-700 hover:underline"
-                    onClick={() => {
-                      setQuery("");
-                      setSearchFocused(false);
-                      setActiveIdx(0);
-                      clearFilters();
-                    }}
-                  >
-                    Clear all
-                  </button>
-                </div>
-              )}
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  className="text-[12px] font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
+                  disabled={!anyActiveFilter && !hasSearch && sortKey === "relevance" && pageSize === 12}
+                  onClick={() => {
+                    setQuery("");
+                    setSearchFocused(false);
+                    setActiveIdx(0);
+                    setSortKey("relevance");
+                    setPageSize(12);
+                    clearFilters();
+                  }}
+                >
+                  Reset all
+                </button>
+              </div>
 
-              <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+              {/* Sort */}
+              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+                <h4 className="mb-2 text-[12px] font-semibold text-zinc-900">Sort by</h4>
+                <div className="flex flex-wrap gap-2">
+                  {([
+                    { key: "relevance", label: "Relevance" },
+                    { key: "price-asc", label: "Price ↑" },
+                    { key: "price-desc", label: "Price ↓" },
+                  ] as { key: SortKey; label: string }[]).map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setSortKey(key)}
+                      className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
+                        sortKey === key
+                          ? "border-zinc-900 bg-zinc-900 text-white"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-black/5"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Per page */}
+              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+                <h4 className="mb-2 text-[12px] font-semibold text-zinc-900">Per page</h4>
+                <div className="flex flex-wrap gap-2">
+                  {[8, 12, 16].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setPageSize(n as 8 | 12 | 16 | 24)}
+                      className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
+                        pageSize === n
+                          ? "border-zinc-900 bg-zinc-900 text-white"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-black/5"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* In stock */}
+              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+                <button
+                  type="button"
+                  onClick={() => setInStockOnly((v) => !v)}
+                  className="flex w-full items-center justify-between"
+                >
+                  <span className="text-[12px] font-semibold text-zinc-900">In stock only</span>
+                  <span
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                      inStockOnly ? "bg-zinc-900" : "bg-zinc-300"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+                        inStockOnly ? "translate-x-[18px]" : "translate-x-[3px]"
+                      }`}
+                    />
+                  </span>
+                </button>
+              </div>
+
+              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
                   <button
@@ -3702,19 +3755,19 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${checked
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${checked
+                              ? "border-zinc-900 bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
-                            style={{ paddingLeft: 8 + pad }}
+                            style={{ paddingLeft: 12 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-lg ${checked
-                                    ? "text-white/90 hover:bg-white/10"
-                                    : "text-zinc-600 hover:bg-black/5"
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${checked
+                                  ? "text-white/90 hover:bg-white/10"
+                                  : "text-zinc-600 hover:bg-black/5"
                                   }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
@@ -3753,9 +3806,9 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
                           >
                             <span className="truncate">{c.name}</span>
@@ -3774,7 +3827,7 @@ export default function Catalog() {
               </div>
 
               {brands.length > 0 && (
-                <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+                <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
                   <div className="mb-2 flex items-center justify-between">
                     <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
                     <button
@@ -3793,9 +3846,9 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                                ? "bg-zinc-900 text-white"
-                                : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
                           >
                             <span className="truncate">{b.name}</span>
@@ -3813,7 +3866,7 @@ export default function Catalog() {
                 </div>
               )}
 
-              <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
                   <button
@@ -3833,9 +3886,9 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
+                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                             }`}
                         >
                           <span>{bucket.label}</span>
@@ -3856,7 +3909,7 @@ export default function Catalog() {
                 <button
                   type="button"
                   onClick={closeRefine}
-                  className="w-full rounded-2xl bg-zinc-900 px-4 py-2.5 font-semibold text-white transition active:scale-[0.98]"
+                  className="w-full rounded-full bg-zinc-900 px-4 py-3 font-semibold text-white transition active:scale-[0.98]"
                 >
                   Done
                 </button>
