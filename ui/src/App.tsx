@@ -141,6 +141,7 @@ const CookiesPage = React.lazy(() => import("./pages/Cookies"));
 const UnsubscribeNewsletter = React.lazy(
   () => import("./pages/UnsubscribeNewsletter")
 );
+const NotFound = React.lazy(() => import("./pages/NotFound"));
 
 /* -----------------------------
    Small shared fallback
@@ -1725,7 +1726,7 @@ export default function App() {
                   <Route path="/cookies" element={<CookiesPage />} />
                   <Route path="/unsubscribe" element={<UnsubscribeNewsletter />} />
 
-                  <Route path="*" element={<Navigate to="/" replace />} />
+                  <Route path="*" element={<NotFound />} />
                 </Routes>
               </Suspense>
             </div>

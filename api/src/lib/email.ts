@@ -708,3 +708,161 @@ export async function sendSupplierPurchaseOrderEmail(
 function round2(n: number) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
+
+/* ===========================
+   Customer order lifecycle emails
+=========================== */
+
+const BRAND_PRIMARY = "#4f46e5";
+const BRAND_FUCHSIA = "#a21caf";
+
+function orderEmailShell(title: string, body: string, ctaHref?: string, ctaLabel?: string) {
+  const cta = ctaHref && ctaLabel
+    ? `<p style="margin:24px 0 0 0;text-align:center">
+         <a href="${ctaHref}" style="display:inline-block;background:${BRAND_PRIMARY};color:#fff;padding:10px 20px;border-radius:10px;text-decoration:none;font-weight:600">
+           ${ctaLabel}
+         </a>
+       </p>`
+    : "";
+
+  return `
+<div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111;max-width:560px;margin:0 auto">
+  <div style="background:linear-gradient(135deg,${BRAND_PRIMARY},${BRAND_FUCHSIA});border-radius:14px 14px 0 0;padding:20px 24px">
+    <h1 style="margin:0;color:#fff;font-size:20px;font-weight:700">DaySpring</h1>
+  </div>
+  <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 14px 14px;padding:24px">
+    <h2 style="margin:0 0 12px 0;font-size:18px">${title}</h2>
+    ${body}
+    ${cta}
+    <hr style="margin:24px 0;border:none;border-top:1px solid #e5e7eb" />
+    <p style="margin:0;font-size:12px;color:#9ca3af">
+      You're receiving this because you placed an order on DaySpring House.
+      Visit <a href="${process.env.APP_URL || "https://dayspringhouse.com"}" style="color:${BRAND_PRIMARY}">dayspringhouse.com</a> for help.
+    </p>
+  </div>
+</div>
+  `.trim();
+}
+
+export type CustomerOrderEmailArgs = {
+  to: string;
+  customerName?: string;
+  orderId: string;
+  orderRef?: string;
+  totalAmount?: number;
+  currency?: string;
+  orderUrl?: string;
+};
+
+export async function sendCustomerOrderCreatedEmail(args: CustomerOrderEmailArgs) {
+  const name = args.customerName ? `Hi ${args.customerName},` : "Hi,";
+  const ref = args.orderRef || args.orderId;
+  const amount = args.totalAmount != null
+    ? `<p style="margin:8px 0">Order total: <strong>${formatMoney(args.totalAmount, args.currency || "NGN")}</strong></p>`
+    : "";
+  const url = args.orderUrl || `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`;
+
+  const body = `
+    <p style="margin:0 0 8px 0">${name}</p>
+    <p style="margin:0 0 12px 0">Your order has been placed successfully. We'll notify you once it's confirmed and on its way.</p>
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin:12px 0">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#6b7280">Order reference</p>
+      <p style="margin:0;font-family:ui-monospace,monospace;font-weight:700;font-size:16px">${ref}</p>
+      ${amount}
+    </div>
+    <p style="margin:12px 0 0 0;color:#444">You can track your order status in your account.</p>
+  `;
+
+  return safeSend({
+    to: args.to,
+    subject: `Order confirmed — ${ref}`,
+    html: orderEmailShell("Your order is confirmed!", body, url, "Track my order"),
+    text: `${name}\n\nYour DaySpring order ${ref} has been placed successfully.\n${args.totalAmount != null ? `Total: ${formatMoney(args.totalAmount, args.currency || "NGN")}\n` : ""}Track your order at: ${url}`,
+  });
+}
+
+export async function sendCustomerOrderPaidEmail(args: CustomerOrderEmailArgs) {
+  const name = args.customerName ? `Hi ${args.customerName},` : "Hi,";
+  const ref = args.orderRef || args.orderId;
+  const amount = args.totalAmount != null
+    ? `<p style="margin:8px 0">Amount paid: <strong>${formatMoney(args.totalAmount, args.currency || "NGN")}</strong></p>`
+    : "";
+  const url = args.orderUrl || `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`;
+
+  const body = `
+    <p style="margin:0 0 8px 0">${name}</p>
+    <p style="margin:0 0 12px 0">We've received your payment. Your order is now being processed and will be with you soon.</p>
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px 16px;margin:12px 0">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#6b7280">Order reference</p>
+      <p style="margin:0;font-family:ui-monospace,monospace;font-weight:700;font-size:16px">${ref}</p>
+      ${amount}
+    </div>
+    <p style="margin:12px 0 0 0;color:#444">We'll send you another update when your order ships.</p>
+  `;
+
+  return safeSend({
+    to: args.to,
+    subject: `Payment received — ${ref}`,
+    html: orderEmailShell("Payment confirmed!", body, url, "View order"),
+    text: `${name}\n\nPayment received for your DaySpring order ${ref}.\n${args.totalAmount != null ? `Amount: ${formatMoney(args.totalAmount, args.currency || "NGN")}\n` : ""}Track your order at: ${url}`,
+  });
+}
+
+export async function sendCustomerOrderShippedEmail(args: CustomerOrderEmailArgs & { trackingInfo?: string }) {
+  const name = args.customerName ? `Hi ${args.customerName},` : "Hi,";
+  const ref = args.orderRef || args.orderId;
+  const tracking = args.trackingInfo
+    ? `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 16px;margin:12px 0">
+         <p style="margin:0 0 4px 0;font-size:12px;color:#6b7280">Tracking information</p>
+         <p style="margin:0;font-weight:600">${args.trackingInfo}</p>
+       </div>`
+    : "";
+  const url = args.orderUrl || `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`;
+
+  const body = `
+    <p style="margin:0 0 8px 0">${name}</p>
+    <p style="margin:0 0 12px 0">Great news! Your order is on its way.</p>
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin:12px 0">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#6b7280">Order reference</p>
+      <p style="margin:0;font-family:ui-monospace,monospace;font-weight:700;font-size:16px">${ref}</p>
+    </div>
+    ${tracking}
+    <p style="margin:12px 0 0 0;color:#444">You'll need to provide a delivery OTP when the rider arrives — check your order page for the code.</p>
+  `;
+
+  return safeSend({
+    to: args.to,
+    subject: `Your order is on its way — ${ref}`,
+    html: orderEmailShell("Your order has shipped!", body, url, "Track my order"),
+    text: `${name}\n\nYour DaySpring order ${ref} has been shipped and is on its way.${args.trackingInfo ? `\nTracking: ${args.trackingInfo}` : ""}\nTrack your order at: ${url}`,
+  });
+}
+
+export async function sendCustomerOrderDeliveredEmail(args: CustomerOrderEmailArgs) {
+  const name = args.customerName ? `Hi ${args.customerName},` : "Hi,";
+  const ref = args.orderRef || args.orderId;
+  const url = args.orderUrl || `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`;
+  const reviewUrl = `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`;
+
+  const body = `
+    <p style="margin:0 0 8px 0">${name}</p>
+    <p style="margin:0 0 12px 0">Your order has been delivered. We hope you love it!</p>
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin:12px 0">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#6b7280">Order reference</p>
+      <p style="margin:0;font-family:ui-monospace,monospace;font-weight:700;font-size:16px">${ref}</p>
+    </div>
+    <p style="margin:12px 0 0 0;color:#444">
+      If there's any issue with your order, you can raise a refund or dispute from your order page.
+    </p>
+    <p style="margin:8px 0 0 0;color:#444">
+      Enjoying your purchase? Leave a review to help other shoppers.
+    </p>
+  `;
+
+  return safeSend({
+    to: args.to,
+    subject: `Order delivered — ${ref}`,
+    html: orderEmailShell("Your order has been delivered!", body, reviewUrl, "Leave a review"),
+    text: `${name}\n\nYour DaySpring order ${ref} has been delivered. We hope you love it!\nIf there are any issues visit: ${url}`,
+  });
+}

@@ -1,5 +1,12 @@
 // api/src/services/messaging.service.ts
 import { sendSmsViaTermii } from "../lib/termii.js";
+import {
+  sendMail,
+  sendCustomerOrderCreatedEmail,
+  sendCustomerOrderPaidEmail,
+  sendCustomerOrderShippedEmail,
+  sendCustomerOrderDeliveredEmail,
+} from "../lib/email.js";
 
 type Channel = "whatsapp" | "sms" | "email";
 
@@ -18,6 +25,17 @@ type SendMessageArgs = {
     | "ORDER_SHIPPED"
     | "ORDER_DELIVERED"
     | "GENERAL";
+
+  // Optional rich context for HTML email templates
+  emailContext?: {
+    customerName?: string;
+    orderId?: string;
+    orderRef?: string;
+    totalAmount?: number;
+    currency?: string;
+    orderUrl?: string;
+    trackingInfo?: string;
+  };
 
   preferChannel?: Channel;
   allowFallback?: boolean;
@@ -79,13 +97,39 @@ async function sendWhatsappViaTermii(args: { to: string; message: string }) {
   throw new Error("sendWhatsappViaTermii is not implemented yet.");
 }
 
-// Optional placeholder for later
-async function sendEmailFallback(_args: {
+async function sendEmailFallback(args: {
   to: string;
   subject: string;
   message: string;
+  purpose?: SendMessageArgs["purpose"];
+  emailContext?: SendMessageArgs["emailContext"];
 }) {
-  throw new Error("Email fallback is not implemented yet.");
+  const { to, subject, message, purpose, emailContext } = args;
+
+  // For order lifecycle events with rich context, send branded HTML emails
+  if (emailContext?.orderId) {
+    const base = { to, ...emailContext, orderId: emailContext.orderId };
+    if (purpose === "ORDER_CREATED")   return sendCustomerOrderCreatedEmail(base);
+    if (purpose === "ORDER_PAID")      return sendCustomerOrderPaidEmail(base);
+    if (purpose === "ORDER_SHIPPED")   return sendCustomerOrderShippedEmail(base);
+    if (purpose === "ORDER_DELIVERED") return sendCustomerOrderDeliveredEmail(base);
+  }
+
+  // Generic fallback: plain message wrapped in minimal HTML
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111;max-width:560px;margin:0 auto">
+      <div style="background:linear-gradient(135deg,#4f46e5,#a21caf);border-radius:14px 14px 0 0;padding:16px 20px">
+        <h1 style="margin:0;color:#fff;font-size:18px;font-weight:700">DaySpring</h1>
+      </div>
+      <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 14px 14px;padding:20px">
+        <p style="margin:0;white-space:pre-wrap">${message.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>
+        <hr style="margin:20px 0;border:none;border-top:1px solid #e5e7eb" />
+        <p style="margin:0;font-size:12px;color:#9ca3af">DaySpring House — <a href="${process.env.APP_URL || "https://dayspringhouse.com"}" style="color:#4f46e5">dayspringhouse.com</a></p>
+      </div>
+    </div>
+  `.trim();
+
+  return sendMail({ to, subject, html, text: message });
 }
 
 function buildChannelOrder(args: SendMessageArgs): Channel[] {
@@ -153,6 +197,8 @@ export async function sendMessageWithFallback(
           to: emailTo,
           subject: args.subject || "DaySpring notification",
           message: args.message,
+          purpose: args.purpose,
+          emailContext: args.emailContext,
         });
 
         return {
@@ -217,68 +263,126 @@ export async function sendOtpMessage(args: {
 
 export async function sendOrderCreatedMessage(args: {
   orderId: string;
+  orderRef?: string;
+  customerName?: string;
+  totalAmount?: number;
+  currency?: string;
   toPhone?: string | null;
   toWhatsapp?: string | null;
   toEmail?: string | null;
   preferChannel?: Channel;
 }) {
-  const message = `Your DaySpring order ${args.orderId} has been created successfully.`;
+  const ref = args.orderRef || args.orderId;
+  const message = `Your DaySpring order ${ref} has been placed successfully. We'll notify you when it's on its way.`;
   return sendMessageWithFallback({
-    ...args,
-    subject: "Order created",
+    toPhone: args.toPhone,
+    toWhatsapp: args.toWhatsapp,
+    toEmail: args.toEmail,
+    preferChannel: args.preferChannel,
+    subject: "Order confirmed",
     message,
     purpose: "ORDER_CREATED",
     allowFallback: true,
+    emailContext: {
+      customerName: args.customerName,
+      orderId: args.orderId,
+      orderRef: args.orderRef,
+      totalAmount: args.totalAmount,
+      currency: args.currency,
+      orderUrl: `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`,
+    },
   });
 }
 
 export async function sendOrderPaidMessage(args: {
   orderId: string;
+  orderRef?: string;
+  customerName?: string;
+  totalAmount?: number;
+  currency?: string;
   toPhone?: string | null;
   toWhatsapp?: string | null;
   toEmail?: string | null;
   preferChannel?: Channel;
 }) {
-  const message = `Payment received for your DaySpring order ${args.orderId}.`;
+  const ref = args.orderRef || args.orderId;
+  const message = `Payment received for your DaySpring order ${ref}.`;
   return sendMessageWithFallback({
-    ...args,
+    toPhone: args.toPhone,
+    toWhatsapp: args.toWhatsapp,
+    toEmail: args.toEmail,
+    preferChannel: args.preferChannel,
     subject: "Payment received",
     message,
     purpose: "ORDER_PAID",
     allowFallback: true,
+    emailContext: {
+      customerName: args.customerName,
+      orderId: args.orderId,
+      orderRef: args.orderRef,
+      totalAmount: args.totalAmount,
+      currency: args.currency,
+      orderUrl: `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`,
+    },
   });
 }
 
 export async function sendOrderShippedMessage(args: {
   orderId: string;
+  orderRef?: string;
+  customerName?: string;
+  trackingInfo?: string;
   toPhone?: string | null;
   toWhatsapp?: string | null;
   toEmail?: string | null;
   preferChannel?: Channel;
 }) {
-  const message = `Your DaySpring order ${args.orderId} has been shipped.`;
+  const ref = args.orderRef || args.orderId;
+  const message = `Your DaySpring order ${ref} has been shipped and is on its way.${args.trackingInfo ? ` Tracking: ${args.trackingInfo}` : ""}`;
   return sendMessageWithFallback({
-    ...args,
-    subject: "Order shipped",
+    toPhone: args.toPhone,
+    toWhatsapp: args.toWhatsapp,
+    toEmail: args.toEmail,
+    preferChannel: args.preferChannel,
+    subject: "Your order is on its way",
     message,
     purpose: "ORDER_SHIPPED",
     allowFallback: true,
+    emailContext: {
+      customerName: args.customerName,
+      orderId: args.orderId,
+      orderRef: args.orderRef,
+      trackingInfo: args.trackingInfo,
+      orderUrl: `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`,
+    },
   });
 }
 
 export async function sendOrderDeliveredMessage(args: {
   orderId: string;
+  orderRef?: string;
+  customerName?: string;
   toPhone?: string | null;
   toWhatsapp?: string | null;
   toEmail?: string | null;
   preferChannel?: Channel;
 }) {
-  const message = `Your DaySpring order ${args.orderId} has been delivered.`;
+  const ref = args.orderRef || args.orderId;
+  const message = `Your DaySpring order ${ref} has been delivered. We hope you love it!`;
   return sendMessageWithFallback({
-    ...args,
+    toPhone: args.toPhone,
+    toWhatsapp: args.toWhatsapp,
+    toEmail: args.toEmail,
+    preferChannel: args.preferChannel,
     subject: "Order delivered",
     message,
     purpose: "ORDER_DELIVERED",
     allowFallback: true,
+    emailContext: {
+      customerName: args.customerName,
+      orderId: args.orderId,
+      orderRef: args.orderRef,
+      orderUrl: `${process.env.APP_URL || "https://dayspringhouse.com"}/orders`,
+    },
   });
 }
