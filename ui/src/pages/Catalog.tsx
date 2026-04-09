@@ -20,6 +20,7 @@ import {
   ChevronRight,
   ChevronDown,
   Heart,
+  Layers,
 } from "lucide-react";
 
 import SiteLayout from "../layouts/SiteLayout.js";
@@ -1356,24 +1357,66 @@ const ProductCard = memo(
             {p._categoryLabel}
           </div>
 
-          <div className="mt-1">
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-sm font-semibold md:text-base">{ngn.format(bestPrice || 0)}</p>
+            {hasVariants && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-fuchsia-200 bg-fuchsia-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-fuchsia-600 md:text-[10px]">
+                <Layers size={9} />
+                Options
+              </span>
+            )}
           </div>
 
           <div className="mt-2">
             {hasVariants ? (
-              <button
-                type="button"
-                data-stop-card-nav="true"
-                className="inline-flex items-center rounded-full bg-black/40 px-2.5 py-1 text-[10px] font-medium text-white transition hover:bg-black/55 md:px-3 md:py-1.5 md:text-xs"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onGoToProduct(p.id);
-                }}
-              >
-                View options
-              </button>
+              <div data-stop-card-nav="true">
+                {baseQtyInCart > 0 ? (
+                  <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                    <button
+                      type="button"
+                      data-stop-card-nav="true"
+                      aria-label="Decrease quantity"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void onSetCartQty(p, baseQtyInCart - 1);
+                      }}
+                    >
+                      −
+                    </button>
+                    <span className="min-w-[18px] text-center text-[11px] font-semibold md:text-xs">
+                      {baseQtyInCart}
+                    </span>
+                    <button
+                      type="button"
+                      data-stop-card-nav="true"
+                      aria-label="Increase quantity"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void onSetCartQty(p, baseQtyInCart + 1);
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-stop-card-nav="true"
+                    className="inline-flex items-center rounded-full bg-zinc-700 px-2.5 py-1 text-[10px] font-medium text-white shadow-sm transition hover:bg-black/90 md:px-3 md:py-1.5 md:text-xs"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void onSetCartQty(p, 1);
+                    }}
+                  >
+                    Add to cart
+                  </button>
+                )}
+              </div>
 
             ) : (
               <div data-stop-card-nav="true">
@@ -2680,9 +2723,10 @@ export default function Catalog() {
         const primaryImg = p._primaryImg ?? null;
         const optionsKey = "";
 
+        const productHasVariants = Array.isArray(p.variants) && p.variants.length > 0;
         const activeBaseOffer = getActiveBaseOffer(p);
 
-        if (qty > 0 && !activeBaseOffer) {
+        if (qty > 0 && !productHasVariants && !activeBaseOffer) {
           openModal({
             title: "Unavailable",
             message: "This item is no longer available to add to cart. Please refresh and try again.",
@@ -2707,6 +2751,7 @@ export default function Catalog() {
           unitPriceCache: Number.isFinite(unitPriceCache) ? unitPriceCache : 0,
           supplierId: activeBaseOffer?.supplierId ?? null,
           offerId: activeBaseOffer?.id ?? undefined,
+          needsOptions: productHasVariants ? true : undefined,
         });
 
         window.dispatchEvent(new Event("cart:updated"));
@@ -2801,6 +2846,13 @@ export default function Catalog() {
     selectedBrands.length > 0 ||
     !inStockOnly;
 
+  const activeFilterCount =
+    selectedCategories.length +
+    selectedBrands.length +
+    selectedBucketIdxs.length +
+    (!inStockOnly ? 1 : 0) +
+    (sortKey !== "relevance" ? 1 : 0);
+
   const hasSearch = !!normalizedDeferredQuery;
   const hasTypedQuery = !!normalizedQuery;
   const shouldShowSuggest = searchFocused && hasTypedQuery;
@@ -2880,96 +2932,84 @@ export default function Catalog() {
           </div>
         </div>
 
-        <div className="mb-3 md:hidden">
-          <div className="min-w-0">
-            <h1 className="text-lg font-semibold text-zinc-900">Products</h1>
-            <p className="text-xs text-zinc-600">Search and filter quickly.</p>
-          </div>
-        </div>
+        {/* ── Compact sticky mobile toolbar ── */}
+        <div className="sticky top-0 z-30 -mx-2 mb-3 bg-white/95 px-2 pb-2 pt-2 shadow-[0_2px_16px_-4px_rgba(15,23,42,0.1)] backdrop-blur-sm md:hidden">
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => { e.preventDefault(); submitSearch(); }}
+          >
+            {/* Search input */}
+            <div className="relative min-w-0 flex-1">
+              <Search
+                size={14}
+                className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-zinc-400"
+              />
+              <input
+                ref={mobileInputRef}
+                value={query}
+                onChange={(e) => { setQuery(e.target.value); setSearchFocused(true); setActiveIdx(0); }}
+                onFocus={() => setSearchFocused(true)}
+                placeholder="Search products..."
+                className="h-10 w-full rounded-full border border-zinc-200 bg-white pl-8 pr-8 text-[13px] text-zinc-800 placeholder:text-zinc-400 focus:border-fuchsia-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-100"
+                aria-label="Search products"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => { setQuery(""); setSearchFocused(false); }}
+                  className="absolute right-2.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full bg-zinc-200"
+                >
+                  <X size={10} className="text-zinc-600" />
+                </button>
+              )}
+            </div>
 
-        {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
-          <div className="mb-2 flex flex-wrap items-center gap-1.5 md:hidden">
-            {hasSearch && (
-              <span className="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[10px] text-zinc-700 shadow-sm">
-                Search: <span className="font-semibold">{query.trim()}</span>
-              </span>
-            )}
-
-            {anyActiveFilter && (
-              <span className="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[10px] text-zinc-700 shadow-sm">
-                Filters active
-              </span>
-            )}
-
-            {sortKey !== "relevance" && (
-              <span className="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[10px] text-zinc-700 shadow-sm">
-                {sortKey === "price-asc"
-                  ? "Low → High"
-                  : sortKey === "price-desc"
-                    ? "High → Low"
-                    : "Relevance"}
-              </span>
-            )}
-
-            {pageSize !== 12 && (
-              <span className="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[10px] text-zinc-700 shadow-sm">
-                {pageSize}/page
-              </span>
-            )}
-
+            {/* Filter button with active count badge */}
             <button
               type="button"
-              className="ml-auto inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[10px] font-medium text-zinc-700 shadow-sm transition hover:border-zinc-300"
               onClick={() => setRefineOpen(true)}
+              className="relative shrink-0 inline-flex h-10 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3.5 text-[12px] font-medium text-zinc-700 shadow-sm transition active:scale-95"
             >
-              <SlidersHorizontal size={13} />
-              Edit
-            </button>
-          </div>
-        )}
-
-        <div className="mb-3 rounded-[28px] border border-zinc-200 bg-white p-2.5 shadow-sm md:hidden">
-          <form
-            className="relative"
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitSearch();
-            }}
-          >
-            <Search
-              className="absolute left-4 top-1/2 z-10 -translate-y-1/2 text-zinc-400"
-              size={14}
-            />
-
-            <input
-              ref={mobileInputRef}
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setSearchFocused(true);
-                setActiveIdx(0);
-              }}
-              onFocus={() => setSearchFocused(true)}
-              placeholder="Search products, brands, categories..."
-              className="h-12 w-full rounded-full border border-zinc-200 bg-white pl-10 pr-28 text-[13px] text-zinc-800 placeholder:text-[12px] placeholder:text-zinc-400 focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-100"
-              aria-label="Search products"
-            />
-
-            <button
-              type="submit"
-              className="absolute right-1.5 top-1/2 inline-flex h-9 min-w-[96px] -translate-y-1/2 items-center justify-center rounded-full bg-zinc-900 px-5 text-[11px] font-semibold text-white transition hover:bg-zinc-800"
-            >
-              Search
+              <SlidersHorizontal size={14} />
+              <span>Filter</span>
+              {activeFilterCount > 0 && (
+                <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-fuchsia-600 px-1 text-[9px] font-bold text-white">
+                  {activeFilterCount}
+                </span>
+              )}
             </button>
           </form>
 
+          {/* Active search / sort chips */}
+          {(hasSearch || sortKey !== "relevance") && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {hasSearch && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2.5 py-0.5 text-[10px] text-zinc-700">
+                  "{query.trim()}"
+                  <button type="button" onClick={() => setQuery("")}>
+                    <X size={9} />
+                  </button>
+                </span>
+              )}
+              {sortKey !== "relevance" && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2.5 py-0.5 text-[10px] text-zinc-700">
+                  {sortKey === "price-asc" ? "Price ↑" : "Price ↓"}
+                  <button type="button" onClick={() => setSortKey("relevance")}>
+                    <X size={9} />
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Suggestions dropdown */}
           {shouldShowSuggest && (
             <div
               ref={mobileSuggestRef}
-              className="mt-2 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-lg"
+              className="mt-1.5 overflow-hidden rounded-[20px] border border-zinc-200 bg-white shadow-lg"
             >
               {hasSuggestionResults ? (
-                <ul className="max-h-64 overflow-auto p-2">
+                <ul className="max-h-48 overflow-auto p-2">
                   {suggestions.map((p, i) => (
                     <SuggestionItem
                       key={p.id}
@@ -2984,65 +3024,6 @@ export default function Catalog() {
               )}
             </div>
           )}
-
-          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_110px_120px]">
-            <div className="relative">
-              <select
-                value={sortKey}
-                onChange={(e) => setSortKey(e.target.value as SortKey)}
-                className="h-11 w-full min-w-0 appearance-none rounded-full border border-zinc-200 bg-white pl-4 pr-11 text-[12px] text-zinc-700"
-              >
-                <option value="relevance">Relevance</option>
-                <option value="price-asc">Low → High</option>
-                <option value="price-desc">High → Low</option>
-              </select>
-              <ChevronDown
-                size={16}
-                className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500"
-              />
-            </div>
-
-            <div className="relative">
-              <select
-                value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
-                className="h-11 w-full appearance-none rounded-full border border-zinc-200 bg-white pl-4 pr-11 text-[12px] text-zinc-700"
-              >
-                <option value={8}>8</option>
-                <option value={12}>12</option>
-                <option value={16}>16</option>
-              </select>
-              <ChevronDown
-                size={16}
-                className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500"
-              />
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setRefineOpen(true)}
-              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-full border border-zinc-200 bg-white px-4 text-[12px] font-medium text-zinc-700 shadow-sm transition hover:border-zinc-300"
-            >
-              <SlidersHorizontal size={13} />
-              Filters
-            </button>
-          </div>
-
-          <div className="mt-2 flex items-center justify-between rounded-full bg-zinc-50 px-4 py-2.5">
-            <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-700">
-              <input
-                type="checkbox"
-                checked={inStockOnly}
-                onChange={(e) => setInStockOnly(e.target.checked)}
-                className="h-4 w-4 rounded border-zinc-300 accent-purple-600"
-              />
-              In stock only
-            </label>
-
-            <div className="text-[10px] text-zinc-500">
-              {totalProducts} result{totalProducts === 1 ? "" : "s"}
-            </div>
-          </div>
         </div>
 
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
@@ -3384,7 +3365,7 @@ export default function Catalog() {
                     const activeBaseOffer = hasVariants ? null : getActiveBaseOffer(p);
                     const inStock = p._availableNow;
                     const baseQtyInCart = cartQtyMap.get(String(p.id)) ?? 0;
-                    const canAdjustBaseQty = hasVariants ? false : !!activeBaseOffer;
+                    const canAdjustBaseQty = hasVariants ? true : !!activeBaseOffer;
 
                     return (
                       <ProductCard
@@ -3680,6 +3661,74 @@ export default function Catalog() {
                   }}
                 >
                   Reset all
+                </button>
+              </div>
+
+              {/* Sort */}
+              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+                <h4 className="mb-2 text-[12px] font-semibold text-zinc-900">Sort by</h4>
+                <div className="flex flex-wrap gap-2">
+                  {([
+                    { key: "relevance", label: "Relevance" },
+                    { key: "price-asc", label: "Price ↑" },
+                    { key: "price-desc", label: "Price ↓" },
+                  ] as { key: SortKey; label: string }[]).map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setSortKey(key)}
+                      className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
+                        sortKey === key
+                          ? "border-zinc-900 bg-zinc-900 text-white"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-black/5"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Per page */}
+              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+                <h4 className="mb-2 text-[12px] font-semibold text-zinc-900">Per page</h4>
+                <div className="flex flex-wrap gap-2">
+                  {[8, 12, 16].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setPageSize(n)}
+                      className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
+                        pageSize === n
+                          ? "border-zinc-900 bg-zinc-900 text-white"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-black/5"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* In stock */}
+              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+                <button
+                  type="button"
+                  onClick={() => setInStockOnly((v) => !v)}
+                  className="flex w-full items-center justify-between"
+                >
+                  <span className="text-[12px] font-semibold text-zinc-900">In stock only</span>
+                  <span
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                      inStockOnly ? "bg-zinc-900" : "bg-zinc-300"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+                        inStockOnly ? "translate-x-[18px]" : "translate-x-[3px]"
+                      }`}
+                    />
+                  </span>
                 </button>
               </div>
 

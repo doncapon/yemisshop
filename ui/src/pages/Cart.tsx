@@ -27,6 +27,8 @@ type CartItem = {
   totalPrice: number;
   selectedOptions?: SelectedOption[];
   image?: string;
+  /** True when the item was quick-added from a variant product and still needs options chosen. */
+  needsOptions?: boolean;
 };
 
 type ServerCartItem = {
@@ -283,6 +285,7 @@ function normalizeCartItemLike(item: any): CartItem | null {
     totalPrice: round2(safeUnit * qty),
     selectedOptions: normalizeSelectedOptions(item?.selectedOptions),
     image: resolveImageUrl(item?.image ?? item?.imageSnapshot),
+    needsOptions: item?.needsOptions === true ? true : undefined,
   };
 }
 
@@ -355,6 +358,7 @@ function cartItemsToStorageLines(items: CartItem[]) {
       titleSnapshot: it.title ?? null,
       imageSnapshot: it.image ?? null,
       unitPriceCache: Number.isFinite(Number(it.unitPrice)) ? Number(it.unitPrice) : 0,
+      needsOptions: it.needsOptions === true ? true : undefined,
     }))
     .filter((x) => x.qty > 0);
 }
@@ -984,8 +988,9 @@ export default function Cart() {
                 const inputValue = draft ?? String(currentQty);
                 const displayOptions = normalizeSelectedOptions(it.selectedOptions);
                 const isExpanded = !!expanded[key];
+                const INLINE_LIMIT = 3;
 
-                let optionLabel = displayOptions
+                const optionPills = displayOptions
                   .map((o) => {
                     const attr =
                       o.attribute && !isCodeLike(o.attribute)
@@ -993,24 +998,16 @@ export default function Cart() {
                         : o.attributeId && !isCodeLike(o.attributeId)
                           ? o.attributeId
                           : "";
-
                     const val =
                       o.value && !isCodeLike(o.value)
                         ? o.value
                         : o.valueId && !isCodeLike(o.valueId)
                           ? o.valueId
                           : "";
-
                     if (!attr && !val) return null;
-                    if (!attr) return val;
-                    if (!val) return attr;
-                    return `${attr}: ${val}`;
+                    return attr && val ? `${attr}: ${val}` : attr || val;
                   })
-                  .filter(Boolean)
-                  .join(" • ");
-
-                if (!optionLabel && !isBaseLine(it)) optionLabel = "Variant selected";
-                else if (!optionLabel && displayOptions.length) optionLabel = "Options saved";
+                  .filter((s): s is string => !!s);
 
                 const commitDraft = () => {
                   const raw = qtyDraft[key];
@@ -1087,13 +1084,56 @@ export default function Cart() {
                             </button>
                           </div>
 
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{kindLabel}</span>
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            {/* Kind badge */}
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${
+                              kindLabel === "Variant" || kindLabel === "Configured"
+                                ? "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700"
+                                : "border-zinc-200 bg-white text-ink-soft"
+                            }`}>
+                              {kindLabel}
+                            </span>
+
+                            {/* Inline option pills — always shown when present */}
+                            {optionPills.slice(0, INLINE_LIMIT).map((label, i) => (
+                              <span key={i} className="text-[10px] px-2 py-0.5 rounded-full border border-zinc-200 bg-zinc-50 text-zinc-700">
+                                {label}
+                              </span>
+                            ))}
+
+                            {/* "+N more" toggle */}
+                            {optionPills.length > INLINE_LIMIT && (
+                              <button
+                                type="button"
+                                className={`${tap} text-[10px] px-2 py-0.5 rounded-full border border-zinc-300 bg-white text-zinc-500 hover:bg-zinc-100 transition`}
+                                onClick={() => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))}
+                              >
+                                {isExpanded ? "less" : `+${optionPills.length - INLINE_LIMIT} more`}
+                              </button>
+                            )}
                           </div>
 
-                          {!!optionLabel && (
-                            <div className="mt-2 text-[12px] max-[360px]:text-[11px] sm:text-xs text-ink-soft leading-snug break-words">
-                              {optionLabel}
+                          {/* Overflow options (> INLINE_LIMIT) */}
+                          {isExpanded && optionPills.length > INLINE_LIMIT && (
+                            <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              {optionPills.slice(INLINE_LIMIT).map((label, i) => (
+                                <span key={i} className="text-[10px] px-2 py-0.5 rounded-full border border-zinc-200 bg-zinc-50 text-zinc-700">
+                                  {label}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Amber prompt only when needsOptions AND no options chosen yet */}
+                          {it.needsOptions && optionPills.length === 0 && (
+                            <div className="mt-2 flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                              <span>⚠ This item has options.</span>
+                              <Link
+                                to={`/products/${it.productId}`}
+                                className="font-semibold underline underline-offset-2 hover:text-amber-900"
+                              >
+                                Choose options →
+                              </Link>
                             </div>
                           )}
 
@@ -1103,31 +1143,7 @@ export default function Cart() {
                             </div>
                           </div>
 
-                          {displayOptions.length > 0 && (
-                            <button
-                              className={`${tap} mt-2 text-[11px] text-primary-700 hover:underline`}
-                              onClick={() => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))}
-                              type="button"
-                            >
-                              {isExpanded ? "Hide option details" : "Show option details"}
-                            </button>
-                          )}
                         </div>
-
-                        {isExpanded && displayOptions.length > 0 && (
-                          <div className="mt-2 rounded-xl border bg-white/70 px-3 py-2">
-                            <div className="text-[11px] text-ink-soft space-y-1">
-                              {displayOptions.map((o, idx) => (
-                                <div key={`${o.attributeId}-${o.valueId ?? o.value}-${idx}`}>
-                                  <span className="font-medium text-ink">
-                                    {o.attribute || o.attributeId || "Option"}:
-                                  </span>{" "}
-                                  {o.value || o.valueId || "—"}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
 
                         {qtyNote[key] ? <div className="mt-2 text-[12px] font-semibold text-rose-700">{qtyNote[key]}</div> : null}
 
