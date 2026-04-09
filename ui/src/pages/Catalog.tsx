@@ -3002,11 +3002,11 @@ export default function Catalog() {
             </div>
           )}
 
-          {/* Suggestions dropdown */}
+          {/* Suggestions dropdown — desktop only; mobile shows results in the grid below */}
           {shouldShowSuggest && (
             <div
               ref={mobileSuggestRef}
-              className="mt-1.5 overflow-hidden rounded-[20px] border border-zinc-200 bg-white shadow-lg"
+              className="mt-1.5 hidden md:block overflow-hidden rounded-[20px] border border-zinc-200 bg-white shadow-lg"
             >
               {hasSuggestionResults ? (
                 <ul className="max-h-48 overflow-auto p-2">
