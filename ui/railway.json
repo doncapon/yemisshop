@@ -9,7 +9,7 @@
     "sleepApplication": false,
     "useLegacyStacker": false,
     "multiRegionConfig": {
-      "us-west2": {
+      "europe-west4-drams3a": {
         "numReplicas": 1
       }
     },
