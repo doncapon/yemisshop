@@ -517,7 +517,8 @@ model ShippingChargeReconciliation {
 model User {
   id                             String                       @id @default(cuid())
   email                          String                       @unique
-  password                       String
+  password                       String?
+  googleId                       String?                      @unique
   role                           Role
   firstName                      String
   middleName                     String?
