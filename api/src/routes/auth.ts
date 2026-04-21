@@ -25,7 +25,7 @@ const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || "CHANGE_ME_DEV_SECRET";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
-const GOOGLE_REDIRECT_URI = `${API_BASE_URL}/api/auth/google/callback`;
+const GOOGLE_REDIRECT_URI = `${APP_URL}/api/auth/google/callback`;
 
 const EMAIL_RESEND_COOLDOWN_SEC = 60;
 const EMAIL_DAILY_CAP = 5;
