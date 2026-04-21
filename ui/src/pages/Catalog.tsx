@@ -108,6 +108,7 @@ type ProductView = Product & {
   _searchCat: string;
   _searchBrand: string;
   _searchSku: string;
+  _searchPrice: string;
 };
 
 type PublicSettings = {
@@ -150,6 +151,8 @@ type CatalogPersistedState = {
   expandedCats: Record<string, boolean>;
   page: number;
   pageSize: 8 | 12 | 16 | 24;
+  priceMin: string;
+  priceMax: string;
 };
 
 type CatalogProductsMeta = {
@@ -250,6 +253,8 @@ function readCatalogState(): CatalogPersistedState | null {
           : {},
       page: Number.isFinite(Number(parsed?.page)) ? Math.max(1, Number(parsed.page)) : 1,
       pageSize,
+      priceMin: typeof parsed?.priceMin === "string" ? parsed.priceMin : "",
+      priceMax: typeof parsed?.priceMax === "string" ? parsed.priceMax : "",
     };
   } catch {
     return null;
@@ -1267,6 +1272,19 @@ const ProductCard = memo(
     onGoToProduct,
     onSetCartQty,
   }: ProductCardProps) {
+    // Mirror availableNow: check variant offers first, fall back to variant-level stock.
+    // Badge shows only when 2+ variants are purchasable — if just 1 (or 0) there's no real choice.
+    const variantsWithStock = hasVariants
+      ? (p.variants ?? []).filter((v) => {
+          if (Array.isArray(v.offers) && v.offers.length > 0)
+            return v.offers.some(
+              (o) => o.isActive !== false && (o.inStock === true || Number(o.availableQty) > 0)
+            );
+          return v.inStock === true || Number(v.availableQty) > 0;
+        }).length
+      : 0;
+    const showOptionsBadge = variantsWithStock > 1;
+
     return (
       <Link
         to={`/products/${p.id}`}
@@ -1360,7 +1378,7 @@ const ProductCard = memo(
 
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-sm font-semibold md:text-base">{ngn.format(bestPrice || 0)}</p>
-            {hasVariants && (
+            {showOptionsBadge && (
               <span className="inline-flex items-center gap-1 rounded-full border border-fuchsia-200 bg-fuchsia-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-fuchsia-600 md:text-[10px]">
                 <Layers size={9} />
                 Options
@@ -1560,6 +1578,8 @@ export default function Catalog() {
     setPage(1);
     setPageSize(12);
     setJumpVal("");
+    setPriceMin("");
+    setPriceMax("");
 
     clearCatalogPersistedState();
 
@@ -1672,6 +1692,8 @@ export default function Catalog() {
     initialPersisted?.selectedBrands ?? []
   );
   const [sortKey, setSortKey] = useState<SortKey>(initialPersisted?.sortKey ?? "relevance");
+  const [priceMin, setPriceMin] = useState(initialPersisted?.priceMin ?? "");
+  const [priceMax, setPriceMax] = useState(initialPersisted?.priceMax ?? "");
 
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
@@ -1695,6 +1717,8 @@ export default function Catalog() {
   const deferredSelectedBucketIdxs = useDeferredValue(selectedBucketIdxs);
   const deferredSelectedBrands = useDeferredValue(selectedBrands);
   const deferredInStockOnly = useDeferredValue(inStockOnly);
+  const deferredPriceMin = useDeferredValue(priceMin);
+  const deferredPriceMax = useDeferredValue(priceMax);
 
   const normalizedDeferredQuery = useMemo(() => norm(deferredQuery.trim()), [deferredQuery]);
   const normalizedQuery = useMemo(() => norm(query.trim()), [query]);
@@ -1721,6 +1745,8 @@ export default function Catalog() {
       expandedCats,
       page,
       pageSize,
+      priceMin,
+      priceMax,
     });
     writeCatalogScroll(window.scrollY || window.pageYOffset || 0);
   }, [
@@ -1732,6 +1758,8 @@ export default function Catalog() {
     expandedCats,
     page,
     pageSize,
+    priceMin,
+    priceMax,
   ]);
 
   const goToProduct = useCallback(
@@ -1843,6 +1871,8 @@ export default function Catalog() {
         expandedCats,
         page,
         pageSize,
+        priceMin,
+        priceMax,
       });
       persistTimerRef.current = null;
     }, 120);
@@ -2134,6 +2164,17 @@ export default function Catalog() {
         _searchCat: norm(categoryLabel),
         _searchBrand: norm(brandName),
         _searchSku: norm(cleanText(p.sku)),
+        _searchPrice: (() => {
+          const tokens = new Set<string>();
+          if (displayPrice > 0) tokens.add(String(Math.round(displayPrice)));
+          if (Number(p.retailPrice) > 0) tokens.add(String(Math.round(Number(p.retailPrice))));
+          if (Number(p.computedRetailPrice) > 0) tokens.add(String(Math.round(Number(p.computedRetailPrice))));
+          if (Number(p.autoPrice) > 0) tokens.add(String(Math.round(Number(p.autoPrice))));
+          for (const v of (p.variants ?? [])) {
+            if (Number(v.retailPrice) > 0) tokens.add(String(Math.round(Number(v.retailPrice))));
+          }
+          return Array.from(tokens).join(" ");
+        })(),
       };
     }
 
@@ -2355,6 +2396,8 @@ export default function Catalog() {
     const q = normalizedQuery;
     if (!q || q.length < 2) return [];
 
+    const qIsNumeric = /^\d+$/.test(q);
+
     return productViews
       .map((p) => {
         let score = 0;
@@ -2367,6 +2410,8 @@ export default function Catalog() {
         if (p._searchCat.includes(q)) score += 2;
         if (p._searchBrand.includes(q)) score += 2;
         if (p._searchDesc.includes(q)) score += 1;
+
+        if (qIsNumeric && p._searchPrice && p._searchPrice.split(" ").some((t) => t.startsWith(q))) score += 3;
 
         return { p, score };
       })
@@ -2417,8 +2462,19 @@ export default function Catalog() {
     const q = normalizedDeferredQuery;
 
     return productViews.filter((p) => {
+      if (!q) {
+        if (deferredInStockOnly && !p._availableNow) return false;
+        return true;
+      }
+
+      const qIsNumeric = /^\d+$/.test(q);
+      const priceHit = qIsNumeric && !!p._searchPrice &&
+        p._searchPrice.split(" ").some((t) => t.startsWith(q));
+
+      // Price-matched products always show regardless of stock filter
+      if (priceHit) return true;
+
       if (deferredInStockOnly && !p._availableNow) return false;
-      if (!q) return true;
 
       const productCategoryKey = toCategoryKey(p.categoryId);
       const categoryHit = queryMatchedCategoryIds.has(productCategoryKey);
@@ -2440,6 +2496,16 @@ export default function Catalog() {
     const brandCountMap = new Map<string, { name: string; count: number }>();
     const bucketCounts = PRICE_BUCKETS.map(() => 0);
 
+    const customMin =
+      deferredPriceMin !== "" && Number.isFinite(Number(deferredPriceMin))
+        ? Number(deferredPriceMin)
+        : null;
+    const customMax =
+      deferredPriceMax !== "" && Number.isFinite(Number(deferredPriceMax))
+        ? Number(deferredPriceMax)
+        : null;
+    const hasCustomRange = customMin !== null || customMax !== null;
+
     for (const p of queryMatchedProducts) {
       const productCategoryKey = toCategoryKey(p.categoryId);
       const productBrandKey = toBrandKey(p._brandName);
@@ -2453,9 +2519,12 @@ export default function Catalog() {
         activeBrandSet.size === 0 ? true : activeBrandSet.has(productBrandKey);
 
       const priceMatch =
-        activeBuckets.length === 0
+        activeBuckets.length === 0 && !hasCustomRange
           ? true
-          : activeBuckets.some((b) => inBucket(p._displayPrice, b));
+          : activeBuckets.some((b) => inBucket(p._displayPrice, b)) ||
+            (hasCustomRange &&
+              (customMin === null || p._displayPrice >= customMin) &&
+              (customMax === null || p._displayPrice <= customMax));
 
       let bucketIndex = -1;
       for (let i = 0; i < PRICE_BUCKETS.length; i++) {
@@ -2525,6 +2594,8 @@ export default function Catalog() {
     activeBuckets,
     PRICE_BUCKETS,
     HIDE_OOS,
+    deferredPriceMin,
+    deferredPriceMax,
   ]);
 
   const categoryCountsMap = catalogAnalysis.categoryCountsMap;
@@ -2837,22 +2908,28 @@ export default function Catalog() {
     setSelectedBrands([]);
     setInStockOnly(true);
     setExpandedCats({});
+    setPriceMin("");
+    setPriceMax("");
     setPage(1);
     writeCatalogScroll(0);
   }, []);
+
+  const hasCustomPriceRange = priceMin !== "" || priceMax !== "";
 
   const anyActiveFilter =
     selectedCategories.length > 0 ||
     selectedBucketIdxs.length > 0 ||
     selectedBrands.length > 0 ||
-    !inStockOnly;
+    !inStockOnly ||
+    hasCustomPriceRange;
 
   const activeFilterCount =
     selectedCategories.length +
     selectedBrands.length +
     selectedBucketIdxs.length +
     (!inStockOnly ? 1 : 0) +
-    (sortKey !== "relevance" ? 1 : 0);
+    (sortKey !== "relevance" ? 1 : 0) +
+    (hasCustomPriceRange ? 1 : 0);
 
   const hasSearch = !!normalizedDeferredQuery;
   const hasTypedQuery = !!normalizedQuery;
@@ -3236,11 +3313,31 @@ export default function Catalog() {
                   <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
                   <button
                     className="text-[11px] text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
-                    onClick={() => setSelectedBucketIdxs([])}
-                    disabled={selectedBucketIdxs.length === 0}
+                    onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
+                    disabled={selectedBucketIdxs.length === 0 && priceMin === "" && priceMax === ""}
                   >
                     Reset
                   </button>
+                </div>
+
+                <div className="mb-3 flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    placeholder="Min ₦"
+                    value={priceMin}
+                    min={0}
+                    onChange={(e) => { setPriceMin(e.target.value); setPage(1); }}
+                    className="w-full min-w-0 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-100"
+                  />
+                  <span className="shrink-0 text-[11px] text-zinc-400">–</span>
+                  <input
+                    type="number"
+                    placeholder="Max ₦"
+                    value={priceMax}
+                    min={0}
+                    onChange={(e) => { setPriceMax(e.target.value); setPage(1); }}
+                    className="w-full min-w-0 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-100"
+                  />
                 </div>
 
                 <ul className="max-h-56 space-y-1.5 overflow-auto pr-1">
@@ -3871,11 +3968,31 @@ export default function Catalog() {
                   <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => setSelectedBucketIdxs([])}
-                    disabled={selectedBucketIdxs.length === 0}
+                    onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
+                    disabled={selectedBucketIdxs.length === 0 && priceMin === "" && priceMax === ""}
                   >
                     Reset
                   </button>
+                </div>
+
+                <div className="mb-3 flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    placeholder="Min ₦"
+                    value={priceMin}
+                    min={0}
+                    onChange={(e) => { setPriceMin(e.target.value); setPage(1); }}
+                    className="w-full min-w-0 rounded-full border border-zinc-200 bg-white px-3 py-2 text-[12px] outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-100"
+                  />
+                  <span className="shrink-0 text-[11px] text-zinc-400">–</span>
+                  <input
+                    type="number"
+                    placeholder="Max ₦"
+                    value={priceMax}
+                    min={0}
+                    onChange={(e) => { setPriceMax(e.target.value); setPage(1); }}
+                    className="w-full min-w-0 rounded-full border border-zinc-200 bg-white px-3 py-2 text-[12px] outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-100"
+                  />
                 </div>
 
                 <ul className="max-h-52 space-y-1.5 overflow-auto pr-1">

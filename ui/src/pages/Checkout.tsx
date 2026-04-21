@@ -101,6 +101,7 @@ type ShippingQuoteLite = {
   etaMinDays?: number | null;
   etaMaxDays?: number | null;
   rateSource?: string | null;
+  pickupType?: "gigl_hub" | "supplier_premises" | null;
   error?: string | null;
 };
 
@@ -1030,6 +1031,7 @@ function normalizeShippingQuoteResponse(raw: any): ShippingQuoteResponse | null 
                 : Number(breakdown.etaMaxDays)
               : Number(q.etaMaxDays),
           rateSource: q.rateSource ?? breakdown.rateSource ?? null,
+          pickupType: q.pickupType ?? null,
           error: q.error ? String(q.error) : null,
         } as ShippingQuoteLite;
       })
@@ -1140,8 +1142,9 @@ async function fetchShippingQuotesForCart(args: {
   cart: CartLine[];
   address: Address;
   selectedUserShippingAddressId?: string | null;
+  serviceLevel?: string;
 }): Promise<ShippingQuoteResponse | null> {
-  const { cart, address, selectedUserShippingAddressId } = args;
+  const { cart, address, selectedUserShippingAddressId, serviceLevel } = args;
   if (!cart.length) return null;
 
   const cacheKey = getShippingQuoteCacheKey({
@@ -1181,7 +1184,7 @@ async function fetchShippingQuotesForCart(args: {
   const quoteBodyBase = {
     items,
     selectedUserShippingAddressId: selectedUserShippingAddressId || undefined,
-    serviceLevel: "STANDARD",
+    serviceLevel: serviceLevel || "STANDARD",
   };
 
   const quoteBodyWithFallbackAddress = {
@@ -1659,6 +1662,8 @@ export default function Checkout() {
     makeEmptyShippingForm(homeAddr.country || NIGERIA_COUNTRY)
   );
 
+  const [selectedServiceLevel, setSelectedServiceLevel] = useState<"STANDARD" | "EXPRESS" | "PICKUP_POINT">("STANDARD");
+
   const [makeDefaultShipping, setMakeDefaultShipping] = useState(false);
   const [savingShippingEntry, setSavingShippingEntry] = useState(false);
   const [deletingShippingId, setDeletingShippingId] = useState<string | null>(null);
@@ -1871,6 +1876,7 @@ export default function Checkout() {
       "shipping-quotes:v4",
       sessionUser?.id,
       selectedShippingId,
+      selectedServiceLevel,
       JSON.stringify({
         ...selectedShippingQuoteAddress,
         lga: selectedShippingQuoteAddress.lga ?? selectedShippingQuoteAddress.town ?? "",
@@ -1892,6 +1898,7 @@ export default function Checkout() {
       fetchShippingQuotesForCart({
         cart,
         selectedUserShippingAddressId: selectedShippingAddress?.id ?? null,
+        serviceLevel: selectedServiceLevel,
         address: {
           ...selectedShippingQuoteAddress,
           lga: selectedShippingQuoteAddress.lga ?? selectedShippingQuoteAddress.town ?? "",
@@ -3623,6 +3630,41 @@ export default function Checkout() {
                   )}
                 </div>
 
+                {/* Delivery method selector */}
+                {shippingEnabled && (
+                  <div className="mt-4">
+                    <div className="text-xs font-medium uppercase tracking-wide text-ink-soft mb-2">Delivery method</div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(
+                        [
+                          { level: "STANDARD", label: "Standard", icon: "🚚" },
+                          { level: "EXPRESS", label: "Express", icon: "⚡" },
+                          { level: "PICKUP_POINT", label: "Pickup Hub", icon: "📦" },
+                        ] as const
+                      ).map(({ level, label, icon }) => (
+                        <button
+                          key={level}
+                          type="button"
+                          onClick={() => setSelectedServiceLevel(level)}
+                          className={`flex flex-col items-center gap-0.5 rounded-xl border px-2 py-2 text-center transition ${
+                            selectedServiceLevel === level
+                              ? "border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 font-semibold"
+                              : "border-border bg-surface text-ink-soft hover:border-fuchsia-300 hover:text-ink"
+                          }`}
+                        >
+                          <span className="text-base leading-none">{icon}</span>
+                          <span className="text-[10px] sm:text-[11px] leading-tight mt-0.5">{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {selectedServiceLevel === "PICKUP_POINT" && (
+                      <p className="mt-1.5 text-[10px] sm:text-[11px] text-ink-soft leading-snug">
+                        Pick up your order at a <span className="font-medium text-ink">GIG Logistics service centre</span> near you, or at the supplier's premises if they offer self-pickup.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="mt-4 space-y-2 text-xs sm:text-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Items Subtotal</span>
@@ -3670,6 +3712,11 @@ export default function Checkout() {
                               <div className="text-[10px] sm:text-[11px] text-ink-soft">
                                 {q.zoneName || q.zoneCode || "Zone pending"}
                                 {q.serviceLevel ? ` • ${q.serviceLevel}` : ""}
+                                {q.pickupType === "gigl_hub"
+                                  ? " • GIG Logistics hub"
+                                  : q.pickupType === "supplier_premises"
+                                    ? " • Supplier premises"
+                                    : ""}
                                 {q.shippingQuoteId ? " • quote saved" : " • fallback"}
                               </div>
 

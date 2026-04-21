@@ -349,6 +349,14 @@ router.get("/:supplierId", requireAuth, requireAdmin, async (req, res) => {
         kycCheckedAt: true,
         kycRejectedAt: true,
         kycRejectionReason: true,
+        bankCountry: true,
+        bankCode: true,
+        bankName: true,
+        accountNumber: true,
+        accountName: true,
+        bankVerificationStatus: true,
+        bankVerificationNote: true,
+        bankVerifiedAt: true,
         user: {
           select: {
             id: true,

@@ -132,29 +132,58 @@ router.get(
 );
 
 // GET /api/auth/sessions
-router.get("/sessions", requireAuth, async (req, res) => {
+router.get("/sessions", requireAuth, wrap(async (req, res) => {
   const userId = getUserId(req);
   const currentSessionId = getSessionId(req);
 
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-  const sessions = await prisma.userSession.findMany({
-    where: { userId: String(userId) },
-    orderBy: { lastSeenAt: "desc" },
-    select: {
-      id: true,
-      createdAt: true,
-      lastSeenAt: true,
-      ip: true,
-      userAgent: true,
-      deviceName: true,
-      revokedAt: true,
-      revokedReason: true,
-    },
-  });
+  const tab = String(req.query.tab || req.query.status || "ACTIVE").toUpperCase();
+  const isActive = tab !== "RECENT";
+  const rawPage = Math.max(1, Number(req.query.page) || 1);
+  const rawPageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
 
-  res.json({ data: sessions, currentSessionId: currentSessionId ?? null });
-});
+  const where = {
+    userId: String(userId),
+    revokedAt: isActive ? null : { not: null as null },
+  };
+
+  const [sessions, total, activeCount, recentCount] = await Promise.all([
+    prisma.userSession.findMany({
+      where,
+      orderBy: isActive ? { lastSeenAt: "desc" } : { revokedAt: "desc" },
+      skip: (rawPage - 1) * rawPageSize,
+      take: rawPageSize,
+      select: {
+        id: true,
+        createdAt: true,
+        lastSeenAt: true,
+        ip: true,
+        userAgent: true,
+        deviceName: true,
+        revokedAt: true,
+        revokedReason: true,
+      },
+    }),
+    prisma.userSession.count({ where }),
+    prisma.userSession.count({ where: { userId: String(userId), revokedAt: null } }),
+    prisma.userSession.count({ where: { userId: String(userId), revokedAt: { not: null } } }),
+  ]);
+
+  const totalPages = Math.max(1, Math.ceil(total / rawPageSize));
+
+  res.json({
+    rows: sessions,
+    total,
+    page: rawPage,
+    pageSize: rawPageSize,
+    totalPages,
+    hasNextPage: rawPage < totalPages,
+    hasPrevPage: rawPage > 1,
+    currentSessionId: currentSessionId ?? null,
+    counts: { active: activeCount, recent: recentCount },
+  });
+}));
 
 // DELETE /api/auth/sessions/:id
 router.delete("/sessions/:id", requireAuth, async (req, res) => {

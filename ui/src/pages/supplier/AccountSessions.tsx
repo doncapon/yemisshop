@@ -116,7 +116,10 @@ function Pill({
 }
 
 function normalizeSessionsPayload(raw: any, fallbackTab: TabKey, fallbackPage: number, fallbackPageSize: number): SessionsPageDto {
-  const payload = raw?.data ?? raw ?? {};
+  // If raw.data is an array it's the old format { data: [...sessions], currentSessionId }.
+  // In that case keep raw as the payload so payload.data finds the sessions array below.
+  const dataField = raw?.data;
+  const payload = Array.isArray(dataField) ? raw : (dataField ?? raw ?? {});
 
   const rows = Array.isArray(payload?.rows)
     ? payload.rows

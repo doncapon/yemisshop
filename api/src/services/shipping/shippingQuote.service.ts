@@ -8,8 +8,21 @@ import {
   SupplierShippingProfileMode,
   SupplierFulfillmentMode,
 } from "@prisma/client";
+import { getGiglShippingPrice, isGiglConfigured } from "./giglProvider.js";
 
 const prisma = new PrismaClient();
+
+/**
+ * Returns true when GIGL is the active shipping provider.
+ * Switch by setting SHIPPING_PROVIDER=gigl in your .env.
+ * Defaults to "internal" (zone-based rates) so nothing breaks until you're ready.
+ */
+function isGiglEnabled(): boolean {
+  return (
+    String(process.env.SHIPPING_PROVIDER || "internal").toLowerCase() === "gigl" &&
+    isGiglConfigured()
+  );
+}
 
 export type QuoteCheckoutItemInput = {
   productId: string;
@@ -43,6 +56,12 @@ export type SupplierShippingQuoteResult = {
   serviceLevel: DeliveryServiceLevel;
   currency: string;
   rateSource: ShippingRateSource | "MANUAL_QUOTE";
+  /**
+   * Only present when serviceLevel === PICKUP_POINT.
+   * "gigl_hub"          — customer picks up at a GIG Logistics service centre
+   * "supplier_premises" — customer picks up at the supplier's own address
+   */
+  pickupType?: "gigl_hub" | "supplier_premises" | null;
   shippingQuoteId?: string;
   totals: {
     shippingFee: number;
@@ -855,6 +874,81 @@ export async function quoteShippingForCheckout(
 
     let chosen: PriceBreakdown | null = null;
 
+    // ── Pickup availability enforcement ─────────────────────────────────────
+    // PICKUP_POINT via GIGL → always available (GIGL runs their own hubs).
+    // PICKUP_POINT via internal rates → only if supplier opted in.
+    if (serviceLevel === DeliveryServiceLevel.PICKUP_POINT && !isGiglEnabled()) {
+      if (!supplier.supportsPickupPoint) {
+        supplierQuotes.push(
+          makeEmptyQuote({
+            supplierId,
+            destinationZoneCode: destinationZone?.code ?? null,
+            destinationZoneName: destinationZone?.name ?? null,
+            originZoneCode: originZone?.code ?? null,
+            serviceLevel,
+            totalActualWeightGrams,
+            totalVolumetricWeightGrams,
+            chargeableWeightGrams,
+            items: quoteItems,
+            error: "This supplier does not offer a pickup point option.",
+          })
+        );
+        continue;
+      }
+    }
+
+    // Determine pickupType for PICKUP_POINT orders
+    const pickupType: SupplierShippingQuoteResult["pickupType"] =
+      serviceLevel === DeliveryServiceLevel.PICKUP_POINT
+        ? isGiglEnabled()
+          ? "gigl_hub"
+          : "supplier_premises"
+        : null;
+
+    // ── GIGL live rate ──────────────────────────────────────────────────────
+    // Runs first when SHIPPING_PROVIDER=gigl. If GIGL is disabled, not
+    // configured, or throws, chosen stays null and the existing internal
+    // zone-based hierarchy below takes over automatically.
+    if (isGiglEnabled() && !allFreeShipping) {
+      try {
+        const giglResult = await getGiglShippingPrice({
+          originState: pickupAddress.state ?? "",
+          originLga: pickupAddress.lga ?? null,
+          destinationState: destination.state ?? "",
+          destinationLga: destination.lga ?? null,
+          weightKg: chargeableKg,
+          parcelClass,
+        });
+
+        chosen = {
+          shippingFee: giglResult.baseRate,
+          remoteSurcharge: 0,
+          fuelSurcharge: 0,
+          handlingFee: shouldUseSupplierHandlingFee(fulfillmentMode)
+            ? toNum(supplier.handlingFee)
+            : 0,
+          etaMinDays: giglResult.etaMinDays,
+          etaMaxDays: giglResult.etaMaxDays,
+          rateSource: ShippingRateSource.LIVE_CARRIER,
+          pricingMeta: {
+            mode: "gigl_live",
+            carrierRef: giglResult.carrierRef,
+            giglTotalFee: giglResult.totalFee,
+            giglVat: giglResult.vatAmount,
+            originState: pickupAddress.state ?? null,
+            destinationState: destination.state ?? null,
+          },
+        };
+      } catch (e: any) {
+        console.warn(
+          "[shipping] GIGL quote failed — falling back to internal rates:",
+          e?.message
+        );
+        // chosen stays null → internal hierarchy below runs as normal
+      }
+    }
+    // ── end GIGL ────────────────────────────────────────────────────────────
+
     if (profileMode === SupplierShippingProfileMode.SUPPLIER_OVERRIDDEN) {
       const supplierZoneRate =
         destinationZone &&
@@ -1125,6 +1219,7 @@ export async function quoteShippingForCheckout(
       currency: quote.currency,
       rateSource: chosen.rateSource,
       shippingQuoteId: quote.id,
+      pickupType,
       totals: {
         shippingFee: toNum(quote.shippingFee),
         remoteSurcharge: toNum(quote.remoteSurcharge),

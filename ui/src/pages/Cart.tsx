@@ -528,6 +528,8 @@ export default function Cart() {
   const [variantProductIds, setVariantProductIds] = useState<Set<string>>(new Set());
   // default option labels for the first variant of each variant product
   const [defaultVariantOptions, setDefaultVariantOptions] = useState<Map<string, string[]>>(new Map());
+  // count of variants with availableQty > 0 (or unknown) per productId
+  const [variantAvailableCount, setVariantAvailableCount] = useState<Map<string, number>>(new Map());
 
   const isMountedRef = useRef(true);
   const activeRequestIdRef = useRef(0);
@@ -896,30 +898,39 @@ export default function Cart() {
 
   const visibleCart = useMemo(() => mergeCartItemsByLine(cart), [cart]);
 
-  // Fetch variant info for BASE items so we can show "Choose options" even after
-  // server round-trips (where the client-only needsOptions flag is lost).
+  // Fetch variant info for all cart items to determine available variant count and
+  // show "Choose options" for BASE items after server round-trips lose needsOptions flag.
   useEffect(() => {
-    const baseIds = [
+    const needsCheck = [
       ...new Set(
         visibleCart
-          .filter((it) => isBaseLine(it) && !it.variantId)
           .map((it) => it.productId)
-          .filter((pid) => !variantProductIds.has(pid))
+          .filter((pid) => !variantAvailableCount.has(pid))
       ),
     ];
-    if (!baseIds.length) return;
+    if (!needsCheck.length) return;
 
     let cancelled = false;
     Promise.all(
-      baseIds.map((pid) =>
+      needsCheck.map((pid) =>
         api
           .get(`/api/products/${pid}`, { params: { include: "variants" } })
           .then(({ data }) => {
             const p = (data as any)?.data ?? data ?? {};
             const variants = Array.isArray(p.variants) ? p.variants : [];
-            if (!variants.length) return null;
 
-            // Capture the first variant's option labels for default display
+            // Mirror availableNow: check variant offers first, fall back to variant-level stock.
+            const availCount = variants.filter((v: any) => {
+              if (Array.isArray(v.offers) && v.offers.length > 0)
+                return v.offers.some(
+                  (o: any) => o?.isActive !== false && (o?.inStock === true || Number(o?.availableQty) > 0)
+                );
+              return v.inStock === true || Number(v.availableQty) > 0;
+            }).length;
+
+            if (!variants.length) return { pid, pills: [] as string[], availCount: 0, isVariantProduct: false };
+
+            // Capture the first variant's option labels for default display on BASE items
             const firstVariant = variants[0];
             const opts = Array.isArray(firstVariant?.options) ? firstVariant.options : [];
             const pills = opts
@@ -931,17 +942,21 @@ export default function Cart() {
               })
               .filter(Boolean) as string[];
 
-            return { pid, pills };
+            return { pid, pills, availCount, isVariantProduct: true };
           })
           .catch(() => null)
       )
     ).then((results) => {
       if (cancelled) return;
-      const found = results.filter((r): r is { pid: string; pills: string[] } => !!r);
+      const found = results.filter(
+        (r): r is { pid: string; pills: string[]; availCount: number; isVariantProduct: boolean } => r !== null
+      );
       if (found.length) {
         setVariantProductIds((prev) => {
           const next = new Set(prev);
-          found.forEach(({ pid }) => next.add(pid));
+          // Always track variant products regardless of current stock — so BASE items from
+          // variant products keep their variant identity even when all combos are sold out.
+          found.forEach(({ pid, isVariantProduct }) => { if (isVariantProduct) next.add(pid); });
           return next;
         });
         setDefaultVariantOptions((prev) => {
@@ -949,6 +964,11 @@ export default function Cart() {
           found.forEach(({ pid, pills }) => {
             if (pills.length) next.set(pid, pills);
           });
+          return next;
+        });
+        setVariantAvailableCount((prev) => {
+          const next = new Map(prev);
+          found.forEach(({ pid, availCount }) => next.set(pid, availCount));
           return next;
         });
       }
@@ -1215,8 +1235,8 @@ export default function Cart() {
                                   </div>
                                 )}
 
-                                {/* Choose / change options — all variant products */}
-                                {isVariantProduct && (
+                                {/* Choose / change options — only when 2+ variants have stock */}
+                                {isVariantProduct && (variantAvailableCount.get(it.productId) ?? 2) > 1 && (
                                   <div className="mt-2">
                                     <button
                                       type="button"
