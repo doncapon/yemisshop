@@ -611,7 +611,7 @@ export default function Login() {
 
               {/* Google sign-in */}
               <a
-                href={`/api/auth/google${returnToRef.current ? `?returnTo=${encodeURIComponent(returnToRef.current)}` : ""}`}
+                href={`${import.meta.env.VITE_API_URL ?? ""}/api/auth/google${returnToRef.current ? `?returnTo=${encodeURIComponent(returnToRef.current)}` : ""}`}
                 className="inline-flex w-full items-center justify-center gap-3 rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-zinc-200"
               >
                 <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
