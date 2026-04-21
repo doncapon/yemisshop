@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:giglogistics.com)",
+      "WebFetch(domain:docs.shipbubble.com)",
+      "WebFetch(domain:www.aftership.com)",
+      "WebFetch(domain:dev-thirdpartynode.theagilitysystems.com)",
+      "WebFetch(domain:www.trackingmore.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:gigagilitysystems.com)",
+      "WebFetch(domain:www.theagilitysystems.com)",
+      "WebFetch(domain:test.giglogisticsse.com)",
+      "WebFetch(domain:www.blog.shipbubble.com)",
+      "Bash(xargs grep *)"
+    ]
+  }
+}

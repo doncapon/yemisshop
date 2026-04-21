@@ -1,6 +1,6 @@
 // CatalogSettingsSection.tsx
 import React, { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 
 import api from "../../api/client";
 
@@ -122,23 +122,6 @@ type AdminBrand = {
 };
 
 type AdminAttribute = any;
-
-/* =========================
-   Catalog Requests (Admin)
-========================= */
-type AdminCatalogRequest = {
-  id: string;
-
-  supplierId: string;
-  supplier?: { id: string; name: string } | null;
-
-  payload: any;
-  reason?: string | null;
-  adminNote?: string | null;
-
-  createdAt: string;
-  reviewedAt?: string | null;
-};
 
 /* =========================
    Helpers
@@ -741,7 +724,6 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
   setViewingSupplier: (v: AdminSupplier | null) => void;
 
   deleteSupplier: any;
-  bankVerifyM: any;
 
   qc: ReturnType<typeof useQueryClient>;
 }) {
@@ -751,7 +733,6 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
     viewingSupplier,
     setViewingSupplier,
     deleteSupplier,
-    bankVerifyM,
   } = props;
 
   const [supplierSearch, setSupplierSearch] = useState("");
@@ -903,8 +884,6 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
               const status = (s.bankVerificationStatus || "UNVERIFIED") as BankVerificationStatus;
 
               const hasCoreBank = !!s.bankCode && !!s.accountNumber;
-              const isVerifiableStatus = status !== "VERIFIED";
-              const canVerify = isVerifiableStatus && hasCoreBank && !bankVerifyM.isPending;
               const deletable =
                 s.deletable === true ||
                 (
@@ -961,39 +940,6 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
 
                       {canEdit && (
                         <>
-                          {status !== "VERIFIED" && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  bankVerifyM.mutate({
-                                    id: s.id,
-                                    decision: "VERIFIED",
-                                    note: "Verified by admin",
-                                  })
-                                }
-                                className="px-2 py-1 rounded bg-emerald-600 text-white disabled:opacity-50"
-                                disabled={!canVerify}
-                                title={!canVerify ? missingReason || "Cannot verify right now" : "Verify bank details"}
-                              >
-                                Verify bank
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const note = window.prompt("Reason for rejection (optional):") || undefined;
-                                  bankVerifyM.mutate({ id: s.id, decision: "REJECTED", note });
-                                }}
-                                className="px-2 py-1 rounded bg-amber-600 text-white disabled:opacity-50"
-                                disabled={!canVerify}
-                                title={!canVerify ? missingReason || "Cannot reject right now" : "Reject bank details"}
-                              >
-                                Reject bank
-                              </button>
-                            </>
-                          )}
-
                           <button
                             type="button"
                             disabled={!deletable || deleteSupplier.isPending}
@@ -1162,32 +1108,6 @@ export function CatalogSettingsSection(props: {
     }
   };
 
-  const bankVerifyM = useMutation({
-    mutationFn: async (vars: { id: string; decision: "VERIFIED" | "REJECTED"; note?: string }) => {
-      const { data } = await api.post<{ ok: true; data: any }>(
-        `/api/admin/suppliers/${vars.id}/bank-verify`,
-        { decision: vars.decision, note: vars.note },
-        { withCredentials: true }
-      );
-      return data;
-    },
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
-
-      if (viewingSupplier?.id) {
-        const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${viewingSupplier.id}`, {
-          withCredentials: true,
-        });
-        setViewingSupplier(data.data);
-      }
-
-      openModal({ title: "Bank verification updated", message: "Supplier bank verification status updated." });
-    },
-    onError: (e: any) => {
-      openModal({ title: "Could not update", message: e?.response?.data?.error || "Please try again." });
-    },
-  });
-
   const AttributeValueAdder = React.memo(function AttributeValueAdder({
     attributeId,
     onCreate,
@@ -1266,7 +1186,6 @@ export function CatalogSettingsSection(props: {
           viewingSupplier={viewingSupplier}
           setViewingSupplier={setViewingSupplier}
           deleteSupplier={deleteSupplier}
-          bankVerifyM={bankVerifyM}
           qc={qc}
         />
       </SectionCard>

@@ -39,6 +39,7 @@ const ProductReviews = React.lazy(() => import("./pages/ProductReviews"));
 const Cart = React.lazy(() => import("./pages/Cart"));
 const Checkout = React.lazy(() => import("./pages/Checkout"));
 const Login = React.lazy(() => import("./pages/Login"));
+const GoogleAuthCallback = React.lazy(() => import("./pages/GoogleAuthCallback"));
 const Register = React.lazy(() => import("./pages/Register"));
 const Verify = React.lazy(() => import("./pages/Verify"));
 const Profile = React.lazy(() => import("./pages/Profile"));
@@ -1191,6 +1192,7 @@ export default function App() {
                   <Route path="/rider/accept" element={<RiderAcceptInvite />} />
 
                   <Route path="/login" element={<LoginRouteGuard />} />
+                  <Route path="/auth/google/callback" element={<GoogleAuthCallback />} />
                   <Route path="/about" element={<About />} />
                   <Route path="/contact" element={<Contact />} />
                   <Route path="/help" element={<HelpCenter />} />

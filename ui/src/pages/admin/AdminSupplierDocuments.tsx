@@ -105,6 +105,14 @@ type SupplierDetail = {
     } | null;
     documents: SupplierDocument[];
     documentsPagination?: PaginationMeta;
+    bankCode?: string | null;
+    bankName?: string | null;
+    bankCountry?: string | null;
+    accountNumber?: string | null;
+    accountName?: string | null;
+    bankVerificationStatus?: string | null;
+    bankVerificationNote?: string | null;
+    bankVerifiedAt?: string | null;
 };
 
 type SupplierListResponse = {
@@ -586,7 +594,7 @@ export default function AdminSupplierDocuments() {
     const [previewDoc, setPreviewDoc] = useState<SupplierDocument | null>(null);
 
     const [supplierActionLoading, setSupplierActionLoading] = useState<
-        "approve" | "reject" | null
+        "approve" | "reject" | "bank-verify" | "bank-reject" | null
     >(null);
 
     const [supplierPage, setSupplierPage] = useState(1);
@@ -940,6 +948,33 @@ export default function AdminSupplierDocuments() {
                 e?.response?.data?.error ||
                 e?.response?.data?.message ||
                 "Could not reject supplier."
+            );
+        } finally {
+            setSupplierActionLoading(null);
+        }
+    };
+
+    const verifyBank = async (decision: "VERIFIED" | "REJECTED") => {
+        if (!selectedSupplierId) return;
+        const action = decision === "VERIFIED" ? "bank-verify" : "bank-reject";
+        try {
+            setSupplierActionLoading(action);
+            setDetailError(null);
+            let note: string | undefined;
+            if (decision === "REJECTED") {
+                note = window.prompt("Reason for rejection (optional):") ?? undefined;
+            }
+            await api.post(
+                `/api/admin/suppliers/${selectedSupplierId}/bank-verify`,
+                { decision, note },
+                { withCredentials: true }
+            );
+            await loadDetail(selectedSupplierId);
+        } catch (e: any) {
+            setDetailError(
+                e?.response?.data?.error ||
+                e?.response?.data?.message ||
+                "Could not update bank verification."
             );
         } finally {
             setSupplierActionLoading(null);
@@ -1752,6 +1787,69 @@ export default function AdminSupplierDocuments() {
                                                             )}
                                                         </div>
                                                     </div>
+
+                                                    {isSuperAdmin && (
+                                                        <div className={`${card} p-5 sm:p-6`}>
+                                                            <h3 className="text-base font-semibold text-zinc-900">
+                                                                Bank verification
+                                                            </h3>
+                                                            <p className="mt-1 text-sm text-zinc-600">
+                                                                Verify or reject the supplier's bank account details.
+                                                            </p>
+
+                                                            <div className="mt-4 space-y-3">
+                                                                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm space-y-1">
+                                                                    <div><span className="text-xs font-medium uppercase tracking-wide text-zinc-500">Status</span></div>
+                                                                    <div className="font-semibold text-zinc-900">{detail.bankVerificationStatus || "UNVERIFIED"}</div>
+                                                                    {detail.bankName && <div className="text-zinc-600">{detail.bankName}</div>}
+                                                                    {detail.accountNumber && <div className="text-zinc-600">Acct: ****{detail.accountNumber.slice(-4)}</div>}
+                                                                    {detail.accountName && <div className="text-zinc-600">{detail.accountName}</div>}
+                                                                    {detail.bankVerificationNote && (
+                                                                        <div className="text-xs text-zinc-500 pt-1">{detail.bankVerificationNote}</div>
+                                                                    )}
+                                                                    {!detail.bankCode || !detail.accountNumber ? (
+                                                                        <div className="text-xs text-amber-700 pt-1">Missing bank code or account number</div>
+                                                                    ) : null}
+                                                                </div>
+
+                                                                {detail.bankVerificationStatus !== "VERIFIED" && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => verifyBank("VERIFIED")}
+                                                                        disabled={
+                                                                            !detail.bankCode ||
+                                                                            !detail.accountNumber ||
+                                                                            supplierActionLoading !== null
+                                                                        }
+                                                                        className="inline-flex w-full items-center justify-center rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                                                    >
+                                                                        {supplierActionLoading === "bank-verify" ? (
+                                                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                        ) : (
+                                                                            <ShieldCheck className="mr-2 h-4 w-4" />
+                                                                        )}
+                                                                        Verify bank
+                                                                    </button>
+                                                                )}
+
+                                                                {detail.bankVerificationStatus !== "REJECTED" && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => verifyBank("REJECTED")}
+                                                                        disabled={supplierActionLoading !== null}
+                                                                        className="inline-flex w-full items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                                                    >
+                                                                        {supplierActionLoading === "bank-reject" ? (
+                                                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                                        ) : (
+                                                                            <XCircle className="mr-2 h-4 w-4" />
+                                                                        )}
+                                                                        Reject bank
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </aside>
                                             </section>
                                         </div>

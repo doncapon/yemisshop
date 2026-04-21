@@ -833,13 +833,16 @@ export function ManageProducts({
     return found?.name || "";
   };
 
+  const qIsNumericSearch = /^\d+$/.test(debouncedQ.trim());
+  const serverQ = qIsNumericSearch ? "" : debouncedQ;
+
   const listQ = useQuery<AdminProduct[]>({
     queryKey: [
       "admin",
       "products",
       "manage",
       {
-        q: debouncedQ,
+        q: serverQ,
         statusParam,
         refreshKey,
       },
@@ -852,8 +855,8 @@ export function ManageProducts({
           ...cookieOpts,
           params: {
             status: statusParam,
-            q: debouncedQ,
-            take: 100,
+            q: serverQ,
+            take: 200,
             skip: 0,
             include: "owner,variants,supplierOffers,supplier",
           },
@@ -3015,8 +3018,26 @@ export function ManageProducts({
       return true;
     };
 
+    const priceTokens = (p: any): string[] => {
+      const tokens = new Set<string>();
+      const add = (v: any) => { const n = Math.round(Number(v)); if (n > 0) tokens.add(String(n)); };
+      add(p.__computedRetailFrom);
+      add(p.retailPrice);
+      add(p.computedRetailPrice);
+      add(p.autoPrice);
+      for (const v of (p.variants ?? [])) add(v?.retailPrice);
+      return Array.from(tokens);
+    };
+
+    const matchesPrice = (p: any) => {
+      if (!qIsNumericSearch) return true;
+      const q = debouncedQ.trim();
+      return priceTokens(p).some((t) => t.startsWith(q));
+    };
+
     return rowsWithDerived.filter((p) => {
       if (!matchesSupplier(p)) return false;
+      if (!matchesPrice(p)) return false;
 
       switch (preset) {
         case "no-offer":
@@ -3050,7 +3071,7 @@ export function ManageProducts({
           return true;
       }
     });
-  }, [rowsWithDerived, preset, offersSummaryQ.data, supplierFilterId, debouncedSupplierFilterText, suppliersQ.data]);
+  }, [rowsWithDerived, preset, offersSummaryQ.data, supplierFilterId, debouncedSupplierFilterText, suppliersQ.data, qIsNumericSearch, debouncedQ]);
 
   const displayRows = useMemo(() => {
     const arr = [...filteredRows];
@@ -4346,7 +4367,7 @@ export function ManageProducts({
               <input
                 value={qInput}
                 onChange={(e) => setQInput(e.target.value)}
-                placeholder="Search by title / SKU / owner…"
+                placeholder="Search by title, SKU, owner, or price…"
                 className="w-full rounded-xl border px-3 py-2 text-sm"
               />
             </div>

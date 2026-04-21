@@ -13,7 +13,7 @@ vi.stubEnv("APP_URL", "http://localhost:5173");
 vi.stubEnv("RESEND_API_KEY", ""); // empty → email.ts logs instead of sending
 
 // If a dedicated test DB URL is provided, use it
-const testDbUrl = import.meta.env.TEST_DATABASE_URL as string | undefined;
+const testDbUrl = process.env.TEST_DATABASE_URL;
 if (testDbUrl) {
   vi.stubEnv("DATABASE_URL", testDbUrl);
 }

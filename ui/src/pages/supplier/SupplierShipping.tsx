@@ -550,21 +550,36 @@ export default function SupplierShipping() {
                       </span>
                     </label>
 
-                    <label className="flex items-center gap-3 rounded-2xl border p-4">
-                      <input
-                        type="checkbox"
-                        checked={settingsForm.supportsPickupPoint}
-                        onChange={(e) =>
-                          setSettingsForm((s) => ({
-                            ...s,
-                            supportsPickupPoint: e.target.checked,
-                          }))
-                        }
-                      />
-                      <span className="text-sm font-medium text-slate-700">
-                        Supports pickup point
-                      </span>
-                    </label>
+                    <div className="col-span-full rounded-2xl border border-blue-100 bg-blue-50 p-4 space-y-3">
+                      <div className="flex items-start gap-2">
+                        <span className="text-blue-500 mt-0.5">📦</span>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">Pickup options</p>
+                          <p className="text-xs text-slate-600 mt-0.5">
+                            <span className="font-medium text-blue-700">GIG Logistics hub pickup</span> is automatically available to your customers whenever DaySpring routes shipping through GIGL — no setup needed from you.
+                          </p>
+                        </div>
+                      </div>
+                      <label className="flex items-start gap-3 rounded-xl border border-blue-200 bg-white p-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={settingsForm.supportsPickupPoint}
+                          onChange={(e) =>
+                            setSettingsForm((s) => ({
+                              ...s,
+                              supportsPickupPoint: e.target.checked,
+                            }))
+                          }
+                        />
+                        <div>
+                          <span className="text-sm font-medium text-slate-700">Also allow pickup from my premises</span>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            Customers can come directly to your address. Make sure your pickup address and contact details are set below.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
                   </div>
 
                   <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">

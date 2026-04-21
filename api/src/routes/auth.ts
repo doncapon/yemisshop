@@ -4,6 +4,7 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
+import axios from "axios";
 
 import { prisma } from "../lib/prisma.js";
 import { sendVerifyEmail, sendResetorForgotPasswordEmail } from "../lib/email.js";
@@ -21,6 +22,10 @@ import {
 const APP_URL = process.env.APP_URL || "http://localhost:5173";
 const API_BASE_URL = process.env.API_URL || "http://localhost:8080";
 const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || "CHANGE_ME_DEV_SECRET";
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = `${API_BASE_URL}/api/auth/google/callback`;
 
 const EMAIL_RESEND_COOLDOWN_SEC = 60;
 const EMAIL_DAILY_CAP = 5;
@@ -680,6 +685,10 @@ router.post(
 
     if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    if (!user.password) {
+      return res.status(401).json({ error: "This account uses Google Sign-In. Please use 'Continue with Google' to log in." });
     }
 
     const ok = await bcrypt.compare(passwordRaw, String(user.password ?? ""));
@@ -1848,6 +1857,166 @@ router.post("/register-supplier", async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 });
+
+// ---------------- GOOGLE OAUTH ----------------
+
+const googleUserSelect = {
+  id: true,
+  email: true,
+  role: true,
+  firstName: true,
+  middleName: true,
+  lastName: true,
+  emailVerifiedAt: true,
+  phoneVerifiedAt: true,
+  status: true,
+  phone: true,
+  googleId: true,
+} as const;
+
+type GoogleUserRow = Prisma.UserGetPayload<{ select: typeof googleUserSelect }>;
+
+router.get("/google", (req: Request, res: Response) => {
+  if (!GOOGLE_CLIENT_ID) {
+    return res.status(501).json({ error: "Google login is not configured on this server." });
+  }
+
+  const returnTo = String(req.query.returnTo || "").trim();
+  const state = Buffer.from(JSON.stringify({ returnTo })).toString("base64");
+
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: "code",
+    scope: "openid email profile",
+    state,
+    access_type: "online",
+    prompt: "select_account",
+  });
+
+  return res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+router.get(
+  "/google/callback",
+  wrap(async (req: Request, res: Response) => {
+    const callbackBase = `${APP_URL}/auth/google/callback`;
+    const { code, state, error } = req.query;
+
+    if (error) {
+      return res.redirect(`${callbackBase}?error=${encodeURIComponent(String(error))}`);
+    }
+    if (!code) {
+      return res.redirect(`${callbackBase}?error=missing_code`);
+    }
+
+    let returnTo = "/";
+    try {
+      const decoded = JSON.parse(Buffer.from(String(state || ""), "base64").toString());
+      if (typeof decoded.returnTo === "string" && decoded.returnTo.startsWith("/")) {
+        returnTo = decoded.returnTo;
+      }
+    } catch {}
+
+    // Exchange authorization code for tokens
+    let accessToken: string;
+    try {
+      const tokenRes = await axios.post<{ access_token: string }>(
+        "https://oauth2.googleapis.com/token",
+        {
+          code: String(code),
+          client_id: GOOGLE_CLIENT_ID,
+          client_secret: GOOGLE_CLIENT_SECRET,
+          redirect_uri: GOOGLE_REDIRECT_URI,
+          grant_type: "authorization_code",
+        }
+      );
+      accessToken = tokenRes.data.access_token;
+      if (!accessToken) throw new Error("No access_token in response");
+    } catch (e: any) {
+      console.error("[google/callback] token exchange failed:", e?.response?.data ?? e?.message);
+      return res.redirect(`${callbackBase}?error=token_exchange_failed`);
+    }
+
+    // Fetch Google user profile
+    let gUser: { id: string; email: string; given_name: string; family_name: string; name: string };
+    try {
+      const infoRes = await axios.get<typeof gUser>(
+        "https://www.googleapis.com/userinfo/v2/me",
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      gUser = infoRes.data;
+      if (!gUser?.email) throw new Error("No email in Google profile");
+    } catch (e: any) {
+      console.error("[google/callback] userinfo failed:", e?.response?.data ?? e?.message);
+      return res.redirect(`${callbackBase}?error=userinfo_failed`);
+    }
+
+    const emailNorm = gUser.email.trim().toLowerCase();
+
+    // Find existing user by googleId or email
+    let user: GoogleUserRow | null = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { googleId: gUser.id },
+          { email: { equals: emailNorm, mode: "insensitive" } },
+        ],
+      },
+      select: googleUserSelect,
+    });
+
+    if (!user) {
+      // New user — create a SHOPPER, email already verified via Google
+      user = await prisma.user.create({
+        data: {
+          email: emailNorm,
+          googleId: gUser.id,
+          firstName: gUser.given_name || (gUser.name?.split(" ")[0] ?? "User"),
+          lastName: gUser.family_name || (gUser.name?.split(" ").slice(1).join(" ") ?? ""),
+          role: "SHOPPER",
+          status: "VERIFIED",
+          emailVerifiedAt: new Date(),
+        },
+        select: googleUserSelect,
+      });
+    } else if (!user.googleId) {
+      // Existing email account — link Google to it and mark email verified
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          googleId: gUser.id,
+          emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
+          status: user.status === "PENDING" ? "PARTIAL" : user.status,
+        },
+      });
+      user = { ...user, googleId: gUser.id, emailVerifiedAt: user.emailVerifiedAt ?? new Date() };
+    }
+
+    const userId = user.id;
+    const userRole = String(user.role ?? "SHOPPER");
+
+    const sid = await createUserSession(req, userId, userRole);
+    const ttlDays = getSessionTtlDays(userRole);
+
+    const token = signAccessJwt(
+      {
+        id: userId,
+        sub: userId,
+        email: String(user.email ?? ""),
+        role: normRoleLoose(userRole),
+        k: "access",
+        sid: sid || undefined,
+      } as any,
+      `${ttlDays}d`
+    );
+
+    setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
+    res.setHeader("Cache-Control", "no-store");
+
+    const safeReturn = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
+    return res.redirect(`${callbackBase}?returnTo=${encodeURIComponent(safeReturn)}`);
+  })
+);
 
 export default router;
 
