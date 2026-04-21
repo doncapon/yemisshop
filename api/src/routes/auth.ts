@@ -1860,6 +1860,22 @@ router.post("/register-supplier", async (req, res) => {
 
 // ---------------- GOOGLE OAUTH ----------------
 
+const googleUserSelect = {
+  id: true,
+  email: true,
+  role: true,
+  firstName: true,
+  middleName: true,
+  lastName: true,
+  emailVerifiedAt: true,
+  phoneVerifiedAt: true,
+  status: true,
+  phone: true,
+  googleId: true,
+} as const;
+
+type GoogleUserRow = Prisma.UserGetPayload<{ select: typeof googleUserSelect }>;
+
 router.get("/google", (req: Request, res: Response) => {
   if (!GOOGLE_CLIENT_ID) {
     return res.status(501).json({ error: "Google login is not configured on this server." });
@@ -1938,22 +1954,6 @@ router.get(
 
     const emailNorm = gUser.email.trim().toLowerCase();
 
-    const userSelect = {
-      id: true,
-      email: true,
-      role: true,
-      firstName: true,
-      middleName: true,
-      lastName: true,
-      emailVerifiedAt: true,
-      phoneVerifiedAt: true,
-      status: true,
-      phone: true,
-      googleId: true,
-    } satisfies Prisma.UserSelect;
-
-    type GoogleUserRow = Prisma.UserGetPayload<{ select: typeof userSelect }>;
-
     // Find existing user by googleId or email
     let user: GoogleUserRow | null = await prisma.user.findFirst({
       where: {
@@ -1962,7 +1962,7 @@ router.get(
           { email: { equals: emailNorm, mode: "insensitive" } },
         ],
       },
-      select: userSelect,
+      select: googleUserSelect,
     });
 
     if (!user) {
@@ -1977,7 +1977,7 @@ router.get(
           status: "VERIFIED",
           emailVerifiedAt: new Date(),
         },
-        select: userSelect,
+        select: googleUserSelect,
       });
     } else if (!user.googleId) {
       // Existing email account — link Google to it and mark email verified
@@ -1994,7 +1994,6 @@ router.get(
 
     const userId = user.id;
     const userRole = String(user.role ?? "SHOPPER");
-    const profile = buildPublicProfile(user);
 
     const sid = await createUserSession(req, userId, userRole);
     const ttlDays = getSessionTtlDays(userRole);
