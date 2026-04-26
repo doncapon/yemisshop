@@ -4,7 +4,12 @@ import { markJustLoggedOut } from "../utils/logout";
 import api from "../api/client";
 import { useAuthStore } from "../store/auth";
 
-export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
+const IDLE_TIMEOUT_MS = (() => {
+  const mins = Number(import.meta.env.VITE_IDLE_TIMEOUT_MINS);
+  return Number.isFinite(mins) && mins > 0 ? mins * 60 * 1000 : 20 * 60 * 1000;
+})();
+
+export function useIdleLogout(timeoutMs = IDLE_TIMEOUT_MS) {
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
 
