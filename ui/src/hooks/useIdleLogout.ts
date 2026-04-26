@@ -1,34 +1,12 @@
 // src/hooks/useIdleLogout.ts
 import { useEffect, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
-import { performLogout } from "../utils/logout";
+import { markJustLoggedOut } from "../utils/logout";
+import api from "../api/client";
 import { useAuthStore } from "../store/auth";
-
-const RETURN_TO_KEY = "auth:returnTo";
-
-function isProtectedPath(p: string) {
-  return (
-    p === "/checkout" ||
-    p === "/orders" ||
-    p === "/wishlist" ||
-    p === "/profile" ||
-    p === "/dashboard" ||
-    p === "/customer-dashboard" ||
-    p === "/account/sessions" ||
-    p === "/admin" ||
-    p.startsWith("/admin/") ||
-    p === "/supplier" ||
-    p.startsWith("/supplier/") ||
-    p === "/rider" ||
-    p.startsWith("/u/")
-  );
-}
 
 export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
-
-  const loc = useLocation();
 
   const timerRef = useRef<number | null>(null);
   const kickingRef = useRef(false);
@@ -62,20 +40,13 @@ export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
 
     kickingRef.current = true;
 
-    const path = `${loc.pathname}${loc.search}`;
+    // Mark logged out so bootstrap doesn't re-trigger session-expired on reload.
+    markJustLoggedOut();
 
-    if (isProtectedPath(loc.pathname)) {
-      try {
-        sessionStorage.setItem(RETURN_TO_KEY, path);
-      } catch {
-        //
-      }
-    }
+    // Show the session-expired modal (keeps user on current page).
+    useAuthStore.getState().markSessionExpired();
 
-    const target = isProtectedPath(loc.pathname)
-      ? `/login?reason=idle&from=${encodeURIComponent(path)}`
-      : "/login?reason=idle";
-
-    void performLogout(target);
-  }, [shouldKick, hydrated, loc.pathname, loc.search]);
+    // Invalidate the server session in the background — no redirect needed.
+    api.post("/api/auth/logout", {}, { withCredentials: true }).catch(() => {});
+  }, [shouldKick, hydrated]);
 }

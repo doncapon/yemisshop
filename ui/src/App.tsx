@@ -25,6 +25,7 @@ import { Toaster } from "react-hot-toast";
 import toast from "react-hot-toast";
 import ScrollToTop from "./components/ScrollToTop";
 import AuthBootstrap from "./components/AuthBootstrap";
+import SessionExpiredModal from "./components/SessionExpiredModal";
 
 import { useAuthStore } from "./store/auth";
 import { useIdleLogout } from "./hooks/useIdleLogout";
@@ -1172,6 +1173,7 @@ export default function App() {
       <SupplierStageProvider>
         <div className="min-h-screen flex flex-col">
           <AuthBootstrap />
+          <SessionExpiredModal />
 
           <main className="w-full flex-1 bg-slate-50">
             <div className="max-w-7xl mx-auto">
