@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Link, useLocation, useNavigationType, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   PackageCheck,
@@ -315,7 +315,6 @@ export default function SupplierOrders() {
   const { orderId } = useParams<{ orderId?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
-  const navigationType = useNavigationType();
 
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const rawRole = useAuthStore((s: any) => s.user?.role);
@@ -444,45 +443,21 @@ export default function SupplierOrders() {
     return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
   };
 
-  const [q, setQ] = useState(() => (orderId ?? searchParams.get("q") ?? "").trim());
+  // q is purely local — client-side filter, no URL sync.
+  // Removing the q→URL sync effect eliminates setSearchParams calls on every keypress,
+  // which in turn stops location.key from changing while typing (no more jumpiness).
+  const [q, setQ] = useState(() => (orderId ?? "").trim());
 
-  // Reset q on PUSH navigation (notification click, link click) but NOT on REPLACE
-  // (setSearchParams from typing uses replace:true — we must not reset there).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (navigationType !== "REPLACE") setQ(searchParams.get("q") ?? "");
-  }, [location.key]);
-
+  // Seed q from orderId route param (e.g. /supplier/orders/:orderId)
   useEffect(() => {
     const v = (orderId ?? "").trim();
-    if (!v) return;
+    if (v) setQ(v);
+  }, [orderId]);
 
-    setQ(v);
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.set("q", v);
-        return next;
-      },
-      { replace: true }
-    );
-  }, [orderId, setSearchParams]);
-
-  useEffect(() => {
-    const v = (q ?? "").trim();
-    const cur = (searchParams.get("q") ?? "").trim();
-    if (v === cur) return;
-
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (v) next.set("q", v);
-        else next.delete("q");
-        return next;
-      },
-      { replace: true }
-    );
-  }, [q, searchParams, setSearchParams]);
+  // On any fresh navigation (PUSH/POP) reset q. Safe now because typing no
+  // longer calls setSearchParams, so location.key won't change while typing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setQ(""); }, [location.key]);
 
   const [deliveryOtpToken, setDeliveryOtpToken] = useState<Record<string, string>>({});
   const [deliveryOtpAutoRequested, setDeliveryOtpAutoRequested] = useState<Record<string, boolean>>({});
