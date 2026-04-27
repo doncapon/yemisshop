@@ -61,19 +61,17 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
     case "ORDER_CANCELED":
     case "PAYMENT_FAILED":
     case "RIDER_DELIVERED":
-      if (isAdmin) return d.orderId ? `/admin?tab=transactions&orderId=${enc(d.orderId)}` : "/admin?tab=transactions";
       return d.orderId ? `/orders?orderId=${enc(d.orderId)}` : "/orders";
 
     // ── Refunds ───────────────────────────────────────────────────────────
     case "REFUND_REQUESTED":
     case "REFUND_STATUS_CHANGED":
-      if (isAdmin) return d.orderId ? `/admin?tab=transactions&orderId=${enc(d.orderId)}` : "/admin?tab=transactions";
+      if (isAdmin) return d.orderId ? `/orders?orderId=${enc(d.orderId)}` : "/admin?tab=refunds";
       return d.orderId ? `/orders?orderId=${enc(d.orderId)}` : "/returns-refunds";
 
     // ── Disputes ──────────────────────────────────────────────────────────
     case "DISPUTE_OPENED":
     case "DISPUTE_STATUS_CHANGED":
-      if (isAdmin) return d.orderId ? `/admin?tab=transactions&orderId=${enc(d.orderId)}` : "/admin?tab=transactions";
       return d.orderId ? `/orders?orderId=${enc(d.orderId)}` : "/orders";
 
     // ── Supplier purchase-order events ────────────────────────────────────
@@ -137,7 +135,6 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
     // ── Generic / fallback ────────────────────────────────────────────────
     case "GENERIC":
     default:
-      if (d.orderId && isAdmin) return `/admin?tab=transactions&orderId=${enc(d.orderId)}`;
       if (d.orderId && !isSupplier) return `/orders?orderId=${enc(d.orderId)}`;
       if (d.purchaseOrderId && isAdmin) {
         const sid = d.supplierId ? `&supplierId=${enc(d.supplierId)}` : "";
