@@ -1,6 +1,6 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   PackageCheck,
@@ -314,6 +314,7 @@ function normStr(v: any) {
 export default function SupplierOrders() {
   const { orderId } = useParams<{ orderId?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
 
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const rawRole = useAuthStore((s: any) => s.user?.role);
@@ -377,8 +378,8 @@ export default function SupplierOrders() {
     return v || undefined;
   }, [searchParams]);
 
-  const storedSupplierId = useMemo(() => safeGetStoredAdminSupplierId(), []);
-  const adminSupplierId = isAdmin ? urlSupplierId ?? storedSupplierId : undefined;
+  // When admin arrives with poId but no supplierId, resolve it from the API
+  const [resolvingSupplierId, setResolvingSupplierId] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -391,6 +392,35 @@ export default function SupplierOrders() {
       return;
     }
 
+    // If poId is present, resolve the correct supplierId from the API instead
+    // of injecting a potentially stale stored supplierId
+    if (urlPoId) {
+      setResolvingSupplierId(true);
+      api
+        .get("/api/supplier/orders/resolve-supplier", {
+          params: { poId: urlPoId },
+          withCredentials: true,
+        })
+        .then(({ data }) => {
+          const sid = String(data?.supplierId ?? "").trim();
+          if (sid) {
+            safeSetStoredAdminSupplierId(sid);
+            setSearchParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                next.set("supplierId", sid);
+                return next;
+              },
+              { replace: true }
+            );
+          }
+        })
+        .catch(() => {})
+        .finally(() => setResolvingSupplierId(false));
+      return;
+    }
+
+    // No poId — restore from localStorage as before
     if (fromStore) {
       setSearchParams(
         (prev) => {
@@ -402,7 +432,10 @@ export default function SupplierOrders() {
         { replace: true }
       );
     }
-  }, [isAdmin, setSearchParams, searchParams]);
+  }, [isAdmin, urlPoId, setSearchParams, searchParams]);
+
+  const storedSupplierId = useMemo(() => safeGetStoredAdminSupplierId(), []);
+  const adminSupplierId = isAdmin ? urlSupplierId ?? storedSupplierId : undefined;
 
   const withSupplierCtx = (to: string) => {
     if (!isAdmin || !adminSupplierId) return to;
@@ -412,10 +445,13 @@ export default function SupplierOrders() {
 
   const [q, setQ] = useState(() => (orderId ?? searchParams.get("q") ?? "").trim());
 
-  // Reset search when navigating here via poId (e.g. from notification) with no explicit q
+  // Reset search on fresh navigation (location.key changes each time navigate() is called)
+  const prevLocationKey = useRef<string>(location.key);
   useEffect(() => {
-    if (urlPoId && !searchParams.get("q")) setQ("");
-  }, [urlPoId, searchParams]);
+    if (prevLocationKey.current === location.key) return;
+    prevLocationKey.current = location.key;
+    if (!searchParams.get("q")) setQ("");
+  }, [location.key, searchParams]);
 
   useEffect(() => {
     const v = (orderId ?? "").trim();
@@ -552,7 +588,7 @@ export default function SupplierOrders() {
     return () => timers.forEach((id) => window.clearTimeout(id));
   }, [cancelOtpToken, cancelOtpMeta]);
 
-  const queryEnabled = hydrated && (!isAdmin || !!adminSupplierId);
+  const queryEnabled = hydrated && (!isAdmin || !!adminSupplierId) && !resolvingSupplierId;
 
   const ordersQ = useQuery({
     queryKey: [
@@ -1053,7 +1089,12 @@ export default function SupplierOrders() {
   return (
     <SiteLayout>
       <SupplierLayout>
-        {isAdmin && !adminSupplierId && (
+        {isAdmin && !adminSupplierId && resolvingSupplierId && (
+          <div className="mt-4 sm:mt-6 rounded-2xl border bg-zinc-50 text-zinc-700 border-zinc-200 p-4 text-sm">
+            Loading supplier context…
+          </div>
+        )}
+        {isAdmin && !adminSupplierId && !resolvingSupplierId && !urlPoId && (
           <div className="mt-4 sm:mt-6 rounded-2xl border bg-amber-50 text-amber-900 border-amber-200 p-4 text-sm">
             Select a supplier on the dashboard first (Admin view) to inspect their orders.
             <Link to="/supplier" className="ml-2 underline font-semibold">
