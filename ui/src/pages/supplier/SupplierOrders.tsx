@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, useRef } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -445,13 +445,10 @@ export default function SupplierOrders() {
 
   const [q, setQ] = useState(() => (orderId ?? searchParams.get("q") ?? "").trim());
 
-  // Reset search on fresh navigation (location.key changes each time navigate() is called)
-  const prevLocationKey = useRef<string>(location.key);
-  useEffect(() => {
-    if (prevLocationKey.current === location.key) return;
-    prevLocationKey.current = location.key;
-    if (!searchParams.get("q")) setQ("");
-  }, [location.key, searchParams]);
+  // On every navigation (location.key is unique per navigate() call), re-read q from the URL.
+  // This prevents stale React state from writing old search terms back to a fresh URL.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setQ(searchParams.get("q") ?? ""); }, [location.key]);
 
   useEffect(() => {
     const v = (orderId ?? "").trim();
