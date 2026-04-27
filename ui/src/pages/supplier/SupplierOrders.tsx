@@ -509,15 +509,6 @@ export default function SupplierOrders() {
     setPage(1);
   }, [q, status, riderView, adminSupplierId, urlPoId]);
 
-  // Auto-expand the order that matches the poId from the URL
-  useEffect(() => {
-    if (!urlPoId || !ordersQ.data?.data?.length) return;
-    const match = ordersQ.data.data.find((o) => o.purchaseOrderId === urlPoId);
-    if (match) {
-      setExpanded((prev) => ({ ...prev, [match.id]: true }));
-    }
-  }, [urlPoId, ordersQ.data]);
-
   useEffect(() => {
     const timers: number[] = [];
 
@@ -609,6 +600,13 @@ export default function SupplierOrders() {
     refetchOnMount: "always",
     retry: 1,
   });
+
+  // Auto-expand the order that matches the poId from the URL
+  useEffect(() => {
+    if (!urlPoId || !ordersQ.data?.data?.length) return;
+    const match = ordersQ.data.data.find((o) => o.purchaseOrderId === urlPoId);
+    if (match) setExpanded((prev) => ({ ...prev, [match.id]: true }));
+  }, [urlPoId, ordersQ.data]);
 
   const serverRows = Array.isArray(ordersQ.data?.data) ? ordersQ.data!.data : [];
   const serverTotal = Number(ordersQ.data?.total ?? 0);
