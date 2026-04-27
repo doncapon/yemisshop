@@ -678,8 +678,11 @@ router.get("/", requireAuth, async (req: any, res) => {
 
     const includeRiderId = orderItemHasField("riderId");
 
+    const filterPoId = String(req.query?.poId ?? "").trim() || null;
+
     const poWhere: any = {
       supplierId,
+      ...(filterPoId ? { id: filterPoId } : {}),
       ...(riderId
         ? {
             riderId,

@@ -372,6 +372,11 @@ export default function SupplierOrders() {
     return v || undefined;
   }, [searchParams]);
 
+  const urlPoId = useMemo(() => {
+    const v = normStr(searchParams.get("poId"));
+    return v || undefined;
+  }, [searchParams]);
+
   const storedSupplierId = useMemo(() => safeGetStoredAdminSupplierId(), []);
   const adminSupplierId = isAdmin ? urlSupplierId ?? storedSupplierId : undefined;
 
@@ -502,7 +507,16 @@ export default function SupplierOrders() {
 
   useEffect(() => {
     setPage(1);
-  }, [q, status, riderView, adminSupplierId]);
+  }, [q, status, riderView, adminSupplierId, urlPoId]);
+
+  // Auto-expand the order that matches the poId from the URL
+  useEffect(() => {
+    if (!urlPoId || !ordersQ.data?.data?.length) return;
+    const match = ordersQ.data.data.find((o) => o.purchaseOrderId === urlPoId);
+    if (match) {
+      setExpanded((prev) => ({ ...prev, [match.id]: true }));
+    }
+  }, [urlPoId, ordersQ.data]);
 
   useEffect(() => {
     const timers: number[] = [];
@@ -548,7 +562,7 @@ export default function SupplierOrders() {
     queryKey: [
       "supplier",
       "orders",
-      { role, supplierId: adminSupplierId ?? null, riderView, page, pageSize },
+      { role, supplierId: adminSupplierId ?? null, riderView, page, pageSize, poId: urlPoId ?? null },
     ],
     enabled: queryEnabled,
     placeholderData: keepPreviousData,
@@ -561,6 +575,7 @@ export default function SupplierOrders() {
 
         if (isAdmin && adminSupplierId) params.supplierId = adminSupplierId;
         if (isRider) params.view = riderView;
+        if (urlPoId) params.poId = urlPoId;
 
         const { data } = await api.get<SupplierOrdersEnvelope>("/api/supplier/orders", {
           withCredentials: true,
