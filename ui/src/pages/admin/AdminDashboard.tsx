@@ -398,11 +398,21 @@ export default function AdminDashboard() {
   const lastUrlTab = useRef<string | null>(null);
   const lastUrlPTab = useRef<string | null>(null);
   const lastUrlQ = useRef<string | null>(null);
+  const lastUrlOrderId = useRef<string | null>(null);
+  const lastUrlProductId = useRef<string | null>(null);
+
+  // Transactions search — initialised from URL orderId/poId on first render
+  const [q, setQ] = useState(() => {
+    const p = new URLSearchParams(window.location.search);
+    return p.get("orderId") || p.get("poId") || "";
+  });
 
   useEffect(() => {
     const rawTabParam = searchParams.get("tab"); // may be null
     const rawPTabParam = searchParams.get("pTab"); // may be null
     const rawQParam = searchParams.get("q"); // may be null
+    const rawOrderId = searchParams.get("orderId") || searchParams.get("poId") || null;
+    const rawProductId = searchParams.get("productId") || null;
 
     const urlTabLower = (rawTabParam || "").toLowerCase();
     const urlPTabLower = (rawPTabParam || "").toLowerCase();
@@ -427,6 +437,7 @@ export default function AdminDashboard() {
     // --- PTAB syncing ---
     const effectiveTab: TabKey = hasValidTab ? urlTab : tab;
     const isProducts = effectiveTab === "products";
+    const isTransactions = effectiveTab === "transactions";
 
     if (isProducts) {
       if (rawPTabParam && rawPTabParam !== lastUrlPTab.current && hasValidPTab) {
@@ -447,14 +458,23 @@ export default function AdminDashboard() {
       }
     }
 
+    // --- orderId / poId -> transactions search syncing ---
+    if (isTransactions && rawOrderId && rawOrderId !== lastUrlOrderId.current) {
+      setQ(rawOrderId);
+    }
+
+    // --- productId -> focusProductId syncing ---
+    if (isProducts && rawProductId && rawProductId !== lastUrlProductId.current) {
+      setFocusProductId(rawProductId);
+    }
+
     lastUrlTab.current = rawTabParam;
     lastUrlPTab.current = rawPTabParam;
     lastUrlQ.current = rawQParam;
+    lastUrlOrderId.current = rawOrderId;
+    lastUrlProductId.current = rawProductId;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
-
-  // Transactions search
-  const [q, setQ] = useState("");
 
   // Manage filters (currently only used when jumping from tiles)
   const [manageFilters, setManageFilters] = useState<ManageFilters>({
