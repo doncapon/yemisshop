@@ -131,7 +131,9 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
     // ── Generic / fallback ────────────────────────────────────────────────
     case "GENERIC":
     default:
+      if (d.orderId && isAdmin) return `/admin?tab=transactions&orderId=${enc(d.orderId)}`;
       if (d.orderId && !isSupplier) return `/orders?orderId=${enc(d.orderId)}`;
+      if (d.purchaseOrderId && isAdmin) return `/admin?tab=transactions`;
       if (d.purchaseOrderId) return `/supplier/orders?poId=${enc(d.purchaseOrderId)}`;
       if (d.productId && isAdmin) return `/admin?tab=products`;
       if (d.productId) return `/products/${enc(d.productId)}`;
