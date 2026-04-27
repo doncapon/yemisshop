@@ -412,6 +412,11 @@ export default function SupplierOrders() {
 
   const [q, setQ] = useState(() => (orderId ?? searchParams.get("q") ?? "").trim());
 
+  // Reset search when navigating here via poId (e.g. from notification) with no explicit q
+  useEffect(() => {
+    if (urlPoId && !searchParams.get("q")) setQ("");
+  }, [urlPoId, searchParams]);
+
   useEffect(() => {
     const v = (orderId ?? "").trim();
     if (!v) return;

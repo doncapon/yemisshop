@@ -54,7 +54,20 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
   if (!userId) return { ok: false, status: 401, error: "Unauthorized" };
 
   if (isAdmin(role)) {
-    const supplierId = String(req.query?.supplierId ?? "").trim();
+    let supplierId = String(req.query?.supplierId ?? "").trim();
+
+    // Auto-resolve supplierId from poId when only poId is provided
+    if (!supplierId) {
+      const poId = String(req.query?.poId ?? "").trim();
+      if (poId) {
+        const po = await prisma.purchaseOrder.findUnique({
+          where: { id: poId },
+          select: { supplierId: true },
+        });
+        if (po?.supplierId) supplierId = po.supplierId;
+      }
+    }
+
     if (!supplierId) {
       return { ok: false, status: 400, error: "Missing supplierId query param for admin view" };
     }
