@@ -7,6 +7,7 @@ import { useAuthStore } from "../store/auth";
 const IDLE_TIMEOUT_MS = (() => {
   const mins = Number(import.meta.env.VITE_IDLE_TIMEOUT_MINS);
   const ms = Number.isFinite(mins) && mins > 0 ? mins * 60 * 1000 : 20 * 60 * 1000;
+  console
   return ms;
 })();
 
