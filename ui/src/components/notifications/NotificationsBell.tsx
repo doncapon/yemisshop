@@ -80,8 +80,14 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
     case "PURCHASE_ORDER_CREATED":
     case "PURCHASE_ORDER_FUNDED":
     case "PURCHASE_ORDER_STATUS_UPDATE":
-    case "RIDER_ASSIGNED":
-      return d.purchaseOrderId ? `/supplier/orders?poId=${enc(d.purchaseOrderId)}` : "/supplier/orders";
+    case "RIDER_ASSIGNED": {
+      const sid = d.supplierId ? `&supplierId=${enc(d.supplierId)}` : "";
+      return d.purchaseOrderId
+        ? `/supplier/orders?poId=${enc(d.purchaseOrderId)}${sid}`
+        : d.supplierId
+          ? `/supplier/orders?supplierId=${enc(d.supplierId)}`
+          : "/supplier/orders";
+    }
 
     // ── Payouts ───────────────────────────────────────────────────────────
     case "SUPPLIER_PAYOUT_RELEASED":
@@ -133,7 +139,10 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
     default:
       if (d.orderId && isAdmin) return `/admin?tab=transactions&orderId=${enc(d.orderId)}`;
       if (d.orderId && !isSupplier) return `/orders?orderId=${enc(d.orderId)}`;
-      if (d.purchaseOrderId && isAdmin) return `/admin?tab=transactions`;
+      if (d.purchaseOrderId && isAdmin) {
+        const sid = d.supplierId ? `&supplierId=${enc(d.supplierId)}` : "";
+        return `/supplier/orders?poId=${enc(d.purchaseOrderId)}${sid}`;
+      }
       if (d.purchaseOrderId) return `/supplier/orders?poId=${enc(d.purchaseOrderId)}`;
       if (d.productId && isAdmin) return `/admin?tab=products`;
       if (d.productId) return `/products/${enc(d.productId)}`;
