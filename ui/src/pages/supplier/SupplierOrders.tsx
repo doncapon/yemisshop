@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigationType, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   PackageCheck,
@@ -315,6 +315,7 @@ export default function SupplierOrders() {
   const { orderId } = useParams<{ orderId?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
+  const navigationType = useNavigationType();
 
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const rawRole = useAuthStore((s: any) => s.user?.role);
@@ -445,10 +446,12 @@ export default function SupplierOrders() {
 
   const [q, setQ] = useState(() => (orderId ?? searchParams.get("q") ?? "").trim());
 
-  // On every navigation (location.key is unique per navigate() call), re-read q from the URL.
-  // This prevents stale React state from writing old search terms back to a fresh URL.
+  // Reset q on PUSH navigation (notification click, link click) but NOT on REPLACE
+  // (setSearchParams from typing uses replace:true — we must not reset there).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setQ(searchParams.get("q") ?? ""); }, [location.key]);
+  useEffect(() => {
+    if (navigationType !== "REPLACE") setQ(searchParams.get("q") ?? "");
+  }, [location.key]);
 
   useEffect(() => {
     const v = (orderId ?? "").trim();
