@@ -1303,7 +1303,7 @@ const ProductCard = memo(
           setTouchStartX(null);
         }}
         onDragStart={(e) => e.preventDefault()}
-        className="group block cursor-pointer overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:border-zinc-300 active:scale-[0.99]"
+        className="group flex flex-col cursor-pointer overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:border-zinc-300 active:scale-[0.99]"
       >
         <div className="relative h-28 w-full overflow-hidden bg-zinc-100 sm:h-36 md:h-40">
           <SafeImg
@@ -1366,7 +1366,7 @@ const ProductCard = memo(
           )}
         </div>
 
-        <div className="p-2.5 md:p-4">
+        <div className="flex flex-col flex-1 p-2.5 md:p-4">
           <TruncatedTitle
             text={p.title}
             className="line-clamp-1 text-[12px] font-semibold text-zinc-900 md:text-sm"
@@ -1386,7 +1386,7 @@ const ProductCard = memo(
             )}
           </div>
 
-          <div className="mt-2">
+          <div className="mt-auto pt-2">
             {hasVariants ? (
               <div data-stop-card-nav="true">
                 {baseQtyInCart > 0 ? (

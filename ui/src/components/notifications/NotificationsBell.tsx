@@ -255,6 +255,25 @@ export default function NotificationsBell({
     clearToastTimer();
   }, [userId, clearToastTimer, loadSeenIdsFromSession]);
 
+  // Persists readAt server-side when a toast is shown so the popup never repeats on a new device.
+  const markToastShown = React.useCallback((id: string) => {
+    if (!userId || !id) return;
+    qc.setQueryData(["notifications", userId], (old: any) => {
+      if (!old) return old;
+      const now = new Date().toISOString();
+      return {
+        ...old,
+        items: (old.items || []).map((n: NotificationWire) =>
+          n.id === id ? { ...n, readAt: now } : n
+        ),
+        unreadCount: Math.max(0, (old.unreadCount ?? 1) - 1),
+      };
+    });
+    api
+      .post("/api/notifications/read", { ids: [id] }, { withCredentials: true })
+      .catch(() => {});
+  }, [qc, userId]);
+
   /* -------- polling query (stops on 401) -------- */
 
   const { data, isLoading, isError } = useQuery({
@@ -309,6 +328,7 @@ export default function NotificationsBell({
         if (newestUnread) {
           setInlineToast(newestUnread);
           scheduleToastHide();
+          markToastShown(newestUnread.id);
         }
         sessionStorage.setItem(loginSessionKey!, "1");
       }
@@ -322,11 +342,12 @@ export default function NotificationsBell({
     if (newUnread) {
       setInlineToast(newUnread);
       scheduleToastHide();
+      markToastShown(newUnread.id);
     }
 
     prevIdsRef.current = new Set(items.map((n) => n.id));
     saveSeenIdsToSession(prevIdsRef.current);
-  }, [data?.items, userId, loginSessionKey, scheduleToastHide, saveSeenIdsToSession]);
+  }, [data?.items, userId, loginSessionKey, scheduleToastHide, saveSeenIdsToSession, markToastShown]);
 
   React.useEffect(() => {
     return () => clearToastTimer();
@@ -431,12 +452,13 @@ export default function NotificationsBell({
       if (!prevIds.has(incoming.id) && !incoming.readAt) {
         setInlineToast(incoming);
         scheduleToastHide();
+        markToastShown(incoming.id);
       }
 
       prevIdsRef.current = new Set([incoming.id, ...Array.from(prevIdsRef.current)]);
       saveSeenIdsToSession(prevIdsRef.current);
     },
-    [qc, userId, scheduleToastHide, saveSeenIdsToSession]
+    [qc, userId, scheduleToastHide, saveSeenIdsToSession, markToastShown]
   );
 
   React.useEffect(() => {
