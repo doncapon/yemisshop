@@ -116,7 +116,7 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
 
     // ── Product submitted for admin review ────────────────────────────────
     case "PRODUCT_SUBMITTED":
-      return d.productId ? `/admin?tab=products&pTab=moderation&productId=${enc(d.productId)}` : "/admin?tab=products&pTab=moderation";
+      return d.productId ? `/admin?tab=products&pTab=manage&productId=${enc(d.productId)}` : "/admin?tab=products&pTab=manage";
 
     // ── Supplier profile / docs ───────────────────────────────────────────
     case "SUPPLIER_KYC_STATUS_CHANGED":
