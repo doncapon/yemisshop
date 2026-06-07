@@ -2164,22 +2164,27 @@ export const createProductHandler = wrap(async (req, res) => {
       });
 
       const initialAvailableQty = Number((req.body as any)?.availableQty ?? (req.body as any)?.supplierAvailableQty ?? 0);
+      const offerPrice = Number(nextRetail ?? 0);
 
-      if (
-        initialAvailableQty > 0 &&
-        hasModel("SupplierProductOffer")
-      ) {
-        await (tx as any).supplierProductOffer.create({
-          data: {
-            productId: String(product.id),
-            supplierId: String(supplierId),
-            basePrice: new Prisma.Decimal(String(nextRetail ?? 0)),
-            availableQty: Math.max(0, Math.floor(initialAvailableQty)),
-            isActive: true,
-            inStock: true,
-            currency: "NGN",
-          },
+      if (hasModel("SupplierProductOffer") && offerPrice > 0) {
+        const qty = Math.max(0, Math.floor(initialAvailableQty));
+        const existing = await (tx as any).supplierProductOffer.findFirst({
+          where: { productId: String(product.id), supplierId: String(supplierId) },
+          select: { id: true },
         });
+        if (!existing) {
+          await (tx as any).supplierProductOffer.create({
+            data: {
+              productId: String(product.id),
+              supplierId: String(supplierId),
+              basePrice: new Prisma.Decimal(String(offerPrice)),
+              availableQty: qty,
+              isActive: true,
+              inStock: qty > 0,
+              currency: "NGN",
+            },
+          });
+        }
       }
 
       const normalizedVariants = normalizeVariantsPayload(req.body);

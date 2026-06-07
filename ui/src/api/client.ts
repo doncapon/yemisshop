@@ -43,4 +43,16 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Fire a DOM event on 401 so the SessionExpiredModal can react without
+// creating a circular import (auth store imports this client).
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err?.response?.status === 401) {
+      window.dispatchEvent(new CustomEvent("auth:session-expired"));
+    }
+    return Promise.reject(err);
+  }
+);
+
 export default api;

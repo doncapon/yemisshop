@@ -19,6 +19,7 @@ import {
     X,
     XCircle,
 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
 import { useAuthStore } from "../../store/auth";
@@ -566,6 +567,7 @@ function hasActiveFilters(
 
 export default function AdminSupplierDocuments() {
     const isSuperAdmin = useAuthStore((s) => s.user?.role === "SUPER_ADMIN");
+    const [searchParams] = useSearchParams();
 
     const [loadingList, setLoadingList] = useState(true);
     const [listError, setListError] = useState<string | null>(null);
@@ -579,7 +581,9 @@ export default function AdminSupplierDocuments() {
         hasPrevPage: false,
     });
 
-    const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
+    const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(
+        () => searchParams.get("supplierId") || null
+    );
     const [detailLoading, setDetailLoading] = useState(false);
     const [detailError, setDetailError] = useState<string | null>(null);
     const [detail, setDetail] = useState<SupplierDetail | null>(null);

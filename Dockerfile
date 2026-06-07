@@ -25,6 +25,7 @@ FROM base AS build
 # UI build args (you can override in Railway)
 ARG VITE_API_URL=/api
 ARG VITE_APP_URL=https://dayspringhouse.com
+ARG VITE_IDLE_TIMEOUT_MINS=20
 
 # ---- Build UI ----
 WORKDIR /app/ui
@@ -32,6 +33,7 @@ COPY --from=ui_deps /app/ui/node_modules ./node_modules
 COPY ui/ ./
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_APP_URL=$VITE_APP_URL
+ENV VITE_IDLE_TIMEOUT_MINS=$VITE_IDLE_TIMEOUT_MINS
 RUN npm run build
 
 # ---- Build API ----

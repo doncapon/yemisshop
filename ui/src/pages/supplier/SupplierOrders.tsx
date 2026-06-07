@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   PackageCheck,
@@ -314,6 +314,7 @@ function normStr(v: any) {
 export default function SupplierOrders() {
   const { orderId } = useParams<{ orderId?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
 
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const rawRole = useAuthStore((s: any) => s.user?.role);
@@ -372,8 +373,13 @@ export default function SupplierOrders() {
     return v || undefined;
   }, [searchParams]);
 
-  const storedSupplierId = useMemo(() => safeGetStoredAdminSupplierId(), []);
-  const adminSupplierId = isAdmin ? urlSupplierId ?? storedSupplierId : undefined;
+  const urlPoId = useMemo(() => {
+    const v = normStr(searchParams.get("poId"));
+    return v || undefined;
+  }, [searchParams]);
+
+  // When admin arrives with poId but no supplierId, resolve it from the API
+  const [resolvingSupplierId, setResolvingSupplierId] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -386,6 +392,35 @@ export default function SupplierOrders() {
       return;
     }
 
+    // If poId is present, resolve the correct supplierId from the API instead
+    // of injecting a potentially stale stored supplierId
+    if (urlPoId) {
+      setResolvingSupplierId(true);
+      api
+        .get("/api/supplier/orders/resolve-supplier", {
+          params: { poId: urlPoId },
+          withCredentials: true,
+        })
+        .then(({ data }) => {
+          const sid = String(data?.supplierId ?? "").trim();
+          if (sid) {
+            safeSetStoredAdminSupplierId(sid);
+            setSearchParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                next.set("supplierId", sid);
+                return next;
+              },
+              { replace: true }
+            );
+          }
+        })
+        .catch(() => {})
+        .finally(() => setResolvingSupplierId(false));
+      return;
+    }
+
+    // No poId — restore from localStorage as before
     if (fromStore) {
       setSearchParams(
         (prev) => {
@@ -397,7 +432,10 @@ export default function SupplierOrders() {
         { replace: true }
       );
     }
-  }, [isAdmin, setSearchParams, searchParams]);
+  }, [isAdmin, urlPoId, setSearchParams, searchParams]);
+
+  const storedSupplierId = useMemo(() => safeGetStoredAdminSupplierId(), []);
+  const adminSupplierId = isAdmin ? urlSupplierId ?? storedSupplierId : undefined;
 
   const withSupplierCtx = (to: string) => {
     if (!isAdmin || !adminSupplierId) return to;
@@ -405,38 +443,21 @@ export default function SupplierOrders() {
     return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
   };
 
-  const [q, setQ] = useState(() => (orderId ?? searchParams.get("q") ?? "").trim());
+  // q is purely local — client-side filter, no URL sync.
+  // Removing the q→URL sync effect eliminates setSearchParams calls on every keypress,
+  // which in turn stops location.key from changing while typing (no more jumpiness).
+  const [q, setQ] = useState(() => (orderId ?? "").trim());
 
+  // Seed q from orderId route param (e.g. /supplier/orders/:orderId)
   useEffect(() => {
     const v = (orderId ?? "").trim();
-    if (!v) return;
+    if (v) setQ(v);
+  }, [orderId]);
 
-    setQ(v);
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.set("q", v);
-        return next;
-      },
-      { replace: true }
-    );
-  }, [orderId, setSearchParams]);
-
-  useEffect(() => {
-    const v = (q ?? "").trim();
-    const cur = (searchParams.get("q") ?? "").trim();
-    if (v === cur) return;
-
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (v) next.set("q", v);
-        else next.delete("q");
-        return next;
-      },
-      { replace: true }
-    );
-  }, [q, searchParams, setSearchParams]);
+  // On any fresh navigation (PUSH/POP) reset q. Safe now because typing no
+  // longer calls setSearchParams, so location.key won't change while typing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setQ(""); }, [location.key]);
 
   const [deliveryOtpToken, setDeliveryOtpToken] = useState<Record<string, string>>({});
   const [deliveryOtpAutoRequested, setDeliveryOtpAutoRequested] = useState<Record<string, boolean>>({});
@@ -502,7 +523,7 @@ export default function SupplierOrders() {
 
   useEffect(() => {
     setPage(1);
-  }, [q, status, riderView, adminSupplierId]);
+  }, [q, status, riderView, adminSupplierId, urlPoId]);
 
   useEffect(() => {
     const timers: number[] = [];
@@ -542,13 +563,13 @@ export default function SupplierOrders() {
     return () => timers.forEach((id) => window.clearTimeout(id));
   }, [cancelOtpToken, cancelOtpMeta]);
 
-  const queryEnabled = hydrated && (!isAdmin || !!adminSupplierId);
+  const queryEnabled = hydrated && (!isAdmin || !!adminSupplierId) && !resolvingSupplierId;
 
   const ordersQ = useQuery({
     queryKey: [
       "supplier",
       "orders",
-      { role, supplierId: adminSupplierId ?? null, riderView, page, pageSize },
+      { role, supplierId: adminSupplierId ?? null, riderView, page, pageSize, poId: urlPoId ?? null },
     ],
     enabled: queryEnabled,
     placeholderData: keepPreviousData,
@@ -561,6 +582,7 @@ export default function SupplierOrders() {
 
         if (isAdmin && adminSupplierId) params.supplierId = adminSupplierId;
         if (isRider) params.view = riderView;
+        if (urlPoId) params.poId = urlPoId;
 
         const { data } = await api.get<SupplierOrdersEnvelope>("/api/supplier/orders", {
           withCredentials: true,
@@ -594,6 +616,13 @@ export default function SupplierOrders() {
     refetchOnMount: "always",
     retry: 1,
   });
+
+  // Auto-expand the order that matches the poId from the URL
+  useEffect(() => {
+    if (!urlPoId || !ordersQ.data?.data?.length) return;
+    const match = ordersQ.data.data.find((o) => o.purchaseOrderId === urlPoId);
+    if (match) setExpanded((prev) => ({ ...prev, [match.id]: true }));
+  }, [urlPoId, ordersQ.data]);
 
   const serverRows = Array.isArray(ordersQ.data?.data) ? ordersQ.data!.data : [];
   const serverTotal = Number(ordersQ.data?.total ?? 0);
@@ -1035,7 +1064,12 @@ export default function SupplierOrders() {
   return (
     <SiteLayout>
       <SupplierLayout>
-        {isAdmin && !adminSupplierId && (
+        {isAdmin && !adminSupplierId && resolvingSupplierId && (
+          <div className="mt-4 sm:mt-6 rounded-2xl border bg-zinc-50 text-zinc-700 border-zinc-200 p-4 text-sm">
+            Loading supplier context…
+          </div>
+        )}
+        {isAdmin && !adminSupplierId && !resolvingSupplierId && !urlPoId && (
           <div className="mt-4 sm:mt-6 rounded-2xl border bg-amber-50 text-amber-900 border-amber-200 p-4 text-sm">
             Select a supplier on the dashboard first (Admin view) to inspect their orders.
             <Link to="/supplier" className="ml-2 underline font-semibold">

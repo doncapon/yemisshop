@@ -12,7 +12,9 @@
       "WebFetch(domain:www.theagilitysystems.com)",
       "WebFetch(domain:test.giglogisticsse.com)",
       "WebFetch(domain:www.blog.shipbubble.com)",
-      "Bash(xargs grep *)"
+      "Bash(xargs grep *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

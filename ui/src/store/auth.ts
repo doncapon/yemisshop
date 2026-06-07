@@ -236,7 +236,9 @@ export const useAuthStore = create<AuthState>()(
             set({
               user: null,
               needsVerification: false,
-              sessionExpired: true,
+              // Only show the session-expired modal if the user was previously logged in.
+              // For guests who were never logged in, a 401 from /me is expected.
+              sessionExpired: previousUser != null,
             });
           } else {
             // Keep previous good session on transient/network issues.

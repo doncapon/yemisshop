@@ -54,7 +54,20 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
   if (!userId) return { ok: false, status: 401, error: "Unauthorized" };
 
   if (isAdmin(role)) {
-    const supplierId = String(req.query?.supplierId ?? "").trim();
+    let supplierId = String(req.query?.supplierId ?? "").trim();
+
+    // Auto-resolve supplierId from poId when only poId is provided
+    if (!supplierId) {
+      const poId = String(req.query?.poId ?? "").trim();
+      if (poId) {
+        const po = await prisma.purchaseOrder.findUnique({
+          where: { id: poId },
+          select: { supplierId: true },
+        });
+        if (po?.supplierId) supplierId = po.supplierId;
+      }
+    }
+
     if (!supplierId) {
       return { ok: false, status: 400, error: "Missing supplierId query param for admin view" };
     }
@@ -633,6 +646,30 @@ async function bestEffortSendDeliveryOtp(opts: {
 }
 
 /**
+ * GET /api/supplier/orders/resolve-supplier?poId=xxx
+ * Admin-only: returns the supplierId that owns a given purchase order.
+ */
+router.get("/resolve-supplier", requireAuth, async (req: any, res) => {
+  try {
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    const poId = String(req.query?.poId ?? "").trim();
+    if (!poId) return res.status(400).json({ error: "Missing poId" });
+
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+      select: { supplierId: true },
+    });
+    if (!po) return res.status(404).json({ error: "Purchase order not found" });
+
+    return res.json({ supplierId: po.supplierId });
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || "Failed to resolve supplier" });
+  }
+});
+
+/**
  * GET /api/supplier/orders
  * ✅ SUPPLIER + ADMIN + SUPPLIER_RIDER
  * - rider sees only assigned POs in delivery mode (SHIPPED / OUT_FOR_DELIVERY)
@@ -678,8 +715,11 @@ router.get("/", requireAuth, async (req: any, res) => {
 
     const includeRiderId = orderItemHasField("riderId");
 
+    const filterPoId = String(req.query?.poId ?? "").trim() || null;
+
     const poWhere: any = {
       supplierId,
+      ...(filterPoId ? { id: filterPoId } : {}),
       ...(riderId
         ? {
             riderId,
