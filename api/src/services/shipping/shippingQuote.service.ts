@@ -910,6 +910,12 @@ export async function quoteShippingForCheckout(
     // configured, or throws, chosen stays null and the existing internal
     // zone-based hierarchy below takes over automatically.
     if (isGiglEnabled() && !allFreeShipping) {
+      console.log("[GIGL] attempting live rate", {
+        originState: pickupAddress.state,
+        destinationState: destination.state,
+        weightKg: chargeableKg,
+        parcelClass,
+      });
       try {
         const giglResult = await getGiglShippingPrice({
           originState: pickupAddress.state ?? "",
@@ -918,6 +924,13 @@ export async function quoteShippingForCheckout(
           destinationLga: destination.lga ?? null,
           weightKg: chargeableKg,
           parcelClass,
+          itemDescription: lineSnapshots[0]?.title ?? null,
+        });
+
+        console.log("[GIGL] live rate success", {
+          totalFee: giglResult.totalFee,
+          baseRate: giglResult.baseRate,
+          carrierRef: giglResult.carrierRef,
         });
 
         chosen = {
@@ -940,45 +953,110 @@ export async function quoteShippingForCheckout(
           },
         };
       } catch (e: any) {
-        console.warn(
-          "[shipping] GIGL quote failed — falling back to internal rates:",
-          e?.message
-        );
+        const axiosDetail = e?.response?.data ?? null;
+        console.error("[GIGL] quote failed — falling back to internal rates", {
+          message: e?.message,
+          status: e?.response?.status,
+          responseData: axiosDetail,
+          url: e?.config?.url,
+        });
         // chosen stays null → internal hierarchy below runs as normal
       }
     }
     // ── end GIGL ────────────────────────────────────────────────────────────
 
-    if (profileMode === SupplierShippingProfileMode.SUPPLIER_OVERRIDDEN) {
-      const supplierZoneRate =
-        destinationZone &&
-        (await findSupplierZoneRate({
-          supplierId,
-          zoneId: destinationZone.id,
-          serviceLevel,
-          parcelClass,
-          chargeableWeightGrams,
-        }));
+    // Internal zone-based hierarchy — only runs when GIGL didn't produce a rate
+    if (!chosen) {
+      if (profileMode === SupplierShippingProfileMode.SUPPLIER_OVERRIDDEN) {
+        const supplierZoneRate =
+          destinationZone &&
+          (await findSupplierZoneRate({
+            supplierId,
+            zoneId: destinationZone.id,
+            serviceLevel,
+            parcelClass,
+            chargeableWeightGrams,
+          }));
 
-      if (supplierZoneRate) {
-        chosen = priceFromSupplierZoneRate({
-          supplierZoneRate,
-          chargeableKg,
-          destinationZoneCode: destinationZone?.code ?? null,
-        });
-      }
+        if (supplierZoneRate) {
+          chosen = priceFromSupplierZoneRate({
+            supplierZoneRate,
+            chargeableKg,
+            destinationZoneCode: destinationZone?.code ?? null,
+          });
+        }
 
-      if (!chosen) {
-        chosen = priceFromSupplierProfileFlat({
-          profile,
-          supplierHandlingFee: supplier.handlingFee,
-          originZoneCode: originZone?.code ?? null,
-          destinationZoneCode: destinationZone?.code ?? null,
-          defaultLeadDays: supplier.defaultLeadDays ?? null,
-        });
-      }
+        if (!chosen) {
+          chosen = priceFromSupplierProfileFlat({
+            profile,
+            supplierHandlingFee: supplier.handlingFee,
+            originZoneCode: originZone?.code ?? null,
+            destinationZoneCode: destinationZone?.code ?? null,
+            defaultLeadDays: supplier.defaultLeadDays ?? null,
+          });
+        }
 
-      if (!chosen) {
+        if (!chosen) {
+          const routeRate = await findPlatformRouteRate({
+            originZoneCode: originZone?.code ?? null,
+            destinationZoneCode: destinationZone?.code ?? null,
+            serviceLevel,
+            parcelClass,
+            chargeableWeightGrams,
+          });
+
+          if (routeRate) {
+            chosen = addOptionalSupplierHandling({
+              base: priceFromRouteRate({
+                routeRate,
+                chargeableKg,
+                originZoneCode: originZone?.code ?? null,
+                destinationZoneCode: destinationZone?.code ?? null,
+              }),
+              supplierHandlingFee: supplier.handlingFee,
+              fulfillmentMode,
+              includeOnlyWhenZero: true,
+            });
+          }
+        }
+
+        if (!chosen) {
+          const defaultZoneRate =
+            destinationZone &&
+            (await findDefaultZoneRate({
+              zoneId: destinationZone.id,
+              serviceLevel,
+              parcelClass,
+              chargeableWeightGrams,
+            }));
+
+          if (defaultZoneRate) {
+            chosen = addOptionalSupplierHandling({
+              base: {
+                shippingFee:
+                  toNum(defaultZoneRate.baseFee) +
+                  (toNum(defaultZoneRate.perKgFee) > 0
+                    ? toNum(defaultZoneRate.perKgFee) * chargeableKg
+                    : 0),
+                remoteSurcharge: toNum(defaultZoneRate.remoteSurcharge),
+                fuelSurcharge: toNum(defaultZoneRate.fuelSurcharge),
+                handlingFee: toNum(defaultZoneRate.handlingFee),
+                etaMinDays: defaultZoneRate.etaMinDays ?? supplier.defaultLeadDays ?? null,
+                etaMaxDays: defaultZoneRate.etaMaxDays ?? supplier.defaultLeadDays ?? null,
+                rateSource: ShippingRateSource.FALLBACK_ZONE,
+                pricingMeta: {
+                  mode: "default_zone_rate_fallback",
+                  zoneRateCardId: defaultZoneRate.id,
+                  destinationZoneCode: destinationZone?.code ?? null,
+                },
+              },
+              supplierHandlingFee: supplier.handlingFee,
+              fulfillmentMode,
+              includeOnlyWhenZero: true,
+            });
+          }
+        }
+      } else {
         const routeRate = await findPlatformRouteRate({
           originZoneCode: originZone?.code ?? null,
           destinationZoneCode: destinationZone?.code ?? null,
@@ -1000,112 +1078,53 @@ export async function quoteShippingForCheckout(
             includeOnlyWhenZero: true,
           });
         }
-      }
 
-      if (!chosen) {
-        const defaultZoneRate =
-          destinationZone &&
-          (await findDefaultZoneRate({
-            zoneId: destinationZone.id,
-            serviceLevel,
-            parcelClass,
-            chargeableWeightGrams,
-          }));
+        if (!chosen) {
+          const defaultZoneRate =
+            destinationZone &&
+            (await findDefaultZoneRate({
+              zoneId: destinationZone.id,
+              serviceLevel,
+              parcelClass,
+              chargeableWeightGrams,
+            }));
 
-        if (defaultZoneRate) {
-          chosen = addOptionalSupplierHandling({
-            base: {
-              shippingFee:
-                toNum(defaultZoneRate.baseFee) +
-                (toNum(defaultZoneRate.perKgFee) > 0
-                  ? toNum(defaultZoneRate.perKgFee) * chargeableKg
-                  : 0),
-              remoteSurcharge: toNum(defaultZoneRate.remoteSurcharge),
-              fuelSurcharge: toNum(defaultZoneRate.fuelSurcharge),
-              handlingFee: toNum(defaultZoneRate.handlingFee),
-              etaMinDays: defaultZoneRate.etaMinDays ?? supplier.defaultLeadDays ?? null,
-              etaMaxDays: defaultZoneRate.etaMaxDays ?? supplier.defaultLeadDays ?? null,
-              rateSource: ShippingRateSource.FALLBACK_ZONE,
-              pricingMeta: {
-                mode: "default_zone_rate_fallback",
-                zoneRateCardId: defaultZoneRate.id,
-                destinationZoneCode: destinationZone?.code ?? null,
+          if (defaultZoneRate) {
+            chosen = addOptionalSupplierHandling({
+              base: {
+                shippingFee:
+                  toNum(defaultZoneRate.baseFee) +
+                  (toNum(defaultZoneRate.perKgFee) > 0
+                    ? toNum(defaultZoneRate.perKgFee) * chargeableKg
+                    : 0),
+                remoteSurcharge: toNum(defaultZoneRate.remoteSurcharge),
+                fuelSurcharge: toNum(defaultZoneRate.fuelSurcharge),
+                handlingFee: toNum(defaultZoneRate.handlingFee),
+                etaMinDays: defaultZoneRate.etaMinDays ?? supplier.defaultLeadDays ?? null,
+                etaMaxDays: defaultZoneRate.etaMaxDays ?? supplier.defaultLeadDays ?? null,
+                rateSource: ShippingRateSource.FALLBACK_ZONE,
+                pricingMeta: {
+                  mode: "default_zone_rate",
+                  zoneRateCardId: defaultZoneRate.id,
+                  destinationZoneCode: destinationZone?.code ?? null,
+                },
               },
-            },
-            supplierHandlingFee: supplier.handlingFee,
-            fulfillmentMode,
-            includeOnlyWhenZero: true,
-          });
+              supplierHandlingFee: supplier.handlingFee,
+              fulfillmentMode,
+              includeOnlyWhenZero: true,
+            });
+          }
         }
-      }
-    } else {
-      const routeRate = await findPlatformRouteRate({
-        originZoneCode: originZone?.code ?? null,
-        destinationZoneCode: destinationZone?.code ?? null,
-        serviceLevel,
-        parcelClass,
-        chargeableWeightGrams,
-      });
 
-      if (routeRate) {
-        chosen = addOptionalSupplierHandling({
-          base: priceFromRouteRate({
-            routeRate,
-            chargeableKg,
+        if (!chosen && profile) {
+          chosen = priceFromSupplierProfileFlat({
+            profile,
+            supplierHandlingFee: supplier.handlingFee,
             originZoneCode: originZone?.code ?? null,
             destinationZoneCode: destinationZone?.code ?? null,
-          }),
-          supplierHandlingFee: supplier.handlingFee,
-          fulfillmentMode,
-          includeOnlyWhenZero: true,
-        });
-      }
-
-      if (!chosen) {
-        const defaultZoneRate =
-          destinationZone &&
-          (await findDefaultZoneRate({
-            zoneId: destinationZone.id,
-            serviceLevel,
-            parcelClass,
-            chargeableWeightGrams,
-          }));
-
-        if (defaultZoneRate) {
-          chosen = addOptionalSupplierHandling({
-            base: {
-              shippingFee:
-                toNum(defaultZoneRate.baseFee) +
-                (toNum(defaultZoneRate.perKgFee) > 0
-                  ? toNum(defaultZoneRate.perKgFee) * chargeableKg
-                  : 0),
-              remoteSurcharge: toNum(defaultZoneRate.remoteSurcharge),
-              fuelSurcharge: toNum(defaultZoneRate.fuelSurcharge),
-              handlingFee: toNum(defaultZoneRate.handlingFee),
-              etaMinDays: defaultZoneRate.etaMinDays ?? supplier.defaultLeadDays ?? null,
-              etaMaxDays: defaultZoneRate.etaMaxDays ?? supplier.defaultLeadDays ?? null,
-              rateSource: ShippingRateSource.FALLBACK_ZONE,
-              pricingMeta: {
-                mode: "default_zone_rate",
-                zoneRateCardId: defaultZoneRate.id,
-                destinationZoneCode: destinationZone?.code ?? null,
-              },
-            },
-            supplierHandlingFee: supplier.handlingFee,
-            fulfillmentMode,
-            includeOnlyWhenZero: true,
+            defaultLeadDays: supplier.defaultLeadDays ?? null,
           });
         }
-      }
-
-      if (!chosen && profile) {
-        chosen = priceFromSupplierProfileFlat({
-          profile,
-          supplierHandlingFee: supplier.handlingFee,
-          originZoneCode: originZone?.code ?? null,
-          destinationZoneCode: destinationZone?.code ?? null,
-          defaultLeadDays: supplier.defaultLeadDays ?? null,
-        });
       }
     }
 

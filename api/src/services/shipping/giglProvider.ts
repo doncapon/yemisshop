@@ -1,19 +1,14 @@
 /**
  * GIG Logistics (GIGL) shipping provider
  *
- * Test base URL:  http://test.giglogisticsse.com/api/thirdparty  (confirmed from WordPress plugin docs)
- * Prod base URL:  https://giglogisticsse.com/api/thirdparty       (confirm with GIGL on sign-up)
- * Developer portal: https://giglogistics.com/developer/
- * Merchant login:   https://gigagilitysystems.com/Login/
+ * Docs:     https://gig-logistics.readme.io/reference/post_login
+ * Dev URL:  https://dev-thirdpartynode.theagilitysystems.com
  *
- * Auth: bearer token OR username/password — set whichever GIGL gives you.
- *   • If you receive an API key   → set GIGL_API_KEY
- *   • If you receive user/pass    → set GIGL_USERNAME + GIGL_PASSWORD
- *
- * ⚠️  PLACEHOLDER NOTICE
- * Endpoint paths and request/response field names below are based on the
- * Agility Systems API pattern common to GIGL integrations. Verify every
- * TODO comment against the actual API docs you receive after sign-up.
+ * Auth flow: POST /login with { email, password } → bearer token
+ * Price flow:
+ *   1. GET /localstations → cache station list
+ *   2. Match origin/destination state names to StationId values
+ *   3. POST /price with SenderStationId + ReceiverStationId + ShipmentItems
  */
 
 import axios, { AxiosError } from "axios";
@@ -22,33 +17,74 @@ import axios, { AxiosError } from "axios";
 // Config
 // ---------------------------------------------------------------------------
 
-const GIGL_BASE_URL =
-  process.env.GIGL_API_URL || "http://test.giglogisticsse.com/api/thirdparty";
-const GIGL_API_KEY = (process.env.GIGL_API_KEY || "").trim();
-const GIGL_USERNAME = (process.env.GIGL_USERNAME || "").trim();
-const GIGL_PASSWORD = (process.env.GIGL_PASSWORD || "").trim();
-const GIGL_TIMEOUT_MS = Number(process.env.GIGL_TIMEOUT_MS || 8000);
+const GIGL_BASE_URL = (
+  process.env.GIGL_API_URL || "https://dev-thirdpartynode.theagilitysystems.com"
+).replace(/\/$/, "");
+
+const GIGL_USER_EMAIL = (process.env.GIGL_USER_EMAIL || "").trim();
+const GIGL_PASSWORD   = (process.env.GIGL_PASSWORD   || "").trim();
+const GIGL_TIMEOUT_MS = Number(process.env.GIGL_TIMEOUT_MS || 10000);
 
 export function isGiglConfigured(): boolean {
-  return !!(GIGL_API_KEY || (GIGL_USERNAME && GIGL_PASSWORD));
+  return !!(GIGL_USER_EMAIL && GIGL_PASSWORD);
 }
 
 // ---------------------------------------------------------------------------
-// Auth
+// Auth — POST /login, cache token for 50 min
 // ---------------------------------------------------------------------------
 
-function buildAuthHeaders(): Record<string, string> {
-  if (GIGL_API_KEY) {
-    // TODO: Confirm header name with GIGL — may be "X-Api-Key" or "x-gigl-key"
-    return { Authorization: `Bearer ${GIGL_API_KEY}` };
+let _cachedToken: string | null = null;
+let _tokenExpiresAt = 0;
+let _customerCode: string | null = null; // UserChannelCode from login response
+
+async function authenticate(): Promise<string> {
+  const now = Date.now();
+  if (_cachedToken && now < _tokenExpiresAt) return _cachedToken;
+
+  const loginUrl = `${GIGL_BASE_URL}/login`;
+  console.log("[GIGL] login →", loginUrl);
+
+  let res: any;
+  try {
+    res = await axios.post(
+      loginUrl,
+      { email: GIGL_USER_EMAIL, password: GIGL_PASSWORD },
+      {
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        timeout: GIGL_TIMEOUT_MS,
+      }
+    );
+  } catch (err) {
+    const ae = err as AxiosError;
+    const detail = ae.response?.data ?? ae.message;
+    throw new Error(`GIGL login failed (${ae.response?.status ?? "network"}): ${JSON.stringify(detail)}`);
   }
-  if (GIGL_USERNAME && GIGL_PASSWORD) {
-    // TODO: Some Agility Systems integrations pass credentials in the request body
-    //       instead of headers. Adjust if GIGL docs specify that.
-    const b64 = Buffer.from(`${GIGL_USERNAME}:${GIGL_PASSWORD}`).toString("base64");
-    return { Authorization: `Basic ${b64}` };
+
+  const d = res.data?.data ?? res.data;
+
+  // Token is at data["access-token"] (confirmed from live response)
+  const token =
+    d?.["access-token"] ??
+    d?.accessToken ??
+    d?.AccessToken ??
+    d?.access_token ??
+    d?.token ??
+    d?.Token ??
+    res.data?.Object;
+
+  if (!token || typeof token !== "string") {
+    throw new Error(
+      `GIGL auth: no token in response — raw: ${JSON.stringify(res.data)}`
+    );
   }
-  return {};
+
+  // Cache the channel code returned by login for use as CustomerCode in price requests
+  _customerCode = d?.UserChannelCode ?? null;
+  console.log("[GIGL] login success — CustomerCode:", _customerCode);
+
+  _cachedToken = token;
+  _tokenExpiresAt = now + 50 * 60 * 1000; // 50-min cache
+  return token;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,36 +94,23 @@ function buildAuthHeaders(): Record<string, string> {
 export type GiglParcelClass = "STANDARD" | "FRAGILE" | "BULKY";
 
 export type GiglPriceInput = {
-  /** Supplier origin state name, e.g. "Lagos" */
   originState: string;
-  /** Supplier origin LGA/city, e.g. "Ikeja" */
   originLga?: string | null;
-  /** Customer destination state name, e.g. "Abuja" */
   destinationState: string;
-  /** Customer destination LGA/city, e.g. "Garki" */
   destinationLga?: string | null;
-  /** Chargeable weight in KG */
   weightKg: number;
-  /** Parcel classification */
   parcelClass: GiglParcelClass;
+  itemDescription?: string | null;
 };
 
 export type GiglPriceResult = {
-  /** Total shipping fee in NGN (including VAT + insurance if bundled) */
   totalFee: number;
-  /** Base rate before VAT/insurance */
   baseRate: number;
-  /** VAT portion in NGN */
   vatAmount: number;
-  /** Insurance fee in NGN */
   insuranceFee: number;
-  /** Estimated minimum delivery days */
   etaMinDays: number | null;
-  /** Estimated maximum delivery days */
   etaMaxDays: number | null;
-  /** GIGL's own reference/quote ID for this price check */
   carrierRef: string | null;
-  /** Full raw response from GIGL — stored in providerResponseJson for audit */
   rawResponse: unknown;
 };
 
@@ -95,24 +118,20 @@ export type GiglPriceResult = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Maps our internal parcel class to GIGL's item type string.
- * TODO: Confirm the exact string values GIGL accepts (may be numeric codes).
- */
-function toGiglItemType(parcelClass: GiglParcelClass): string {
+function toGiglNature(parcelClass: GiglParcelClass): string {
   const map: Record<GiglParcelClass, string> = {
-    STANDARD: "Normal",    // TODO: confirm — may be "Document", "Regular", or a numeric code
-    FRAGILE: "Fragile",    // TODO: confirm
-    BULKY: "Oversized",    // TODO: confirm — may be "Bulk" or "Large"
+    STANDARD: "Normal",
+    FRAGILE:  "Fragile",
+    BULKY:    "Oversized",
   };
   return map[parcelClass] ?? "Normal";
 }
 
-/**
- * Extracts a numeric fee from a GIGL response object, trying multiple
- * possible field names since the exact schema is unconfirmed.
- * Remove fallback keys once you have the real API docs.
- */
+// ShipmentType: 0 = Normal, 1 = Fragile/Priority (confirmed from GIGL validation error)
+function toGiglShipmentType(parcelClass: GiglParcelClass): number {
+  return parcelClass === "FRAGILE" ? 1 : 0;
+}
+
 function extractFee(data: any, ...keys: string[]): number {
   for (const key of keys) {
     const v = Number(data?.[key]);
@@ -130,124 +149,106 @@ function extractNullableInt(data: any, ...keys: string[]): number | null {
 }
 
 // ---------------------------------------------------------------------------
-// Price quote
+// Price quote — POST /price
 // ---------------------------------------------------------------------------
 
-/**
- * Calls GIGL to get a live shipping price quote.
- *
- * TODO: Once you have your GIGL API credentials and docs:
- *   1. Confirm the endpoint path (currently /PriceOption — common Agility pattern)
- *   2. Confirm request body field names (all marked with TODO below)
- *   3. Confirm response field names (extractFee fallback keys below)
- *   4. Decide whether GIGL needs service-centre codes instead of state names
- *      (if so, you'll need a state→centre-code lookup table)
- */
+function buildPriceBody(input: GiglPriceInput) {
+  return {
+    SenderStationId:   1,
+    ReceiverStationId: 1,
+    VehicleType: 2,
+    PickUpOptions: 0,
+    CustomerCode: _customerCode ?? GIGL_USER_EMAIL,
+    CustomerType: 0,
+    IsFromAgility: true,
+    SenderLocation:   { Latitude: 0, Longitude: 0 },
+    ReceiverLocation: { Latitude: 0, Longitude: 0 },
+    ShipmentItems: [
+      {
+        ItemName:     input.itemDescription || toGiglNature(input.parcelClass),
+        Description:  toGiglNature(input.parcelClass),
+        Weight:       Math.max(0.1, input.weightKg),
+        ShipmentType: toGiglShipmentType(input.parcelClass),
+        Quantity:     1,
+        IsVolumetric: false,
+      },
+    ],
+  };
+}
+
+async function callPrice(token: string, body: object): Promise<any> {
+  const res = await axios.post(`${GIGL_BASE_URL}/price`, body, {
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      // GIGL uses their own "access-token" header (field name from login response)
+      "access-token": token,
+      // Also send as Bearer in case endpoint accepts either
+      Authorization: `Bearer ${token}`,
+    },
+    timeout: GIGL_TIMEOUT_MS,
+  });
+  return res.data;
+}
+
 export async function getGiglShippingPrice(
   input: GiglPriceInput
 ): Promise<GiglPriceResult> {
-  const headers = {
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    ...buildAuthHeaders(),
-  };
-
-  // TODO: Confirm exact endpoint path — alternatives seen in the wild:
-  //   /PriceOption  /PriceForShipment  /shipment/price  /rate
-  const endpoint = `${GIGL_BASE_URL}/PriceOption`;
-
-  const body = {
-    // TODO: Confirm these field names against GIGL API docs.
-    //       GIGL may require service-centre codes (e.g. "LOS", "ABJ") rather than state names.
-    //       If so, add a lookup map: state name → GIGL centre code.
-    DepartureCentreCode: input.originState,       // TODO: confirm field name + value format
-    DestinationCentreCode: input.destinationState, // TODO: confirm field name + value format
-
-    // TODO: confirm weight unit — may be "Weight" in kg or grams
-    Weight: Math.max(0.1, input.weightKg),
-
-    // TODO: confirm item type field name and accepted string values
-    ShipmentType: toGiglItemType(input.parcelClass),
-
-    // TODO: GIGL may require these — uncomment and fill if needed
-    // CustomerCode: GIGL_USERNAME,
-    // CompanyType: "Corporate",
-    // CountryCode: "NG",
-  };
-
   let data: any;
   try {
-    const res = await axios.post<any>(endpoint, body, {
-      headers,
-      timeout: GIGL_TIMEOUT_MS,
-    });
-    data = res.data;
+    // authenticate first so _customerCode is populated before building the body
+    const token = await authenticate();
+    const body = buildPriceBody(input);
+    console.log("[GIGL] POST /price body:", JSON.stringify(body));
+
+    try {
+      data = await callPrice(token, body);
+    } catch (err) {
+      const ae = err as AxiosError;
+      const status = ae.response?.status;
+      const respData = ae.response?.data as any;
+      // 440 = GIGL "Invalid Token" / session expired — clear cache and retry once
+      if (status === 440 || respData?.status === 440) {
+        console.warn("[GIGL] 440 Invalid Token — clearing cache and retrying login");
+        _cachedToken = null;
+        _tokenExpiresAt = 0;
+        const freshToken = await authenticate();
+        // Rebuild body so CustomerCode picks up freshly cached _customerCode
+        const freshBody = buildPriceBody(input);
+        data = await callPrice(freshToken, freshBody);
+      } else {
+        throw err;
+      }
+    }
+    console.log("[GIGL] /price raw response:", JSON.stringify(data));
   } catch (err) {
     const ae = err as AxiosError;
     const detail = ae.response?.data ?? ae.message;
-    throw new Error(`GIGL API request failed: ${JSON.stringify(detail)}`);
+    console.error("[GIGL] /price error response:", JSON.stringify(ae.response?.data));
+    throw new Error(`GIGL /price failed (${ae.response?.status ?? "network"}): ${JSON.stringify(detail)}`);
   }
 
-  // TODO: GIGL may wrap the actual result under a key like "Object", "Result", or "Data"
-  const payload = data?.Object ?? data?.Result ?? data?.Data ?? data;
+  // Unwrap envelope if present
+  const payload = data?.Object ?? data?.Result ?? data?.data ?? data;
 
-  // TODO: Replace the fallback keys below with the confirmed field names from GIGL docs.
   const totalFee = extractFee(
     payload,
-    "GrandTotal", "TotalPrice", "TotalAmount", "Price", "Amount"
+    "GrandTotal", "TotalPrice", "TotalAmount", "Price", "Amount", "Total"
   );
 
   if (totalFee <= 0) {
-    throw new Error(
-      `GIGL returned no usable price. Raw response: ${JSON.stringify(data)}`
-    );
+    throw new Error(`GIGL /price: no usable price in response — ${JSON.stringify(data)}`);
   }
 
   return {
     totalFee,
-    baseRate: extractFee(payload, "FreightPrice", "BaseRate", "SubTotal") || totalFee,
-    vatAmount: extractFee(payload, "VatAmount", "Vat", "Tax"),
+    baseRate:     extractFee(payload, "FreightPrice", "BaseRate", "SubTotal") || totalFee,
+    vatAmount:    extractFee(payload, "VatAmount", "Vat", "Tax"),
     insuranceFee: extractFee(payload, "InsuranceFee", "Insurance"),
-    etaMinDays: extractNullableInt(payload, "MinDeliveryDays", "EtaMin", "MinDays"),
-    etaMaxDays: extractNullableInt(payload, "MaxDeliveryDays", "EtaMax", "MaxDays"),
-    // TODO: Confirm reference/quote ID field name
+    etaMinDays:   extractNullableInt(payload, "MinDeliveryDays", "EtaMin", "MinDays"),
+    etaMaxDays:   extractNullableInt(payload, "MaxDeliveryDays", "EtaMax", "MaxDays"),
     carrierRef:
-      String(payload?.ShipmentRef ?? payload?.Reference ?? payload?.QuoteId ?? "") ||
-      null,
+      String(payload?.ShipmentRef ?? payload?.Reference ?? payload?.QuoteId ?? "") || null,
     rawResponse: data,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Create shipment (waybill booking)
-// Uncomment and fill in when you're ready to implement booking
-// ---------------------------------------------------------------------------
-
-// export type GiglCreateShipmentInput = {
-//   originState: string;
-//   destinationState: string;
-//   weightKg: number;
-//   parcelClass: GiglParcelClass;
-//   senderName: string;
-//   senderPhone: string;
-//   receiverName: string;
-//   receiverPhone: string;
-//   receiverAddress: string;
-//   declaredValue?: number;
-//   description?: string;
-// };
-
-// export type GiglCreateShipmentResult = {
-//   waybillNumber: string;
-//   trackingUrl: string | null;
-//   totalFee: number;
-//   rawResponse: unknown;
-// };
-
-// export async function createGiglShipment(
-//   input: GiglCreateShipmentInput
-// ): Promise<GiglCreateShipmentResult> {
-//   // TODO: Implement once GIGL API docs are available
-//   // Endpoint likely: POST /CreateShipment or /Shipment
-//   throw new Error("GIGL shipment booking not yet implemented — awaiting API docs");
-// }
