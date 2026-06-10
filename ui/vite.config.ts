@@ -42,14 +42,6 @@ export default defineConfig({
           if (!id.includes("node_modules")) return;
           if (id.includes("framer-motion")) return "vendor-motion";
           if (id.includes("lucide-react")) return "vendor-icons";
-          if (id.includes("@tanstack")) return "vendor-query";
-          if (
-            id.includes("react-router") ||
-            id.includes("react-dom") ||
-            id.includes("/react/")
-          ) {
-            return "vendor-react";
-          }
           return "vendor";
         },
       },
