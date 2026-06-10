@@ -667,6 +667,8 @@ export default function ProductDetail() {
     sourceIds?: string[];
   } | undefined;
 
+  const catalogVariantId = ((location.state as any)?.catalogVariantId as string | null) ?? null;
+
   const goBack = React.useCallback(() => {
     const state = (location.state as any) || {};
     if (state.from) navigate(state.from);
@@ -1211,6 +1213,16 @@ export default function ProductDetail() {
       return sellableVariantOptionMaps[0].map;
     }
 
+    // When arriving from the catalog, pre-select the exact variant that drove the
+    // displayed price — even if that variant is currently out of stock — so the
+    // price shown in the catalog matches what the customer sees first on this page.
+    if (catalogVariantId) {
+      const v = allVariants.find((x) => String(x.id) === String(catalogVariantId));
+      if (v) {
+        return buildEffectiveVariantSelectionMap({ variant: v, baseDefaults });
+      }
+    }
+
     if (hasExplicitBaseDefaults) {
       const out: Record<string, string> = {};
       for (const ax of visibleAxes) {
@@ -1233,7 +1245,7 @@ export default function ProductDetail() {
     }
 
     return {};
-  }, [editCartLine, sellableVariantOptionMaps, visibleAxes, hasExplicitBaseDefaults, hasBaseOffer, baseDefaults, cheapestOverallOffer, allVariants]);
+  }, [editCartLine, sellableVariantOptionMaps, visibleAxes, hasExplicitBaseDefaults, hasBaseOffer, baseDefaults, cheapestOverallOffer, allVariants, catalogVariantId]);
 
   React.useEffect(() => {
     if (!product || !visibleAxes.length) {
