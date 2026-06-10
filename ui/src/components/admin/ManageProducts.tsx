@@ -159,7 +159,8 @@ type FilterPreset =
   | "published-with-availability"
   | "published"
   | "pending"
-  | "rejected";
+  | "rejected"
+  | "out-of-stock";
 
 type VariantRow = {
   id: string;
@@ -3066,6 +3067,8 @@ export function ManageProducts({
           return p.status === "PENDING";
         case "rejected":
           return p.status === "REJECTED";
+        case "out-of-stock":
+          return !isAvailableVariantAware(p.id, p);
         case "all":
         default:
           return true;
@@ -3299,6 +3302,7 @@ export function ManageProducts({
     { key: "with-variants", label: "With variants" },
     { key: "simple", label: "Simple" },
     { key: "rejected", label: "Rejected" },
+    { key: "out-of-stock", label: "Out of stock" },
   ];
 
   const displayRetailForRow = (p: any) => {

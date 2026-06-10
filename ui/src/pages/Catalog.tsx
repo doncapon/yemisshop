@@ -99,6 +99,7 @@ type ProductView = Product & {
   _displayPrice: number;
   _availableNow: boolean;
   _sellable: boolean;
+  _catalogVariantId: string | null;
   _primaryImg?: string;
   _secondaryImg?: string;
   _brandName: string;
@@ -591,24 +592,23 @@ function getDisplayRetailPrice(
 
   let sourceSupplierPrice: number | null = null;
 
-  if (offersFromPrice != null) {
-    sourceSupplierPrice = offersFromPrice;
-  } else if (hasOptions) {
-    const baseSupplierPrice = firstActiveBaseOfferSupplierPrice(p);
-    const variantSupplierPrice = firstActiveVariantOfferSupplierPrice(p);
+  // Base offer always takes priority — show the standard product price first.
+  // Variant or offersFrom prices are only used when no active base offer exists.
+  const baseSupplierPrice = firstActiveBaseOfferSupplierPrice(p);
 
-    if (baseSupplierPrice != null && variantSupplierPrice != null) {
-      sourceSupplierPrice = Math.min(baseSupplierPrice, variantSupplierPrice);
-    } else if (baseSupplierPrice != null) {
-      sourceSupplierPrice = baseSupplierPrice;
-    } else if (variantSupplierPrice != null) {
-      sourceSupplierPrice = variantSupplierPrice;
-    } else if (displayBaseSupplierPrice != null) {
-      sourceSupplierPrice = displayBaseSupplierPrice;
-    }
+  if (baseSupplierPrice != null) {
+    sourceSupplierPrice = baseSupplierPrice;
+  } else if (hasOptions) {
+    const variantSupplierPrice = firstActiveVariantOfferSupplierPrice(p);
+    sourceSupplierPrice =
+      variantSupplierPrice ??
+      offersFromPrice ??
+      displayBaseSupplierPrice ??
+      null;
   } else {
     sourceSupplierPrice =
       firstActiveAnyOfferSupplierPrice(p) ??
+      offersFromPrice ??
       displayBaseSupplierPrice ??
       null;
   }
@@ -636,6 +636,87 @@ function getDisplayRetailPrice(
         : 0;
 
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function getOfferRawPrice(o?: SupplierOfferLite | null): number | null {
+  if (!o) return null;
+  const n = Number(o.unitPrice ?? o.basePrice ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+/**
+ * Returns the variantId to pre-select when navigating from catalog to detail, or null
+ * when the catalog showed the base product price (so detail lands on default/base).
+ * Must mirror the priority order in getDisplayRetailPrice.
+ */
+function pickCatalogVariantId(p: Product): string | null {
+  const variants = Array.isArray(p.variants) ? p.variants : [];
+  if (!variants.length) return null;
+
+  // Base offer available → catalog showed base price → no variant pre-selection
+  if (firstActiveBaseOfferSupplierPrice(p) !== null) return null;
+
+  // No base offer — catalog showed a variant price. Find which one.
+
+  // A: Active in-stock variant (mirrors firstActiveVariantOfferSupplierPrice priority)
+  let bestId: string | null = null;
+  let bestPrice: number | null = null;
+
+  for (const v of variants) {
+    for (const o of (v.offers ?? []) as SupplierOfferLite[]) {
+      const price = getOfferSupplierPrice(o);
+      if (price !== null && (bestPrice === null || price < bestPrice)) {
+        bestId = String(v.id);
+        bestPrice = price;
+      }
+    }
+  }
+  if (bestId !== null) return bestId;
+
+  // B: offersFrom path — match by price when individual offer arrays are sparse
+  const offersFromPrice =
+    Number.isFinite(Number(p.offersFrom)) && Number(p.offersFrom) > 0
+      ? Number(p.offersFrom)
+      : null;
+
+  if (offersFromPrice !== null) {
+    for (const v of variants) {
+      for (const o of (v.offers ?? []) as SupplierOfferLite[]) {
+        const price = getOfferRawPrice(o);
+        if (price !== null && Math.round(price) === Math.round(offersFromPrice)) {
+          return String(v.id);
+        }
+      }
+    }
+    let closestId: string | null = null;
+    let closestDiff = Infinity;
+    for (const v of variants) {
+      for (const o of (v.offers ?? []) as SupplierOfferLite[]) {
+        const price = getOfferRawPrice(o);
+        if (price !== null) {
+          const diff = Math.abs(price - offersFromPrice);
+          if (diff < closestDiff) { closestDiff = diff; closestId = String(v.id); }
+        }
+      }
+    }
+    if (closestId) return closestId;
+  }
+
+  // C: Any offer regardless of stock/active status (out-of-stock variants still pre-selected)
+  for (const v of variants) {
+    for (const o of (v.offers ?? []) as SupplierOfferLite[]) {
+      const price = getOfferRawPrice(o);
+      if (price !== null && (bestPrice === null || price < bestPrice)) {
+        bestId = String(v.id);
+        bestPrice = price;
+      }
+    }
+  }
+  if (bestId !== null) return bestId;
+
+  // D: No offer data at all — pre-select the first variant
+  return String(variants[0].id);
 }
 
 function priceForFiltering(
@@ -1288,7 +1369,7 @@ const ProductCard = memo(
     return (
       <Link
         to={`/products/${p.id}`}
-        state={{ from: location.pathname }}
+        state={{ from: location.pathname, catalogVariantId: p._catalogVariantId ?? null }}
         data-testid="product-card"
         onClick={(e) => {
           if (isFromCardAction(e.target)) {
@@ -1330,9 +1411,13 @@ const ProductCard = memo(
             />
           )}
 
-          {inStock && (
+          {inStock ? (
             <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-purple-500 px-2.5 py-1 text-[10px] font-semibold text-white shadow-sm md:text-[11px]">
               In stock
+            </span>
+          ) : (
+            <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full border border-rose-200 bg-rose-100 px-2.5 py-1 text-[10px] font-semibold text-rose-700 shadow-sm md:text-[11px]">
+              Out of stock
             </span>
           )}
 
@@ -1439,7 +1524,11 @@ const ProductCard = memo(
 
             ) : (
               <div data-stop-card-nav="true">
-                {baseQtyInCart > 0 ? (
+                {baseQtyInCart > 0 && !canAdjustBaseQty ? (
+                  <p className="text-[10px] text-amber-600 md:text-[11px]">
+                    No longer available. Remove it from your cart.
+                  </p>
+                ) : baseQtyInCart > 0 ? (
                   <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
                     <button
                       type="button"
@@ -1463,25 +1552,15 @@ const ProductCard = memo(
                       type="button"
                       data-stop-card-nav="true"
                       aria-label="Increase quantity"
-                      disabled={!canAdjustBaseQty}
-                      className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-sm font-semibold ${canAdjustBaseQty
-                        ? "bg-white/15 hover:bg-white/25"
-                        : "cursor-not-allowed bg-white/10 text-white/40"
-                        }`}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-sm font-semibold hover:bg-white/25"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        if (!canAdjustBaseQty) return;
                         void onSetCartQty(p, baseQtyInCart + 1);
                       }}
                     >
                       +
                     </button>
-                    {baseQtyInCart > 0 && !canAdjustBaseQty && (
-                      <div className="mt-2 text-[10px] text-amber-600 md:text-[11px]">
-                        This item is no longer available. You can remove it, but not increase quantity.
-                      </div>
-                    )}
                   </div>
                 ) : (
                   <button
@@ -2155,6 +2234,7 @@ export default function Catalog() {
         _displayPrice: displayPrice,
         _availableNow: available,
         _sellable: sellable,
+        _catalogVariantId: pickCatalogVariantId(p),
         _primaryImg: imageCandidates[0],
         _secondaryImg: imageCandidates[1],
         _brandName: brandName,
