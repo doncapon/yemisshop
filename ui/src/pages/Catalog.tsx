@@ -1475,7 +1475,7 @@ const ProductCard = memo(
             {hasVariants ? (
               <div data-stop-card-nav="true">
                 {baseQtyInCart > 0 ? (
-                  <div className="flex w-full items-center justify-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                  <div className="flex w-full items-center justify-center gap-1.5 rounded-full bg-black/75 px-2 py-1 text-white shadow-sm sm:gap-2 sm:py-1.5">
                     <button
                       type="button"
                       data-stop-card-nav="true"
@@ -1510,7 +1510,7 @@ const ProductCard = memo(
                   <button
                     type="button"
                     data-stop-card-nav="true"
-                    className="flex w-full items-center justify-center rounded-full bg-zinc-700 px-2.5 py-1.5 text-[10px] font-medium text-white shadow-sm transition hover:bg-black/90 sm:text-[11px] md:py-2 md:text-xs"
+                    className="flex w-full items-center justify-center whitespace-nowrap rounded-full bg-zinc-700 px-2 py-1 text-[8px] font-medium text-white shadow-sm transition hover:bg-black/90 min-[400px]:text-[9px] sm:text-[10px] md:text-xs md:py-1.5"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1529,7 +1529,7 @@ const ProductCard = memo(
                     No longer available. Remove it from your cart.
                   </p>
                 ) : baseQtyInCart > 0 ? (
-                  <div className="flex w-full items-center justify-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                  <div className="flex w-full items-center justify-center gap-1.5 rounded-full bg-black/75 px-2 py-1 text-white shadow-sm sm:gap-2 sm:py-1.5">
                     <button
                       type="button"
                       data-stop-card-nav="true"
@@ -1567,7 +1567,7 @@ const ProductCard = memo(
                     type="button"
                     data-stop-card-nav="true"
                     disabled={!inStock}
-                    className={`flex w-full items-center justify-center rounded-full px-2.5 py-1.5 text-[10px] font-medium shadow-sm transition sm:text-[11px] md:py-2 md:text-xs ${inStock
+                    className={`flex w-full items-center justify-center whitespace-nowrap rounded-full px-2 py-1 text-[8px] font-medium shadow-sm transition min-[400px]:text-[9px] sm:text-[10px] md:py-1.5 md:text-xs ${inStock
                       ? "bg-zinc-700 text-white hover:bg-black/90"
                       : "cursor-not-allowed bg-zinc-200 text-zinc-500"
                       }`}
