@@ -1386,7 +1386,7 @@ const ProductCard = memo(
         onDragStart={(e) => e.preventDefault()}
         className="group flex flex-col cursor-pointer overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:border-zinc-300 active:scale-[0.99]"
       >
-        <div className="relative h-28 w-full overflow-hidden bg-zinc-100 sm:h-36 md:h-40">
+        <div className="relative h-32 w-full overflow-hidden bg-zinc-100 sm:h-40 md:h-44">
           <SafeImg
             src={p._primaryImg}
             alt={p.title}
@@ -1451,7 +1451,7 @@ const ProductCard = memo(
           )}
         </div>
 
-        <div className="flex flex-col flex-1 p-2.5 md:p-4">
+        <div className="flex flex-col flex-1 p-2.5 sm:p-3 md:p-4">
           <TruncatedTitle
             text={p.title}
             className="line-clamp-1 text-[12px] font-semibold text-zinc-900 md:text-sm"
@@ -1475,7 +1475,7 @@ const ProductCard = memo(
             {hasVariants ? (
               <div data-stop-card-nav="true">
                 {baseQtyInCart > 0 ? (
-                  <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                  <div className="flex w-full items-center justify-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
                     <button
                       type="button"
                       data-stop-card-nav="true"
@@ -1510,7 +1510,7 @@ const ProductCard = memo(
                   <button
                     type="button"
                     data-stop-card-nav="true"
-                    className="inline-flex items-center rounded-full bg-zinc-700 px-2.5 py-1 text-[10px] font-medium text-white shadow-sm transition hover:bg-black/90 md:px-3 md:py-1.5 md:text-xs"
+                    className="flex w-full items-center justify-center rounded-full bg-zinc-700 px-2.5 py-1.5 text-[10px] font-medium text-white shadow-sm transition hover:bg-black/90 sm:text-[11px] md:py-2 md:text-xs"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1529,7 +1529,7 @@ const ProductCard = memo(
                     No longer available. Remove it from your cart.
                   </p>
                 ) : baseQtyInCart > 0 ? (
-                  <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                  <div className="flex w-full items-center justify-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
                     <button
                       type="button"
                       data-stop-card-nav="true"
@@ -1567,7 +1567,7 @@ const ProductCard = memo(
                     type="button"
                     data-stop-card-nav="true"
                     disabled={!inStock}
-                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium shadow-sm transition md:px-3 md:py-1.5 md:text-xs ${inStock
+                    className={`flex w-full items-center justify-center rounded-full px-2.5 py-1.5 text-[10px] font-medium shadow-sm transition sm:text-[11px] md:py-2 md:text-xs ${inStock
                       ? "bg-zinc-700 text-white hover:bg-black/90"
                       : "cursor-not-allowed bg-zinc-200 text-zinc-500"
                       }`}

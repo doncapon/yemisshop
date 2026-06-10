@@ -1973,6 +1973,7 @@ export default function ProductDetail() {
 
   const [mainIndex, setMainIndex] = React.useState(0);
   const [brokenByIndex, setBrokenByIndex] = React.useState<Record<number, boolean>>({});
+  const carouselPausedRef = React.useRef(false);
 
   React.useEffect(() => {
     setMainIndex(0);
@@ -1980,6 +1981,16 @@ export default function ProductDetail() {
     setIsZooming(false);
     setZoomPos({ x: 50, y: 50 });
   }, [product?.id, matchedVariant?.id]);
+
+  React.useEffect(() => {
+    if (images.length <= 1) return;
+    const id = setInterval(() => {
+      if (!carouselPausedRef.current) {
+        setMainIndex((i) => (i + 1) % images.length);
+      }
+    }, 4000);
+    return () => clearInterval(id);
+  }, [images.length]);
 
   function NoImageBox({ className = "" }: { className?: string }) {
     return (
@@ -2655,8 +2666,8 @@ export default function ProductDetail() {
                 <div className="relative w-full">
                   <div
                     className={`relative h-[250px] sm:h-[300px] md:h-[340px] lg:h-[380px] aspect-square w-full rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
-                    onMouseEnter={() => showMainImg && setIsZooming(true)}
-                    onMouseLeave={() => setIsZooming(false)}
+                    onMouseEnter={() => { carouselPausedRef.current = true; showMainImg && setIsZooming(true); }}
+                    onMouseLeave={() => { carouselPausedRef.current = false; setIsZooming(false); }}
                     onMouseMove={handleZoomMove}
                     onTouchStart={() => showMainImg && setIsZooming(true)}
                     onTouchMove={handleTouchZoomMove}
