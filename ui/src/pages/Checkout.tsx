@@ -1412,7 +1412,7 @@ const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLI
       <input
         ref={ref}
         {...props}
-        className={`border border-border rounded-xl px-3 py-2.5 bg-white text-ink placeholder:text-ink-soft placeholder:text-[0.6em] focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
+        className={`border border-border rounded-xl px-3 py-2.5 bg-white text-ink placeholder:text-ink-soft placeholder:text-[0.875em] focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
       />
     );
   }
@@ -1424,7 +1424,7 @@ function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (
     <textarea
       {...props}
-      className={`border border-border rounded-xl px-3 py-2.5 bg-white text-ink placeholder:text-ink-soft placeholder:text-[0.6em] focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
+      className={`border border-border rounded-xl px-3 py-2.5 bg-white text-ink placeholder:text-ink-soft placeholder:text-[0.875em] focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""}`}
     />
   );
 }
@@ -3067,7 +3067,7 @@ export default function Checkout() {
                 ) : showHomeForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input value={homeAddr.houseNumber} onChange={onChangeHome("houseNumber")} placeholder="House No. *" />
+                      <Input value={homeAddr.houseNumber} onChange={onChangeHome("houseNumber")} placeholder="House / Plot No. *" />
                     </div>
 
                     <Input value={homeAddr.streetName} onChange={onChangeHome("streetName")} placeholder="Street name *" />
@@ -3152,7 +3152,7 @@ export default function Checkout() {
                         <Input
                           value={homeAddr.lga || ""}
                           onChange={onChangeHome("lga")}
-                          placeholder="District / County / LGA"
+                          placeholder="District / County / LGA (optional)"
                         />
                       )}
 
@@ -3376,7 +3376,7 @@ export default function Checkout() {
                             ref={firstShippingFieldRef}
                             value={shippingForm.label}
                             onChange={onChangeShippingForm("label")}
-                            placeholder="Address label * e.g. Home, Office"
+                            placeholder="Address label (e.g. Home, Office) *"
                           />
                           <Input value={shippingForm.recipientName} onChange={onChangeShippingForm("recipientName")} placeholder="Recipient full name *" />
                         </div>
@@ -3458,7 +3458,7 @@ export default function Checkout() {
                             <Input
                               value={shippingForm.lga}
                               onChange={onChangeShippingForm("lga")}
-                              placeholder="District / County / LGA"
+                              placeholder="District / County / LGA (optional)"
                             />
                           )}
                         </div>
@@ -3493,7 +3493,7 @@ export default function Checkout() {
                             <Input
                               value={shippingForm.lga}
                               onChange={onChangeShippingForm("lga")}
-                              placeholder="LGA not listed? Type it here"
+                              placeholder="Or type LGA manually (optional)"
                             />
                             <p className="text-[11px] text-ink-soft">
                               Choose from the official state list where available. If a government update is newer than our data,
@@ -3506,7 +3506,7 @@ export default function Checkout() {
                           rows={3}
                           value={shippingForm.directionsNote}
                           onChange={onChangeShippingForm("directionsNote")}
-                          placeholder="Extra delivery note (gate code, closest landmark, instructions, etc.)"
+                          placeholder="Delivery instructions — gate code, landmark, etc. (optional)"
                         />
 
                         <label className="inline-flex items-center gap-2 text-sm text-ink">

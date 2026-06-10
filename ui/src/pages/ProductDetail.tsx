@@ -898,6 +898,7 @@ export default function ProductDetail() {
   const [ratingInput, setRatingInput] = React.useState<number>(0);
   const [commentInput, setCommentInput] = React.useState<string>("");
   const [isAdding, setIsAdding] = React.useState(false);
+  const isAddingRef = React.useRef(false);
 
   const reviewSummaryQ = useQuery<{ ratingAvg: number | null; ratingCount: number | null }>({
     queryKey: ["product-reviews-summary", id],
@@ -2022,23 +2023,24 @@ export default function ProductDetail() {
 
   /* ---------------- Add to cart ---------------- */
   const handleAddToCart = React.useCallback(async () => {
-    if (isAdding) return;
+    if (isAddingRef.current) return;
     if (!product) return;
 
+    if (purchaseMeta.disableAddToCart) {
+      const msg =
+        purchaseMeta.helperNote ||
+        "Please select an available option (variant or base) before adding this item to your cart.";
+      try {
+        openModal({ title: "Select options", message: msg });
+      } catch {
+        alert(msg);
+      }
+      return;
+    }
+
+    isAddingRef.current = true;
     setIsAdding(true);
     try {
-      if (purchaseMeta.disableAddToCart) {
-        const msg =
-          purchaseMeta.helperNote ||
-          "Please select an available option (variant or base) before adding this item to your cart.";
-
-        try {
-          openModal({ title: "Select options", message: msg });
-        } catch {
-          alert(msg);
-        }
-        return;
-      }
 
       const variantId = purchaseMeta.mode === "VARIANT" ? purchaseMeta.variantId : null;
 
@@ -2224,9 +2226,10 @@ export default function ProductDetail() {
         alert(msg);
       }
     } finally {
+      isAddingRef.current = false;
       setIsAdding(false);
     }
-  }, [isAdding, product, purchaseMeta, selected, computed.final, axes, openModal, qty]);
+  }, [product, purchaseMeta, selected, computed.final, axes, openModal, qty]);
 
   /* ---------------- Review handlers ---------------- */
   const handleSubmitReview = React.useCallback(
@@ -2951,10 +2954,13 @@ export default function ProductDetail() {
                     type="button"
                     onClick={handleAddToCart}
                     disabled={purchaseMeta.disableAddToCart || isAdding}
-                    className={`w-full sm:w-auto px-4 py-3 rounded-full font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
-                      ? "bg-zinc-300 cursor-not-allowed"
-                      : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
-                      }`}
+                    className={`w-full sm:w-auto px-4 py-3 rounded-full font-semibold text-white touch-manipulation ${
+                      purchaseMeta.disableAddToCart
+                        ? "bg-zinc-300 cursor-not-allowed"
+                        : isAdding
+                        ? "bg-fuchsia-600 opacity-70 cursor-wait"
+                        : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
+                    }`}
                   >
                     {isAdding ? "Updating cart…" : editCartLine ? "Update cart" : "Add to cart"}
                   </button>
