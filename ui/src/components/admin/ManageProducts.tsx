@@ -1220,6 +1220,12 @@ export function ManageProducts({
     refetchOnWindowFocus: false,
   });
 
+  const catById = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const c of catsQ.data ?? []) m[c.id] = c.name;
+    return m;
+  }, [catsQ.data]);
+
   const brandsQ = useQuery<AdminBrand[]>({
     queryKey: ["admin", "products", "brands"],
     enabled: !!role,
@@ -4557,6 +4563,9 @@ export function ManageProducts({
       </div>
 
       {/* ================= Desktop Table ================= */}
+      <p className="hidden md:block text-xs text-slate-400 mb-2">
+        Price = supplier price + base service fee + comms fee + gateway fee
+      </p>
       <div className="hidden md:block rounded-2xl border bg-white shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="min-w-[980px] w-full text-sm">
@@ -4610,9 +4619,9 @@ export function ManageProducts({
                         </div>
                       ) : null}
 
-                      {(p.__bestBaseSupplierPrice || p.__bestVariantSupplierPrice) && (
+                      {p.categoryId && (
                         <div className="text-[11px] text-slate-500 mt-1">
-                          computed retail uses this product’s supplier price + service fee + comms fee + gateway fee
+                          Category: {catById[p.categoryId] ?? p.categoryId}
                         </div>
                       )}
                     </td>
