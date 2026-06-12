@@ -1335,10 +1335,11 @@ export default function ProductDetail() {
         return selectionHasAnyCompatibleBuyablePath(normalizedSelected);
       }
 
-      // For non-selected options, be more permissive:
-      // show green if this option participates in ANY buyable base/variant path,
-      // even if the user's current other selections are conflicting right now.
-      const probe = { [a]: v };
+      // For non-selected options: show green only if this value can combine with
+      // the values already selected on OTHER axes to form a valid buyable path.
+      // e.g. Color=Red selected → only sizes that exist in a Red+Size combo go green.
+      const otherSelected = removeAxisFromSelection(normalizedSelected, a);
+      const probe = { ...otherSelected, [a]: v };
 
       if (buyableBaseSelectionMap && mapContainsSelection(buyableBaseSelectionMap, probe)) {
         return true;
@@ -1352,7 +1353,7 @@ export default function ProductDetail() {
 
       return false;
     },
-    [buyableBaseSelectionMap, sellableVariantOptionMaps, selectionHasAnyCompatibleBuyablePath]
+    [buyableBaseSelectionMap, sellableVariantOptionMaps, selectionHasAnyCompatibleBuyablePath, removeAxisFromSelection]
   );
 
   const variantIdByKey = React.useMemo(() => {
