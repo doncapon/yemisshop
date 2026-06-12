@@ -1,5 +1,6 @@
 // src/pages/Cart.tsx
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
@@ -509,6 +510,67 @@ async function serverSetQty(item: CartItem, qty: number) {
   }
 }
 
+type StockStatus = { qtyPriced: number; qtyRequested: number };
+
+async function fetchCartAvailability(
+  items: CartItem[]
+): Promise<Map<string, StockStatus>> {
+  if (!items.length) return new Map();
+
+  const payload = {
+    items: items.map((it) => ({
+      key: lineKeyFor(it),
+      kind: it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
+      productId: it.productId,
+      variantId: it.variantId ?? null,
+      qty: Math.max(1, it.qty),
+      selectedOptions: it.selectedOptions ?? [],
+    })),
+  };
+
+  let raw: any = null;
+  for (const url of ["/api/checkout/quote", "/api/cart/quote", "/api/catalog/quote"]) {
+    try {
+      const res = await api.post(url, payload, AXIOS_COOKIE_CFG);
+      raw = res.data?.data ?? res.data ?? null;
+      if (raw?.lines || raw?.items) break;
+    } catch {
+      // try next endpoint
+    }
+  }
+
+  const result = new Map<string, StockStatus>();
+  if (!raw) return result;
+
+  const lines: Record<string, any> = raw.lines ?? raw.items ?? {};
+  for (const [serverKey, v] of Object.entries(lines)) {
+    const qtyRequested = Math.max(1, Number(v?.qtyRequested ?? v?.qty ?? v?.requestedQty ?? 1));
+    const allocsRaw: any[] = Array.isArray(v?.allocations) ? v.allocations
+      : Array.isArray(v?.splits) ? v.splits : [];
+    const sumFromAllocs = allocsRaw.reduce((s, a) => s + (Number(a?.qty) || 0), 0);
+    const qtyPriced = Math.max(0, Number(v?.qtyPriced ?? sumFromAllocs));
+    if (qtyPriced >= qtyRequested) continue;
+
+    // Resolve to our lineKeyFor format so it matches what the render loop looks up.
+    // Priority: (1) server echoed our key directly, (2) match by productId+variantId.
+    const directMatch = items.find((it) => lineKeyFor(it) === serverKey);
+    if (directMatch) {
+      result.set(serverKey, { qtyPriced, qtyRequested });
+      continue;
+    }
+    const pid = String(v?.productId ?? "");
+    const vid = v?.variantId != null ? String(v.variantId) : null;
+    const cartMatch = items.find(
+      (it) =>
+        it.productId === pid &&
+        (String(it.variantId ?? "") === String(vid ?? ""))
+    );
+    result.set(cartMatch ? lineKeyFor(cartMatch) : serverKey, { qtyPriced, qtyRequested });
+  }
+
+  return result;
+}
+
 /* =========================================================
    Component
 ========================================================= */
@@ -898,6 +960,21 @@ export default function Cart() {
 
   const visibleCart = useMemo(() => mergeCartItemsByLine(cart), [cart]);
 
+  const cartSig = useMemo(
+    () => visibleCart.map((i) => `${lineKeyFor(i)}@${Math.max(1, i.qty)}`).sort().join(","),
+    [visibleCart]
+  );
+
+  const availabilityQ = useQuery({
+    queryKey: ["cart", "availability:v1", cartSig],
+    enabled: hydrated && visibleCart.length > 0,
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+    queryFn: () => fetchCartAvailability(visibleCart),
+  });
+
+  const shortLineKeys: Map<string, StockStatus> = availabilityQ.data ?? new Map();
+
   // Fetch variant info for all cart items to determine available variant count and
   // show "Choose options" for BASE items after server round-trips lose needsOptions flag.
   useEffect(() => {
@@ -1104,6 +1181,10 @@ export default function Cart() {
                     return attr && val ? `${attr}: ${val}` : attr || val;
                   })
                   .filter((s): s is string => !!s);
+                const short = shortLineKeys.get(key);
+                const isUnavailable = short != null && short.qtyPriced === 0;
+                const isLow = short != null && short.qtyPriced > 0;
+
                 const commitDraft = () => {
                   const raw = qtyDraft[key];
                   const parsed = raw === "" || raw == null ? 1 : Math.floor(Number(raw));
@@ -1138,7 +1219,13 @@ export default function Cart() {
                 return (
                   <article
                     key={key}
-                    className="group rounded-2xl border border-white/60 bg-white/75 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-3 sm:p-5 max-[360px]:p-3 overflow-hidden relative z-10"
+                    className={`group rounded-2xl border backdrop-blur p-3 sm:p-5 max-[360px]:p-3 overflow-hidden relative z-10 transition ${
+                      isUnavailable
+                        ? "border-red-400 bg-red-50/80 shadow-[0_6px_30px_rgba(239,68,68,0.12)]"
+                        : isLow
+                          ? "border-amber-400 bg-amber-50/80 shadow-[0_6px_30px_rgba(245,158,11,0.12)]"
+                          : "border-white/60 bg-white/75 shadow-[0_6px_30px_rgba(0,0,0,0.06)]"
+                    }`}
                   >
                     <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
                       <div className="shrink-0 w-16 h-16 sm:w-20 sm:h-20 max-[360px]:w-14 max-[360px]:h-14 rounded-xl border overflow-hidden bg-white self-start relative">
@@ -1347,6 +1434,47 @@ export default function Cart() {
                             </div>
                           </div>
                         </div>
+
+                        {isUnavailable && (
+                          <div className="mt-3 flex items-start gap-2 rounded-xl bg-red-50 border border-red-200 px-3 py-2.5">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] sm:text-xs font-semibold text-red-700">Out of stock</p>
+                              <p className="text-[11px] sm:text-xs text-red-600 mt-0.5">This item is no longer available. Remove it to continue to checkout.</p>
+                            </div>
+                            <button
+                              type="button"
+                              className={`${tap} shrink-0 text-[11px] sm:text-xs font-medium text-rose-600 hover:underline px-1 py-0.5`}
+                              onClick={() => void remove(it)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        )}
+
+                        {isLow && (
+                          <div className="mt-3 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5">
+                            <p className="text-[11px] sm:text-xs font-semibold text-amber-800">
+                              Only {short!.qtyPriced} in stock — you requested {short!.qtyRequested}
+                            </p>
+                            <p className="text-[11px] sm:text-xs text-amber-700 mt-0.5">Reduce the quantity or remove this item to proceed.</p>
+                            <div className="mt-2 flex items-center gap-2">
+                              <button
+                                type="button"
+                                className={`${tap} inline-flex items-center justify-center rounded-lg bg-amber-600 text-white text-[11px] sm:text-xs font-medium px-2.5 py-1 hover:bg-amber-700 transition`}
+                                onClick={() => void commitQty(it, short!.qtyPriced, key)}
+                              >
+                                Reduce to {short!.qtyPriced}
+                              </button>
+                              <button
+                                type="button"
+                                className={`${tap} inline-flex items-center justify-center rounded-lg border border-red-300 text-red-600 text-[11px] sm:text-xs font-medium px-2.5 py-1 hover:bg-red-50 transition`}
+                                onClick={() => void remove(it)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </article>
@@ -1387,24 +1515,46 @@ export default function Cart() {
                     </span>
                   </div>
 
-                  <Link
-                    to="/checkout"
-                    onClick={() => {
-                      try {
-                        sessionStorage.removeItem("payment:init");
-                        sessionStorage.removeItem("paystack:return");
-                        sessionStorage.removeItem("paystack:return:v1");
-                        sessionStorage.removeItem("paystack:exit");
-                        sessionStorage.removeItem("paystack:exit:v1");
-                      } catch {
-                        //
-                      }
-                    }}
-                    className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200`}
-                  >
-                    <span className="sm:hidden">Checkout</span>
-                    <span className="hidden sm:inline">Proceed to checkout</span>
-                  </Link>
+                  {availabilityQ.isLoading && (
+                    <p className="mt-3 text-[11px] text-ink-soft text-center">Checking availability…</p>
+                  )}
+
+                  {shortLineKeys.size > 0 ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled
+                        className="mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white opacity-40 cursor-not-allowed"
+                        aria-disabled="true"
+                      >
+                        <span className="sm:hidden">Checkout</span>
+                        <span className="hidden sm:inline">Proceed to checkout</span>
+                      </button>
+                      <p className="mt-2 text-[11px] sm:text-xs text-danger font-medium text-center">
+                        Fix the highlighted items above before you can proceed.
+                      </p>
+                    </>
+                  ) : (
+                    <Link
+                      to="/checkout"
+                      onClick={() => {
+                        try {
+                          sessionStorage.removeItem("payment:init");
+                          sessionStorage.removeItem("paystack:return");
+                          sessionStorage.removeItem("paystack:return:v1");
+                          sessionStorage.removeItem("paystack:exit");
+                          sessionStorage.removeItem("paystack:exit:v1");
+                        } catch {
+                          //
+                        }
+                      }}
+                      className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200`}
+                    >
+                      <span className="sm:hidden">Checkout</span>
+                      <span className="hidden sm:inline">Proceed to checkout</span>
+                    </Link>
+                  )}
+
                   <Link
                     to="/"
                     className={`${tap} mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 max-[360px]:py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition`}
@@ -1412,7 +1562,9 @@ export default function Cart() {
                     Continue shopping
                   </Link>
 
-                  <p className="mt-3 text-[11px] text-ink-soft">Final stock and pricing checks happen at checkout.</p>
+                  {!shortLineKeys.size && (
+                    <p className="mt-3 text-[11px] text-ink-soft">Final stock and pricing checks happen at checkout.</p>
+                  )}
                 </div>
               </div>
 

@@ -27,6 +27,7 @@ export default function SessionExpiredModal() {
 
   const handleDismiss = () => {
     useAuthStore.getState().clear();
+    navigate("/");
   };
 
   return (

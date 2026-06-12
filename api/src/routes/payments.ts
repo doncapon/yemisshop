@@ -1435,6 +1435,29 @@ function readStoredAuthorizationUrl(providerPayload: any): string | null {
 }
 
 /**
+ * GET /api/payments/native-callback
+ * No auth required — Paystack redirects here after payment in the CCT.
+ * We immediately redirect to the dayspring:// deep link so Android closes
+ * the CCT and hands control back to the native app.
+ */
+router.get("/native-callback", (req: Request, res: Response) => {
+  const orderId = q1(req.query.orderId).trim();
+  const reference = q1(req.query.reference).trim();
+
+  if (!orderId || !reference) {
+    return res.status(400).send("Bad request: missing orderId or reference");
+  }
+
+  const deepLink =
+    `dayspring://payment/callback` +
+    `?orderId=${encodeURIComponent(orderId)}` +
+    `&reference=${encodeURIComponent(reference)}` +
+    `&gateway=paystack`;
+
+  return res.redirect(deepLink);
+});
+
+/**
  * POST /api/payments/init  { orderId, channel?, otpToken?, expectedTotal? }
  */
 /**
@@ -1758,9 +1781,10 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
 
     if (channel === "paystack") {
       const channels = getInitChannels();
-      const callback_url = `${APP_URL}/payment-callback?orderId=${encodeURIComponent(
-        orderId
-      )}&reference=${encodeURIComponent(pay!.reference)}&gateway=paystack`;
+      const isNativeRequest = !!req.body?.native;
+      const callback_url = isNativeRequest
+        ? `${APP_URL}/api/payments/native-callback?orderId=${encodeURIComponent(orderId)}&reference=${encodeURIComponent(pay!.reference)}`
+        : `${APP_URL}/payment-callback?orderId=${encodeURIComponent(orderId)}&reference=${encodeURIComponent(pay!.reference)}&gateway=paystack`;
 
       let split_code: string | undefined;
 

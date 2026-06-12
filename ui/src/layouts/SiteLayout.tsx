@@ -34,14 +34,14 @@ export default function SiteLayout({ children }: Props) {
   }, []);
 
   return (
-    <div className="min-h-screen w-full overflow-x-hidden flex flex-col bg-gradient-to-b from-primary-50/40 via-bg-soft to-bg-soft text-ink">
+    <div className="min-h-screen w-full flex flex-col bg-gradient-to-b from-primary-50/40 via-bg-soft to-bg-soft text-ink">
       <MiniCartToastHost />
       <Navbar />
 
       {/* Global overlays */}
       <ConsentBanner />
 
-      <main className="w-full flex-1 pt-3 md:pt-0 bg-white-400">
+      <main className="w-full flex-1 pt-3 md:pt-0 bg-white">
         <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto py-4 md:py-8 md">
             {children}

@@ -4,6 +4,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import { useModal } from "../components/ModalProvider";
 import SiteLayout from "../layouts/SiteLayout";
+import { Capacitor } from "@capacitor/core";
+import { Browser } from "@capacitor/browser";
 
 type InitResp = {
   reference: string;
@@ -271,10 +273,14 @@ export default function Payment() {
     redirectStartedRef.current = true;
     setStatus("redirecting");
 
-    try {
-      window.location.assign(finalUrl);
-    } catch {
-      window.location.href = finalUrl;
+    if (Capacitor.isNativePlatform()) {
+      Browser.open({ url: finalUrl }).catch(() => {});
+    } else {
+      try {
+        window.location.assign(finalUrl);
+      } catch {
+        window.location.href = finalUrl;
+      }
     }
   };
 
@@ -333,6 +339,7 @@ export default function Payment() {
       const basePayload: Record<string, any> = {
         orderId,
         channel: "paystack",
+        ...(Capacitor.isNativePlatform() ? { native: "1" } : {}),
       };
 
       const payloadWithExpectedTotal: Record<string, any> =
@@ -382,6 +389,36 @@ export default function Payment() {
       setErr(null);
       setInfo(null);
       redirectStartedRef.current = false;
+
+      // When user returns from the payment browser (back button or deep link),
+      // check immediately if payment is already done before re-initializing.
+      const storedLastRef = (() => {
+        try {
+          const raw = localStorage.getItem(LAST_REF_KEY);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          if (String(parsed?.orderId ?? "") !== String(orderId ?? "")) return null;
+          return String(parsed.reference ?? "").trim() || null;
+        } catch { return null; }
+      })();
+
+      if (storedLastRef) {
+        try {
+          const statusRes = await api.get<{ status: string }>("/api/payments/status", {
+            params: { orderId, reference: storedLastRef },
+            withCredentials: true,
+          });
+          if (!alive || effectRunIdRef.current !== runId) return;
+          if (statusRes.data?.status === "PAID") {
+            window.clearTimeout(uiTimeout);
+            nav(
+              `/payment-callback?orderId=${encodeURIComponent(orderId)}&reference=${encodeURIComponent(storedLastRef)}&gateway=paystack`,
+              { replace: true }
+            );
+            return;
+          }
+        } catch { /* not paid yet — fall through to normal init */ }
+      }
 
       try {
         if (bootReference || bootAuthorizationUrl) {
@@ -542,6 +579,18 @@ export default function Payment() {
         if (statusCode === 401) {
           setErr("Your session has expired. Please log in again.");
         } else if (statusCode === 409) {
+          // "Order already paid" means the user completed payment and returned
+          if (message.toLowerCase().includes("already paid")) {
+            const ref = storedLastRef || bootReference || "";
+            if (ref) {
+              window.clearTimeout(uiTimeout);
+              nav(
+                `/payment-callback?orderId=${encodeURIComponent(orderId)}&reference=${encodeURIComponent(ref)}&gateway=paystack`,
+                { replace: true }
+              );
+              return;
+            }
+          }
           setErr(
             "This order was recalculated and could not be initialized for payment. Please reopen payment from your orders page."
           );
@@ -590,6 +639,58 @@ export default function Payment() {
 
     redirectToHosted(url);
   }, [init, status]);
+
+  // Native only: poll payment status while CCT is open and close it automatically
+  // the moment Paystack confirms the payment, then navigate to the callback page.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (status !== "redirecting") return;
+
+    const reference = init?.reference;
+    if (!reference || !orderId) return;
+
+    let stopped = false;
+    let browserHandle: { remove: () => void } | null = null;
+
+    Browser.addListener("browserFinished", () => { stopped = true; })
+      .then((h) => { browserHandle = h; })
+      .catch(() => {});
+
+    const poll = async () => {
+      while (!stopped) {
+        await new Promise<void>((r) => window.setTimeout(r, 3000));
+        if (stopped) break;
+        try {
+          const res = await api.get<{ status: string }>("/api/payments/status", {
+            params: { orderId, reference },
+            withCredentials: true,
+          });
+          if (stopped) break;
+          if (res.data?.status === "PAID") {
+            stopped = true;
+            try { await Browser.close(); } catch {}
+            nav(
+              `/payment-callback?orderId=${encodeURIComponent(orderId)}&reference=${encodeURIComponent(reference)}&gateway=paystack`,
+              { replace: true }
+            );
+            return;
+          }
+          if (["FAILED", "CANCELED", "REFUNDED"].includes(res.data?.status ?? "")) {
+            stopped = true;
+            return;
+          }
+        } catch { /* keep polling — webhook may not have fired yet */ }
+      }
+    };
+
+    void poll();
+
+    return () => {
+      stopped = true;
+      browserHandle?.remove();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, init?.reference, orderId]);
 
   const retryInit = () => {
     autoRetriedRef.current = false;
