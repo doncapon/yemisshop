@@ -1981,6 +1981,24 @@ export default function ProductDetail() {
     allAxesSelected,
   ]);
 
+  // Partial variant selection: user has started selecting but hasn't filled all axes yet,
+  // and the current selection still leads to a compatible buyable path.
+  const { isPartialVariantSelection, partialSelectionNote } = React.useMemo(() => {
+    const empty = { isPartialVariantSelection: false, partialSelectionNote: null as string | null };
+    if (!purchaseMeta.disableAddToCart) return empty;
+    if (!visibleAxes.length) return empty;
+    if (!currentSelectionHasCompatiblePath) return empty; // invalid combo — show error, not guidance
+    const missing = visibleAxes.filter((ax) => !String(selected?.[ax.id] ?? "").trim());
+    if (!missing.length) return empty; // all axes filled — disabled for another reason (e.g. out of stock)
+    const names = missing.map((ax) => ax.name);
+    const note =
+      names.length === 1
+        ? `Select a ${names[0]} to continue`
+        : names.length === 2
+        ? `Select ${names[0]} and ${names[1]} to continue`
+        : `Select ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]} to continue`;
+    return { isPartialVariantSelection: true, partialSelectionNote: note };
+  }, [purchaseMeta.disableAddToCart, visibleAxes, selected, currentSelectionHasCompatiblePath]);
 
   const [mainIndex, setMainIndex] = React.useState(0);
   const [brokenByIndex, setBrokenByIndex] = React.useState<Record<number, boolean>>({});
@@ -2860,15 +2878,18 @@ export default function ProductDetail() {
                   </div>
                 </div>
 
-                {purchaseMeta.helperNote ? (
+                {(isPartialVariantSelection ? partialSelectionNote : purchaseMeta.helperNote) ? (
                   <div className="mt-3 text-sm">
                     <span
-                      className={`inline-flex rounded-xl px-3 py-2 border ${purchaseMeta.disableAddToCart
-                        ? "border-amber-400 bg-amber-50 text-amber-900"
-                        : "border-zinc-200 bg-zinc-50 text-zinc-700"
-                        }`}
+                      className={`inline-flex rounded-xl px-3 py-2 border ${
+                        isPartialVariantSelection
+                          ? "border-blue-200 bg-blue-50 text-blue-800"
+                          : purchaseMeta.disableAddToCart
+                          ? "border-amber-400 bg-amber-50 text-amber-900"
+                          : "border-zinc-200 bg-zinc-50 text-zinc-700"
+                      }`}
                     >
-                      {purchaseMeta.helperNote}
+                      {isPartialVariantSelection ? partialSelectionNote : purchaseMeta.helperNote}
                     </span>
                   </div>
                 ) : null}
@@ -2918,10 +2939,11 @@ export default function ProductDetail() {
                 <div className="mt-4 space-y-2">
                   <span className="block text-sm text-zinc-700">Qty</span>
 
-                  <div className="grid grid-cols-[44px_minmax(0,1fr)_44px_64px] gap-2 sm:flex sm:items-center">
+                  <div className={`grid grid-cols-[44px_minmax(0,1fr)_44px_64px] gap-2 sm:flex sm:items-center${isPartialVariantSelection ? " opacity-50 pointer-events-none" : ""}`}>
                     <button
                       type="button"
                       onClick={() => setQty((q) => Math.max(1, q - 1))}
+                      disabled={isPartialVariantSelection}
                       className={`h-11 sm:h-10 rounded-full bg-white hover:bg-zinc-50 px-3 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
                     >
                       −
@@ -2932,6 +2954,7 @@ export default function ProductDetail() {
                       min={1}
                       max={maxQty}
                       value={qty === 0 ? "" : qty}
+                      disabled={isPartialVariantSelection}
                       onChange={(e) => {
                         const v = e.target.value;
                         if (v === "") {
@@ -2952,6 +2975,7 @@ export default function ProductDetail() {
                     <button
                       type="button"
                       onClick={() => setQty((q) => Math.min(maxQty, q + 1))}
+                      disabled={isPartialVariantSelection}
                       className={`h-11 sm:h-10 rounded-full bg-white hover:bg-zinc-50 px-3 text-base sm:text-sm ${silverBorder} ${silverShadowSm}`}
                     >
                       +
@@ -2959,6 +2983,7 @@ export default function ProductDetail() {
 
                     <button
                       type="button"
+                      disabled={isPartialVariantSelection}
                       onClick={() => {
                         if (isAdding) return;
                         setQty((prev) => {
