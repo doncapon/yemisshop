@@ -4,6 +4,9 @@ import api from "../api/client";
 import { mergeGuestCartIntoUserCart, useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout";
 import DaySpringLogo from "../components/brand/DayspringLogo";
+import { getApiBase } from "../lib/apiBase";
+import { Capacitor } from "@capacitor/core";
+import { Browser } from "@capacitor/browser";
 
 /* ---------------- Cookie-mode helpers ---------------- */
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
@@ -136,6 +139,8 @@ export default function Login() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
+
+  const isNative = Capacitor.isNativePlatform();
 
   const [blockedProfile, setBlockedProfile] = useState<MeResponse | null>(null);
   const [verifyToken, setVerifyToken] = useState<string | null>(null);
@@ -303,6 +308,35 @@ export default function Login() {
       nav(path, { replace: true });
     }, 0);
   }
+
+  async function handleGoogleLoginClick(e: React.MouseEvent<HTMLAnchorElement>) {
+    if (!Capacitor.isNativePlatform()) return; // web: let the href work normally
+    e.preventDefault();
+    const returnTo = returnToRef.current || computedReturnTo || "";
+    const oauthUrl = `${getApiBase()}/api/auth/google?native=1${returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : ""}`;
+    try {
+      await Browser.open({ url: oauthUrl });
+    } catch { /* ignore */ }
+  }
+
+  // On Android (adjustResize) the WebView shrinks to fit above the keyboard.
+  // The form inputs are near the top so they're naturally visible — no scroll needed.
+  // We just reset to scrollY=0 when the keyboard opens so nothing overshoots.
+  useEffect(() => {
+    if (!isNative) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    let prevH = vv.height;
+    function onVVResize() {
+      if (vv!.height < prevH) {
+        // Keyboard opened — snap document back to top so form stays visible
+        window.scrollTo(0, 0);
+      }
+      prevH = vv!.height;
+    }
+    vv.addEventListener("resize", onVVResize);
+    return () => vv.removeEventListener("resize", onVVResize);
+  }, [isNative]);
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -508,7 +542,7 @@ export default function Login() {
 
         <div className="relative flex flex-col items-center px-3 pt-3 pb-6 sm:px-4 sm:pt-4 sm:pb-8">
           <div className="w-full max-w-md">
-            <div className="mb-3 text-center sm:mb-6">
+            <div className={isNative ? "hidden" : "mb-3 text-center sm:mb-6"}>
               <div className="flex justify-center">
                 <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/90 px-3 py-1.5 shadow-sm backdrop-blur sm:px-4 sm:py-2">
                   <DaySpringLogo size={26} showText={true} />
@@ -611,7 +645,8 @@ export default function Login() {
 
               {/* Google sign-in */}
               <a
-                href={`${import.meta.env.VITE_API_URL ?? ""}/api/auth/google${(returnToRef.current || computedReturnTo) ? `?returnTo=${encodeURIComponent(returnToRef.current || computedReturnTo || "")}` : ""}`}
+                href={`${getApiBase()}/api/auth/google${(returnToRef.current || computedReturnTo) ? `?returnTo=${encodeURIComponent(returnToRef.current || computedReturnTo || "")}` : ""}`}
+                onClick={handleGoogleLoginClick}
                 className="inline-flex w-full items-center justify-center gap-3 rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-zinc-200"
               >
                 <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">

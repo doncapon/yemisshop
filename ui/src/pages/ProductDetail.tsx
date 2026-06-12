@@ -58,6 +58,8 @@ type ProductWire = {
   title: string;
   description?: string;
   retailPrice: number | null;
+  computedRetailPrice?: number | null;
+  autoPrice?: number | null;
   inStock?: boolean;
   imagesJson?: string[];
   brand?: Brand;
@@ -818,6 +820,8 @@ export default function ProductDetail() {
         title: String(p.title ?? ""),
         description: p.description ?? "",
         retailPrice: readProductRetail(p),
+        computedRetailPrice: Number.isFinite(Number(p?.computedRetailPrice)) && Number(p?.computedRetailPrice) > 0 ? Number(p.computedRetailPrice) : null,
+        autoPrice: Number.isFinite(Number(p?.autoPrice)) && Number(p?.autoPrice) > 0 ? Number(p.autoPrice) : null,
         inStock: p.inStock !== false,
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
         brand: p.brand ? { id: String(p.brand.id), name: String(p.brand.name) } : null,
@@ -1411,7 +1415,13 @@ export default function ProductDetail() {
 
   const computed = React.useMemo(() => {
     const offers = product?.offers ?? [];
-    const retailFallbackProduct = toNum(product?.retailPrice, 0);
+    const retailFallbackProduct = (() => {
+      const apiComputed = toNum(product?.computedRetailPrice, 0);
+      if (apiComputed > 0) return apiComputed;
+      const retail = toNum(product?.retailPrice, 0);
+      if (retail > 0) return retail;
+      return toNum(product?.autoPrice, 0);
+    })();
 
     const hasFullSelection =
       axes.length > 0 &&

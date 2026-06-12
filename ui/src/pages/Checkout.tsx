@@ -1817,8 +1817,40 @@ export default function Checkout() {
     const unpriced = Object.values(q.lines || {}).filter((l) => l.qtyPriced < l.qtyRequested);
     if (!unpriced.length) return null;
 
-    return "Some items could not be fully allocated across suppliers. Reduce quantities or try again.";
+    return "Some items are unavailable or out of stock. Remove the highlighted items below to continue.";
   }, [pricingQ.data]);
+
+  const shortLineKeys = useMemo<Map<string, { qtyPriced: number; qtyRequested: number }>>(() => {
+    const q = pricingQ.data as QuotePayload | null;
+    if (!q) return new Map();
+    const result = new Map<string, { qtyPriced: number; qtyRequested: number }>();
+    for (const [k, l] of Object.entries(q.lines ?? {})) {
+      if (l.qtyPriced < l.qtyRequested) {
+        result.set(k, { qtyPriced: l.qtyPriced, qtyRequested: l.qtyRequested });
+      }
+    }
+    return result;
+  }, [pricingQ.data]);
+
+  const removeItemFromCheckout = useCallback((lineKey: string) => {
+    setCart((prev) => {
+      const next = removeCartLineByKey(prev, lineKey);
+      writeCart(next);
+      window.dispatchEvent(new Event("cart:updated"));
+      return next;
+    });
+  }, []);
+
+  const adjustItemQtyInCheckout = useCallback((lineKey: string, newQty: number) => {
+    setCart((prev) => {
+      const next = prev.map((line) =>
+        lineKeyFor(line) === lineKey ? { ...line, qty: Math.max(1, newQty) } : line
+      );
+      writeCart(next);
+      window.dispatchEvent(new Event("cart:updated"));
+      return next;
+    });
+  }, []);
 
   const selectedShippingAddress = useMemo(
     () => shippingAddresses.find((a) => a.id === selectedShippingId) ?? null,
@@ -3612,6 +3644,93 @@ export default function Checkout() {
             <aside className="lg:sticky lg:top-6 h-max">
               <Card className="p-4 sm:p-5">
                 <h2 className="text-base sm:text-lg font-semibold text-ink">Order Summary</h2>
+
+                {/* Items list with per-line availability markers */}
+                <div className="mt-4 space-y-2">
+                  {cart.map((item) => {
+                    const key = lineKeyFor(item);
+                    const short = shortLineKeys.get(key);
+                    const isUnavailable = short != null && short.qtyPriced === 0;
+                    const isLow = short != null && short.qtyPriced > 0;
+                    const wrapCls = isUnavailable
+                      ? "border-red-300 bg-red-50/70"
+                      : isLow
+                        ? "border-amber-300 bg-amber-50/70"
+                        : "border-border bg-surface";
+                    const rawImg = item.image ?? null;
+                    const imgSrc =
+                      rawImg
+                        ? typeof rawImg === "string" && !rawImg.startsWith("[") && !rawImg.startsWith("{")
+                          ? rawImg
+                          : (() => { try { const p = JSON.parse(rawImg); return (Array.isArray(p) ? p[0] : p)?.url ?? (Array.isArray(p) ? p[0] : p)?.src ?? null; } catch { return null; } })()
+                        : null;
+                    const opts = (item.selectedOptions ?? [])
+                      .map((o: SelectedOption) => o.value)
+                      .filter(Boolean)
+                      .join(", ");
+                    return (
+                      <div key={key} className={`rounded-xl border px-2.5 py-2 transition ${wrapCls}`}>
+                        <div className="flex items-start gap-2">
+                          {imgSrc ? (
+                            <div className="shrink-0 w-9 h-9 rounded-lg overflow-hidden border bg-white">
+                              <img src={imgSrc} alt={item.title || ""} className="w-full h-full object-cover" onError={(e) => { (e.currentTarget.parentElement as HTMLElement).style.display = "none"; }} />
+                            </div>
+                          ) : (
+                            <div className="shrink-0 w-9 h-9 rounded-lg border bg-zinc-100 grid place-items-center text-[9px] text-ink-soft">No img</div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-medium text-ink leading-snug truncate">{item.title || "Item"}</div>
+                            {opts && <div className="text-[10px] text-ink-soft truncate">{opts}</div>}
+                            <div className="text-[10px] text-ink-soft">Qty: {item.qty}</div>
+                          </div>
+                        </div>
+
+                        {/* Availability alert + actions */}
+                        {isUnavailable && (
+                          <div className="mt-2 rounded-lg bg-red-100 border border-red-200 px-2 py-1.5">
+                            <p className="text-[10px] sm:text-[11px] font-semibold text-red-700">Out of stock</p>
+                            <p className="text-[10px] text-red-600 mt-0.5">This item is no longer available. Remove it to continue.</p>
+                            <button
+                              type="button"
+                              onClick={() => removeItemFromCheckout(key)}
+                              className="mt-1.5 inline-flex items-center justify-center rounded-lg bg-red-600 text-white text-[10px] sm:text-[11px] font-medium px-2.5 py-1 hover:bg-red-700 transition"
+                              aria-label={`Remove ${item.title} from order`}
+                            >
+                              Remove item
+                            </button>
+                          </div>
+                        )}
+
+                        {isLow && (
+                          <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-2 py-1.5">
+                            <p className="text-[10px] sm:text-[11px] font-semibold text-amber-800">
+                              Only {short!.qtyPriced} in stock — you requested {short!.qtyRequested}
+                            </p>
+                            <p className="text-[10px] text-amber-700 mt-0.5">Reduce the quantity or remove this item to continue.</p>
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => adjustItemQtyInCheckout(key, short!.qtyPriced)}
+                                className="inline-flex items-center justify-center rounded-lg bg-amber-600 text-white text-[10px] sm:text-[11px] font-medium px-2.5 py-1 hover:bg-amber-700 transition"
+                                aria-label={`Reduce ${item.title} qty to ${short!.qtyPriced}`}
+                              >
+                                Reduce to {short!.qtyPriced}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => removeItemFromCheckout(key)}
+                                className="inline-flex items-center justify-center rounded-lg border border-red-300 text-red-600 text-[10px] sm:text-[11px] font-medium px-2.5 py-1 hover:bg-red-50 transition"
+                                aria-label={`Remove ${item.title} from order`}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
 
                 <div className="mt-4 rounded-2xl border border-border bg-surface px-3 py-3">
                   <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Selected delivery detail</div>

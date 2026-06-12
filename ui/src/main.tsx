@@ -7,7 +7,21 @@ import "./index.css";
 import ToastProvider from "./components/ToastProvider";
 
 import { UnheadProvider } from "@unhead/react/client";
-import { head } from "./seo/head"; // ✅ use the SAME head instance
+import { head } from "./seo/head";
+
+// Capacitor native initialisation — only runs inside the native app shell
+import { Capacitor } from "@capacitor/core";
+import { StatusBar, Style } from "@capacitor/status-bar";
+import { SplashScreen } from "@capacitor/splash-screen";
+
+if (Capacitor.isNativePlatform()) {
+  // Light status bar (dark icons on white background)
+  StatusBar.setStyle({ style: Style.Light }).catch(() => {});
+  StatusBar.setBackgroundColor({ color: "#ffffff" }).catch(() => {});
+
+  // Hide the splash screen after the React tree mounts
+  SplashScreen.hide({ fadeOutDuration: 300 }).catch(() => {});
+}
 
 const qc =new QueryClient({
   defaultOptions: {

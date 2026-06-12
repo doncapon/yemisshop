@@ -9,7 +9,11 @@
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
 
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="DaySpring" />
 
   <!-- ✅ Primary SEO -->
   <title>DaySpring — Shop products in Nigeria</title>
@@ -53,8 +57,7 @@
         font-src 'self' data: https:;
         style-src 'self' 'unsafe-inline';
         script-src 'self' https://js.paystack.co 'sha256-Crr0k6ehqLlwP6rZg5dzQbxqTcCHFGnFZyNBFv3d/tw=';
-        connect-src 'self' https://api.dayspringhouse.com https://api.paystack.co;
-        upgrade-insecure-requests
+        connect-src 'self' https://api.dayspringhouse.com https://api.paystack.co capacitor: ionic: http://10.0.2.2:5173 ws://10.0.2.2:5173;
       " />
 </head>
 

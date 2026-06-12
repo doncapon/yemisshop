@@ -1860,6 +1860,21 @@ router.post("/register-supplier", async (req, res) => {
 
 // ---------------- GOOGLE OAUTH ----------------
 
+// In-memory store for mobile OAuth one-time tokens (OTT).
+// Each entry expires in 5 minutes and is consumed on first use.
+const mobileOttStore = new Map<string, {
+  userId: string;
+  token: string;
+  maxAgeDays: number;
+  expiresAt: number;
+}>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of mobileOttStore) {
+    if (v.expiresAt < now) mobileOttStore.delete(k);
+  }
+}, 60_000).unref();
+
 const googleUserSelect = {
   id: true,
   email: true,
@@ -1882,7 +1897,8 @@ router.get("/google", (req: Request, res: Response) => {
   }
 
   const returnTo = String(req.query.returnTo || "").trim();
-  const state = Buffer.from(JSON.stringify({ returnTo })).toString("base64");
+  const isNative = req.query.native === "1";
+  const state = Buffer.from(JSON.stringify({ returnTo, native: isNative })).toString("base64");
 
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
@@ -1911,11 +1927,13 @@ router.get(
     }
 
     let returnTo = "/";
+    let isNativeCallback = false;
     try {
       const decoded = JSON.parse(Buffer.from(String(state || ""), "base64").toString());
       if (typeof decoded.returnTo === "string" && decoded.returnTo.startsWith("/")) {
         returnTo = decoded.returnTo;
       }
+      if (decoded.native === true) isNativeCallback = true;
     } catch {}
 
     // Exchange authorization code for tokens
@@ -2014,7 +2032,45 @@ router.get(
     res.setHeader("Cache-Control", "no-store");
 
     const safeReturn = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
+
+    if (isNativeCallback) {
+      // For native mobile OAuth: create a one-time token so the WebView can
+      // exchange it for a cookie (Chrome CCT and WebView have separate cookie stores).
+      const ott = crypto.randomBytes(16).toString("hex");
+      mobileOttStore.set(ott, { userId, token, maxAgeDays: ttlDays, expiresAt: Date.now() + 5 * 60 * 1000 });
+      // Redirect to the app's custom URL scheme — Android intercepts this,
+      // closes the CCT, and delivers the URL to the app via appUrlOpen.
+      return res.redirect(`dayspring://auth/callback?ott=${ott}&returnTo=${encodeURIComponent(safeReturn)}`);
+    }
+
     return res.redirect(`${callbackBase}?returnTo=${encodeURIComponent(safeReturn)}`);
+  })
+);
+
+// Native mobile session exchange: validates a one-time token issued during OAuth
+// and sets the session cookie in the Capacitor WebView context.
+router.get(
+  "/mobile-session",
+  wrap(async (req: Request, res: Response) => {
+    const ott = String(req.query.ott ?? "").trim();
+    if (!ott) return res.status(400).json({ error: "Missing ott" });
+
+    const entry = mobileOttStore.get(ott);
+    if (!entry || entry.expiresAt < Date.now()) {
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
+    mobileOttStore.delete(ott); // one-time use
+
+    const user = await prisma.user.findUnique({
+      where: { id: entry.userId },
+      select: googleUserSelect,
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    setAccessTokenCookie(res, entry.token, { maxAgeDays: entry.maxAgeDays });
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.json({ profile: buildPublicProfile(user) });
   })
 );
 

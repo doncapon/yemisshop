@@ -19,8 +19,12 @@ import AuthBootstrap from "./components/AuthBootstrap";
 import SessionExpiredModal from "./components/SessionExpiredModal";
 import RouteFallback from "./components/RouteFallback";
 
-import { useAuthStore } from "./store/auth";
+import { mergeGuestCartIntoUserCart, useAuthStore } from "./store/auth";
 import { useIdleLogout } from "./hooks/useIdleLogout";
+import { Capacitor } from "@capacitor/core";
+import { App as CapApp } from "@capacitor/app";
+import { Browser } from "@capacitor/browser";
+import api from "./api/client";
 
 import {
   normRole,
@@ -134,6 +138,124 @@ export default function App() {
   const lastAuthedPathRef = React.useRef<string>("/");
 
   useIdleLogout();
+
+  const setUser = useAuthStore((s) => s.setUser);
+  const setNeedsVerification = useAuthStore((s) => s.setNeedsVerification);
+
+  /* ── Native deep-link handler (OAuth + Payment) ── */
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    async function handleOAuthDeepLink(url: string) {
+      const qIdx = url.indexOf("?");
+      const params = new URLSearchParams(qIdx >= 0 ? url.slice(qIdx + 1) : "");
+      const ott = params.get("ott");
+      const returnTo = params.get("returnTo") || "/";
+      const safe = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
+      if (!ott) return;
+      try {
+        const res = await api.get("/api/auth/mobile-session", { params: { ott }, withCredentials: true });
+        const profile = res.data?.profile ?? res.data?.data ?? res.data;
+        if (!profile?.id) return;
+        setUser(profile);
+        setNeedsVerification(false);
+        try { mergeGuestCartIntoUserCart(String(profile.id)); } catch {}
+        queueMicrotask(() => window.dispatchEvent(new Event("cart:updated")));
+        nav(safe, { replace: true });
+      } catch { /* OTT invalid or expired — stay on current page */ }
+    }
+
+    async function handlePaymentDeepLink(url: string) {
+      const qIdx = url.indexOf("?");
+      const params = new URLSearchParams(qIdx >= 0 ? url.slice(qIdx + 1) : "");
+      const orderId = params.get("orderId");
+      const reference = params.get("reference");
+      const gateway = params.get("gateway") || "paystack";
+      if (!orderId || !reference) return;
+      try { await Browser.close(); } catch {}
+      nav(
+        `/payment-callback?orderId=${encodeURIComponent(orderId)}&reference=${encodeURIComponent(reference)}&gateway=${encodeURIComponent(gateway)}`,
+        { replace: true }
+      );
+    }
+
+    async function handleDeepLink(url: string) {
+      if (url.startsWith("dayspring://auth/callback")) {
+        await handleOAuthDeepLink(url);
+      } else if (url.startsWith("dayspring://payment/callback")) {
+        await handlePaymentDeepLink(url);
+      }
+    }
+
+    let handle: { remove: () => void } | null = null;
+    CapApp.addListener("appUrlOpen", ({ url }) => void handleDeepLink(url))
+      .then((h) => { handle = h; });
+
+    // Handle the case where the app was cold-started by the deep link
+    CapApp.getLaunchUrl().then((res) => { if (res?.url) void handleDeepLink(res.url); }).catch(() => {});
+
+    return () => { handle?.remove(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ── Android keyboard: keep focused input visible ── */
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    // visualViewport.height is more reliable than innerHeight on Android —
+    // it updates immediately when the keyboard appears with adjustResize.
+    const getVH = () => window.visualViewport?.height ?? window.innerHeight;
+    const baseH = getVH();
+
+    const scrollInputIntoView = () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el || !["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) return;
+
+      const currH = getVH();
+      const kbH = Math.max(0, baseH - currH);
+
+      // Pad the body so the window has enough scroll range to center the input.
+      // (Without this, the page may be too short to scroll the input to center.)
+      if (kbH > 50) {
+        document.body.style.paddingBottom = `${kbH + 20}px`;
+      }
+
+      // One rAF lets the browser reflow the new paddingBottom before we read
+      // getBoundingClientRect and call scrollTo.
+      requestAnimationFrame(() => {
+        const rect = el.getBoundingClientRect();
+        const targetY = window.scrollY + rect.top + rect.height / 2 - currH / 2;
+        window.scrollTo({ top: Math.max(0, targetY), behavior: "instant" as ScrollBehavior });
+      });
+    };
+
+    const onFocusIn = (e: FocusEvent) => {
+      const el = e.target as HTMLElement;
+      if (!["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) return;
+      window.setTimeout(scrollInputIntoView, 350);
+      window.setTimeout(scrollInputIntoView, 650);
+    };
+
+    const onResize = () => {
+      const kbH = Math.max(0, baseH - getVH());
+      if (kbH < 50) {
+        document.body.style.paddingBottom = "";
+        return;
+      }
+      window.setTimeout(scrollInputIntoView, 100);
+    };
+
+    document.addEventListener("focusin", onFocusIn, true);
+    window.visualViewport?.addEventListener("resize", onResize);
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      document.removeEventListener("focusin", onFocusIn, true);
+      window.visualViewport?.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", onResize);
+      document.body.style.paddingBottom = "";
+    };
+  }, []);
 
   /* ── User-switch: clear stale browser state ── */
   useEffect(() => {
@@ -769,7 +891,9 @@ export default function App() {
             </div>
           </main>
 
-          <Footer />
+          {!/^\/(login|register(-supplier)?|forgot-password|reset-password|verify)(\/|$)/.test(loc.pathname) && (
+            <Footer />
+          )}
         </div>
       </SupplierStageProvider>
     </ModalProvider>
