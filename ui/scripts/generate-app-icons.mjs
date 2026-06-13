@@ -1,13 +1,15 @@
 /**
- * Generates Capacitor source assets from favicon.svg.
+ * Generates Capacitor source assets from public/favicon.svg.
  * Outputs:
- *   assets/icon-only.png       – 1024×1024, transparent bg (adaptive icon fg layer)
- *   assets/icon-background.png – 1024×1024, solid white bg
+ *   assets/icon-only.png       – 1024×1024, transparent bg (kept for reference)
+ *   assets/icon.png            – 1024×1024, transparent bg (@capacitor/assets standard icon)
+ *   assets/icon-foreground.png – 1024×1024, transparent bg (@capacitor/assets adaptive fg)
+ *   assets/icon-background.png – 1024×1024, solid white bg (@capacitor/assets adaptive bg)
  *   assets/splash.png          – 2732×2732, white bg with centered logo
  *   assets/splash-dark.png     – 2732×2732, dark bg (#0f172a) with centered logo
  *
- * After running this once, replace these files with your final artwork.
- * Then run: npm run cap:icons
+ * Run: node scripts/generate-app-icons.mjs
+ * Then: npm run cap:icons
  */
 import sharp from "sharp";
 import { readFileSync, mkdirSync, existsSync } from "fs";
@@ -22,19 +24,23 @@ if (!existsSync(assetsDir)) {
   mkdirSync(assetsDir, { recursive: true });
 }
 
-const svgBuffer = readFileSync(resolve(uiRoot, "favicon.svg"));
+const svgBuffer = readFileSync(resolve(uiRoot, "public", "favicon.svg"));
 
-console.log("Generating app icon source images from favicon.svg...");
+console.log("Generating app icon source images from public/favicon.svg...");
 
-// 1. icon-only.png – transparent background, 1024×1024
-await sharp(svgBuffer)
+// 1a. icon-only.png + icon.png + icon-foreground.png – transparent bg, 1024×1024
+const iconBuffer = await sharp(svgBuffer)
   .resize(1024, 1024, {
     fit: "contain",
     background: { r: 0, g: 0, b: 0, alpha: 0 },
   })
   .png()
-  .toFile(resolve(assetsDir, "icon-only.png"));
-console.log("  ✓ assets/icon-only.png (1024×1024)");
+  .toBuffer();
+
+for (const name of ["icon-only.png", "icon.png", "icon-foreground.png"]) {
+  await sharp(iconBuffer).toFile(resolve(assetsDir, name));
+  console.log(`  ✓ assets/${name} (1024×1024)`);
+}
 
 // 2. icon-background.png – solid white, 1024×1024
 await sharp({

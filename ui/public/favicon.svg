@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="45%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#fb923c"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </radialGradient>
+    <linearGradient id="ray" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f87171"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <clipPath id="c">
+      <circle cx="50" cy="50" r="42"/>
+    </clipPath>
+  </defs>
+
+  <!-- White fill -->
+  <circle cx="50" cy="50" r="42" fill="white"/>
+
+  <g clip-path="url(#c)">
+    <!-- Horizon line -->
+    <rect x="8" y="49" width="84" height="2" fill="#e2e8f0"/>
+
+    <!-- Sun -->
+    <circle cx="40" cy="35" r="13" fill="url(#sun)"/>
+
+    <!-- Rays fanning to the right (6 rays) -->
+    <g transform="translate(40,35)">
+      <rect x="15" y="-2.5" width="14" height="5" rx="2.5" fill="url(#ray)" transform="rotate(-55)"/>
+      <rect x="15" y="-2.5" width="14" height="5" rx="2.5" fill="url(#ray)" transform="rotate(-33)"/>
+      <rect x="15" y="-2.5" width="13" height="5" rx="2.5" fill="url(#ray)" transform="rotate(-11)"/>
+      <rect x="15" y="-2.5" width="12" height="5" rx="2.5" fill="url(#ray)" transform="rotate(12)"/>
+      <rect x="15" y="-2.5" width="11" height="5" rx="2.5" fill="url(#ray)" transform="rotate(35)"/>
+      <rect x="15" y="-2.5" width="10" height="5" rx="2.5" fill="url(#ray)" transform="rotate(58)"/>
+    </g>
+
+    <!-- Wave back (lighter) -->
+    <path d="M8,53 C20,47 32,55 45,51 C58,47 70,57 92,51 L92,66 C70,72 58,62 45,66 C32,70 20,60 8,66 Z"
+          fill="url(#wave)" opacity="0.45"/>
+
+    <!-- Wave front (solid) -->
+    <path d="M8,58 C20,52 32,60 45,56 C58,52 70,62 92,56 L92,95 L8,95 Z"
+          fill="url(#wave)"/>
+
+    <!-- Wave highlight -->
+    <path d="M8,58 C20,52 32,60 45,56 C58,52 70,62 92,56"
+          fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="2.5"/>
+  </g>
+
+  <!-- Ring border: purple → cyan -->
+  <circle cx="50" cy="50" r="46" fill="none" stroke="url(#ring)" stroke-width="8"/>
+</svg>
