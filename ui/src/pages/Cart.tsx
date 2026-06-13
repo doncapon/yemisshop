@@ -602,7 +602,23 @@ export default function Cart() {
 
   const safeSetCart = useCallback((next: CartItem[]) => {
     const dedupedNext = mergeCartItemsByLine(next);
-    setCart((prev) => (sameCartItems(prev, dedupedNext) ? prev : dedupedNext));
+    setCart((prev) => {
+      if (sameCartItems(prev, dedupedNext)) return prev;
+      if (prev.length === 0) return dedupedNext;
+
+      const nextByKey = new Map(dedupedNext.map((item) => [lineKeyFor(item), item]));
+      const prevKeySet = new Set(prev.map(lineKeyFor));
+
+      // Keep existing items at their current positions, updated with new data
+      const preserved = prev
+        .filter((item) => nextByKey.has(lineKeyFor(item)))
+        .map((item) => nextByKey.get(lineKeyFor(item))!);
+
+      // Brand-new items not seen in prev → prepend so latest is on top
+      const newItems = dedupedNext.filter((item) => !prevKeySet.has(lineKeyFor(item)));
+
+      return newItems.length > 0 ? [...newItems, ...preserved] : preserved;
+    });
   }, []);
 
   const clearAllNotes = useCallback(() => {
@@ -970,6 +986,7 @@ export default function Cart() {
     enabled: hydrated && visibleCart.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
+    placeholderData: (prev: Map<string, StockStatus> | undefined) => prev,
     queryFn: () => fetchCartAvailability(visibleCart),
   });
 
@@ -1364,13 +1381,14 @@ export default function Cart() {
 
                         <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                           <div className="flex items-center justify-between sm:justify-start gap-3">
-                            <div className="flex items-center rounded-xl border border-border bg-white overflow-hidden shadow-sm">
+                            <div className={`flex items-center rounded-xl border border-border bg-white overflow-hidden shadow-sm${isUnavailable ? " opacity-50" : ""}`}>
                               <button
                                 type="button"
                                 aria-label="Decrease quantity"
                                 className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 transition`}
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={dec}
+                                disabled={isUnavailable}
                               >
                                 −
                               </button>
@@ -1379,7 +1397,8 @@ export default function Cart() {
                                 type="text"
                                 inputMode="numeric"
                                 pattern="[0-9]*"
-                                value={inputValue}
+                                value={isUnavailable ? "—" : inputValue}
+                                disabled={isUnavailable}
                                 onFocus={() => {
                                   focusedQtyKeyRef.current = key;
                                 }}
@@ -1417,6 +1436,7 @@ export default function Cart() {
                                 className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 transition`}
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={inc}
+                                disabled={isUnavailable}
                               >
                                 +
                               </button>

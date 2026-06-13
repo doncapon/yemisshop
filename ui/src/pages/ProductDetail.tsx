@@ -2261,13 +2261,15 @@ export default function ProductDetail() {
       window.dispatchEvent(new Event("cart:updated"));
 
       if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+      const wasExisting = !!existingForCombo;
       toastTimerRef.current = window.setTimeout(() => {
         const linesAfter = readCartLines();
-        showMiniCartToast(
-          toMiniCartRows(linesAfter),
-          { productId: product.id, variantId: variantId ?? null },
-          { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" }
-        );
+        showMiniCartToast({
+          cart: toMiniCartRows(linesAfter),
+          focus: { productId: product.id, variantId: variantId ?? null },
+          opts: { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" },
+          preserveOrder: wasExisting,
+        });
       }, 0);
     } catch (err: any) {
       console.error(err);

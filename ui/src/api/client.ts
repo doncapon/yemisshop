@@ -7,19 +7,27 @@ const normalizePath = (s: string) => s.trim().replace(/\/+$/, "");
 const isDev = import.meta.env.DEV;
 const isNative = Capacitor.isNativePlatform();
 
-// Prefer explicit env; fallback to "/api"
+// Web production base URL (deployed server)
 const PROD_BASE = normalizeBase(String(import.meta.env.VITE_API_URL ?? "")) || "/api";
 
-// In native dev: derive the API base from the WebView's current origin (the Vite
-// dev server URL). This routes all API calls through Vite's proxy to the backend,
-// which works for both emulators (via ADB reverse) and physical devices over LAN
-// without needing a separate port-forwarding rule for port 8080.
-// CapacitorHttp (OkHttp) is enabled, so the chunked-encoding WebView bug doesn't apply.
-const NATIVE_DEV_BASE =
-  normalizeBase(String(import.meta.env.VITE_NATIVE_API_URL ?? "")) ||
-  (typeof window !== "undefined" ? normalizeBase(window.location.origin) : "http://localhost:5173");
+// Native production base — set VITE_NATIVE_API_URL to your backend's LAN IP for device
+// testing (e.g. http://192.168.1.202:8080). Falls back to PROD_BASE so deployed builds work.
+const NATIVE_PROD_BASE =
+  normalizeBase(String(import.meta.env.VITE_NATIVE_API_URL ?? "")) || PROD_BASE;
 
-const baseURL = isDev && isNative ? NATIVE_DEV_BASE : isDev ? "" : PROD_BASE;
+// In native dev (live reload): window.location.origin is the Vite dev server URL.
+// All /api/* calls hit the Vite proxy which forwards to the local backend.
+// Works for emulators (ADB reverse) and physical devices over LAN.
+const NATIVE_DEV_BASE =
+  typeof window !== "undefined"
+    ? normalizeBase(window.location.origin)
+    : "http://localhost:5173";
+
+const baseURL =
+  isDev && isNative ? NATIVE_DEV_BASE
+  : isDev ? ""
+  : isNative ? NATIVE_PROD_BASE
+  : PROD_BASE;
 
 const api = axios.create({
   baseURL,
