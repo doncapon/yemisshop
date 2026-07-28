@@ -1,7 +1,7 @@
 // ui/e2e/helpers.ts
 // Shared helpers for all E2E specs.
 
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -86,6 +86,37 @@ export async function getLocalCartCount(page: Page): Promise<number> {
       return 0;
     }
   });
+}
+
+/**
+ * Click the first "Add to cart" button and wait for the local cart count to
+ * actually increase, polling instead of sleeping a fixed amount.
+ *
+ * The catalog swaps the button for a qty stepper immediately after a
+ * successful add. On a loaded CI runner a click can occasionally land right
+ * as that DOM swap happens, so the click never reaches a handler. Retrying
+ * the click a couple of times (each backed by a poll, not a blind sleep)
+ * absorbs that render race without weakening the assertion.
+ */
+export async function addFirstProductToCart(page: Page): Promise<void> {
+  const addBtn = page.getByRole("button", { name: /add to cart/i }).first();
+  await expect(addBtn).toBeVisible({ timeout: 10_000 });
+
+  const countBefore = await getLocalCartCount(page);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.getByRole("button", { name: /add to cart/i }).first().click();
+    try {
+      await expect
+        .poll(() => getLocalCartCount(page), { timeout: 2_000 })
+        .toBeGreaterThan(countBefore);
+      return;
+    } catch {
+      // Button may have been mid-swap; retry.
+    }
+  }
+
+  throw new Error("Add to cart did not increase the local cart count after 3 attempts");
 }
 
 // ── API mocks ─────────────────────────────────────────────────────────────────
