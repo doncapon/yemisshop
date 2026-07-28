@@ -595,8 +595,10 @@ export default function Cart() {
 
   const isMountedRef = useRef(true);
   const activeRequestIdRef = useRef(0);
-  const lastMirroredServerSigRef = useRef("");
-  const lastPersistedGuestSigRef = useRef("");
+  // null (not "") sentinel so the very first persist of an emptied cart
+  // (whose signature is also "") isn't mistaken for "unchanged, skip write".
+  const lastMirroredServerSigRef = useRef<string | null>(null);
+  const lastPersistedGuestSigRef = useRef<string | null>(null);
   const focusedQtyKeyRef = useRef<string | null>(null);
   const qtyNoteTimersRef = useRef<Record<string, number>>({});
 

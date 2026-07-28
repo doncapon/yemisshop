@@ -2,7 +2,7 @@
 // End-to-end tests for the cart flow.
 
 import { test, expect } from "@playwright/test";
-import { getLocalCartCount, clearSession, setupApiMocks } from "./helpers";
+import { addFirstProductToCart, clearSession, setupApiMocks } from "./helpers";
 
 test.describe("Cart", () => {
   test.beforeEach(async ({ page }) => {
@@ -12,35 +12,20 @@ test.describe("Cart", () => {
   });
 
   test("add to cart from catalog increases cart count", async ({ page }) => {
-    // Find a product with a visible Add to Cart button
-    const addBtn = page.getByRole("button", { name: /add to cart/i }).first();
-    await expect(addBtn).toBeVisible({ timeout: 10_000 });
-
-    const countBefore = await getLocalCartCount(page);
-    await addBtn.click();
-    await page.waitForTimeout(800); // allow cart toast + storage write
-
-    const countAfter = await getLocalCartCount(page);
-    expect(countAfter).toBeGreaterThan(countBefore);
+    await addFirstProductToCart(page);
   });
 
   test("cart page shows added items", async ({ page }) => {
-    // Add a product
-    const addBtn = page.getByRole("button", { name: /add to cart/i }).first();
-    await expect(addBtn).toBeVisible({ timeout: 10_000 });
-    await addBtn.click();
-    await page.waitForTimeout(600);
+    await addFirstProductToCart(page);
 
     // Navigate to cart
     await page.goto("/cart");
     // Either shows item or empty-state — should not crash
     await expect(page.locator("body")).not.toContainText("Something went wrong");
-    // If cart is not empty, we should see at least one article
+
+    // The item we just added must be visible.
     const items = page.locator("article");
-    const count = await items.count();
-    if (count > 0) {
-      await expect(items.first()).toBeVisible();
-    }
+    await expect(items.first()).toBeVisible();
   });
 
   test("cart empty state has a go-shopping link", async ({ page }) => {
@@ -59,43 +44,35 @@ test.describe("Cart", () => {
   });
 
   test("remove button removes an item from the cart", async ({ page }) => {
-    // Add a product first
-    const addBtn = page.getByRole("button", { name: /add to cart/i }).first();
-    await expect(addBtn).toBeVisible({ timeout: 10_000 });
-    await addBtn.click();
-    await page.waitForTimeout(600);
+    await addFirstProductToCart(page);
 
     await page.goto("/cart");
     const removeBtn = page.getByRole("button", { name: /remove/i }).first();
-    const hasRemoveBtn = await removeBtn.isVisible().catch(() => false);
+    await expect(removeBtn).toBeVisible();
 
-    if (hasRemoveBtn) {
-      const itemsBefore = await page.locator("article").count();
-      await removeBtn.click();
-      await page.waitForTimeout(600);
-      const itemsAfter = await page.locator("article").count();
-      expect(itemsAfter).toBeLessThan(itemsBefore);
-    }
+    const itemsBefore = await page.locator("article").count();
+    await removeBtn.click();
+    await page.waitForTimeout(600);
+    const itemsAfter = await page.locator("article").count();
+    expect(itemsAfter).toBeLessThan(itemsBefore);
   });
 
   test("quantity stepper increments qty", async ({ page }) => {
-    const addBtn = page.getByRole("button", { name: /add to cart/i }).first();
-    await expect(addBtn).toBeVisible({ timeout: 10_000 });
-    await addBtn.click();
-    await page.waitForTimeout(600);
+    await addFirstProductToCart(page);
 
     await page.goto("/cart");
 
     const incBtn = page.getByRole("button", { name: /increase quantity|\+/i }).first();
-    const hasIncBtn = await incBtn.isVisible().catch(() => false);
+    await expect(incBtn).toBeVisible();
 
-    if (hasIncBtn) {
-      const qtyInput = page.getByLabel(/quantity/i).first();
-      const qtyBefore = Number(await qtyInput.inputValue());
-      await incBtn.click();
-      await page.waitForTimeout(400);
-      const qtyAfter = Number(await qtyInput.inputValue());
-      expect(qtyAfter).toBe(qtyBefore + 1);
-    }
+    // getByLabel(/quantity/i) also matches the "Increase/Decrease quantity"
+    // buttons since it substring-matches accessible names; scope to the
+    // textbox role so we only ever get the actual <input aria-label="Quantity">.
+    const qtyInput = page.getByRole("textbox", { name: "Quantity" }).first();
+    const qtyBefore = Number(await qtyInput.inputValue());
+    await incBtn.click();
+    await page.waitForTimeout(400);
+    const qtyAfter = Number(await qtyInput.inputValue());
+    expect(qtyAfter).toBe(qtyBefore + 1);
   });
 });
