@@ -3260,7 +3260,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
                   <button
-                    className="text-[11px] text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                    className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
@@ -3310,7 +3310,7 @@ export default function Catalog() {
                             </button>
 
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
                                 }`}
                             >
                               ({count})
@@ -3336,7 +3336,7 @@ export default function Catalog() {
                           >
                             <span className="truncate">{c.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
                                 }`}
                             >
                               ({c.count})
@@ -3354,7 +3354,7 @@ export default function Catalog() {
                   <div className="mb-2 flex items-center justify-between">
                     <h4 className="text-xs font-semibold text-zinc-800">Brands</h4>
                     <button
-                      className="text-[11px] text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                      className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
@@ -3375,7 +3375,7 @@ export default function Catalog() {
                           >
                             <span className="truncate">{b.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
                                 }`}
                             >
                               ({b.count})
@@ -3392,7 +3392,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
                   <button
-                    className="text-[11px] text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                    className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
                     disabled={selectedBucketIdxs.length === 0 && priceMin === "" && priceMax === ""}
                   >
@@ -3409,7 +3409,7 @@ export default function Catalog() {
                     onChange={(e) => { setPriceMin(e.target.value); setPage(1); }}
                     className="w-full min-w-0 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-100"
                   />
-                  <span className="shrink-0 text-[11px] text-zinc-400">–</span>
+                  <span className="shrink-0 text-xs text-zinc-400">–</span>
                   <input
                     type="number"
                     placeholder="Max ₦"
@@ -3435,7 +3435,7 @@ export default function Catalog() {
                         >
                           <span>{bucket.label}</span>
                           <span
-                            className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                            className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
                               }`}
                           >
                             ({count})
@@ -3914,7 +3914,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
                   <button
-                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
@@ -3964,7 +3964,7 @@ export default function Catalog() {
                             </button>
 
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
                                 }`}
                             >
                               ({count})
@@ -3990,7 +3990,7 @@ export default function Catalog() {
                           >
                             <span className="truncate">{c.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
                                 }`}
                             >
                               ({c.count})
@@ -4008,7 +4008,7 @@ export default function Catalog() {
                   <div className="mb-2 flex items-center justify-between">
                     <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
                     <button
-                      className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                      className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
@@ -4030,7 +4030,7 @@ export default function Catalog() {
                           >
                             <span className="truncate">{b.name}</span>
                             <span
-                              className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
                                 }`}
                             >
                               ({b.count})
@@ -4047,7 +4047,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
                   <button
-                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
                     disabled={selectedBucketIdxs.length === 0 && priceMin === "" && priceMax === ""}
                   >
@@ -4064,7 +4064,7 @@ export default function Catalog() {
                     onChange={(e) => { setPriceMin(e.target.value); setPage(1); }}
                     className="w-full min-w-0 rounded-full border border-zinc-200 bg-white px-3 py-2 text-[12px] outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-100"
                   />
-                  <span className="shrink-0 text-[11px] text-zinc-400">–</span>
+                  <span className="shrink-0 text-xs text-zinc-400">–</span>
                   <input
                     type="number"
                     placeholder="Max ₦"
@@ -4090,7 +4090,7 @@ export default function Catalog() {
                         >
                           <span>{bucket.label}</span>
                           <span
-                            className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"
+                            className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
                               }`}
                           >
                             ({count})
