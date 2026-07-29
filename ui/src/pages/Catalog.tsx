@@ -1108,10 +1108,20 @@ const FILTER_SECTION_ACCENT: Record<
   },
 };
 
-function filterPillClasses(section: FilterSection, checked: boolean) {
-  return checked
-    ? FILTER_SECTION_ACCENT[section].checked
-    : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5";
+// Same family as the top-level category gradient, just a shade lighter —
+// reads as "nested" rather than a different section, so it only applies to
+// pills inside the Categories list itself (never to the active-filter chips).
+const CATEGORY_SUBCATEGORY_CHECKED =
+  "border-transparent bg-gradient-to-r from-fuchsia-400 to-purple-400 text-white shadow-sm";
+
+function filterPillClasses(section: FilterSection, checked: boolean, depth = 0) {
+  if (!checked) {
+    return "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5";
+  }
+  if (section === "category" && depth > 0) {
+    return CATEGORY_SUBCATEGORY_CHECKED;
+  }
+  return FILTER_SECTION_ACCENT[section].checked;
 }
 
 /* =========================================================
@@ -2730,16 +2740,33 @@ export default function Catalog() {
 
     const aggregated = aggregateCountsToParents(categoryForest, directCounts);
 
-    const rows: Array<{ node: CategoryNode; count: number; depth: number; hasChildren: boolean }> =
-      [];
+    const selectedSet = new Set(selectedCategories.map(String));
+    const hasSelectedDescendant = (id: string) => {
+      for (const d of catTreeHelpers.getAllDesc(id)) {
+        if (selectedSet.has(d)) return true;
+      }
+      return false;
+    };
+
+    const rows: Array<{
+      node: CategoryNode;
+      count: number;
+      depth: number;
+      hasChildren: boolean;
+      expanded: boolean;
+    }> = [];
 
     const walk = (n: CategoryNode, depth: number) => {
       const count = aggregated.get(n.id) || 0;
       if (count <= 0) return;
 
-      rows.push({ node: n, count, depth, hasChildren: n.children.length > 0 });
+      // Auto-expand (and keep expanded) any ancestor of a selected subcategory,
+      // so the active chip is never hidden behind a collapsed row. Manual
+      // collapse only takes effect once none of its descendants are selected.
+      const isExpanded = !!expandedCats[n.id] || hasSelectedDescendant(n.id);
 
-      const isExpanded = !!expandedCats[n.id];
+      rows.push({ node: n, count, depth, hasChildren: n.children.length > 0, expanded: isExpanded });
+
       if (n.children.length > 0 && isExpanded) {
         for (const c of n.children) walk(c, depth + 1);
       }
@@ -2748,7 +2775,7 @@ export default function Catalog() {
     for (const r of categoryForest) walk(r, 0);
 
     return rows.length ? rows : null;
-  }, [categoryForest, catTreeHelpers, categoryCountsMap, expandedCats]);
+  }, [categoryForest, catTreeHelpers, categoryCountsMap, expandedCats, selectedCategories]);
 
   const purchasedQ = usePurchasedCounts(!isSupplier);
 
@@ -3402,15 +3429,14 @@ export default function Catalog() {
 
                 {categoryTreeUi ? (
                   <ul className="max-h-60 space-y-1.5 overflow-auto pr-1">
-                    {categoryTreeUi.map(({ node, count, depth, hasChildren }) => {
+                    {categoryTreeUi.map(({ node, count, depth, hasChildren, expanded }) => {
                       const checked = selectedCategories.includes(node.id);
-                      const expanded = !!expandedCats[node.id];
                       const pad = Math.min(24, depth * 10);
 
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${filterPillClasses("category", checked)} ${hasChildren ? "cursor-pointer" : ""}`}
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${filterPillClasses("category", checked, depth)} ${hasChildren ? "cursor-pointer" : ""}`}
                             style={{ paddingLeft: 12 + pad }}
                             onClick={() => hasChildren && toggleExpand(node.id)}
                           >
@@ -4064,15 +4090,14 @@ export default function Catalog() {
 
                 {categoryTreeUi ? (
                   <ul className="max-h-56 space-y-1.5 overflow-auto pr-1">
-                    {categoryTreeUi.map(({ node, count, depth, hasChildren }) => {
+                    {categoryTreeUi.map(({ node, count, depth, hasChildren, expanded }) => {
                       const checked = selectedCategories.includes(node.id);
-                      const expanded = !!expandedCats[node.id];
                       const pad = Math.min(20, depth * 10);
 
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${filterPillClasses("category", checked)} ${hasChildren ? "cursor-pointer" : ""}`}
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${filterPillClasses("category", checked, depth)} ${hasChildren ? "cursor-pointer" : ""}`}
                             style={{ paddingLeft: 12 + pad }}
                             onClick={() => hasChildren && toggleExpand(node.id)}
                           >
