@@ -607,7 +607,7 @@ app.use((err: any, _req: any, res: any, _next: any) => {
   });
 });
 
-const PORT = Number(process.env.PORT ?? 8080);
+const PORT = Number(process.env.PORT ?? 8081);
 const HOST = process.env.HOST || "0.0.0.0";
 
 // Only bind a port when running as the real server (not under test)

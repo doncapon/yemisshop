@@ -20,7 +20,7 @@ import {
 
 // ---------------- ENV / constants ----------------
 const APP_URL = process.env.APP_URL || "http://localhost:5173";
-const API_BASE_URL = process.env.API_URL || "http://localhost:8080";
+const API_BASE_URL = process.env.API_URL || "http://localhost:8081";
 const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || "CHANGE_ME_DEV_SECRET";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
