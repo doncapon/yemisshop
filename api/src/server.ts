@@ -326,6 +326,13 @@ app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
+// TEMPORARY — Sentry verification route. Hit this once against the test
+// deployment to confirm errors show up in the Sentry dashboard, then
+// remove this route (and this comment).
+app.get("/debug-sentry", () => {
+  throw new Error("My first Sentry error!");
+});
+
 app.use("/api/auth", authRouter);
 app.use("/api/auth", authSessionRouter);
 app.use("/api/profile", profileRouter);
