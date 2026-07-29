@@ -3046,6 +3046,101 @@ export default function Catalog() {
     (sortKey !== "relevance" ? 1 : 0) +
     (hasCustomPriceRange ? 1 : 0);
 
+  const categoryNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    const walk = (nodes: CategoryNode[]) => {
+      for (const n of nodes) {
+        map.set(n.id, n.name);
+        if (n.children?.length) walk(n.children);
+      }
+    };
+    walk(categoryForest);
+    for (const c of categories) if (!map.has(c.id)) map.set(c.id, c.name);
+    return map;
+  }, [categoryForest, categories]);
+
+  type ActiveFilterChip = { key: string; label: string; section: FilterSection; onRemove: () => void };
+
+  const activeFilterChips = useMemo<ActiveFilterChip[]>(() => {
+    const chips: ActiveFilterChip[] = [];
+
+    for (const id of selectedCategories) {
+      chips.push({
+        key: `category-${id}`,
+        label: categoryNameById.get(id) ?? id,
+        section: "category",
+        onRemove: () => toggleCategory(id),
+      });
+    }
+
+    for (const name of selectedBrands) {
+      chips.push({
+        key: `brand-${name}`,
+        label: name,
+        section: "brand",
+        onRemove: () => toggleBrand(name),
+      });
+    }
+
+    for (const idx of selectedBucketIdxs) {
+      const bucket = PRICE_BUCKETS[idx];
+      if (!bucket) continue;
+      chips.push({
+        key: `price-bucket-${idx}`,
+        label: bucket.label,
+        section: "price",
+        onRemove: () => toggleBucket(idx),
+      });
+    }
+
+    if (priceMin !== "" || priceMax !== "") {
+      const minLabel = priceMin !== "" ? ngn.format(Number(priceMin)) : "₦0";
+      const maxLabel = priceMax !== "" ? ngn.format(Number(priceMax)) : "Any";
+      chips.push({
+        key: "price-range",
+        label: `${minLabel} – ${maxLabel}`,
+        section: "price",
+        onRemove: () => {
+          setPriceMin("");
+          setPriceMax("");
+        },
+      });
+    }
+
+    return chips;
+  }, [
+    selectedCategories,
+    selectedBrands,
+    selectedBucketIdxs,
+    priceMin,
+    priceMax,
+    categoryNameById,
+    PRICE_BUCKETS,
+    toggleCategory,
+    toggleBrand,
+    toggleBucket,
+  ]);
+
+  const renderActiveFilterChips = () => {
+    if (activeFilterChips.length === 0) return null;
+
+    return (
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {activeFilterChips.map((chip) => (
+          <button
+            key={chip.key}
+            type="button"
+            onClick={chip.onRemove}
+            className={`inline-flex max-w-full items-center gap-1 rounded-full px-3 py-1 text-[11px] font-medium transition hover:opacity-90 ${FILTER_SECTION_ACCENT[chip.section].checked}`}
+          >
+            <span className="max-w-[140px] truncate">{chip.label}</span>
+            <X size={12} className="shrink-0" />
+          </button>
+        ))}
+      </div>
+    );
+  };
+
   const hasSearch = !!normalizedDeferredQuery;
   const hasTypedQuery = !!normalizedQuery;
   const shouldShowSuggest = searchFocused && hasTypedQuery;
@@ -3241,6 +3336,8 @@ export default function Catalog() {
                 </button>
               </div>
 
+              {renderActiveFilterChips()}
+
               <div className="mb-3">
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Sort</label>
                 <div className="relative">
@@ -3313,13 +3410,17 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${filterPillClasses("category", checked)}`}
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${filterPillClasses("category", checked)} ${hasChildren ? "cursor-pointer" : ""}`}
                             style={{ paddingLeft: 12 + pad }}
+                            onClick={() => hasChildren && toggleExpand(node.id)}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
-                                onClick={() => toggleExpand(node.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleExpand(node.id);
+                                }}
                                 className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${checked
                                   ? "text-white/90 hover:bg-white/10"
                                   : "text-zinc-600 hover:bg-black/5"
@@ -3865,6 +3966,22 @@ export default function Catalog() {
                 </button>
               </div>
 
+              {activeFilterChips.length > 0 && (
+                <div className="-mt-2 flex flex-wrap gap-1.5">
+                  {activeFilterChips.map((chip) => (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      onClick={chip.onRemove}
+                      className={`inline-flex max-w-full items-center gap-1 rounded-full px-3 py-1 text-[11px] font-medium transition hover:opacity-90 ${FILTER_SECTION_ACCENT[chip.section].checked}`}
+                    >
+                      <span className="max-w-[140px] truncate">{chip.label}</span>
+                      <X size={12} className="shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {/* Sort */}
               <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
                 <h4 className="mb-2 text-[12px] font-semibold text-zinc-900">Sort by</h4>
@@ -3955,13 +4072,17 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${filterPillClasses("category", checked)}`}
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${filterPillClasses("category", checked)} ${hasChildren ? "cursor-pointer" : ""}`}
                             style={{ paddingLeft: 12 + pad }}
+                            onClick={() => hasChildren && toggleExpand(node.id)}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
-                                onClick={() => toggleExpand(node.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleExpand(node.id);
+                                }}
                                 className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${checked
                                   ? "text-white/90 hover:bg-white/10"
                                   : "text-zinc-600 hover:bg-black/5"
