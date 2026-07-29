@@ -11,6 +11,7 @@ import { sendVerifyEmail, sendResetorForgotPasswordEmail } from "../lib/email.js
 import { signJwt, signAccessJwt } from "../lib/jwt.js";
 import { requireAuth, requireVerifySession } from "../middleware/auth.js";
 import { issueOtp, verifyOtp } from "../lib/otp.js";
+import { loginLimiter, otpLimiter, passwordResetLimiter, registerLimiter } from "../middleware/rateLimit.js";
 import { Prisma, SupplierType } from "@prisma/client";
 import {
   setAccessTokenCookie,
@@ -642,6 +643,7 @@ async function markCanonicalPhoneVerified(userId: string, e164?: string | null) 
 // ---------------- LOGIN ----------------
 router.post(
   "/login",
+  loginLimiter,
   wrap(async (req, res) => {
     const { email, password } = (req.body || {}) as {
       email?: string;
@@ -980,6 +982,7 @@ const fmtErr = (e: any) => {
 
 router.post(
   "/resend-verification",
+  otpLimiter,
   wrap(async (req, res) => {
     const email = String(req.body?.email ?? "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "email is required" });
@@ -1041,6 +1044,7 @@ router.post(
 // ---------------- REGISTER ----------------
 router.post(
   "/register",
+  registerLimiter,
   wrap(async (req, res) => {
     const body = RegisterSchema.parse(req.body);
 
@@ -1318,7 +1322,7 @@ router.get("/verify-email", async (req, res) => {
 });
 
 // ---------------- Forgot / Reset password ----------------
-router.post("/forgot-password", async (req, res, next) => {
+router.post("/forgot-password", passwordResetLimiter, async (req, res, next) => {
   try {
     const { email } = ForgotSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
@@ -1346,7 +1350,7 @@ router.post("/forgot-password", async (req, res, next) => {
   }
 });
 
-router.post("/reset-password", async (req, res, next) => {
+router.post("/reset-password", passwordResetLimiter, async (req, res, next) => {
   try {
     const { token, password } = ResetSchema.parse(req.body);
     const user = await prisma.user.findFirst({
@@ -1387,7 +1391,7 @@ router.get("/reset-token/validate", async (req, res, next) => {
 });
 
 // ---------------- OTP Verification (phone) ----------------
-router.post("/verify-otp", requireVerifySession, async (req, res) => {
+router.post("/verify-otp", otpLimiter, requireVerifySession, async (req, res) => {
   const userId = req.user?.id;
   const code = String(req.body?.otp ?? "").trim();
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -1448,7 +1452,7 @@ router.post("/verify-otp", requireVerifySession, async (req, res) => {
 });
 
 // ---------------- Resend OTP (phone) ----------------
-router.post("/resend-otp", requireVerifySession, async (req, res) => {
+router.post("/resend-otp", otpLimiter, requireVerifySession, async (req, res) => {
   try {
     const userId = String(req.user?.id || "");
     if (!userId) {
@@ -1647,7 +1651,7 @@ async function pickUniqueSupplierName(desired: string, rc: string) {
 }
 
 // ---------------- REGISTER SUPPLIER ----------------
-router.post("/register-supplier", async (req, res) => {
+router.post("/register-supplier", registerLimiter, async (req, res) => {
   try {
     const parsed = registerSupplierSchema.parse(req.body ?? {});
 
