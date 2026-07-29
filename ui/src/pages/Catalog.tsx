@@ -3191,7 +3191,7 @@ export default function Catalog() {
                 <h3 className="text-sm font-semibold text-zinc-900">Filter categories & brands</h3>
                 <button
                   type="button"
-                  className="text-xs font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
+                  className="text-xs! font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
                   disabled={!anyActiveFilter && !hasSearch && sortKey === "relevance" && pageSize === 12}
                   onClick={() => {
                     setQuery("");
@@ -3260,7 +3260,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
                   <button
-                    className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                    className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
@@ -3329,7 +3329,7 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${checked
                               ? "bg-zinc-900 text-white"
                               : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
@@ -3354,7 +3354,7 @@ export default function Catalog() {
                   <div className="mb-2 flex items-center justify-between">
                     <h4 className="text-xs font-semibold text-zinc-800">Brands</h4>
                     <button
-                      className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                      className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
@@ -3368,7 +3368,7 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${checked
                               ? "bg-zinc-900 text-white"
                               : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
@@ -3392,7 +3392,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
                   <button
-                    className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                    className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
                     disabled={selectedBucketIdxs.length === 0 && priceMin === "" && priceMax === ""}
                   >
@@ -3428,7 +3428,7 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
+                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${checked
                             ? "bg-zinc-900 text-white"
                             : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                             }`}
@@ -3827,7 +3827,7 @@ export default function Catalog() {
               <div className="flex items-center justify-end">
                 <button
                   type="button"
-                  className="text-[12px] font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
+                  className="text-xs! font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
                   disabled={!anyActiveFilter && !hasSearch && sortKey === "relevance" && pageSize === 12}
                   onClick={() => {
                     setQuery("");
@@ -3914,7 +3914,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
                   <button
-                    className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
@@ -3983,7 +3983,7 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${checked
                               ? "bg-zinc-900 text-white"
                               : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
@@ -4008,7 +4008,7 @@ export default function Catalog() {
                   <div className="mb-2 flex items-center justify-between">
                     <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
                     <button
-                      className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
+                      className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
@@ -4023,7 +4023,7 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${checked
                               ? "bg-zinc-900 text-white"
                               : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                               }`}
@@ -4047,7 +4047,7 @@ export default function Catalog() {
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
                   <button
-                    className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
                     disabled={selectedBucketIdxs.length === 0 && priceMin === "" && priceMax === ""}
                   >
@@ -4083,7 +4083,7 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
+                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${checked
                             ? "bg-zinc-900 text-white"
                             : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
                             }`}
