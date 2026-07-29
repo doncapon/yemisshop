@@ -1080,6 +1080,41 @@ function aggregateCountsToParents(
 }
 
 /* =========================================================
+   Filter section accents — each of Categories / Brands / Price
+   gets its own gradient identity so the panel reads as three
+   distinct groups instead of one flat block of black pills.
+========================================================= */
+
+type FilterSection = "category" | "brand" | "price";
+
+const FILTER_SECTION_ACCENT: Record<
+  FilterSection,
+  { checked: string; panel: string; heading: string }
+> = {
+  category: {
+    checked: "border-transparent bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white shadow-sm",
+    panel: "bg-gradient-to-br from-fuchsia-50/80 to-purple-50/40 border-fuchsia-100",
+    heading: "text-fuchsia-700",
+  },
+  brand: {
+    checked: "border-transparent bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-sm",
+    panel: "bg-gradient-to-br from-cyan-50/80 to-blue-50/40 border-cyan-100",
+    heading: "text-cyan-700",
+  },
+  price: {
+    checked: "border-transparent bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-sm",
+    panel: "bg-gradient-to-br from-amber-50/80 to-orange-50/40 border-amber-100",
+    heading: "text-orange-700",
+  },
+};
+
+function filterPillClasses(section: FilterSection, checked: boolean) {
+  return checked
+    ? FILTER_SECTION_ACCENT[section].checked
+    : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5";
+}
+
+/* =========================================================
    Loader
 ========================================================= */
 
@@ -3256,9 +3291,9 @@ export default function Catalog() {
                 </label>
               </div>
 
-              <div className="mb-4">
+              <div className={`mb-4 rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.category.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
+                  <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.category.heading}`}>Categories</h4>
                   <button
                     className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
@@ -3278,10 +3313,7 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${checked
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${filterPillClasses("category", checked)}`}
                             style={{ paddingLeft: 12 + pad }}
                           >
                             {hasChildren ? (
@@ -3329,10 +3361,7 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${filterPillClasses("category", checked)}`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
@@ -3350,9 +3379,9 @@ export default function Catalog() {
               </div>
 
               {brands.length > 0 && (
-                <div className="mb-4">
+                <div className={`mb-4 rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.brand.panel}`}>
                   <div className="mb-2 flex items-center justify-between">
-                    <h4 className="text-xs font-semibold text-zinc-800">Brands</h4>
+                    <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.brand.heading}`}>Brands</h4>
                     <button
                       className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
@@ -3368,10 +3397,7 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${filterPillClasses("brand", checked)}`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
@@ -3388,9 +3414,9 @@ export default function Catalog() {
                 </div>
               )}
 
-              <div>
+              <div className={`rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.price.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
+                  <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.price.heading}`}>Price</h4>
                   <button
                     className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
@@ -3428,10 +3454,7 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${filterPillClasses("price", checked)}`}
                         >
                           <span>{bucket.label}</span>
                           <span
@@ -3910,9 +3933,9 @@ export default function Catalog() {
                 </button>
               </div>
 
-              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+              <div className={`rounded-[24px] border p-3 ${FILTER_SECTION_ACCENT.category.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
+                  <h4 className={`text-[12px] font-semibold ${FILTER_SECTION_ACCENT.category.heading}`}>Categories</h4>
                   <button
                     className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
@@ -3932,10 +3955,7 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${checked
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${filterPillClasses("category", checked)}`}
                             style={{ paddingLeft: 12 + pad }}
                           >
                             {hasChildren ? (
@@ -3983,10 +4003,7 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${filterPillClasses("category", checked)}`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
@@ -4004,9 +4021,9 @@ export default function Catalog() {
               </div>
 
               {brands.length > 0 && (
-                <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+                <div className={`rounded-[24px] border p-3 ${FILTER_SECTION_ACCENT.brand.panel}`}>
                   <div className="mb-2 flex items-center justify-between">
-                    <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
+                    <h4 className={`text-[12px] font-semibold ${FILTER_SECTION_ACCENT.brand.heading}`}>Brands</h4>
                     <button
                       className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
@@ -4023,10 +4040,7 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${filterPillClasses("brand", checked)}`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
@@ -4043,9 +4057,9 @@ export default function Catalog() {
                 </div>
               )}
 
-              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+              <div className={`rounded-[24px] border p-3 ${FILTER_SECTION_ACCENT.price.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
+                  <h4 className={`text-[12px] font-semibold ${FILTER_SECTION_ACCENT.price.heading}`}>Price</h4>
                   <button
                     className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
@@ -4083,10 +4097,7 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${filterPillClasses("price", checked)}`}
                         >
                           <span>{bucket.label}</span>
                           <span
