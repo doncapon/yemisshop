@@ -1102,12 +1102,12 @@ export default function Cart() {
   if (visibleCart.length === 0) {
     return (
       <SiteLayout>
-        <div className="min-h-[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
-          <div className="pointer-events-none -z-10 absolute -top-24 -left-24 size-80 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
-          <div className="pointer-events-none -z-10 absolute -bottom-28 -right-24 size-96 rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
+        <div className="min-h-[88vh] bg-gradient-to-b from-fuchsia-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
+          <div className="pointer-events-none -z-10 absolute -top-24 -left-24 size-80 rounded-full bg-fuchsia-500/20 blur-3xl animate-pulse" />
+          <div className="pointer-events-none -z-10 absolute -bottom-28 -right-24 size-96 rounded-full bg-purple-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
           <div className="max-w-md w-full text-center relative z-10">
-            <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
+            <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
               Your cart is empty
             </div>
@@ -1115,7 +1115,7 @@ export default function Cart() {
             <p className="mt-1 text-ink-soft">Browse our catalogue and add items to your cart. They’ll show up here for checkout.</p>
             <Link
               to="/"
-              className={`${tap} mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200 transition`}
+              className={`${tap} mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md focus:outline-none focus:ring-4 focus:ring-fuchsia-200 transition`}
             >
               Go shopping
             </Link>
@@ -1127,13 +1127,13 @@ export default function Cart() {
 
   return (
     <SiteLayout>
-      <div className="bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden isolate">
-        <div className="pointer-events-none -z-10 absolute -top-28 -left-24 size-96 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
-        <div className="pointer-events-none -z-10 absolute -bottom-32 -right-28 size-[28rem] rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
+      <div className="bg-gradient-to-b from-fuchsia-50/60 via-bg-soft to-bg-soft relative overflow-hidden isolate">
+        <div className="pointer-events-none -z-10 absolute -top-28 -left-24 size-96 rounded-full bg-fuchsia-500/20 blur-3xl animate-pulse" />
+        <div className="pointer-events-none -z-10 absolute -bottom-32 -right-28 size-[28rem] rounded-full bg-purple-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
         <div className="relative z-10 max-w-[980px] lg:max-w-[980px] xl:max-w-[980px] mx-auto px-3 sm:px-4 md:px-6 py-5 sm:py-8 max-[360px]:px-2 max-[360px]:py-4">
           <div className="mb-4 sm:mb-6 text-center md:text-left">
-            <span className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
+            <span className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
               Review &amp; edit
             </span>
@@ -1546,7 +1546,7 @@ export default function Cart() {
                       <button
                         type="button"
                         disabled
-                        className="mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white opacity-40 cursor-not-allowed"
+                        className="mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white opacity-40 cursor-not-allowed"
                         aria-disabled="true"
                       >
                         <span className="sm:hidden">Checkout</span>
@@ -1570,7 +1570,7 @@ export default function Cart() {
                           //
                         }
                       }}
-                      className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200`}
+                      className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white hover:shadow-md focus:outline-none focus:ring-4 focus:ring-fuchsia-200`}
                     >
                       <span className="sm:hidden">Checkout</span>
                       <span className="hidden sm:inline">Proceed to checkout</span>
@@ -1579,7 +1579,7 @@ export default function Cart() {
 
                   <Link
                     to="/"
-                    className={`${tap} mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 max-[360px]:py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition`}
+                    className={`${tap} mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 max-[360px]:py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-fuchsia-50 transition`}
                   >
                     Continue shopping
                   </Link>

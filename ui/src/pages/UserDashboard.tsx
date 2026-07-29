@@ -1051,7 +1051,7 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
     <SiteLayout>
       <div className="mx-auto max-w-screen-2xl text-[13px] sm:text-[14px]">
         <div className="relative overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(closest-side,rgba(255,0,167,0.08),transparent_70%),radial-gradient(closest-side,rgba(0,204,255,0.10),transparent_70%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(closest-side,rgba(217,70,239,0.08),transparent_70%),radial-gradient(closest-side,rgba(147,51,234,0.10),transparent_70%)]" />
           <div className="relative px-4 pb-3 pt-5 sm:pb-4 sm:pt-7 md:px-8">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 space-y-1">

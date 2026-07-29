@@ -127,7 +127,7 @@ export default function HelpCenter() {
     <SiteLayout>
       <div className="min-h-[80vh] bg-surface">
         {/* Hero */}
-        <section className="border-b bg-gradient-to-br from-primary-700 via-primary-600 to-indigo-700 text-white">
+        <section className="border-b bg-gradient-to-br from-fuchsia-700 via-fuchsia-600 to-purple-700 text-white">
           <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
             <motion.div
               initial="hidden"

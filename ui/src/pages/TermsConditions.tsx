@@ -19,7 +19,7 @@ export default function TermsConditions() {
     <SiteLayout>
       <div className="min-h-[80vh] bg-surface">
         {/* Hero */}
-        <section className="border-b bg-gradient-to-br from-primary-800 via-primary-700 to-indigo-800 text-white">
+        <section className="border-b bg-gradient-to-br from-fuchsia-800 via-fuchsia-700 to-purple-800 text-white">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
             <motion.div
               initial="hidden"

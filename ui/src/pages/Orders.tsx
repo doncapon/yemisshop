@@ -3913,8 +3913,16 @@ export default function OrdersPage() {
     <SiteLayout>
       <div className={`max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 ${T_BASE}`}>
         <div className="mb-3 md:mb-4 flex flex-col gap-3 min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-[28px] leading-[1.05] sm:text-2xl md:text-3xl font-semibold text-ink">
+          <div
+            className={`min-w-0 ${
+              isAdmin ? "" : "rounded-3xl border border-fuchsia-100 bg-gradient-to-br from-fuchsia-50 via-purple-50/40 to-white px-4 py-4 sm:px-5"
+            }`}
+          >
+            <h1
+              className={`text-[28px] leading-[1.05] sm:text-2xl md:text-3xl font-semibold ${
+                isAdmin ? "text-ink" : "bg-gradient-to-r from-fuchsia-700 to-purple-700 bg-clip-text text-transparent"
+              }`}
+            >
               {isAdmin ? "All Orders" : "My Orders"}
             </h1>
             <p className={`mt-1 max-w-[22rem] ${T_SM} text-ink-soft`}>
