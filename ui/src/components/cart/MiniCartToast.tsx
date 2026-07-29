@@ -454,13 +454,14 @@ function MiniCartQtyEditor({
   const canDec = value > 0;
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center overflow-hidden rounded-full border border-zinc-200 bg-white shadow-sm">
       <button
         type="button"
+        aria-label="Decrease quantity"
         disabled={!canDec}
         onClick={() => update(value - 1)}
-        className={`h-6 w-6 rounded-full border bg-white text-sm hover:bg-zinc-50 sm:h-7 sm:w-7 ${
-          !canDec ? "cursor-not-allowed opacity-50" : ""
+        className={`px-2.5 py-1 text-sm! transition hover:bg-black/5 sm:px-3 sm:py-1.5 ${
+          !canDec ? "cursor-not-allowed opacity-40" : ""
         }`}
       >
         −
@@ -468,19 +469,21 @@ function MiniCartQtyEditor({
 
       <input
         type="number"
+        aria-label="Quantity"
         value={value}
         min={0}
         max={maxQty}
         onChange={(e) => update(Number(e.target.value))}
-        className="h-6 w-10 rounded-lg border text-center text-[11px] sm:h-7 sm:w-12 sm:text-xs"
+        className="w-9 border-x border-zinc-200 bg-white text-center text-xs! tabular-nums outline-none sm:w-10 sm:text-sm!"
       />
 
       <button
         type="button"
+        aria-label="Increase quantity"
         disabled={!canInc}
         onClick={() => update(value + 1)}
-        className={`h-6 w-6 rounded-full border bg-white text-sm hover:bg-zinc-50 sm:h-7 sm:w-7 ${
-          !canInc ? "cursor-not-allowed opacity-50" : ""
+        className={`px-2.5 py-1 text-sm! transition hover:bg-black/5 sm:px-3 sm:py-1.5 ${
+          !canInc ? "cursor-not-allowed opacity-40" : ""
         }`}
       >
         +
@@ -748,13 +751,13 @@ export default function MiniCartToastHost() {
             closeToast();
           }, 300);
         }}
-        className={`w-full max-w-[420px] overflow-hidden rounded-2xl border bg-white shadow-2xl transition-all sm:w-[92vw] ${
+        className={`w-full max-w-[420px] overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl transition-all sm:w-[92vw] ${
           open
             ? "pointer-events-auto translate-y-0 opacity-100"
             : "pointer-events-none translate-y-3 opacity-0"
         }`}
       >
-        <div className="bg-gradient-to-r from-fuchsia-600 to-pink-600 p-3 text-white sm:p-4">
+        <div className="bg-gradient-to-r from-fuchsia-600 to-purple-600 p-3 text-white sm:p-4">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <ShoppingCart size={18} className="shrink-0" />
@@ -762,8 +765,13 @@ export default function MiniCartToastHost() {
                 {payload.opts?.title ?? "Added to cart"}
               </span>
             </div>
-            <button type="button" onClick={() => closeToast()} className="shrink-0">
-              <X size={16} />
+            <button
+              type="button"
+              onClick={() => closeToast()}
+              aria-label="Close"
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/15 transition hover:bg-white/25"
+            >
+              <X size={15} />
             </button>
           </div>
         </div>
@@ -771,7 +779,7 @@ export default function MiniCartToastHost() {
         <div className="p-3 sm:p-4">
           <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1 sm:space-y-3">
             {notice ? (
-              <div className="mt-1 rounded-lg bg-rose-600/80 px-2 py-1 text-[11px] font-semibold text-white sm:mt-2 sm:text-[12px]">
+              <div className="mt-1 rounded-lg bg-rose-600/80 px-2 py-1 text-[11px] font-semibold text-white sm:mt-2 sm:text-xs">
                 {notice}
               </div>
             ) : null}
@@ -785,11 +793,11 @@ export default function MiniCartToastHost() {
               return (
                 <div
                   key={stableKey}
-                  className="flex gap-2 rounded-xl border p-2.5 sm:gap-3 sm:p-3"
+                  className="flex gap-2 rounded-xl border border-zinc-200 p-2.5 shadow-sm transition hover:border-zinc-300 sm:gap-3 sm:p-3"
                 >
                   <img
                     src={it.image || "/placeholder.svg"}
-                    className="h-12 w-12 shrink-0 rounded-xl border object-cover sm:h-14 sm:w-14"
+                    className="h-12 w-12 shrink-0 rounded-xl border border-zinc-200 object-cover sm:h-14 sm:w-14"
                     alt={it.title || "Cart item"}
                   />
 
@@ -859,7 +867,7 @@ export default function MiniCartToastHost() {
                         />
 
                         {typeof maxQty === "number" && Number.isFinite(maxQty) ? (
-                          <div className="text-[10px] text-zinc-500 sm:text-[10px]">
+                          <div className="text-[11px] text-zinc-500">
                             Max:{" "}
                             <span className="font-semibold text-zinc-700">
                               {Math.max(0, Math.floor(maxQty))}
@@ -882,7 +890,7 @@ export default function MiniCartToastHost() {
             <button
               type="button"
               onClick={goToCatalog}
-              className="pointer-events-auto w-full rounded-xl border bg-white px-3 py-2 text-xs hover:bg-zinc-50 sm:w-auto sm:text-sm"
+              className="pointer-events-auto w-full rounded-full border border-zinc-200 bg-white px-4 py-2 text-xs! transition hover:bg-zinc-50 sm:w-auto sm:text-sm!"
             >
               Continue shopping
             </button>
@@ -890,7 +898,7 @@ export default function MiniCartToastHost() {
             <button
               type="button"
               onClick={goToCart}
-              className="pointer-events-auto w-full rounded-xl bg-zinc-900 px-3 py-2 text-xs text-white sm:ml-auto sm:w-auto sm:text-sm"
+              className="pointer-events-auto w-full rounded-full bg-zinc-900 px-4 py-2 text-xs! text-white transition hover:bg-black sm:ml-auto sm:w-auto sm:text-sm!"
             >
               View cart →
             </button>
