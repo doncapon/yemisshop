@@ -126,17 +126,6 @@ async function upsertSetting(key: string, value: string, isPublic = false, meta:
   }
 }
 
-function parseIntervalHours(v: unknown): 3 | 4 | 6 | 8 | 12 | 24 {
-  const n = Number(v);
-  if (n === 3 || n === 4 || n === 6 || n === 8 || n === 12 || n === 24) return n;
-  return 6;
-}
-
-function parseTimezone(v: unknown): string {
-  const s = String(v ?? "").trim();
-  return s || "UTC";
-}
-
 function safeJsonParse<T = any>(raw: string | null, fallback: T): T {
   if (!raw) return fallback;
   try {
@@ -416,16 +405,12 @@ router.get("/payout-release-scheduler", requireAuth, requireSuperAdmin, async (_
   try {
     const [
       enabledRaw,
-      intervalRaw,
-      timezoneRaw,
       lastRunAtRaw,
       lastRunStatusRaw,
       lastRunSummaryRaw,
       lastRunErrorRaw,
     ] = await Promise.all([
       readSetting("payoutReleaseSchedulerEnabled"),
-      readSetting("payoutReleaseIntervalHours"),
-      readSetting("payoutReleaseSchedulerTimezone"),
       readSetting("payoutReleaseLastRunAt"),
       readSetting("payoutReleaseLastRunStatus"),
       readSetting("payoutReleaseLastRunSummary"),
@@ -434,8 +419,6 @@ router.get("/payout-release-scheduler", requireAuth, requireSuperAdmin, async (_
 
     return res.json({
       enabled: enabledRaw === null ? true : parseBool(enabledRaw, true),
-      intervalHours: parseIntervalHours(intervalRaw),
-      timezone: parseTimezone(timezoneRaw),
       lastRunAt: lastRunAtRaw || null,
       lastRunStatus: lastRunStatusRaw || null,
       lastRunSummary: safeJsonParse(lastRunSummaryRaw, null),
@@ -450,20 +433,12 @@ router.get("/payout-release-scheduler", requireAuth, requireSuperAdmin, async (_
 router.post("/payout-release-scheduler", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const enabled = parseBool(req.body?.enabled, true);
-    const intervalHours = parseIntervalHours(req.body?.intervalHours);
-    const timezone = parseTimezone(req.body?.timezone);
 
-    await Promise.all([
-      upsertSetting("payoutReleaseSchedulerEnabled", String(enabled)),
-      upsertSetting("payoutReleaseIntervalHours", String(intervalHours)),
-      upsertSetting("payoutReleaseSchedulerTimezone", timezone),
-    ]);
+    await upsertSetting("payoutReleaseSchedulerEnabled", String(enabled));
 
     return res.json({
       ok: true,
       enabled,
-      intervalHours,
-      timezone,
     });
   } catch (e) {
     console.error("POST /api/settings/payout-release-scheduler failed:", e);

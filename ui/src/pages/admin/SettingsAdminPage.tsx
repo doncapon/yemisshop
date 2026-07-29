@@ -17,8 +17,6 @@ type ValueType = "text" | "select";
 
 type PayoutSchedulerCardState = {
   enabled: boolean;
-  intervalHours: 3 | 4 | 6 | 8 | 12 | 24;
-  timezone: string;
   lastRunAt: string | null;
   lastRunStatus: string | null;
   lastRunSummary: {
@@ -42,20 +40,7 @@ const KNOWN_KEY_OPTIONS: Record<string, string[]> = {
   shippingMode: ["DELIVERY", "PICKUP_ONLY"],
 
   payoutReleaseSchedulerEnabled: ["true", "false"],
-  payoutReleaseIntervalHours: ["3", "4", "6", "8", "12", "24"],
-  payoutReleaseSchedulerTimezone: ["UTC", "Europe/London"],
 };
-
-const SCHEDULER_INTERVAL_OPTIONS = [
-  { value: 3, label: "Every 3 hours" },
-  { value: 4, label: "Every 4 hours" },
-  { value: 6, label: "Every 6 hours" },
-  { value: 8, label: "Every 8 hours" },
-  { value: 12, label: "Every 12 hours" },
-  { value: 24, label: "Once daily" },
-] as const;
-
-const SCHEDULER_TIMEZONE_OPTIONS = ["UTC", "Europe/London"];
 
 export default function SettingsAdminPage() {
   const [rows, setRows] = useState<Setting[]>([]);
@@ -67,8 +52,6 @@ export default function SettingsAdminPage() {
   const [schedulerRunningNow, setSchedulerRunningNow] = useState(false);
   const [scheduler, setScheduler] = useState<PayoutSchedulerCardState>({
     enabled: true,
-    intervalHours: 6,
-    timezone: "UTC",
     lastRunAt: null,
     lastRunStatus: null,
     lastRunSummary: null,
@@ -281,8 +264,6 @@ export default function SettingsAdminPage() {
       setSchedulerSaving(true);
       await api.post("/api/settings/payout-release-scheduler", {
         enabled: scheduler.enabled,
-        intervalHours: scheduler.intervalHours,
-        timezone: scheduler.timezone,
       });
       await Promise.all([loadSchedulerCard(), loadSettingsList()]);
       setErr(null);
@@ -333,7 +314,13 @@ export default function SettingsAdminPage() {
               <div>
                 <h2 className="text-lg font-semibold text-zinc-900">Payout Release Scheduler</h2>
                 <p className="text-sm text-zinc-600 mt-1">
-                  Control how often held supplier payouts are checked and released.
+                  Pause or resume automatic payout releases. This blocks both the scheduled
+                  worker and the manual "Run now" button below — it's a real kill switch, not
+                  just a display toggle.
+                </p>
+                <p className="text-xs text-zinc-500 mt-1">
+                  How often the check actually runs is controlled by the Railway Cron Schedule
+                  on the "medium" worker service, not by anything here.
                 </p>
               </div>
 
@@ -342,7 +329,8 @@ export default function SettingsAdminPage() {
                   type="button"
                   className="px-4 py-2 rounded-lg border border-zinc-200 text-zinc-900 disabled:opacity-50"
                   onClick={runSchedulerNow}
-                  disabled={schedulerLoading || schedulerRunningNow}
+                  disabled={schedulerLoading || schedulerRunningNow || !scheduler.enabled}
+                  title={scheduler.enabled ? undefined : "Enable the scheduler first"}
                 >
                   {schedulerRunningNow ? "Running…" : "Run now"}
                 </button>
@@ -377,46 +365,6 @@ export default function SettingsAdminPage() {
                     >
                       <option value="true">Enabled</option>
                       <option value="false">Disabled</option>
-                    </select>
-                  </label>
-
-                  <label className="block">
-                    <div className="text-sm font-medium text-zinc-700 mb-1">Frequency</div>
-                    <select
-                      className="border border-zinc-200 rounded-lg px-3 py-2 bg-white text-zinc-900 w-full focus:outline-none focus:ring-2 focus:ring-zinc-200"
-                      value={String(scheduler.intervalHours)}
-                      onChange={(e) =>
-                        setScheduler((s) => ({
-                          ...s,
-                          intervalHours: Number(e.target.value) as 3 | 4 | 6 | 8 | 12 | 24,
-                        }))
-                      }
-                    >
-                      {SCHEDULER_INTERVAL_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={String(opt.value)}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="block">
-                    <div className="text-sm font-medium text-zinc-700 mb-1">Timezone</div>
-                    <select
-                      className="border border-zinc-200 rounded-lg px-3 py-2 bg-white text-zinc-900 w-full focus:outline-none focus:ring-2 focus:ring-zinc-200"
-                      value={scheduler.timezone}
-                      onChange={(e) =>
-                        setScheduler((s) => ({
-                          ...s,
-                          timezone: e.target.value,
-                        }))
-                      }
-                    >
-                      {SCHEDULER_TIMEZONE_OPTIONS.map((tz) => (
-                        <option key={tz} value={tz}>
-                          {tz}
-                        </option>
-                      ))}
                     </select>
                   </label>
                 </div>
