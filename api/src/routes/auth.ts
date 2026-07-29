@@ -1041,6 +1041,73 @@ router.post(
   })
 );
 
+// ---------------- AUTHED resend verification email ----------------
+// Same cooldown/daily-cap logic as /resend-verification, but for an already
+// logged-in (cookie-authenticated) user resending to their own account email
+// — used by the Profile page and the logged-in branch of the Verify page.
+router.post(
+  "/resend-email",
+  otpLimiter,
+  requireAuth,
+  wrap(async (req, res) => {
+    const userId = String(req.user?.id ?? "").trim();
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const u = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        emailVerifiedAt: true,
+        emailVerifyLastSentAt: true,
+        emailVerifySendCountDay: true,
+      },
+    });
+
+    if (!u) return res.status(404).json({ error: "User not found" });
+
+    if (u.emailVerifiedAt) {
+      return res.json({ ok: true, nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC, expiresInSec: 0 });
+    }
+
+    const now = new Date();
+    const last = u.emailVerifyLastSentAt ? +u.emailVerifyLastSentAt : 0;
+    const since = Math.floor((+now - last) / 1000);
+
+    if (since < EMAIL_RESEND_COOLDOWN_SEC) {
+      return res.status(429).json({
+        error: "Please wait before resending",
+        retryAfterSec: EMAIL_RESEND_COOLDOWN_SEC - since,
+      });
+    }
+
+    if ((u.emailVerifySendCountDay ?? 0) >= EMAIL_DAILY_CAP) {
+      return res.status(429).json({ error: "Daily resend limit reached" });
+    }
+
+    try {
+      await prisma.user.update({
+        where: { id: u.id },
+        data: {
+          emailVerifyLastSentAt: now,
+          emailVerifySendCountDay: (u.emailVerifySendCountDay ?? 0) + 1,
+        },
+      });
+
+      await issueAndEmailEmailVerification(u.id, u.email);
+
+      return res.json({
+        ok: true,
+        nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC,
+        expiresInSec: EMAIL_TTL_MIN * 60,
+      });
+    } catch (e) {
+      console.error("[resend-email] send failed:", fmtErr(e));
+      return res.status(502).json({ error: "Mail send failed", detail: fmtErr(e) });
+    }
+  })
+);
+
 // ---------------- REGISTER ----------------
 router.post(
   "/register",

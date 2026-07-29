@@ -1,4 +1,5 @@
 import "dotenv/config";
+import * as Sentry from "@sentry/node";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -78,6 +79,16 @@ import adminSupplierDocumentsRouter from "./routes/adminSupplierDocuments.js";
 
 import adminShippingRouter from "./routes/adminShipping.js";
 
+
+// Sentry is entirely opt-in: no-op until SENTRY_DSN is set in the
+// environment, so this is inert in dev/CI and safe to leave committed.
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || "development",
+    tracesSampleRate: process.env.NODE_ENV === "production" ? 0.2 : 0,
+  });
+}
 
 const app = express();
 app.set("trust proxy", 1);
@@ -590,6 +601,10 @@ app.use((req, res) => {
   }
   return res.status(404).send("Not Found");
 });
+
+if (process.env.SENTRY_DSN) {
+  Sentry.setupExpressErrorHandler(app);
+}
 
 app.use((err: any, _req: any, res: any, _next: any) => {
   console.error(err);
