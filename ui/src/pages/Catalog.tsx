@@ -3223,11 +3223,11 @@ export default function Catalog() {
         }}
         onTouchEnd={() => setTouchStartX(null)}
       >
-        <div className="hidden border-b border-zinc-200 bg-white shadow-[0_16px_36px_-18px_rgba(15,23,42,0.28)] md:block">
+        <div className="hidden border-b border-fuchsia-100 bg-gradient-to-b from-fuchsia-50 via-purple-50/50 to-white shadow-[0_16px_36px_-18px_rgba(15,23,42,0.28)] md:block">
           <div className="mx-auto max-w-7xl px-4 pb-4 pt-3 md:px-8 md:py-10">
             <div className="flex items-start justify-between gap-6">
               <div className="min-w-0">
-                <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 md:text-4xl">
+                <h1 className="bg-gradient-to-r from-fuchsia-700 to-purple-700 bg-clip-text text-3xl font-semibold tracking-tight text-transparent md:text-4xl">
                   Discover Products
                 </h1>
                 <p className="mt-2 text-sm text-zinc-600 md:text-base">
