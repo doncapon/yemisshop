@@ -55,9 +55,10 @@
         form-action 'self';
         img-src 'self' data: https:;
         font-src 'self' data: https:;
-        style-src 'self' 'unsafe-inline';
-        script-src 'self' https://js.paystack.co 'sha256-Crr0k6ehqLlwP6rZg5dzQbxqTcCHFGnFZyNBFv3d/tw=';
-        connect-src 'self' https://api.dayspringhouse.com https://api.paystack.co capacitor: ionic: http://10.0.2.2:5173 ws://10.0.2.2:5173;
+        style-src 'self' 'unsafe-inline' https://*.tawk.to;
+        script-src 'self' https://js.paystack.co https://*.tawk.to 'sha256-Crr0k6ehqLlwP6rZg5dzQbxqTcCHFGnFZyNBFv3d/tw=';
+        connect-src 'self' https://api.dayspringhouse.com https://api.paystack.co https://*.tawk.to wss://*.tawk.to capacitor: ionic: http://10.0.2.2:5173 ws://10.0.2.2:5173;
+        frame-src 'self' https://*.tawk.to;
       " />
 </head>
 
