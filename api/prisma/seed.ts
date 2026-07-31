@@ -71,7 +71,7 @@ const SEED_BANKS: SeedBankOption[] = [
 function seededAccountNumber(n: number) {
   return `10000000${String(n).padStart(2, "0")}`; // 10 digits
 }
-
+  
 function seededRegistrationNumber(n: number) {
   return `RC-${String(1000000 + n)}`;
 }
