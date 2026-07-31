@@ -1,6 +1,11 @@
 // src/hooks/useTawkAutoVisibility.ts
 import { useEffect, type RefObject } from "react";
 
+function isTawkReady() {
+  const api = (window as any).Tawk_API;
+  return !!(api && typeof api.hideWidget === "function" && typeof api.showWidget === "function");
+}
+
 function hideTawkWidget() {
   const api = (window as any).Tawk_API;
   if (api && typeof api.hideWidget === "function") api.hideWidget();
@@ -13,45 +18,46 @@ function showTawkWidget() {
 
 /**
  * Keeps the Tawk.to bubble hidden while the page is scrolled through, and
- * reveals it once `sentinelRef` (e.g. pagination controls at the end of a
- * product grid) scrolls into view. Restores default visibility on unmount
- * so other pages aren't affected. No-ops entirely if Tawk hasn't loaded
- * (widget unconfigured), since hideTawkWidget/showTawkWidget check first.
+ * reveals it once `sentinelRef` (e.g. the site Footer) scrolls into view.
+ * Polls for Tawk's readiness rather than relying on Tawk_API.onLoad, since
+ * the widget script may swap in a new Tawk_API object once it finishes
+ * loading, silently dropping any callback attached to the earlier stub.
+ * Restores default visibility on unmount so other pages aren't affected.
  */
 export default function useTawkAutoVisibility(sentinelRef: RefObject<Element | null>) {
   useEffect(() => {
-    hideTawkWidget();
+    let desiredVisible = false;
 
-    const api = (window as any).Tawk_API;
-    const previousOnLoad = api?.onLoad;
-    if (api) {
-      api.onLoad = function () {
-        previousOnLoad?.();
-        hideTawkWidget();
-      };
-    }
+    const applyVisibility = () => {
+      if (!isTawkReady()) return;
+      if (desiredVisible) showTawkWidget();
+      else hideTawkWidget();
+    };
+
+    const pollId = window.setInterval(() => {
+      if (isTawkReady()) {
+        applyVisibility();
+        window.clearInterval(pollId);
+      }
+    }, 200);
 
     const node = sentinelRef.current;
-    if (!node) {
-      return () => {
-        showTawkWidget();
-        if (api) api.onLoad = previousOnLoad;
-      };
+    let observer: IntersectionObserver | null = null;
+    if (node) {
+      observer = new IntersectionObserver(
+        ([entry]) => {
+          desiredVisible = entry.isIntersecting;
+          applyVisibility();
+        },
+        { threshold: 0 }
+      );
+      observer.observe(node);
     }
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) showTawkWidget();
-        else hideTawkWidget();
-      },
-      { threshold: 0 }
-    );
-    observer.observe(node);
-
     return () => {
-      observer.disconnect();
+      window.clearInterval(pollId);
+      observer?.disconnect();
       showTawkWidget();
-      if (api) api.onLoad = previousOnLoad;
     };
   }, [sentinelRef]);
 }
