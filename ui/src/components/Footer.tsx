@@ -1,6 +1,6 @@
 // src/components/Footer.tsx
 import { useState, useRef, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import api from "../api/client";
 import useTawkAutoVisibility from "../hooks/useTawkAutoVisibility";
@@ -13,7 +13,9 @@ export default function Footer() {
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const footerRef = useRef<HTMLElement | null>(null);
-  useTawkAutoVisibility(footerRef);
+  const location = useLocation();
+  const isHomepage = location.pathname === "/";
+  useTawkAutoVisibility(footerRef, !isHomepage);
 
   async function handleSubscribe(e: FormEvent) {
     e.preventDefault();

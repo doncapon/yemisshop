@@ -23,9 +23,27 @@ function showTawkWidget() {
  * the widget script may swap in a new Tawk_API object once it finishes
  * loading, silently dropping any callback attached to the earlier stub.
  * Restores default visibility on unmount so other pages aren't affected.
+ *
+ * Pass `enabled={false}` (e.g. on the Catalog/homepage) to opt a page out
+ * of the hide-until-footer behavior — the widget stays shown there instead,
+ * including forcing it visible if a prior page had left it hidden.
  */
-export default function useTawkAutoVisibility(sentinelRef: RefObject<Element | null>) {
+export default function useTawkAutoVisibility(
+  sentinelRef: RefObject<Element | null>,
+  enabled: boolean = true
+) {
   useEffect(() => {
+    if (!enabled) {
+      showTawkWidget();
+      const pollId = window.setInterval(() => {
+        if (isTawkReady()) {
+          showTawkWidget();
+          window.clearInterval(pollId);
+        }
+      }, 200);
+      return () => window.clearInterval(pollId);
+    }
+
     let desiredVisible = false;
 
     const applyVisibility = () => {
@@ -59,5 +77,5 @@ export default function useTawkAutoVisibility(sentinelRef: RefObject<Element | n
       observer?.disconnect();
       showTawkWidget();
     };
-  }, [sentinelRef]);
+  }, [sentinelRef, enabled]);
 }
