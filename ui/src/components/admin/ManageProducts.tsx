@@ -2349,6 +2349,15 @@ export function ManageProducts({
     setPending((p) => ({ ...p, imageUrls: next.join("\n") }));
   }
 
+  function moveImageUrl(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= imagePreviewUrls.length) return;
+
+    const next = [...imagePreviewUrls];
+    [next[index], next[target]] = [next[target], next[index]];
+    setPending((p) => ({ ...p, imageUrls: next.join("\n") }));
+  }
+
   async function loadOfferVariants(productId: string) {
     try {
       const full = await fetchProductFull(productId);
@@ -3962,7 +3971,7 @@ export function ManageProducts({
 
                   {imagePreviewUrls.length > 0 && (
                     <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {imagePreviewUrls.map((u) => (
+                      {imagePreviewUrls.map((u, idx) => (
                         <div key={u} className="relative rounded-xl border overflow-hidden bg-slate-50">
                           <img
                             src={u}
@@ -3973,6 +3982,10 @@ export function ManageProducts({
                             referrerPolicy="no-referrer"
                           />
 
+                          <span className="absolute top-2 left-2 rounded-lg bg-black/60 text-white text-[10px] px-1.5 py-0.5">
+                            {idx === 0 ? "Primary" : `#${idx + 1}`}
+                          </span>
+
                           <button
                             type="button"
                             onClick={() => removeImageUrl(u)}
@@ -3981,6 +3994,27 @@ export function ManageProducts({
                           >
                             Remove
                           </button>
+
+                          <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => moveImageUrl(idx, -1)}
+                              disabled={idx === 0}
+                              className="rounded-lg bg-black/60 text-white text-xs px-2 py-1 hover:bg-black/70 disabled:opacity-30 disabled:hover:bg-black/60"
+                              title="Move earlier"
+                            >
+                              ← Move
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveImageUrl(idx, 1)}
+                              disabled={idx === imagePreviewUrls.length - 1}
+                              className="rounded-lg bg-black/60 text-white text-xs px-2 py-1 hover:bg-black/70 disabled:opacity-30 disabled:hover:bg-black/60"
+                              title="Move later"
+                            >
+                              Move →
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
