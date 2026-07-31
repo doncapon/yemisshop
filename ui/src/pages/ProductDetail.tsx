@@ -1788,7 +1788,6 @@ export default function ProductDetail() {
     return Array.from(new Set(merged));
   }, [product?.imagesJson, matchedVariant?.imagesJson]);
 
-
   const shouldShowOptions = React.useMemo(() => {
     return visibleAxes.length > 0;
   }, [visibleAxes]);
@@ -2020,6 +2019,65 @@ export default function ProductDetail() {
     }, 4000);
     return () => clearInterval(id);
   }, [images.length]);
+
+  // Drag-to-spin: with 5 angle shots per product, dragging left/right across
+  // the main image steps through them like a mini 360° turntable, on top of
+  // (not replacing) the existing hover/touch zoom above.
+  const SPIN_STEP_PX = 28;
+  const spinDragRef = React.useRef({ isDown: false, lastX: 0 });
+
+  const stepMainIndex = React.useCallback(
+    (dir: 1 | -1) => {
+      setMainIndex((i) => (i + dir + images.length) % images.length);
+    },
+    [images.length]
+  );
+
+  const handleSpinMouseDown = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (images.length <= 1) return;
+    spinDragRef.current = { isDown: true, lastX: e.clientX };
+  }, [images.length]);
+
+  const handleSpinMouseMove = React.useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!spinDragRef.current.isDown) return;
+      const delta = e.clientX - spinDragRef.current.lastX;
+      if (Math.abs(delta) >= SPIN_STEP_PX) {
+        stepMainIndex(delta > 0 ? -1 : 1);
+        spinDragRef.current.lastX = e.clientX;
+      }
+    },
+    [stepMainIndex]
+  );
+
+  const handleSpinMouseUp = React.useCallback(() => {
+    spinDragRef.current.isDown = false;
+  }, []);
+
+  const handleSpinTouchStart = React.useCallback((e: React.TouchEvent<HTMLDivElement>) => {
+    if (images.length <= 1) return;
+    const t = e.touches[0];
+    if (!t) return;
+    spinDragRef.current = { isDown: true, lastX: t.clientX };
+  }, [images.length]);
+
+  const handleSpinTouchMove = React.useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      if (!spinDragRef.current.isDown) return;
+      const t = e.touches[0];
+      if (!t) return;
+      const delta = t.clientX - spinDragRef.current.lastX;
+      if (Math.abs(delta) >= SPIN_STEP_PX) {
+        stepMainIndex(delta > 0 ? -1 : 1);
+        spinDragRef.current.lastX = t.clientX;
+      }
+    },
+    [stepMainIndex]
+  );
+
+  const handleSpinTouchEnd = React.useCallback(() => {
+    spinDragRef.current.isDown = false;
+  }, []);
 
   function NoImageBox({ className = "" }: { className?: string }) {
     return (
@@ -2696,13 +2754,15 @@ export default function ProductDetail() {
               <div className="w-full max-w-[420px] sm:max-w-[480px] md:max-w-[540px] lg:max-w-[580px] mx-auto">
                 <div className="relative w-full">
                   <div
-                    className={`relative h-[250px] sm:h-[300px] md:h-[340px] lg:h-[380px] aspect-square w-full rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
+                    className={`relative h-[250px] sm:h-[300px] md:h-[340px] lg:h-[380px] aspect-square w-full rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} ${images.length > 1 ? "cursor-grab active:cursor-grabbing" : ""}`}
                     onMouseEnter={() => { carouselPausedRef.current = true; showMainImg && setIsZooming(true); }}
-                    onMouseLeave={() => { carouselPausedRef.current = false; setIsZooming(false); }}
-                    onMouseMove={handleZoomMove}
-                    onTouchStart={() => showMainImg && setIsZooming(true)}
-                    onTouchMove={handleTouchZoomMove}
-                    onTouchEnd={() => setIsZooming(false)}
+                    onMouseLeave={() => { carouselPausedRef.current = false; setIsZooming(false); handleSpinMouseUp(); }}
+                    onMouseDown={handleSpinMouseDown}
+                    onMouseUp={handleSpinMouseUp}
+                    onMouseMove={(e) => { handleZoomMove(e); handleSpinMouseMove(e); }}
+                    onTouchStart={(e) => { showMainImg && setIsZooming(true); handleSpinTouchStart(e); }}
+                    onTouchMove={(e) => { handleTouchZoomMove(e); handleSpinTouchMove(e); }}
+                    onTouchEnd={() => { setIsZooming(false); handleSpinTouchEnd(); }}
                   >
                     {showMainImg ? (
                       <>
@@ -2711,6 +2771,8 @@ export default function ProductDetail() {
                           alt={product.title || "Product image"}
                           className="w-full h-full object-cover object-top"
                           loading="eager"
+                          draggable={false}
+                          onDragStart={(e) => e.preventDefault()}
                           onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
                         />
 
