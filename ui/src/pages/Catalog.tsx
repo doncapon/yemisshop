@@ -21,6 +21,7 @@ import {
   ChevronDown,
   Heart,
   Layers,
+  MapPin,
 } from "lucide-react";
 
 import SiteLayout from "../layouts/SiteLayout.js";
@@ -92,6 +93,8 @@ type Product = {
   ratingAvg?: number | null;
   ratingCount?: number | null;
 
+  supplierState?: string | null;
+
   status?: string;
 };
 
@@ -104,6 +107,7 @@ type ProductView = Product & {
   _secondaryImg?: string;
   _brandName: string;
   _categoryLabel: string;
+  _supplierState: string | null;
   _searchTitle: string;
   _searchDesc: string;
   _searchCat: string;
@@ -146,6 +150,7 @@ type CatalogPersistedState = {
   selectedCategories: string[];
   selectedBucketIdxs: number[];
   selectedBrands: string[];
+  selectedStates: string[];
   sortKey: SortKey;
   query: string;
   inStockOnly: boolean;
@@ -242,6 +247,9 @@ function readCatalogState(): CatalogPersistedState | null {
         : [],
       selectedBrands: Array.isArray(parsed?.selectedBrands)
         ? parsed.selectedBrands.map(String)
+        : [],
+      selectedStates: Array.isArray(parsed?.selectedStates)
+        ? parsed.selectedStates.map(String)
         : [],
       sortKey,
       query: typeof parsed?.query === "string" ? parsed.query : "",
@@ -391,6 +399,7 @@ const toCategoryKey = (v: any): string => {
 };
 
 const toBrandKey = (v: any): string => norm(cleanText(v));
+const toStateKey = (v: any): string => norm(cleanText(v));
 
 /* =========================================================
    Stock + offers helpers
@@ -1085,7 +1094,7 @@ function aggregateCountsToParents(
    distinct groups instead of one flat block of black pills.
 ========================================================= */
 
-type FilterSection = "category" | "brand" | "price";
+type FilterSection = "category" | "brand" | "price" | "state";
 
 const FILTER_SECTION_ACCENT: Record<
   FilterSection,
@@ -1105,6 +1114,11 @@ const FILTER_SECTION_ACCENT: Record<
     checked: "border-transparent bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-sm",
     panel: "bg-gradient-to-br from-amber-50/80 to-orange-50/40 border-amber-100",
     heading: "text-orange-700",
+  },
+  state: {
+    checked: "border-transparent bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm",
+    panel: "bg-gradient-to-br from-emerald-50/80 to-teal-50/40 border-emerald-100",
+    heading: "text-emerald-700",
   },
 };
 
@@ -1310,7 +1324,7 @@ const SafeImg = memo(function SafeImg({
 type SuggestionItemProps = {
   p: ProductView;
   active: boolean;
-  onClick: (title: string) => void;
+  onClick: (productId: string) => void;
 };
 
 const SuggestionItem = memo(function SuggestionItem({
@@ -1324,7 +1338,7 @@ const SuggestionItem = memo(function SuggestionItem({
         type="button"
         className={`w-full rounded-xl px-2.5 py-2.5 text-left hover:bg-black/5 ${active ? "bg-black/5" : ""
           }`}
-        onClick={() => onClick(p.title)}
+        onClick={() => onClick(p.id)}
       >
         <div className="flex items-center gap-3">
           <SafeImg
@@ -1347,6 +1361,12 @@ const SuggestionItem = memo(function SuggestionItem({
               {p.categoryName ? ` • ${p.categoryName}` : ""}
               {p.brand?.name ? ` • ${p.brand.name}` : ""}
             </div>
+            {p._supplierState && (
+              <div className="mt-0.5 flex items-center gap-1 truncate text-[9px] text-emerald-700 md:text-[10px]">
+                <MapPin size={9} className="shrink-0" />
+                <span className="truncate">Ships from {p._supplierState}</span>
+              </div>
+            )}
           </div>
         </div>
       </button>
@@ -1505,6 +1525,12 @@ const ProductCard = memo(
             {p._brandName ? `${p._brandName} • ` : ""}
             {p._categoryLabel}
           </div>
+          {p._supplierState && (
+            <div className="mt-0.5 flex items-center gap-1 text-[9px] text-emerald-700 md:text-[10px]">
+              <MapPin size={10} className="shrink-0" />
+              <span className="truncate">Ships from {p._supplierState}</span>
+            </div>
+          )}
 
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-sm font-semibold md:text-base">{ngn.format(bestPrice || 0)}</p>
@@ -1815,6 +1841,9 @@ export default function Catalog() {
   const [selectedBrands, setSelectedBrands] = useState<string[]>(
     initialPersisted?.selectedBrands ?? []
   );
+  const [selectedStates, setSelectedStates] = useState<string[]>(
+    initialPersisted?.selectedStates ?? []
+  );
   const [sortKey, setSortKey] = useState<SortKey>(initialPersisted?.sortKey ?? "relevance");
   const [priceMin, setPriceMin] = useState(initialPersisted?.priceMin ?? "");
   const [priceMax, setPriceMax] = useState(initialPersisted?.priceMax ?? "");
@@ -1840,6 +1869,7 @@ export default function Catalog() {
   const deferredSelectedCategories = useDeferredValue(selectedCategories);
   const deferredSelectedBucketIdxs = useDeferredValue(selectedBucketIdxs);
   const deferredSelectedBrands = useDeferredValue(selectedBrands);
+  const deferredSelectedStates = useDeferredValue(selectedStates);
   const deferredInStockOnly = useDeferredValue(inStockOnly);
   const deferredPriceMin = useDeferredValue(priceMin);
   const deferredPriceMax = useDeferredValue(priceMax);
@@ -1863,6 +1893,7 @@ export default function Catalog() {
       selectedCategories,
       selectedBucketIdxs,
       selectedBrands,
+      selectedStates,
       sortKey,
       query: "",
       inStockOnly,
@@ -1877,6 +1908,7 @@ export default function Catalog() {
     selectedCategories,
     selectedBucketIdxs,
     selectedBrands,
+    selectedStates,
     sortKey,
     inStockOnly,
     expandedCats,
@@ -1989,6 +2021,7 @@ export default function Catalog() {
         selectedCategories,
         selectedBucketIdxs,
         selectedBrands,
+        selectedStates,
         sortKey,
         query: "",
         inStockOnly,
@@ -2011,6 +2044,7 @@ export default function Catalog() {
     selectedCategories,
     selectedBucketIdxs,
     selectedBrands,
+    selectedStates,
     sortKey,
     inStockOnly,
     expandedCats,
@@ -2212,6 +2246,7 @@ export default function Catalog() {
             supplierProductOffers: baseOffers,
             ratingAvg: x.ratingAvg != null ? decToNumber(x.ratingAvg) : null,
             ratingCount: x.ratingCount != null ? Number(x.ratingCount) : null,
+            supplierState: x.supplierState ? cleanText(x.supplierState) : null,
             status: String(x.status ?? ""),
           } satisfies Product;
         });
@@ -2284,6 +2319,7 @@ export default function Catalog() {
         _secondaryImg: imageCandidates[1],
         _brandName: brandName,
         _categoryLabel: categoryLabel,
+        _supplierState: cleanText(p.supplierState) || null,
         _searchTitle: norm(cleanText(p.title)),
         _searchDesc: norm(cleanText(p.description)),
         _searchCat: norm(categoryLabel),
@@ -2519,7 +2555,7 @@ export default function Catalog() {
 
   const suggestions = useMemo(() => {
     const q = normalizedQuery;
-    if (!q || q.length < 2) return [];
+    if (!q) return [];
 
     const qIsNumeric = /^\d+$/.test(q);
 
@@ -2561,6 +2597,11 @@ export default function Catalog() {
   const activeBrandSet = useMemo(
     () => new Set(deferredSelectedBrands.map((b) => toBrandKey(b)).filter(Boolean)),
     [deferredSelectedBrands]
+  );
+
+  const activeStateSet = useMemo(
+    () => new Set(deferredSelectedStates.map((s) => toStateKey(s)).filter(Boolean)),
+    [deferredSelectedStates]
   );
 
   const activeBuckets = useMemo(
@@ -2619,6 +2660,7 @@ export default function Catalog() {
     const filteredRows: ProductView[] = [];
     const categoryCountMap = new Map<string, { id: string; name: string; count: number }>();
     const brandCountMap = new Map<string, { name: string; count: number }>();
+    const stateCountMap = new Map<string, { name: string; count: number }>();
     const bucketCounts = PRICE_BUCKETS.map(() => 0);
 
     const customMin =
@@ -2634,6 +2676,7 @@ export default function Catalog() {
     for (const p of queryMatchedProducts) {
       const productCategoryKey = toCategoryKey(p.categoryId);
       const productBrandKey = toBrandKey(p._brandName);
+      const productStateKey = toStateKey(p._supplierState);
 
       const catMatch =
         selectedCategoryEffective.size === 0
@@ -2642,6 +2685,9 @@ export default function Catalog() {
 
       const brandMatch =
         activeBrandSet.size === 0 ? true : activeBrandSet.has(productBrandKey);
+
+      const stateMatch =
+        activeStateSet.size === 0 ? true : activeStateSet.has(productStateKey);
 
       const priceMatch =
         activeBuckets.length === 0 && !hasCustomRange
@@ -2661,7 +2707,8 @@ export default function Catalog() {
 
       if (
         (activeBuckets.length === 0 || priceMatch) &&
-        (activeBrandSet.size === 0 || brandMatch)
+        (activeBrandSet.size === 0 || brandMatch) &&
+        (activeStateSet.size === 0 || stateMatch)
       ) {
         const catName = cleanText(p.categoryName) || "Uncategorized";
         const prev = categoryCountMap.get(productCategoryKey) ?? {
@@ -2675,7 +2722,8 @@ export default function Catalog() {
 
       if (
         (activeBuckets.length === 0 || priceMatch) &&
-        (selectedCategoryEffective.size === 0 || catMatch)
+        (selectedCategoryEffective.size === 0 || catMatch) &&
+        (activeStateSet.size === 0 || stateMatch)
       ) {
         if (productBrandKey) {
           const prev = brandCountMap.get(productBrandKey) ?? {
@@ -2688,13 +2736,29 @@ export default function Catalog() {
       }
 
       if (
+        (activeBuckets.length === 0 || priceMatch) &&
         (selectedCategoryEffective.size === 0 || catMatch) &&
         (activeBrandSet.size === 0 || brandMatch)
+      ) {
+        if (productStateKey) {
+          const prev = stateCountMap.get(productStateKey) ?? {
+            name: cleanText(p._supplierState),
+            count: 0,
+          };
+          prev.count += 1;
+          stateCountMap.set(productStateKey, prev);
+        }
+      }
+
+      if (
+        (selectedCategoryEffective.size === 0 || catMatch) &&
+        (activeBrandSet.size === 0 || brandMatch) &&
+        (activeStateSet.size === 0 || stateMatch)
       ) {
         if (bucketIndex >= 0) bucketCounts[bucketIndex] += 1;
       }
 
-      if (catMatch && brandMatch && priceMatch) {
+      if (catMatch && brandMatch && stateMatch && priceMatch) {
         if (!HIDE_OOS || p._sellable) filteredRows.push(p);
       }
     }
@@ -2708,6 +2772,9 @@ export default function Catalog() {
       brands: Array.from(brandCountMap.values()).sort((a, b) =>
         a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
       ),
+      states: Array.from(stateCountMap.values()).sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+      ),
       visiblePriceBuckets: PRICE_BUCKETS
         .map((bucket, idx) => ({ bucket, idx, count: bucketCounts[idx] || 0 }))
         .filter((x) => x.count > 0),
@@ -2716,6 +2783,7 @@ export default function Catalog() {
     queryMatchedProducts,
     selectedCategoryEffective,
     activeBrandSet,
+    activeStateSet,
     activeBuckets,
     PRICE_BUCKETS,
     HIDE_OOS,
@@ -2726,6 +2794,7 @@ export default function Catalog() {
   const categoryCountsMap = catalogAnalysis.categoryCountsMap;
   const categories = catalogAnalysis.categories;
   const brands = catalogAnalysis.brands;
+  const states = catalogAnalysis.states;
   const visiblePriceBuckets = catalogAnalysis.visiblePriceBuckets;
   const filtered = catalogAnalysis.filtered;
 
@@ -2841,7 +2910,7 @@ export default function Catalog() {
       return;
     }
     setPage(1);
-  }, [selectedCategories, selectedBucketIdxs, selectedBrands, pageSize, sortKey, query, inStockOnly]);
+  }, [selectedCategories, selectedBucketIdxs, selectedBrands, selectedStates, pageSize, sortKey, query, inStockOnly]);
 
   useEffect(() => {
     if (page > totalPages) {
@@ -3018,14 +3087,6 @@ export default function Catalog() {
     setPage(1);
   }, []);
 
-  const applySuggestionToFilter = useCallback((title: string) => {
-    setQuery(title);
-    setSearchFocused(false);
-    setActiveIdx(0);
-    writeCatalogScroll(window.scrollY || window.pageYOffset || 0);
-    setPage(1);
-  }, []);
-
   const toggleCategory = useCallback((id: string) => {
     setSelectedCategories((curr) =>
       curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id]
@@ -3044,10 +3105,17 @@ export default function Catalog() {
     );
   }, []);
 
+  const toggleState = useCallback((name: string) => {
+    setSelectedStates((curr) =>
+      curr.includes(name) ? curr.filter((n) => n !== name) : [...curr, name]
+    );
+  }, []);
+
   const clearFilters = useCallback(() => {
     setSelectedCategories([]);
     setSelectedBucketIdxs([]);
     setSelectedBrands([]);
+    setSelectedStates([]);
     setInStockOnly(true);
     setExpandedCats({});
     setPriceMin("");
@@ -3062,12 +3130,14 @@ export default function Catalog() {
     selectedCategories.length > 0 ||
     selectedBucketIdxs.length > 0 ||
     selectedBrands.length > 0 ||
+    selectedStates.length > 0 ||
     !inStockOnly ||
     hasCustomPriceRange;
 
   const activeFilterCount =
     selectedCategories.length +
     selectedBrands.length +
+    selectedStates.length +
     selectedBucketIdxs.length +
     (!inStockOnly ? 1 : 0) +
     (sortKey !== "relevance" ? 1 : 0) +
@@ -3109,6 +3179,15 @@ export default function Catalog() {
       });
     }
 
+    for (const name of selectedStates) {
+      chips.push({
+        key: `state-${name}`,
+        label: name,
+        section: "state",
+        onRemove: () => toggleState(name),
+      });
+    }
+
     for (const idx of selectedBucketIdxs) {
       const bucket = PRICE_BUCKETS[idx];
       if (!bucket) continue;
@@ -3138,6 +3217,7 @@ export default function Catalog() {
   }, [
     selectedCategories,
     selectedBrands,
+    selectedStates,
     selectedBucketIdxs,
     priceMin,
     priceMax,
@@ -3145,6 +3225,7 @@ export default function Catalog() {
     PRICE_BUCKETS,
     toggleCategory,
     toggleBrand,
+    toggleState,
     toggleBucket,
   ]);
 
@@ -3330,7 +3411,7 @@ export default function Catalog() {
                       key={p.id}
                       p={p}
                       active={i === activeIdx}
-                      onClick={applySuggestionToFilter}
+                      onClick={goToProduct}
                     />
                   ))}
                 </ul>
@@ -3541,6 +3622,47 @@ export default function Catalog() {
                 </div>
               )}
 
+              {states.length > 0 && (
+                <div className={`mb-4 rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.state.panel}`}>
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.state.heading}`}>
+                      Supplier state
+                    </h4>
+                    <button
+                      className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                      onClick={() => setSelectedStates([])}
+                      disabled={selectedStates.length === 0}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <p className="mb-2 text-[11px] text-zinc-500">
+                    Find suppliers near you to cut delivery cost and time.
+                  </p>
+                  <ul className="max-h-44 space-y-1.5 overflow-auto pr-1">
+                    {states.map((s) => {
+                      const checked = selectedStates.includes(s.name);
+                      return (
+                        <li key={s.name}>
+                          <button
+                            onClick={() => toggleState(s.name)}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${filterPillClasses("state", checked)}`}
+                          >
+                            <span className="truncate">{s.name}</span>
+                            <span
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
+                            >
+                              ({s.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
               <div className={`rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.price.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
                   <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.price.heading}`}>Price</h4>
@@ -3610,8 +3732,16 @@ export default function Catalog() {
               >
                 {shouldShowSuggest && (
                   <div
+                    className="fixed inset-0 z-20 bg-black/30 backdrop-blur-sm"
+                    onClick={() => setSearchFocused(false)}
+                    aria-hidden="true"
+                  />
+                )}
+
+                {shouldShowSuggest && (
+                  <div
                     ref={desktopSuggestRef}
-                    className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-2xl"
+                    className="absolute top-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-2xl"
                   >
                     {hasSuggestionResults ? (
                       <ul className="max-h-[45vh] overflow-auto p-2">
@@ -3620,7 +3750,7 @@ export default function Catalog() {
                             key={p.id}
                             p={p}
                             active={i === activeIdx}
-                            onClick={applySuggestionToFilter}
+                            onClick={goToProduct}
                           />
                         ))}
                       </ul>
@@ -3631,7 +3761,7 @@ export default function Catalog() {
                 )}
 
                 <Search
-                  className="absolute left-4 top-1/2 z-10 -translate-y-1/2 text-zinc-500"
+                  className="absolute left-4 top-1/2 z-30 -translate-y-1/2 text-zinc-500"
                   size={18}
                 />
                 <input
@@ -3668,13 +3798,13 @@ export default function Catalog() {
                     }
                   }}
                   placeholder="Search products, brands, or categories…"
-                  className="h-14 w-full rounded-full border border-zinc-200 bg-white/95 pl-11 pr-40 text-[15px] text-zinc-800 backdrop-blur focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
+                  className="relative z-30 h-14 w-full rounded-full border border-zinc-200 bg-white/95 pl-11 pr-40 text-[15px] text-zinc-800 backdrop-blur focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
                   aria-label="Search products"
                 />
 
                 <button
                   type="submit"
-                  className="absolute right-2 top-1/2 inline-flex h-11 min-w-[128px] -translate-y-1/2 items-center justify-center rounded-full bg-zinc-900 px-6 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800"
+                  className="absolute right-2 top-1/2 z-30 inline-flex h-11 min-w-[128px] -translate-y-1/2 items-center justify-center rounded-full bg-zinc-900 px-6 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800"
                 >
                   Search
                 </button>
@@ -4194,6 +4324,48 @@ export default function Catalog() {
                                 }`}
                             >
                               ({b.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {states.length > 0 && (
+                <div className={`rounded-[24px] border p-3 ${FILTER_SECTION_ACCENT.state.panel}`}>
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className={`text-[12px] font-semibold ${FILTER_SECTION_ACCENT.state.heading}`}>
+                      Supplier state
+                    </h4>
+                    <button
+                      className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
+                      onClick={() => setSelectedStates([])}
+                      disabled={selectedStates.length === 0}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <p className="mb-2 text-[11px] text-zinc-500">
+                    Find suppliers near you to cut delivery cost and time.
+                  </p>
+
+                  <ul className="max-h-44 space-y-1.5 overflow-auto pr-1">
+                    {states.map((s) => {
+                      const checked = selectedStates.includes(s.name);
+                      return (
+                        <li key={s.name}>
+                          <button
+                            onClick={() => toggleState(s.name)}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${filterPillClasses("state", checked)}`}
+                          >
+                            <span className="truncate">{s.name}</span>
+                            <span
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
+                            >
+                              ({s.count})
                             </span>
                           </button>
                         </li>
