@@ -1,8 +1,9 @@
 // src/components/Footer.tsx
-import { useState, type FormEvent } from "react";
+import { useState, useRef, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import api from "../api/client";
+import useTawkAutoVisibility from "../hooks/useTawkAutoVisibility";
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
@@ -11,6 +12,8 @@ export default function Footer() {
 
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const footerRef = useRef<HTMLElement | null>(null);
+  useTawkAutoVisibility(footerRef);
 
   async function handleSubscribe(e: FormEvent) {
     e.preventDefault();
@@ -63,7 +66,10 @@ export default function Footer() {
   }
 
   return (
-    <footer className="bg-surface-alt border-t border-[--color-surface-ring] text-ink mt-10 overflow-x-hidden">
+    <footer
+      ref={footerRef}
+      className="bg-surface-alt border-t border-[--color-surface-ring] text-ink mt-10 overflow-x-hidden"
+    >
       <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-8 py-6 sm:py-8">
         {/* Top: brand + summary */}
         <div className="flex flex-col gap-3 sm:gap-5">
