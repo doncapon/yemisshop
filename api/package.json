@@ -25,6 +25,7 @@
     "prestart": "prisma migrate deploy && echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1101.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^6.19.2",
     "@sentry/node": "^10.68.0",

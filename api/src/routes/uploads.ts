@@ -3,15 +3,19 @@ import * as path from "path";
 import * as fs from "fs";
 import { Router, Request, Response, NextFunction } from "express";
 import multer, { MulterError } from "multer";
+import { isR2Configured, uploadBufferToR2 } from "../lib/r2.js";
 
 const router = Router();
 
-// Where to put files (configurable)
+// Local-disk fallback, only used when R2 isn't configured (e.g. local dev
+// without R2 credentials set up). In production, R2 is used instead, since
+// Railway's local disk doesn't survive redeploys.
 const UPLOADS_DIR =
   process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), "uploads");
 
-// Make sure the folder exists
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+if (!isR2Configured()) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 // Helper: ensure a subfolder path is safe (no ../ etc.)
 function safeSubfolder(input: unknown): string {
@@ -31,28 +35,17 @@ function safeSubfolder(input: unknown): string {
   return folder;
 }
 
-// Multer storage
-const storage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    try {
-      const rawFolder = (req.body as any)?.folder;
-      const subfolder = safeSubfolder(rawFolder);
-      const dest = subfolder
-        ? path.join(UPLOADS_DIR, subfolder)
-        : UPLOADS_DIR;
+function buildRelPath(rawFolder: unknown, originalname: string): string {
+  const subfolder = safeSubfolder(rawFolder);
+  const safeName = originalname.replace(/[^\w.\- ]/g, "_");
+  const stamp = Date.now();
+  const filename = `${stamp}-${safeName}`;
+  return subfolder ? `${subfolder}/${filename}` : filename;
+}
 
-      fs.mkdirSync(dest, { recursive: true });
-      cb(null, dest);
-    } catch (err) {
-      cb(err as Error, UPLOADS_DIR);
-    }
-  },
-  filename: (_req, file, cb) => {
-    const safe = file.originalname.replace(/[^\w.\- ]/g, "_");
-    const stamp = Date.now();
-    cb(null, `${stamp}-${safe}`);
-  },
-});
+// Multer storage: always buffer in memory. Whether that buffer ends up in
+// R2 or on local disk is decided per-request in the route handler below.
+const storage = multer.memoryStorage();
 
 // Optional: restrict to images only (set to "true" if you want)
 // For HR docs (PDF, images, etc.), LEAVE THIS FALSE in .env
@@ -128,6 +121,9 @@ function collectFiles(req: Request): Express.Multer.File[] {
  * Optional:
  * - folder: subfolder under UPLOADS_DIR (e.g. "employees/<id>/docs")
  *
+ * Files are stored in Cloudflare R2 when configured (production), or on
+ * local disk as a dev fallback otherwise.
+ *
  * Response:
  * {
  *   ok: true,
@@ -153,46 +149,61 @@ router.post(
     { name: "file", maxCount: 1 },
   ]),
 
-  (req, res) => {
-    const files = collectFiles(req);
+  async (req, res, next) => {
+    try {
+      const files = collectFiles(req);
 
-    if (!files.length) {
-      return res.status(400).json({
-        error:
-          "No files uploaded. Use field 'files' (multi) or 'file' (single).",
+      if (!files.length) {
+        return res.status(400).json({
+          error:
+            "No files uploaded. Use field 'files' (multi) or 'file' (single).",
+        });
+      }
+
+      const base = absoluteBase(req);
+      const rawFolder = (req.body as any)?.folder;
+      const useR2 = isR2Configured();
+
+      const payload = await Promise.all(
+        files.map(async (f) => {
+          const relPath = buildRelPath(rawFolder, f.originalname);
+
+          let absoluteUrl: string;
+          let urlPath: string;
+
+          if (useR2) {
+            absoluteUrl = await uploadBufferToR2(relPath, f.buffer, f.mimetype);
+            urlPath = absoluteUrl;
+          } else {
+            const dest = path.join(UPLOADS_DIR, relPath);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.writeFileSync(dest, f.buffer);
+            urlPath = `/uploads/${encodeURI(relPath)}`;
+            absoluteUrl = `${base}${urlPath}`;
+          }
+
+          return {
+            key: relPath,
+            storageKey: relPath,
+            url: urlPath,
+            absoluteUrl,
+            originalFilename: f.originalname,
+            mimeType: f.mimetype,
+            size: f.size,
+          };
+        })
+      );
+
+      const urls = payload.map((p) => p.url);
+
+      return res.json({
+        ok: true,
+        files: payload,
+        urls, // for backwards compatibility with existing image code
       });
+    } catch (err) {
+      next(err);
     }
-
-    const base = absoluteBase(req);
-
-    const payload = files.map((f) => {
-      // Path on disk, e.g. /app/uploads/employees/123/docs/1730-file.pdf
-      // Convert to a relative key under UPLOADS_DIR
-      let relPath = path.relative(UPLOADS_DIR, f.path);
-      // Normalise to URL-style slashes
-      relPath = relPath.replace(/\\/g, "/");
-
-      // Build URL path including subfolders
-      const urlPath = `/uploads/${encodeURI(relPath)}`;
-
-      return {
-        key: relPath,
-        storageKey: relPath,
-        url: urlPath,
-        absoluteUrl: `${base}${urlPath}`,
-        originalFilename: f.originalname,
-        mimeType: f.mimetype,
-        size: f.size,
-      };
-    });
-
-    const urls = payload.map((p) => p.url);
-
-    return res.json({
-      ok: true,
-      files: payload,
-      urls, // for backwards compatibility with existing image code
-    });
   }
 );
 
