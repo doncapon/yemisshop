@@ -133,9 +133,9 @@ export default function ActivitiesPanel({ canAdmin = true }: { canAdmin?: boolea
         "Could not load activities.";
 
     return (
-        <section className="rounded-2xl border bg-white shadow-sm">
+        <section className="rounded-2xl border bg-white shadow-sm overflow-hidden">
             {/* Header + filters */}
-            <div className="p-4 border-b">
+            <div className="p-4 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div className="text-ink font-semibold">Activity</div>
@@ -179,7 +179,7 @@ export default function ActivitiesPanel({ canAdmin = true }: { canAdmin?: boolea
                     <button
                         type="button"
                         onClick={() => refetch()}
-                        className="w-full sm:w-auto rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-50"
+                        className="w-full sm:w-auto rounded-xl border bg-white px-3 py-2 text-sm hover:bg-blue-50 transition disabled:opacity-50"
                         disabled={isFetching}
                     >
                         {isFetching ? "Refreshing…" : "Refresh"}
@@ -228,7 +228,7 @@ export default function ActivitiesPanel({ canAdmin = true }: { canAdmin?: boolea
                                                 {a.orderId ? (
                                                     <button
                                                         type="button"
-                                                        className="text-xs font-mono underline text-indigo-700"
+                                                        className="text-xs font-mono underline text-blue-700"
                                                         onClick={() => nav(`/orders?open=${encodeURIComponent(String(a.orderId))}`)}
                                                     >
                                                         {a.orderId}
@@ -263,14 +263,14 @@ export default function ActivitiesPanel({ canAdmin = true }: { canAdmin?: boolea
                                 </thead>
                                 <tbody className="divide-y">
                                     {items.map((a) => (
-                                        <tr key={a.id} className="hover:bg-black/5">
+                                        <tr key={a.id} className="hover:bg-blue-50 transition">
                                             <td className="px-3 py-2 whitespace-nowrap">{fmt(a.createdAt)}</td>
                                             <td className="px-3 py-2 whitespace-nowrap">
                                                 {a.orderId ? (
                                                     <code
                                                         role="button"
                                                         tabIndex={0}
-                                                        className="font-mono underline cursor-pointer text-indigo-700"
+                                                        className="font-mono underline cursor-pointer text-blue-700"
                                                         onClick={(e) => {
                                                             e.stopPropagation?.();
                                                             nav(`/orders?open=${encodeURIComponent(String(a.orderId))}`);
@@ -321,14 +321,14 @@ export default function ActivitiesPanel({ canAdmin = true }: { canAdmin?: boolea
 
                             <div className="flex items-center justify-between sm:justify-end gap-2">
                                 <button
-                                    className="px-3 py-1.5 border rounded-lg bg-white hover:bg-black/5 disabled:opacity-50"
+                                    className="px-3 py-1.5 border rounded-lg bg-white hover:bg-blue-50 transition disabled:opacity-50"
                                     disabled={page <= 1 || isFetching}
                                     onClick={() => setPage((p) => Math.max(1, p - 1))}
                                 >
                                     Prev
                                 </button>
                                 <button
-                                    className="px-3 py-1.5 border rounded-lg bg-white hover:bg-black/5 disabled:opacity-50"
+                                    className="px-3 py-1.5 border rounded-lg bg-white hover:bg-blue-50 transition disabled:opacity-50"
                                     disabled={page >= totalPages || isFetching}
                                     onClick={() => setPage((p) => p + 1)}
                                 >

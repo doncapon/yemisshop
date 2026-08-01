@@ -475,7 +475,7 @@ function PreviewModal({
                         <button
                             type="button"
                             onClick={() => openDocumentInNewTab(doc)}
-                            className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50"
+                            className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-blue-50 hover:border-blue-200"
                         >
                             <ExternalLink className="mr-2 h-4 w-4" />
                             Open
@@ -484,7 +484,7 @@ function PreviewModal({
                         <button
                             type="button"
                             onClick={() => downloadDocument(doc)}
-                            className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50"
+                            className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-blue-50 hover:border-blue-200"
                         >
                             <Download className="mr-2 h-4 w-4" />
                             Download
@@ -493,7 +493,7 @@ function PreviewModal({
                         <button
                             type="button"
                             onClick={onClose}
-                            className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50"
+                            className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-blue-50 hover:border-blue-200"
                         >
                             <X className="mr-2 h-4 w-4" />
                             Close
@@ -993,9 +993,9 @@ export default function AdminSupplierDocuments() {
     const panel =
         "rounded-[22px] border border-zinc-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.04)]";
     const input =
-        "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm";
+        "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm";
     const secondaryBtn =
-        "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60";
+        "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-blue-50 hover:border-blue-200 disabled:cursor-not-allowed disabled:opacity-60";
 
     const documentPagination = detail?.documentsPagination || {
         total: 0,
@@ -1134,8 +1134,8 @@ export default function AdminSupplierDocuments() {
                                                                 type="button"
                                                                 onClick={() => setSelectedSupplierId(row.id)}
                                                                 className={`w-full rounded-[22px] border p-4 text-left transition ${selected
-                                                                    ? "border-zinc-900 bg-zinc-900 text-white shadow-lg"
-                                                                    : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
+                                                                    ? "border-blue-600 bg-blue-600 text-white shadow-lg"
+                                                                    : "border-zinc-200 bg-white hover:border-blue-200 hover:bg-blue-50"
                                                                     }`}
                                                             >
                                                                 <div className="flex items-start justify-between gap-3">
@@ -1504,7 +1504,7 @@ export default function AdminSupplierDocuments() {
                                                                                                     }))
                                                                                                 }
                                                                                                 rows={3}
-                                                                                                className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                                                                                                className="w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                                                                                                 placeholder="Optional admin note for approval or rejection"
                                                                                             />
 

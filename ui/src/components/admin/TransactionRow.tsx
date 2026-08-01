@@ -65,13 +65,13 @@ export function TransactionRow({
 
   return (
     <>
-      <tr className="hover:bg-black/5">
+      <tr className="hover:bg-blue-50 transition">
         <td className="px-3 py-3 font-mono">
           <div className="flex items-center gap-2">
             {hasItems ? (
               <button
                 onClick={() => setOpen((v) => !v)}
-                className="inline-flex items-center justify-center w-6 h-6 rounded-md border hover:bg-black/5"
+                className="inline-flex items-center justify-center w-6 h-6 rounded-md border hover:bg-blue-50 transition"
               >
                 {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </button>
@@ -120,7 +120,7 @@ export function TransactionRow({
 
               <button
                 onClick={onRefund}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 transition"
                 title="Refund"
               >
                 <CreditCard size={16} /> Refund

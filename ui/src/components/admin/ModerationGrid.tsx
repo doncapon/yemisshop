@@ -591,7 +591,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
 
                     <button
                       onClick={() => onInspect({ id: p.id, title: p.title, sku: p.sku ?? (null as any) })}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50"
                       title="Go to Manage and open this item"
                     >
                       <Search size={16} /> Inspect
@@ -601,7 +601,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                       onClick={() => openFix(p)}
                       className={[
                         "inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border",
-                        brandMissing || categoryMissing ? "bg-amber-50 hover:bg-amber-100" : "bg-white hover:bg-black/5",
+                        brandMissing || categoryMissing ? "bg-amber-50 hover:bg-amber-100" : "bg-white hover:bg-blue-50",
                       ].join(" ")}
                       title="Quickly set Brand/Category (and optionally create them) then approve"
                     >
@@ -650,7 +650,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
 
                     <button
                       onClick={() => onInspect({ id: p.id, title: p.title, sku: p.sku ?? (null as any) })}
-                      className="w-full inline-flex items-center justify-center gap-2 px-3 py-3 rounded-xl text-sm font-semibold border bg-white hover:bg-black/5"
+                      className="w-full inline-flex items-center justify-center gap-2 px-3 py-3 rounded-xl text-sm font-semibold border bg-white hover:bg-blue-50"
                       title="Go to Manage and open this item"
                     >
                       <Search size={16} /> Inspect
@@ -660,7 +660,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                       onClick={() => openFix(p)}
                       className={[
                         "col-span-2 w-full inline-flex items-center justify-center gap-2 px-3 py-3 rounded-xl text-sm font-semibold border",
-                        brandMissing || categoryMissing ? "bg-amber-50 hover:bg-amber-100" : "bg-white hover:bg-black/5",
+                        brandMissing || categoryMissing ? "bg-amber-50 hover:bg-amber-100" : "bg-white hover:bg-blue-50",
                       ].join(" ")}
                       title="Quickly set Brand/Category (and optionally create them) then approve"
                     >
@@ -771,7 +771,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                     {fixProduct.title || "Untitled"} {fixProduct.sku ? `• ${fixProduct.sku}` : ""}
                   </div>
                 </div>
-                <button className="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5" onClick={closeFix}>
+                <button className="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50" onClick={closeFix}>
                   Close
                 </button>
               </div>
@@ -816,7 +816,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                         />
                       </div>
                       <button
-                        className="mt-2 inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-60"
+                        className="mt-2 inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-60"
                         disabled={createBrandM.isPending}
                         onClick={() => createBrandM.mutate()}
                       >
@@ -875,7 +875,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                         </select>
                       </div>
                       <button
-                        className="mt-2 inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-60"
+                        className="mt-2 inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-60"
                         disabled={createCategoryM.isPending}
                         onClick={() => createCategoryM.mutate()}
                       >
@@ -893,14 +893,14 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
 
               <div className="px-5 py-4 border-t flex items-center justify-end gap-2">
                 <button
-                  className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5"
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-blue-50"
                   onClick={() => onInspect({ id: fixProduct.id, title: fixProduct.title, sku: fixProduct.sku ?? (null as any) })}
                 >
                   Inspect instead
                 </button>
 
                 <button
-                  className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 disabled:opacity-60"
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
                   disabled={saveAndApproveM.isPending}
                   onClick={() => saveAndApproveM.mutate()}
                   title="Save Brand/Category to product (if possible) then approve"

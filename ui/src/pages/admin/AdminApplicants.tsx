@@ -274,13 +274,14 @@ export default function AdminApplicants() {
 
   return (
     <div className="min-h-screen bg-surface flex flex-col">
-      <header className="border-b bg-white/80 backdrop-blur">
-        <div className="max-w-6xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <header className="relative overflow-hidden bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white">
+        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+        <div className="relative max-w-6xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-base sm:text-lg md:text-xl font-semibold text-ink">
+            <h1 className="text-base sm:text-lg md:text-xl font-semibold">
               Job applicants
             </h1>
-            <p className="text-[11px] sm:text-xs text-ink-soft">
+            <p className="text-[11px] sm:text-xs text-white/80">
               View and manage applications submitted via the DaySpring careers page.
             </p>
           </div>
@@ -288,7 +289,7 @@ export default function AdminApplicants() {
             <button
               type="button"
               onClick={() => navigate("/admin")}
-              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-1.5 text-xs sm:text-[13px] text-ink hover:bg-black/5"
+              className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 transition px-3 py-1.5 text-xs sm:text-[13px]"
             >
               <ChevronLeft size={13} />
               Back to admin
@@ -296,7 +297,7 @@ export default function AdminApplicants() {
             <button
               type="button"
               onClick={() => refetch()}
-              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-1.5 text-xs sm:text-[13px] text-ink hover:bg-black/5"
+              className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 transition px-3 py-1.5 text-xs sm:text-[13px]"
             >
               <Clock size={13} className={isFetching ? "animate-spin" : ""} />
               {isFetching ? "Refreshing…" : "Refresh"}
@@ -328,7 +329,7 @@ export default function AdminApplicants() {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search name, email or role…"
-                  className="w-full rounded-xl border border-slate-300/80 bg-white pl-7 pr-2 py-1.5 text-[11px] sm:text-xs text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                  className="w-full rounded-xl border border-slate-300/80 bg-white pl-7 pr-2 py-1.5 text-[11px] sm:text-xs text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                 />
               </div>
 
@@ -336,7 +337,7 @@ export default function AdminApplicants() {
                 <select
                   value={roleFilter}
                   onChange={(e) => setRoleFilter(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                  className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                 >
                   <option value="ALL">All roles</option>
                   {roleOptions.map((r) => (
@@ -354,7 +355,7 @@ export default function AdminApplicants() {
                 <select
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value as JobApplicationStatus | "ALL")}
-                  className="flex-1 rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                  className="flex-1 rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                 >
                   <option value="ALL">All statuses</option>
                   <option value="NEW">New</option>
@@ -366,7 +367,7 @@ export default function AdminApplicants() {
                 <select
                   value={String(pageSize)}
                   onChange={(e) => setPageSize(toInt(e.target.value, 20))}
-                  className="rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                  className="rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                 >
                   {PAGE_SIZE_OPTIONS.map((n) => (
                     <option key={n} value={n}>
@@ -425,7 +426,7 @@ export default function AdminApplicants() {
                     }`}
                   >
                     <div className="flex items-start gap-2">
-                      <div className="mt-[2px] hidden sm:flex h-6 w-6 items-center justify-center rounded-full bg-slate-900/90 text-white text-[11px] font-semibold">
+                      <div className="mt-[2px] hidden sm:flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-white text-[11px] font-semibold">
                         {app.name
                           .split(" ")
                           .map((p) => p[0])
@@ -497,7 +498,7 @@ export default function AdminApplicants() {
                       clearSelection();
                     }}
                     disabled={!hasPrevPage || isFetching}
-                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-xs text-ink hover:bg-black/5 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-xs text-ink hover:bg-blue-50 transition disabled:opacity-50"
                   >
                     <ChevronLeft size={13} />
                     Prev
@@ -515,7 +516,7 @@ export default function AdminApplicants() {
                       clearSelection();
                     }}
                     disabled={!hasNextPage || isFetching}
-                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-xs text-ink hover:bg-black/5 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-xs text-ink hover:bg-blue-50 transition disabled:opacity-50"
                   >
                     Next
                     <ChevronRight size={13} />
@@ -550,7 +551,7 @@ export default function AdminApplicants() {
                             <button
                               type="button"
                               onClick={clearSelection}
-                              className="inline-flex items-center justify-center rounded-full border bg-surface px-1.5 py-1 text-[10px] text-ink-soft hover:bg-black/5"
+                              className="inline-flex items-center justify-center rounded-full border bg-surface px-1.5 py-1 text-[10px] text-ink-soft hover:bg-blue-50 transition"
                             >
                               <X size={12} />
                             </button>
@@ -591,7 +592,7 @@ export default function AdminApplicants() {
                             onChange={(e) =>
                               setLocalStatus(e.target.value as JobApplicationStatus)
                             }
-                            className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                            className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                           >
                             <option value="NEW">New</option>
                             <option value="REVIEWED">Reviewed</option>
@@ -643,7 +644,7 @@ export default function AdminApplicants() {
                                 target="_blank"
                                 rel="noreferrer"
                                 download={selectedApp.cvFilename || undefined}
-                                className="inline-flex items-center gap-1 rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-black/5"
+                                className="inline-flex items-center gap-1 rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-blue-50 transition"
                               >
                                 <FileText size={12} />
                                 Download CV
@@ -682,7 +683,7 @@ export default function AdminApplicants() {
                     value={localNotes}
                     onChange={(e) => setLocalNotes(e.target.value)}
                     rows={4}
-                    className="flex-1 min-h-[80px] rounded-xl border border-slate-300/80 bg-white px-2.5 py-2 text-[11px] sm:text-xs text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm resize-y"
+                    className="flex-1 min-h-[80px] rounded-xl border border-slate-300/80 bg-white px-2.5 py-2 text-[11px] sm:text-xs text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm resize-y"
                     placeholder="Optional notes for HR/admin (not visible to the candidate)…"
                   />
                   <div className="mt-2 flex items-center justify-between gap-2">

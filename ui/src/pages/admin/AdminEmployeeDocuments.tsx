@@ -251,28 +251,29 @@ export default function AdminEmployeeDocuments() {
   return (
     <div className="min-h-screen bg-surface flex flex-col">
       {/* Header */}
-      <header className="border-b bg-white/80 backdrop-blur">
-        <div className="max-w-5xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <header className="relative overflow-hidden bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white">
+        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+        <div className="relative max-w-5xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => navigate("/admin/employees")}
-              className="inline-flex items-center justify-center rounded-full border bg-white px-2 py-1 text-[11px] sm:text-xs text-ink-soft hover:bg-black/5"
+              className="inline-flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 transition px-2 py-1 text-[11px] sm:text-xs"
             >
               <ArrowLeft size={14} className="mr-1" />
               Back
             </button>
             <div>
-              <h1 className="text-base sm:text-lg md:text-xl font-semibold text-ink">
+              <h1 className="text-base sm:text-lg md:text-xl font-semibold">
                 Employee documents
               </h1>
-              <p className="text-[11px] sm:text-xs text-ink-soft">
+              <p className="text-[11px] sm:text-xs text-white/80">
                 Upload and manage HR documents for this employee (passport,
                 NIN, tax, contracts…).
               </p>
-              <p className="text-[10px] text-ink-soft mt-0.5">
+              <p className="text-[10px] text-white/70 mt-0.5">
                 Employee ID:{" "}
-                <span className="font-mono text-[10px] text-ink">
+                <span className="font-mono text-[10px] text-white">
                   {employeeId}
                 </span>
               </p>
@@ -282,7 +283,7 @@ export default function AdminEmployeeDocuments() {
           <button
             type="button"
             onClick={() => refetch()}
-            className="self-start sm:self-auto inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-1.5 text-xs sm:text-[13px] text-ink hover:bg-black/5"
+            className="self-start sm:self-auto inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 transition px-3 py-1.5 text-xs sm:text-[13px]"
           >
             <Clock size={13} className={isFetching ? "animate-spin" : ""} />
             {isFetching ? "Refreshing…" : "Refresh"}
@@ -311,7 +312,7 @@ export default function AdminEmployeeDocuments() {
                 onChange={(e) =>
                   setSelectedKind(e.target.value as EmployeeDocumentKind)
                 }
-                className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
               >
                 <option value="PASSPORT">Passport / ID page</option>
                 <option value="NIN_SLIP">NIN slip</option>
@@ -418,7 +419,7 @@ export default function AdminEmployeeDocuments() {
                       className="px-3 sm:px-4 py-2.5 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
                     >
                       <div className="flex items-start gap-2 min-w-0">
-                        <div className="mt-[2px] flex h-7 w-7 items-center justify-center rounded-full bg-slate-900/90 text-white text-[10px] font-semibold">
+                        <div className="mt-[2px] flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-semibold">
                           {doc.kind === "PASSPORT"
                             ? "PP"
                             : doc.kind === "NIN_SLIP"
@@ -459,14 +460,14 @@ export default function AdminEmployeeDocuments() {
                             <button
                               type="button"
                               onClick={() => setPreviewDoc(doc)}
-                              className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-black/5"
+                              className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-blue-50 transition"
                             >
                               View
                             </button>
                             <a
                               href={url}
                               download={doc.originalFilename || "document"}
-                              className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-black/5"
+                              className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-blue-50 transition"
                             >
                               <Download size={13} className="mr-1" />
                               Download
@@ -514,7 +515,7 @@ export default function AdminEmployeeDocuments() {
                 <a
                   href={previewUrl}
                   download={previewDoc.originalFilename || "document"}
-                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-black/5"
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-blue-50 transition"
                 >
                   <Download size={13} className="mr-1" />
                   Download
@@ -522,7 +523,7 @@ export default function AdminEmployeeDocuments() {
                 <button
                   type="button"
                   onClick={() => setPreviewDoc(null)}
-                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-black/5"
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2 py-1 text-[10px] sm:text-[11px] text-ink hover:bg-blue-50 transition"
                 >
                   <X size={13} className="mr-1" />
                   Close

@@ -278,8 +278,8 @@ function SectionCard({
   right?: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border bg-white shadow-sm">
-      <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+      <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="min-w-[180px]">
           <h3 className="text-ink font-semibold">{title}</h3>
           {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
@@ -318,9 +318,9 @@ function TabButton({
         "overflow-hidden text-[13px] font-medium",
         "sm:w-auto sm:justify-start sm:text-sm sm:px-2.5 sm:py-2",
         active
-          ? "bg-zinc-900 text-white border-zinc-900 shadow-sm"
-          : "bg-white text-zinc-700 border-zinc-200 hover:bg-black/5",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400/60",
+          ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+          : "bg-white text-zinc-700 border-zinc-200 hover:bg-blue-50 hover:border-blue-200",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60",
       ].join(" ")}
     >
       <Icon size={16} className={`shrink-0 ${active ? "text-white" : "text-zinc-600"}`} />
@@ -1085,7 +1085,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
         onClick={onClick}
         className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${emphasis
           ? "bg-emerald-600 text-white border-emerald-600 hover:opacity-90"
-          : "bg-white hover:bg-black/5"
+          : "bg-white hover:bg-blue-50 hover:border-blue-200"
           }`}
         title={label}
       >
@@ -1305,7 +1305,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                   ))}
                   <Link
                     to={`/u/${u.id}/dashboard`}
-                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                   >
                     View dashboard
                   </Link>
@@ -1351,7 +1351,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                   statusUpper
                 );
                 return (
-                  <tr key={u.id} className="hover:bg-black/5">
+                  <tr key={u.id} className="hover:bg-blue-50/60 transition">
                     <td className="px-3 py-3">{u.email}</td>
                     <td className="px-3 py-3">
                       {role === "SUPER_ADMIN" ? (
@@ -1380,7 +1380,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                       <div className="inline-flex flex-wrap items-center gap-2">
                         <Link
                           to={`/u/${u.id}/dashboard`}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                         >
                           View
                         </Link>
@@ -1558,8 +1558,8 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
         onMouseDownCapture={stopHashNav}
       >
         {/* Hero */}
-        <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-sky-700 via-sky-600 to-indigo-700 text-white">
-          <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(255,255,255,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,0,0,0.15),transparent_60%)]" />
+        <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white">
+          <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
           <div className="relative px-4 sm:px-5 md:px-8 py-5 md:py-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -1585,7 +1585,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                 {/* Applicants list */}
                 <Link
                   to="/admin/applicants"
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-white text-sky-800 px-3 py-2 text-sm font-medium shadow-sm hover:bg-sky-50 w-full sm:w-auto"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-white text-blue-800 px-3 py-2 text-sm font-medium shadow-sm hover:bg-blue-50 w-full sm:w-auto"
                 >
                   <Users size={16} />
                   <span className="truncate">View applicants</span>
@@ -2074,8 +2074,8 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                       nav(`/admin?${s.toString()}`, { replace: false });
                     }}
                     className={`flex-1 sm:flex-none px-3 py-2 text-sm ${pTab === "moderation"
-                      ? "bg-zinc-900 text-white"
-                      : "bg-white hover:bg-black/5"
+                      ? "bg-blue-600 text-white"
+                      : "bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                       }`}
                   >
                     Moderation
@@ -2089,8 +2089,8 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                       nav(`/admin?${s.toString()}`, { replace: false });
                     }}
                     className={`flex-1 sm:flex-none px-3 py-2 text-sm ${pTab === "manage"
-                      ? "bg-zinc-900 text-white"
-                      : "bg-white hover:bg-black/5"
+                      ? "bg-blue-600 text-white"
+                      : "bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                       }`}
                   >
                     Manage
@@ -2266,8 +2266,8 @@ function TransactionsSection({
     children: ReactNode;
   }) {
     return (
-      <div className="rounded-2xl border bg-white shadow-sm">
-        <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+        <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="min-w-[180px]">
             <h3 className="text-ink font-semibold">{title}</h3>
             {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
@@ -2313,7 +2313,7 @@ function TransactionsSection({
           </div>
           <button
             onClick={onRefresh}
-            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 w-full sm:w-auto"
+            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition w-full sm:w-auto"
           >
             <RefreshCcw size={16} /> Refresh
           </button>
@@ -2384,13 +2384,13 @@ function TransactionsSection({
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <button
                     onClick={() => onVerify(t.id)}
-                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90"
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700"
                   >
                     Verify
                   </button>
                   <button
                     onClick={() => onRefund(t.id)}
-                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                   >
                     Refund
                   </button>
@@ -3214,7 +3214,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
           <div className="flex items-center justify-end gap-2">
             <button
-              className="rounded-xl border bg-white px-3 py-2 hover:bg-black/5"
+              className="rounded-xl border bg-white px-3 py-2 hover:bg-blue-50/60 transition"
               onClick={() => closeModal()}
               disabled={decideRefundM.isPending}
             >
@@ -3287,7 +3287,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
           <div className="flex items-center justify-end gap-2">
             <button
-              className="rounded-xl border bg-white px-3 py-2 hover:bg-black/5"
+              className="rounded-xl border bg-white px-3 py-2 hover:bg-blue-50/60 transition"
               onClick={() => closeModal()}
               disabled={decideRefundM.isPending}
             >
@@ -3508,7 +3508,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
           <div className="flex flex-wrap items-center justify-end gap-2">
             <button
-              className="rounded-xl border bg-white px-3 py-2 hover:bg-black/5"
+              className="rounded-xl border bg-white px-3 py-2 hover:bg-blue-50/60 transition"
               onClick={() => closeModal()}
               disabled={saving || submittingRefund}
             >
@@ -3516,7 +3516,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
             </button>
 
             <button
-              className="rounded-xl border bg-white px-3 py-2 hover:bg-black/5 disabled:opacity-50"
+              className="rounded-xl border bg-white px-3 py-2 hover:bg-blue-50/60 transition disabled:opacity-50"
               disabled={!canSave || saving || submittingRefund}
               onClick={async () => {
                 try {
@@ -3551,7 +3551,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
             </button>
 
             <button
-              className="rounded-xl bg-zinc-900 px-3 py-2 text-white hover:opacity-90 disabled:opacity-50"
+              className="rounded-xl bg-blue-600 px-3 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
               disabled={submittingRefund || loading}
               onClick={async () => {
                 try {
@@ -3607,8 +3607,8 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
   }
 
   return (
-    <div className="rounded-2xl border bg-white shadow-sm">
-      <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+      <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="min-w-[180px]">
           <h3 className="text-ink font-semibold">Refunds</h3>
           <p className="text-xs text-ink-soft">
@@ -3654,7 +3654,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
           <button
             onClick={() => refundsQ.refetch()}
-            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 text-sm w-full sm:w-auto"
+            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm w-full sm:w-auto"
             disabled={refundsQ.isFetching}
           >
             <RefreshCcw size={16} /> Refresh
@@ -3675,7 +3675,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
         <div className="inline-flex items-center gap-2">
           <button
-            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm disabled:opacity-50"
             disabled={!canPrev || refundsQ.isFetching}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
           >
@@ -3692,7 +3692,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
           </div>
 
           <button
-            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm disabled:opacity-50"
             disabled={!canNext || refundsQ.isFetching}
             onClick={() => setPage((p) => p + 1)}
           >
@@ -3812,13 +3812,13 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <Link
                     to={ordersHref(r.orderId)}
-                    className="inline-flex items-center justify-center px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                    className="inline-flex items-center justify-center px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                   >
                     Order
                   </Link>
 
                   <button
-                    className="inline-flex items-center justify-center px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                    className="inline-flex items-center justify-center px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                     disabled={isMutating}
                     onClick={() => openRefundViewModal(r)}
                   >
@@ -3842,7 +3842,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                   </button>
 
                   <button
-                    className="col-span-2 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 disabled:opacity-50"
+                    className="col-span-2 px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                     disabled={isMutating}
                     onClick={() => openPayoutDetailsModal(r)}
                   >
@@ -3850,7 +3850,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                   </button>
 
                   <button
-                    className="col-span-2 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 disabled:opacity-50"
+                    className="col-span-2 px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                     disabled={isMutating}
                     onClick={() => reconcileRefundM.mutate(r.id)}
                   >
@@ -3921,12 +3921,12 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                 const previewItems = refundItems.slice(0, 2);
 
                 return (
-                  <tr key={r.id} className="hover:bg-black/5">
+                  <tr key={r.id} className="hover:bg-blue-50/60 transition">
                     <td className="px-3 py-3 whitespace-nowrap">
                       {r.orderId ? (
                         <Link
                           to={ordersHref(r.orderId)}
-                          className="font-semibold text-indigo-700 hover:underline"
+                          className="font-semibold text-blue-700 hover:underline"
                           title="Open Orders filtered by this orderId"
                         >
                           {r.orderId}
@@ -4067,7 +4067,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                     >
                       <div className="inline-flex flex-col items-end gap-2">
                         <button
-                          className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                          className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                           disabled={isMutating}
                           onClick={() => openRefundViewModal(r)}
                         >
@@ -4091,7 +4091,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                         </button>
 
                         <button
-                          className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 disabled:opacity-50"
+                          className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                           disabled={isMutating}
                           onClick={() => openPayoutDetailsModal(r)}
                         >
@@ -4099,7 +4099,7 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                         </button>
 
                         <button
-                          className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 disabled:opacity-50"
+                          className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                           disabled={isMutating}
                           onClick={() => reconcileRefundM.mutate(r.id)}
                         >
@@ -4132,8 +4132,8 @@ function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
   const AdminLedgerAny = AdminLedgerPanel as any;
 
   return (
-    <div className="rounded-2xl border bg-white shadow-sm">
-      <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+      <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="min-w-[180px]">
           <h3 className="text-ink font-semibold">Finance</h3>
           <p className="text-xs text-ink-soft">
@@ -4146,8 +4146,8 @@ function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
           <button
             onClick={() => setSubTab("payouts")}
             className={`flex-1 sm:flex-none px-3 py-2 text-sm ${subTab === "payouts"
-              ? "bg-zinc-900 text-white"
-              : "bg-white hover:bg-black/5"
+              ? "bg-blue-600 text-white"
+              : "bg-white hover:bg-blue-50 hover:border-blue-200 transition"
               }`}
           >
             Payouts
@@ -4155,8 +4155,8 @@ function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
           <button
             onClick={() => setSubTab("ledger")}
             className={`flex-1 sm:flex-none px-3 py-2 text-sm ${subTab === "ledger"
-              ? "bg-zinc-900 text-white"
-              : "bg-white hover:bg-black/5"
+              ? "bg-blue-600 text-white"
+              : "bg-white hover:bg-blue-50 hover:border-blue-200 transition"
               }`}
           >
             Ledger
@@ -4197,7 +4197,7 @@ function KpiCard({
           <div className="text-xl font-semibold text-ink mt-0.5">{value}</div>
           {!!hint && <div className="text-xs text-ink-soft mt-1">{hint}</div>}
         </div>
-        <span className="inline-grid place-items-center w-10 h-10 rounded-xl bg-primary-50">
+        <span className="inline-grid place-items-center w-10 h-10 rounded-xl bg-blue-50 text-blue-700">
           <Icon size={18} />
         </span>
       </div>
@@ -4235,7 +4235,7 @@ function KpiCardOverview({
           {!!hint && <div className="text-xs text-ink-soft mt-1">{hint}</div>}
           {!!res && <div className="text-xs text-ink-soft mt-1">{res}</div>}
         </div>
-        <span className="inline-grid place-items-center w-10 h-10 rounded-xl bg-primary-50">
+        <span className="inline-grid place-items-center w-10 h-10 rounded-xl bg-blue-50 text-blue-700">
           <Icon size={18} />
         </span>
       </div>
@@ -4309,10 +4309,10 @@ function QuickAction({
   return (
     <button
       onClick={toAction}
-      className="group rounded-2xl border bg-white p-4 text-left hover:shadow-md transition"
+      className="group rounded-2xl border bg-white p-4 text-left hover:shadow-md hover:border-blue-200 hover:bg-blue-50/40 transition"
     >
       <div className="flex items-center gap-3">
-        <span className="inline-grid place-items-center w-10 h-10 rounded-xl bg-primary-50">
+        <span className="inline-grid place-items-center w-10 h-10 rounded-xl bg-blue-50 text-blue-700">
           <Icon size={18} />
         </span>
         <div>

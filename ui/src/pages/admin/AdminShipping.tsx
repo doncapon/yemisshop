@@ -162,7 +162,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-violet-200 ${props.className || ""}`}
+      className={`w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-200 ${props.className || ""}`}
     />
   );
 }
@@ -171,7 +171,7 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       {...props}
-      className={`w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-violet-200 ${props.className || ""}`}
+      className={`w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-200 ${props.className || ""}`}
     />
   );
 }
@@ -398,11 +398,14 @@ export default function AdminShipping() {
   return (
     <SiteLayout>
       <div className="mx-auto max-w-7xl px-4 py-6 space-y-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-zinc-900">Shipping Admin</h1>
-          <p className="mt-1 text-sm text-zinc-600">
-            Manage zones, platform rates, route cards, and supplier shipping profiles.
-          </p>
+        <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white px-6 py-6">
+          <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+          <div className="relative">
+            <h1 className="text-2xl font-semibold">Shipping Admin</h1>
+            <p className="mt-1 text-sm text-white/80">
+              Manage zones, platform rates, route cards, and supplier shipping profiles.
+            </p>
+          </div>
         </div>
 
         {error && (
@@ -424,7 +427,7 @@ export default function AdminShipping() {
               onClick={() => setTab(key as any)}
               className={
                 tab === key
-                  ? "bg-violet-600 text-white"
+                  ? "bg-blue-600 text-white"
                   : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
               }
             >
@@ -618,7 +621,7 @@ function ZonesTab({
           <Button
             type="button"
             onClick={() => createMut.mutate()}
-            className="bg-violet-600 text-white hover:bg-violet-700"
+            className="bg-blue-600 text-white hover:bg-blue-700"
           >
             Create Zone
           </Button>
@@ -793,7 +796,7 @@ function PlatformRatesTab({
           </label>
         </div>
         <div className="px-4 pb-4">
-          <Button type="button" onClick={() => createMut.mutate()} className="bg-violet-600 text-white hover:bg-violet-700">
+          <Button type="button" onClick={() => createMut.mutate()} className="bg-blue-600 text-white hover:bg-blue-700">
             Create Platform Rate
           </Button>
         </div>
@@ -943,7 +946,7 @@ function PlatformRateRow({
   }
 
   return (
-    <tr className="border-t border-zinc-100 bg-violet-50/40">
+    <tr className="border-t border-zinc-100 bg-blue-50/40">
       <td colSpan={7} className="px-4 py-4">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
           <Select value={form.zoneId} onChange={(e) => setForm((s) => ({ ...s, zoneId: e.target.value }))}>
@@ -979,7 +982,7 @@ function PlatformRateRow({
         </div>
 
         <div className="mt-3 flex gap-2">
-          <Button type="button" onClick={() => saveMut.mutate()} className="bg-violet-600 text-white hover:bg-violet-700">
+          <Button type="button" onClick={() => saveMut.mutate()} className="bg-blue-600 text-white hover:bg-blue-700">
             Save
           </Button>
           <Button type="button" onClick={() => setEditing(false)} className="bg-zinc-100 text-zinc-700 hover:bg-zinc-200">
@@ -1102,7 +1105,7 @@ function RouteRatesTab({
           </label>
         </div>
         <div className="px-4 pb-4">
-          <Button type="button" onClick={() => createMut.mutate()} className="bg-violet-600 text-white hover:bg-violet-700">
+          <Button type="button" onClick={() => createMut.mutate()} className="bg-blue-600 text-white hover:bg-blue-700">
             Create Route Rate
           </Button>
         </div>
@@ -1243,7 +1246,7 @@ function RouteRateRow({
   }
 
   return (
-    <tr className="border-t border-zinc-100 bg-violet-50/40">
+    <tr className="border-t border-zinc-100 bg-blue-50/40">
       <td colSpan={7} className="px-4 py-4">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
           <Select value={form.originZoneCode} onChange={(e) => setForm((s) => ({ ...s, originZoneCode: e.target.value }))}>
@@ -1277,7 +1280,7 @@ function RouteRateRow({
         </div>
 
         <div className="mt-3 flex gap-2">
-          <Button type="button" onClick={() => saveMut.mutate()} className="bg-violet-600 text-white hover:bg-violet-700">
+          <Button type="button" onClick={() => saveMut.mutate()} className="bg-blue-600 text-white hover:bg-blue-700">
             Save
           </Button>
           <Button type="button" onClick={() => setEditing(false)} className="bg-zinc-100 text-zinc-700 hover:bg-zinc-200">
@@ -1429,7 +1432,7 @@ function SupplierProfileRow({
           </label>
 
           <div className="md:col-span-4 flex gap-2">
-            <Button type="button" onClick={() => saveMut.mutate()} className="bg-violet-600 text-white hover:bg-violet-700">
+            <Button type="button" onClick={() => saveMut.mutate()} className="bg-blue-600 text-white hover:bg-blue-700">
               Save Supplier Profile
             </Button>
           </div>

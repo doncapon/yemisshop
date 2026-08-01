@@ -310,7 +310,7 @@ export function VariantsSection() {
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm overflow-visible">
-      <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
+      <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex items-center justify-between">
         <div>
           <h3 className="text-ink font-semibold">Variants</h3>
           <p className="text-xs text-ink-soft">First link options to the product, then create variant combinations.</p>
@@ -339,7 +339,7 @@ export function VariantsSection() {
                   {searchQ.data.map((p: any) => (
                     <button
                       key={p.id}
-                      className="w-full text-left px-3 py-2 hover:bg-black/5"
+                      className="w-full text-left px-3 py-2 hover:bg-blue-50"
                       onClick={() => {
                         setSelectedProduct(p);
                         setQ("");
@@ -440,7 +440,7 @@ export function VariantsSection() {
                                         key={v.id}
                                         type="button"
                                         className={`px-2 py-1 rounded border text-sm ${
-                                          on ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                          on ? "bg-blue-600 text-white border-blue-600" : "bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                                         }`}
                                         onClick={() =>
                                           setLinked((prev) => {

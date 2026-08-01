@@ -170,7 +170,7 @@ export default function AdminEmployeeDetailPanel(props: Props) {
             <button
               type="button"
               onClick={onClearSelection}
-              className="inline-flex items-center justify-center rounded-full border bg-surface px-1.5 py-1 text-[10px] text-ink-soft hover:bg-black/5"
+              className="inline-flex items-center justify-center rounded-full border bg-surface px-1.5 py-1 text-[10px] text-ink-soft hover:bg-blue-50 transition"
             >
               <X size={12} />
             </button>
@@ -251,7 +251,7 @@ export default function AdminEmployeeDetailPanel(props: Props) {
               <select
                 value={effectiveStatus}
                 onChange={(e) => setLocalStatus(e.target.value as EmployeeStatus)}
-                className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
               >
                 <option value="ACTIVE">Active</option>
                 <option value="PROBATION">Probation</option>
@@ -301,7 +301,7 @@ export default function AdminEmployeeDetailPanel(props: Props) {
                     step={1000}
                     value={localBaseSalary}
                     onChange={(e) => setLocalBaseSalary(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300/80 bg-white pl-5 pr-2 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    className="w-full rounded-xl border border-slate-300/80 bg-white pl-5 pr-2 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                   />
                 </div>
               </div>
@@ -314,7 +314,7 @@ export default function AdminEmployeeDetailPanel(props: Props) {
                   onChange={(e) =>
                     setLocalPayFrequency(e.target.value as EmployeePayFrequency | "")
                   }
-                  className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                  className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                 >
                   <option value="">Not set</option>
                   <option value="MONTHLY">{payFreqLabelMap.MONTHLY}</option>
@@ -351,7 +351,7 @@ export default function AdminEmployeeDetailPanel(props: Props) {
                     type="text"
                     value={localBankName}
                     onChange={(e) => setLocalBankName(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                   />
                 </div>
                 <div className="space-y-1">
@@ -362,7 +362,7 @@ export default function AdminEmployeeDetailPanel(props: Props) {
                     type="text"
                     value={localBankCode}
                     onChange={(e) => setLocalBankCode(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                   />
                 </div>
               </div>
@@ -376,7 +376,7 @@ export default function AdminEmployeeDetailPanel(props: Props) {
                     type="text"
                     value={localAccountNumber}
                     onChange={(e) => setLocalAccountNumber(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                   />
                   <p className="mt-0.5 text-[9px] text-zinc-400">
                     Displayed as: {maskedAccountNumber}
@@ -390,7 +390,7 @@ export default function AdminEmployeeDetailPanel(props: Props) {
                     type="text"
                     value={localAccountName}
                     onChange={(e) => setLocalAccountName(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] sm:text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-200 transition shadow-sm"
                   />
                 </div>
               </div>

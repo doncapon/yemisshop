@@ -383,10 +383,11 @@ const AdminEmployees: React.FC = () => {
 
     return (
         <div className="p-6 space-y-6">
-            <header className="flex items-center justify-between gap-4">
-                <div>
+            <header className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white px-6 py-6 flex items-center justify-between gap-4">
+                <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+                <div className="relative">
                     <h1 className="text-2xl font-semibold">Employees</h1>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-white/80">
                         Manage DaySpring staff records and payroll readiness.
                     </p>
                 </div>
@@ -394,7 +395,7 @@ const AdminEmployees: React.FC = () => {
                 <button
                     type="button"
                     onClick={openCreate}
-                    className="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                    className="relative inline-flex items-center px-4 py-2 text-sm font-medium rounded-md bg-white text-blue-800 hover:bg-blue-50 shadow-sm"
                 >
                     + New Employee
                 </button>
@@ -604,7 +605,7 @@ const AdminEmployees: React.FC = () => {
                                                     <button
                                                         type="button"
                                                         onClick={() => openEdit(emp)}
-                                                        className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
+                                                        className="px-2 py-1 rounded border text-xs hover:bg-blue-50 transition"
                                                     >
                                                         Edit
                                                     </button>
@@ -613,7 +614,7 @@ const AdminEmployees: React.FC = () => {
                                                         onClick={() =>
                                                             navigate(`/admin/employees/${emp.id}/documents`)
                                                         }
-                                                        className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
+                                                        className="px-2 py-1 rounded border text-xs hover:bg-blue-50 transition"
                                                     >
                                                         Documents
                                                     </button>
@@ -947,7 +948,7 @@ const AdminEmployees: React.FC = () => {
                                     type="button"
                                     onClick={closeForm}
                                     disabled={isSaving}
-                                    className="px-3 py-1.5 border rounded text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                                    className="px-3 py-1.5 border rounded text-xs text-gray-700 hover:bg-blue-50 transition disabled:opacity-50"
                                 >
                                     Cancel
                                 </button>

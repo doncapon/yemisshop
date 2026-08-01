@@ -167,19 +167,20 @@ export default function AdminNewsletterPage() {
             </div>
 
             {/* Header */}
-            <div className="mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div>
-                    <h1 className="text-xl sm:text-2xl font-semibold text-ink flex items-center gap-2">
-                        <Mail className="h-5 w-5 text-primary-600" />
+            <div className="mb-4 relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white px-4 sm:px-5 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+                <div className="relative">
+                    <h1 className="text-xl sm:text-2xl font-semibold flex items-center gap-2">
+                        <Mail className="h-5 w-5" />
                         <span>Newsletter Broadcast</span>
                     </h1>
-                    <p className="text-xs sm:text-sm text-ink-soft mt-1 max-w-xl">
+                    <p className="text-xs sm:text-sm text-white/80 mt-1 max-w-xl">
                         Send occasional updates to all newsletter subscribers.
                         Start with a <strong>dry run</strong> to see how many users will receive it.
                     </p>
                 </div>
 
-                <div className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-3 py-1 text-[11px] text-amber-800 border border-amber-200">
+                <div className="relative inline-flex items-center gap-1 rounded-full bg-white/10 px-3 py-1 text-[11px]">
                     <AlertCircle className="h-3.5 w-3.5" />
                     <span>Admins only</span>
                 </div>

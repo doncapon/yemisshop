@@ -809,7 +809,7 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
         <button
           type="button"
           onClick={() => setSupplierSearch("")}
-          className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 md:ml-auto"
+          className="px-3 py-2 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition md:ml-auto"
           style={{ visibility: supplierSearch.trim() ? "visible" : "hidden" }}
         >
           Clear
@@ -1081,7 +1081,7 @@ export function CatalogSettingsSection(props: {
         className={`rounded-2xl border bg-white shadow-sm overflow-visible ${className ?? ""}`}
         style={disableAnchor ? ({ overflowAnchor: "none" } as any) : undefined}
       >
-        <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
+        <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex items-center justify-between">
           <div>
             <h3 className="text-ink font-semibold">{title}</h3>
             {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
@@ -1217,9 +1217,12 @@ export function CatalogSettingsSection(props: {
           <CategoryForm categories={categoriesQ.data ?? []} onCreate={(payload) => createCategory.mutate(payload)} />
         )}
 
-        <div className="border rounded-xl overflow-x-auto">
+        <div className="text-xs text-ink-soft mb-2">
+          {(categoriesQ.data ?? []).length} categor{(categoriesQ.data ?? []).length === 1 ? "y" : "ies"}
+        </div>
+        <div className="border rounded-xl overflow-auto max-h-[420px]">
           <table className="w-full text-sm">
-            <thead className="bg-zinc-50">
+            <thead className="bg-zinc-50 sticky top-0 z-10">
               <tr>
                 <th className="text-left px-3 py-2">Name</th>
                 <th className="text-left px-3 py-2">Slug</th>
@@ -1280,9 +1283,12 @@ export function CatalogSettingsSection(props: {
       {/* Brands */}
       <SectionCard title="Brands" subtitle="Manage brand metadata">
         {canEdit && <BrandForm onCreate={(payload) => createBrand.mutate(payload)} />}
-        <div className="border rounded-xl overflow-x-auto">
+        <div className="text-xs text-ink-soft mb-2">
+          {(brandsQ.data ?? []).length} brand{(brandsQ.data ?? []).length === 1 ? "" : "s"}
+        </div>
+        <div className="border rounded-xl overflow-auto max-h-[420px]">
           <table className="w-full text-sm">
-            <thead className="bg-zinc-50">
+            <thead className="bg-zinc-50 sticky top-0 z-10">
               <tr>
                 <th className="text-left px-3 py-2">Name</th>
                 <th className="text-left px-3 py-2">Slug</th>
@@ -1350,7 +1356,11 @@ export function CatalogSettingsSection(props: {
       <SectionCard title="Attributes" subtitle="Define attribute schema & options">
         {canEdit && <AttributeForm onCreate={(payload) => createAttribute.mutate(payload)} />}
 
-        <div className="grid gap-3">
+        <div className="text-xs text-ink-soft mb-2">
+          {(attributesQ.data ?? []).length} attribute{(attributesQ.data ?? []).length === 1 ? "" : "s"}
+        </div>
+
+        <div className="grid gap-3 overflow-y-auto max-h-[560px] pr-1">
           {(attributesQ.data ?? []).map((a: AdminAttribute) => {
             const used = attributeUsage[a.id] || 0;
 

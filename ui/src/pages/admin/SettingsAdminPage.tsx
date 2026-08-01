@@ -300,7 +300,10 @@ export default function SettingsAdminPage() {
     <SiteLayout>
       <div className="min-h-[calc(100vh-64px)] bg-zinc-50">
         <div className="p-6 max-w-5xl mx-auto">
-          <h1 className="text-2xl font-semibold mb-4 text-zinc-900">Settings</h1>
+          <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white px-6 py-6 mb-4">
+            <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+            <h1 className="relative text-2xl font-semibold">Settings</h1>
+          </div>
 
           {err && (
             <div className="bg-white border border-zinc-200 text-zinc-800 px-3 py-2 rounded-lg mb-4">
@@ -337,7 +340,7 @@ export default function SettingsAdminPage() {
 
                 <button
                   type="button"
-                  className="px-4 py-2 rounded-lg bg-zinc-900 text-white disabled:opacity-50"
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                   onClick={saveSchedulerCard}
                   disabled={schedulerLoading || schedulerSaving}
                 >
@@ -577,7 +580,7 @@ export default function SettingsAdminPage() {
             <div>
               <button
                 type="submit"
-                className="bg-zinc-900 text-white px-4 py-2 rounded-lg disabled:opacity-50"
+                className="bg-blue-600 text-white hover:bg-blue-700 px-4 py-2 rounded-lg disabled:opacity-50"
                 disabled={
                   !creating.key ||
                   !creating.value ||

@@ -1053,7 +1053,7 @@ export function ManageProducts({
               type="button"
               onClick={() => goToPage(1)}
               disabled={currentPage === 1}
-              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-50"
             >
               First
             </button>
@@ -1062,7 +1062,7 @@ export function ManageProducts({
               type="button"
               onClick={() => goToPage(currentPage - 1)}
               disabled={currentPage === 1}
-              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-50"
             >
               Prev
             </button>
@@ -1075,7 +1075,7 @@ export function ManageProducts({
               type="button"
               onClick={() => goToPage(currentPage + 1)}
               disabled={currentPage === totalPages}
-              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-50"
             >
               Next
             </button>
@@ -1084,7 +1084,7 @@ export function ManageProducts({
               type="button"
               onClick={() => goToPage(totalPages)}
               disabled={currentPage === totalPages}
-              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-50"
             >
               Last
             </button>
@@ -3636,7 +3636,7 @@ export function ManageProducts({
                   type="button"
                   onClick={refreshEditingProduct}
                   disabled={isRefreshingProduct}
-                  className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                  className="rounded-xl border px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-50"
                   title="Reload product + prices"
                 >
                   {isRefreshingProduct ? "Refreshing…" : "Refresh"}
@@ -4026,7 +4026,7 @@ export function ManageProducts({
                         type="button"
                         onClick={() => filePickRef.current?.click()}
                         disabled={isUploadingImages}
-                        className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                        className="rounded-lg border px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-50"
                       >
                         {isUploadingImages ? "Uploading…" : "Add images"}
                       </button>
@@ -4230,8 +4230,8 @@ export function ManageProducts({
                                             }}
                                             className={
                                               on
-                                                ? "px-3 py-1.5 rounded-full bg-slate-900 text-white text-xs"
-                                                : "px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50"
+                                                ? "px-3 py-1.5 rounded-full bg-blue-600 text-white text-xs"
+                                                : "px-3 py-1.5 rounded-full border text-xs hover:bg-blue-50"
                                             }
                                           >
                                             {v.name}
@@ -4302,7 +4302,7 @@ export function ManageProducts({
                   <button
                     type="button"
                     onClick={addVariantCombo}
-                    className="rounded-lg bg-slate-900 text-white px-3 py-2 text-sm hover:bg-slate-800"
+                    className="rounded-lg bg-blue-600 text-white px-3 py-2 text-sm hover:bg-blue-700"
                   >
                     + Add variant
                   </button>
@@ -4314,7 +4314,7 @@ export function ManageProducts({
                       setClearAllVariantsIntent(true);
                       touchVariants();
                     }}
-                    className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
+                    className="rounded-lg border px-3 py-2 text-sm hover:bg-blue-50"
                     title="This will remove all variants on save (editing only)."
                   >
                     Remove all
@@ -4410,7 +4410,7 @@ export function ManageProducts({
                               <span
                                 className={
                                   isLocked
-                                    ? "text-xs rounded-full bg-slate-900 text-white px-2 py-1"
+                                    ? "text-xs rounded-full bg-blue-600 text-white px-2 py-1"
                                     : "text-xs rounded-full bg-slate-100 text-slate-700 px-2 py-1"
                                 }
                               >
@@ -4422,7 +4422,7 @@ export function ManageProducts({
                               <button
                                 type="button"
                                 onClick={() => removeVariantRow(r.id)}
-                                className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                                className="rounded-lg border px-3 py-2 text-sm hover:bg-blue-50 disabled:opacity-50"
                                 disabled={isLocked}
                                 title={isLocked ? "Cannot remove locked variant" : "Remove row"}
                               >
@@ -4464,7 +4464,7 @@ export function ManageProducts({
                     openModal({ title: "Draft", message: "Could not clear draft." });
                   }
                 }}
-                className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50"
+                className="rounded-xl border px-4 py-2 text-sm hover:bg-blue-50"
               >
                 Clear draft
               </button>
@@ -4493,8 +4493,8 @@ export function ManageProducts({
                 onClick={() => setPresetAndUrl(b.key)}
                 className={
                   b.key === preset
-                    ? "w-full sm:w-auto px-3 py-2 rounded-xl bg-slate-900 text-white text-sm"
-                    : "w-full sm:w-auto px-3 py-2 rounded-xl border text-sm hover:bg-slate-50"
+                    ? "w-full sm:w-auto px-3 py-2 rounded-xl bg-blue-600 text-white text-sm"
+                    : "w-full sm:w-auto px-3 py-2 rounded-xl border text-sm hover:bg-blue-50"
                 }
               >
                 <span className="truncate block">{b.label}</span>
@@ -4544,7 +4544,7 @@ export function ManageProducts({
                     setSupplierFilterText("");
                     setSupplierIdAndUrl("");
                   }}
-                  className="shrink-0 rounded-xl border px-3 py-2 text-sm hover:bg-slate-50"
+                  className="shrink-0 rounded-xl border px-3 py-2 text-sm hover:bg-blue-50"
                 >
                   Clear
                 </button>
@@ -4648,7 +4648,7 @@ export function ManageProducts({
                 <button
                   type="button"
                   onClick={() => startEdit(p)}
-                  className="w-full rounded-xl border px-3 py-3 text-sm font-medium hover:bg-slate-50"
+                  className="w-full rounded-xl border px-3 py-3 text-sm font-medium hover:bg-blue-50"
                 >
                   Edit
                 </button>
@@ -4776,7 +4776,7 @@ export function ManageProducts({
                           <button
                             type="button"
                             onClick={() => startEdit(p)}
-                            className="rounded-lg border px-3 py-2 hover:bg-slate-50"
+                            className="rounded-lg border px-3 py-2 hover:bg-blue-50"
                           >
                             Edit
                           </button>
