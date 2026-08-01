@@ -25,7 +25,7 @@ function Card({
 }) {
   return (
     <div className={`rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden ${className}`}>
-      {header ? <div className="px-4 sm:px-5 py-3 border-b bg-white/70">{header}</div> : null}
+      {header ? <div className="px-4 sm:px-5 py-3 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">{header}</div> : null}
       <div className="p-4 sm:p-5">{children}</div>
     </div>
   );
@@ -304,8 +304,8 @@ export default function SupplierPayouts() {
     <SiteLayout>
       <SupplierLayout>
         <div className="relative overflow-hidden rounded-3xl mt-6 border">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
-          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+          <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700" />
+          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(16,185,129,0.3),transparent_60%),radial-gradient(closest-side,rgba(45,212,191,0.3),transparent_60%)]" />
           <div className="relative px-5 md:px-8 py-8 text-white">
             <motion.h1
               initial={{ opacity: 0, y: 8 }}
@@ -433,7 +433,7 @@ export default function SupplierPayouts() {
               className="lg:col-span-1"
               header={
                 <div className="flex items-center gap-3">
-                  <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+                  <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-teal-50 text-teal-700">
                     <CircleDollarSign size={18} />
                   </div>
                   <div className="min-w-0">
@@ -500,7 +500,7 @@ export default function SupplierPayouts() {
             className="lg:col-span-2"
             header={
               <div className="flex items-center gap-3">
-                <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+                <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-teal-50 text-teal-700">
                   <CreditCard size={18} />
                 </div>
                 <div className="min-w-0">
@@ -513,14 +513,14 @@ export default function SupplierPayouts() {
             <div className="text-sm text-zinc-600 leading-relaxed">
               {summary?.scheduleNote?.trim()
                 ? summary.scheduleNote
-                : "Credits come from allocations marked PAID (released). Debits come from refunds/withdrawals recorded in SupplierLedgerEntry. availableBalance = max(0, credits - debits)."}
+                : "Your balance increases when payouts are approved and released, and decreases when refunds or withdrawals are recorded against your account."}
             </div>
           </Card>
         </div>
 
         <div className="mt-4">
           <div className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden">
-            <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="px-4 sm:px-5 py-3 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-zinc-900">Payout history</div>
                 <div className="text-xs text-zinc-500">

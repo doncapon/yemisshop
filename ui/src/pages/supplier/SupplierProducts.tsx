@@ -870,8 +870,8 @@ export default function SupplierProductsPage() {
         {supplierLocked ? (
           <>
             <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
-              <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
-              <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+              <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700" />
+              <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(16,185,129,0.3),transparent_60%),radial-gradient(closest-side,rgba(45,212,191,0.3),transparent_60%)]" />
               <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
                 <motion.h1
                   initial={{ opacity: 0, y: 8 }}
@@ -923,7 +923,7 @@ export default function SupplierProductsPage() {
 
             <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
               <Card className="lg:col-span-2">
-                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
                     Required steps before product access
                   </div>
@@ -969,7 +969,7 @@ export default function SupplierProductsPage() {
                         {!item.done && (
                           <Link
                             to={item.path}
-                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] font-semibold hover:bg-black/5"
+                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] font-semibold hover:bg-teal-50 hover:border-teal-200"
                           >
                             Open step <ArrowRight size={14} />
                           </Link>
@@ -981,7 +981,7 @@ export default function SupplierProductsPage() {
               </Card>
 
               <Card>
-                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
                     Locked on this page
                   </div>
@@ -1021,8 +1021,8 @@ export default function SupplierProductsPage() {
         ) : (
           <>
             <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
-              <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
-              <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+              <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700" />
+              <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(16,185,129,0.3),transparent_60%),radial-gradient(closest-side,rgba(45,212,191,0.3),transparent_60%)]" />
               <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
                 <motion.h1
                   initial={{ opacity: 0, y: 8 }}
@@ -1102,7 +1102,7 @@ export default function SupplierProductsPage() {
                   <button
                     type="button"
                     onClick={() => setShowFilters((v) => !v)}
-                    className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm hover:bg-black/5"
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm hover:bg-teal-50 hover:border-teal-200"
                   >
                     <SlidersHorizontal size={16} /> {showFilters ? "Hide filters" : "Filters"}
                   </button>
@@ -1154,7 +1154,7 @@ export default function SupplierProductsPage() {
 
               <Card>
                 <div className="p-4 sm:p-5 flex items-center gap-3">
-                  <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+                  <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-teal-50 text-teal-700">
                     <Package size={18} />
                   </div>
                   <div className="min-w-0">
@@ -1172,7 +1172,7 @@ export default function SupplierProductsPage() {
 
             <div className="mt-4">
               <Card>
-                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
                     Your listings
                   </div>
@@ -1321,7 +1321,7 @@ export default function SupplierProductsPage() {
                                 }
                                 className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold ${complianceLocked
                                   ? "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
-                                  : "bg-white hover:bg-black/5"
+                                  : "bg-white hover:bg-teal-50 hover:border-teal-200"
                                   }`}
                               >
                                 <Pencil size={14} /> Edit
@@ -1514,7 +1514,7 @@ export default function SupplierProductsPage() {
                                     }
                                     className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] ${complianceLocked
                                         ? "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
-                                        : "bg-white hover:bg-black/5"
+                                        : "bg-white hover:bg-teal-50 hover:border-teal-200"
                                       }`}
                                   >
                                     <Pencil size={12} /> Edit
@@ -1568,7 +1568,7 @@ export default function SupplierProductsPage() {
                   </table>
                 </div>
 
-                <div className="border-t bg-white/70 px-4 sm:px-5 py-3 sm:py-4">
+                <div className="border-t bg-gradient-to-r from-teal-50/80 to-emerald-50/50 px-4 sm:px-5 py-3 sm:py-4">
                   <PaginationBar
                     page={page}
                     pageCount={pageCount}

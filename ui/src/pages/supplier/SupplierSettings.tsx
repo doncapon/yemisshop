@@ -174,10 +174,10 @@ function Card({
     <div
       id={anchorId}
       className={`scroll-mt-24 rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden transition ${
-        highlight ? "ring-2 ring-violet-300" : ""
+        highlight ? "ring-2 ring-teal-300" : ""
       } ${className}`}
     >
-      <div className="px-4 md:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+      <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="flex items-start gap-3 min-w-0">
           {icon && <div className="mt-[2px] text-zinc-700 shrink-0">{icon}</div>}
           <div className="min-w-0">
@@ -225,7 +225,7 @@ function Field({
           } ${
             disabled
               ? "bg-zinc-50 text-zinc-600 cursor-not-allowed"
-              : "bg-white focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+              : "bg-white focus:border-teal-400 focus:ring-4 focus:ring-teal-200"
           }`}
         />
       </div>
@@ -282,7 +282,7 @@ function Toggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`w-full rounded-2xl border transition p-4 text-left flex items-start justify-between gap-3 ${
-        disabled ? "bg-zinc-50 text-zinc-500 cursor-not-allowed" : "bg-white hover:bg-black/5"
+        disabled ? "bg-zinc-50 text-zinc-500 cursor-not-allowed" : "bg-white hover:bg-teal-50 hover:border-teal-200"
       }`}
     >
       <div className="min-w-0">
@@ -291,7 +291,7 @@ function Toggle({
       </div>
       <span
         className={`shrink-0 inline-flex h-6 w-11 items-center rounded-full border transition ${
-          checked ? "bg-zinc-900 border-zinc-900" : "bg-zinc-200 border-zinc-300"
+          checked ? "bg-teal-600 border-teal-600" : "bg-zinc-200 border-zinc-300"
         }`}
       >
         <span
@@ -921,7 +921,7 @@ export default function SupplierSettings() {
               <button
                 onClick={save}
                 disabled={saving || docsPendingLock}
-                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold hover:opacity-90 disabled:opacity-60"
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-teal-600 text-white px-4 py-2.5 text-sm font-semibold hover:bg-teal-700 disabled:opacity-60"
               >
                 <Save size={16} />
                 {saving ? "Saving…" : docsPendingLock ? "Verification required" : "Save changes"}
@@ -932,8 +932,8 @@ export default function SupplierSettings() {
         )}
 
         <div className="relative overflow-hidden rounded-3xl mt-6 border">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
-          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+          <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700" />
+          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(16,185,129,0.3),transparent_60%),radial-gradient(closest-side,rgba(45,212,191,0.3),transparent_60%)]" />
           <div className="relative px-5 md:px-8 py-7 md:py-8 text-white">
             <motion.h1
               initial={{ opacity: 0, y: 8 }}
@@ -1091,7 +1091,7 @@ export default function SupplierSettings() {
                       });
                       setBankEditUnlocked(true);
                     }}
-                    className="text-[11px] px-3 py-1.5 rounded-full border bg-white hover:bg-black/5"
+                    className="text-[11px] px-3 py-1.5 rounded-full border bg-white hover:bg-teal-50 hover:border-teal-200"
                   >
                     Request change
                   </button>
@@ -1100,7 +1100,7 @@ export default function SupplierSettings() {
                   <button
                     type="button"
                     onClick={() => setBankEditUnlocked(false)}
-                    className="text-[11px] px-3 py-1.5 rounded-full border bg-white hover:bg-black/5"
+                    className="text-[11px] px-3 py-1.5 rounded-full border bg-white hover:bg-teal-50 hover:border-teal-200"
                   >
                     Cancel change
                   </button>
@@ -1131,7 +1131,7 @@ export default function SupplierSettings() {
                   className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
                     bankFieldsDisabled
                       ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                      : "bg-white border-zinc-300/80 focus:border-teal-400 focus:ring-4 focus:ring-teal-200"
                   }`}
                   value={draft.bankCountry || "NG"}
                   disabled={bankFieldsDisabled}
@@ -1165,7 +1165,7 @@ export default function SupplierSettings() {
                   className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
                     bankFieldsDisabled
                       ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                      : "bg-white border-zinc-300/80 focus:border-teal-400 focus:ring-4 focus:ring-teal-200"
                   }`}
                   value={draft.bankName ?? ""}
                   disabled={bankFieldsDisabled}
@@ -1186,7 +1186,7 @@ export default function SupplierSettings() {
                   className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
                     bankFieldsDisabled
                       ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                      : "bg-white border-zinc-300/80 focus:border-teal-400 focus:ring-4 focus:ring-teal-200"
                   }`}
                   value={normCode(draft.bankCode)}
                   disabled={bankFieldsDisabled}
@@ -1387,7 +1387,7 @@ export default function SupplierSettings() {
               <button
                 type="button"
                 onClick={() => navigate("/forgot-password")}
-                className="rounded-2xl border bg-white hover:bg-black/5 transition p-4 text-left"
+                className="rounded-2xl border bg-white hover:bg-teal-50 hover:border-teal-200 transition p-4 text-left"
               >
                 <div className="text-sm font-semibold text-zinc-900">Change password</div>
                 <div className="text-xs text-zinc-500 mt-1">Reset your password via email/OTP.</div>
@@ -1396,7 +1396,7 @@ export default function SupplierSettings() {
               <button
                 type="button"
                 onClick={() => navigate("/account/sessions")}
-                className="rounded-2xl border bg-white hover:bg-black/5 transition p-4 text-left"
+                className="rounded-2xl border bg-white hover:bg-teal-50 hover:border-teal-200 transition p-4 text-left"
               >
                 <div className="text-sm font-semibold text-zinc-900">Manage sessions</div>
                 <div className="text-xs text-zinc-500 mt-1">Device/IP tracking and forced logout.</div>
@@ -1408,7 +1408,7 @@ export default function SupplierSettings() {
             <button
               onClick={save}
               disabled={saving || isAdmin || docsPendingLock}
-              className="inline-flex items-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-full bg-teal-600 text-white px-4 py-2 text-sm font-semibold hover:bg-teal-700 disabled:opacity-60"
             >
               <Save size={16} />
               {isAdmin
