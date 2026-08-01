@@ -438,7 +438,10 @@ export default function SupplierPayouts() {
                   </div>
                   <div className="min-w-0">
                     <div className="text-xs text-zinc-500">Available balance</div>
-                    <div className="text-xl font-semibold text-zinc-900">
+                    <div
+                      className="text-lg sm:text-xl font-semibold text-zinc-900 break-words leading-tight"
+                      title={summary ? ngn.format(availableBalance) : undefined}
+                    >
                       {summary ? ngn.format(availableBalance) : "—"}
                     </div>
                   </div>
@@ -447,36 +450,50 @@ export default function SupplierPayouts() {
             >
               <div className="space-y-2">
                 <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div className="rounded-xl border bg-white p-3">
+                  <div className="rounded-xl border bg-white p-3 min-w-0">
                     <div className="text-[11px] text-zinc-500">Credits</div>
-                    <div className="font-semibold text-zinc-900">{summary ? ngn.format(credits) : "—"}</div>
+                    <div className="font-semibold text-zinc-900 break-words leading-tight" title={summary ? ngn.format(credits) : undefined}>
+                      {summary ? ngn.format(credits) : "—"}
+                    </div>
                   </div>
-                  <div className="rounded-xl border bg-white p-3">
+                  <div className="rounded-xl border bg-white p-3 min-w-0">
                     <div className="text-[11px] text-zinc-500">Debits</div>
-                    <div className="font-semibold text-zinc-900">{summary ? ngn.format(debits) : "—"}</div>
+                    <div className="font-semibold text-zinc-900 break-words leading-tight" title={summary ? ngn.format(debits) : undefined}>
+                      {summary ? ngn.format(debits) : "—"}
+                    </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
-                  <div className="rounded-xl border bg-zinc-50 p-3">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+                  <div className="rounded-xl border bg-zinc-50 p-3 min-w-0">
                     <div className="text-zinc-500">Pending</div>
-                    <div className="font-semibold text-zinc-900">{ngn.format(pending)}</div>
+                    <div className="font-semibold text-zinc-900 break-words leading-tight" title={ngn.format(pending)}>
+                      {ngn.format(pending)}
+                    </div>
                   </div>
-                  <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="rounded-xl border bg-zinc-50 p-3 min-w-0">
                     <div className="text-zinc-500">Approved</div>
-                    <div className="font-semibold text-zinc-900">{ngn.format(approved)}</div>
+                    <div className="font-semibold text-zinc-900 break-words leading-tight" title={ngn.format(approved)}>
+                      {ngn.format(approved)}
+                    </div>
                   </div>
-                  <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="rounded-xl border bg-zinc-50 p-3 min-w-0">
                     <div className="text-zinc-500">Held</div>
-                    <div className="font-semibold text-zinc-900">{ngn.format(held)}</div>
+                    <div className="font-semibold text-zinc-900 break-words leading-tight" title={ngn.format(held)}>
+                      {ngn.format(held)}
+                    </div>
                   </div>
-                  <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="rounded-xl border bg-zinc-50 p-3 min-w-0">
                     <div className="text-zinc-500">Paid</div>
-                    <div className="font-semibold text-zinc-900">{ngn.format(paidOut)}</div>
+                    <div className="font-semibold text-zinc-900 break-words leading-tight" title={ngn.format(paidOut)}>
+                      {ngn.format(paidOut)}
+                    </div>
                   </div>
-                  <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="rounded-xl border bg-zinc-50 p-3 min-w-0">
                     <div className="text-zinc-500">Failed</div>
-                    <div className="font-semibold text-zinc-900">{ngn.format(failed)}</div>
+                    <div className="font-semibold text-zinc-900 break-words leading-tight" title={ngn.format(failed)}>
+                      {ngn.format(failed)}
+                    </div>
                   </div>
                 </div>
 
