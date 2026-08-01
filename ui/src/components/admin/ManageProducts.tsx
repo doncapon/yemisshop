@@ -1795,6 +1795,39 @@ export function ManageProducts({
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [uploadInfo, setUploadInfo] = useState<string>("");
   const [isRefreshingProduct, setIsRefreshingProduct] = useState(false);
+
+  // Files picked via "Upload" but not yet sent to the server/bucket - only
+  // actually uploaded once the surrounding form is saved (see saveOrCreate).
+  const [pendingFiles, setPendingFiles] = useState<
+    { id: string; file: File; previewUrl: string }[]
+  >([]);
+
+  function clearPendingFiles() {
+    setPendingFiles((prev) => {
+      prev.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+      return [];
+    });
+  }
+
+  function discardPendingFile(id: string) {
+    setPendingFiles((prev) => {
+      const found = prev.find((p) => p.id === id);
+      if (found) URL.revokeObjectURL(found.previewUrl);
+      return prev.filter((p) => p.id !== id);
+    });
+  }
+
+  const pendingFilesRef = useRef(pendingFiles);
+  useEffect(() => {
+    pendingFilesRef.current = pendingFiles;
+  }, [pendingFiles]);
+
+  useEffect(() => {
+    return () => {
+      pendingFilesRef.current.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+    };
+  }, []);
+
   const [saveBanner, setSaveBanner] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -1950,45 +1983,37 @@ export function ManageProducts({
     return [];
   }
 
-  async function uploadImages(files: FileList | File[]) {
+  // Queues files for upload without touching the server/bucket yet - the
+  // actual upload only happens inside saveOrCreate, once the form is saved.
+  function queueFilesForUpload(files: FileList | File[]) {
     const arr = Array.from(files || []).filter(Boolean);
     if (!arr.length) return;
 
-    setIsUploadingImages(true);
-    setUploadInfo(`Uploading 0/${arr.length}…`);
+    const items = arr.map((file) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
 
-    const uploaded: string[] = [];
+    setPendingFiles((prev) => [...prev, ...items]);
+    if (filePickRef.current) filePickRef.current.value = "";
+  }
 
-    try {
-      const fieldName = arr.length === 1 ? "file" : "files";
+  async function uploadFilesToServer(files: File[]): Promise<string[]> {
+    if (!files.length) return [];
 
-      const fd = new FormData();
-      for (const f of arr) fd.append(fieldName, f);
+    const fieldName = files.length === 1 ? "file" : "files";
+    const fd = new FormData();
+    for (const f of files) fd.append(fieldName, f);
 
-      const res = await api.post("/api/uploads", fd, {
-        withCredentials: true,
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+    const res = await api.post("/api/uploads", fd, {
+      withCredentials: true,
+      headers: { "Content-Type": "multipart/form-data" },
+    });
 
-      const urls = extractUploadUrls(res?.data ?? res);
-      if (!urls.length) throw new Error("Upload succeeded but API did not return image URL(s).");
-
-      uploaded.push(...urls);
-
-      setPending((p) => {
-        const existing = parseUrlList(p.imageUrls || "");
-        const next = [...existing, ...uploaded].filter(isUrlish);
-        return { ...p, imageUrls: next.join("\n") };
-      });
-
-      setUploadInfo(`Uploaded ${uploaded.length} image(s).`);
-    } catch (e: any) {
-      openModal({ title: "Images", message: friendlyErrorMessage(e, "Image upload failed") });
-      setUploadInfo("");
-    } finally {
-      setIsUploadingImages(false);
-      if (filePickRef.current) filePickRef.current.value = "";
-    }
+    const urls = extractUploadUrls(res?.data ?? res);
+    if (!urls.length) throw new Error("Upload succeeded but API did not return image URL(s).");
+    return urls;
   }
 
   function makeTempRowId() {
@@ -2659,6 +2684,7 @@ export function ManageProducts({
   }
 
   function startNewProduct() {
+    clearPendingFiles();
     setEditingId(null);
     setOffersProductId(null);
     setPending({ ...defaultPending });
@@ -2727,7 +2753,27 @@ export function ManageProducts({
     }
 
     const supplierQty = toInt((pending as any).supplierAvailableQty, 0);
-    const urlList = parseUrlList(pending.imageUrls);
+
+    // Upload any queued-but-not-yet-sent files now, right before committing
+    // the save - nothing touches the bucket until this point.
+    let uploadedNowUrls: string[] = [];
+    if (pendingFiles.length > 0) {
+      setIsUploadingImages(true);
+      setUploadInfo(`Uploading ${pendingFiles.length} image(s)…`);
+      try {
+        uploadedNowUrls = await uploadFilesToServer(pendingFiles.map((pf) => pf.file));
+      } catch (e: any) {
+        setIsUploadingImages(false);
+        setUploadInfo("");
+        openModal({ title: "Images", message: friendlyErrorMessage(e, "Image upload failed") });
+        restoreSnapshot();
+        return;
+      }
+      setIsUploadingImages(false);
+      setUploadInfo("");
+    }
+
+    const urlList = [...parseUrlList(pending.imageUrls), ...uploadedNowUrls];
 
     let retailBase = 0;
 
@@ -2857,6 +2903,14 @@ export function ManageProducts({
         { id: editingId, ...payloadForPatch },
         {
           onSuccess: async () => {
+            if (uploadedNowUrls.length > 0) {
+              setPending((p) => ({
+                ...p,
+                imageUrls: [...parseUrlList(p.imageUrls), ...uploadedNowUrls].join("\n"),
+              }));
+            }
+            clearPendingFiles();
+
             const pid = editingId;
             const touched = variantsDirty || clearAllVariantsIntent;
 
@@ -2933,6 +2987,14 @@ export function ManageProducts({
 
     createM.mutate(payloadForCreate, {
       onSuccess: async (res) => {
+        if (uploadedNowUrls.length > 0) {
+          setPending((p) => ({
+            ...p,
+            imageUrls: [...parseUrlList(p.imageUrls), ...uploadedNowUrls].join("\n"),
+          }));
+        }
+        clearPendingFiles();
+
         const created = (res?.data ?? res) as any;
         const pid = created?.id || created?.product?.id || created?.data?.id;
 
@@ -3329,6 +3391,7 @@ export function ManageProducts({
 
   async function startEdit(p: any) {
     try {
+      clearPendingFiles();
       setShowEditor(true);
 
       const full = await fetchProductFull(p.id);
@@ -3507,6 +3570,7 @@ export function ManageProducts({
           <button
             type="button"
             onClick={() => {
+              clearPendingFiles();
               setShowEditor(false);
               setEditingId(null);
               setOffersProductId(null);
@@ -3941,7 +4005,9 @@ export function ManageProducts({
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <div className="text-sm font-semibold text-slate-800">Images</div>
-                      <div className="text-xs text-slate-500">Upload images or paste URLs (one per line).</div>
+                      <div className="text-xs text-slate-500">
+                        Upload images or paste URLs (one per line). Newly picked files upload only when you click Save.
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -3953,7 +4019,7 @@ export function ManageProducts({
                         className="hidden"
                         onChange={(e) => {
                           const files = e.target.files;
-                          if (files && files.length) uploadImages(files);
+                          if (files && files.length) queueFilesForUpload(files);
                         }}
                       />
                       <button
@@ -3962,7 +4028,7 @@ export function ManageProducts({
                         disabled={isUploadingImages}
                         className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
                       >
-                        {isUploadingImages ? "Uploading…" : "Upload"}
+                        {isUploadingImages ? "Uploading…" : "Add images"}
                       </button>
                     </div>
                   </div>
@@ -4017,6 +4083,36 @@ export function ManageProducts({
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {pendingFiles.length > 0 && (
+                    <div className="mt-3">
+                      <div className="text-xs font-medium text-amber-700">
+                        {pendingFiles.length} image(s) selected, not uploaded yet - click Save to upload.
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {pendingFiles.map((pf) => (
+                          <div key={pf.id} className="relative rounded-xl border border-amber-300 overflow-hidden bg-slate-50">
+                            <img
+                              src={pf.previewUrl}
+                              alt="pending preview"
+                              className="h-28 w-full object-cover"
+                            />
+                            <span className="absolute top-2 left-2 rounded-lg bg-amber-600 text-white text-[10px] px-1.5 py-0.5">
+                              Pending
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => discardPendingFile(pf.id)}
+                              className="absolute top-2 right-2 rounded-lg bg-black/60 text-white text-xs px-2 py-1 hover:bg-black/70"
+                              title="Discard (not uploaded)"
+                            >
+                              Discard
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
 

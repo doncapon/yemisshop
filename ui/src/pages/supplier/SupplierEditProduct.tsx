@@ -3367,24 +3367,11 @@ export default function SupplierEditProduct() {
                       <div className="text-xs font-semibold text-zinc-800">
                         Selected files: <span className="font-mono">{files.length}</span>
                       </div>
+                      <div className="mt-1 text-[11px] text-zinc-500">
+                        Not uploaded yet — these upload automatically when you save changes.
+                      </div>
 
                       <div className="mt-3 flex flex-col sm:flex-row gap-2">
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              setErr(null);
-                              await uploadLocalFiles();
-                            } catch (e: any) {
-                              setErr(e?.message || "Upload failed");
-                            }
-                          }}
-                          disabled={uploading || !files.length}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
-                        >
-                          {uploading ? "Uploading…" : "Upload now"}
-                        </button>
-
                         <button
                           type="button"
                           onClick={() => {
