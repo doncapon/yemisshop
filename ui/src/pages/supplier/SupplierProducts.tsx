@@ -1095,7 +1095,7 @@ export default function SupplierProductsPage() {
                       placeholder="Search name, SKU…"
                       value={q}
                       onChange={(e) => setQ(e.target.value)}
-                      className="w-full rounded-2xl border bg-white pl-9 pr-4 py-2.5 sm:py-3 text-[13px] sm:text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
+                      className="w-full rounded-2xl border bg-white pl-9 pr-4 py-2.5 sm:py-3 text-[13px] sm:text-sm outline-none focus:ring-4 focus:ring-teal-100 focus:border-teal-400 transition"
                     />
                   </div>
 

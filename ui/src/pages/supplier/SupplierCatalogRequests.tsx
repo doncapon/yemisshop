@@ -502,7 +502,7 @@ export default function SupplierCatalogRequests() {
     <SiteLayout>
       <SupplierLayout>
         <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
-          <div className="absolute inset-0 bg-gradient-to-br from-indigo-700 via-blue-700 to-fuchsia-700" />
+          <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,255,255,0.18),transparent_60%)]" />
           <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
             <motion.h1
@@ -519,7 +519,7 @@ export default function SupplierCatalogRequests() {
             <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
               <Link
                 to="/supplier"
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-teal-800 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:bg-teal-50"
               >
                 Back to overview <ArrowRight size={14} />
               </Link>
@@ -564,7 +564,7 @@ export default function SupplierCatalogRequests() {
                 onClick={() => setTab(t.key as any)}
                 className={[
                   "shrink-0 inline-flex items-center gap-2 rounded-full px-4 py-2 text-[13px] sm:text-sm font-semibold border",
-                  tab === t.key ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5",
+                  tab === t.key ? "bg-teal-600 text-white border-teal-600" : "bg-white hover:bg-teal-50 hover:border-teal-200",
                 ].join(" ")}
               >
                 {t.icon} {t.label}
@@ -579,7 +579,7 @@ export default function SupplierCatalogRequests() {
               <>
                 <div ref={categoryRef} />
                 <Card>
-                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
+                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex items-center gap-2">
                     <Layers size={18} className="text-zinc-800" />
                     <div className="min-w-0">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Request a Category</div>
@@ -654,7 +654,7 @@ export default function SupplierCatalogRequests() {
                       type="button"
                       disabled={createReqM.isPending || !hydrated || !isSupplier}
                       onClick={submitCategory}
-                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
                     >
                       <Plus size={16} /> Send category request
                     </button>
@@ -663,7 +663,7 @@ export default function SupplierCatalogRequests() {
 
                 <div ref={brandRef} />
                 <Card>
-                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
+                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex items-center gap-2">
                     <Building2 size={18} className="text-zinc-800" />
                     <div className="min-w-0">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Request a Brand</div>
@@ -732,7 +732,7 @@ export default function SupplierCatalogRequests() {
                       type="button"
                       disabled={createReqM.isPending || !hydrated || !isSupplier}
                       onClick={submitBrand}
-                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
                     >
                       <Plus size={16} /> Send brand request
                     </button>
@@ -741,7 +741,7 @@ export default function SupplierCatalogRequests() {
 
                 <div ref={attributeRef} />
                 <Card>
-                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
+                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex items-center gap-2">
                     <TextCursorInput size={18} className="text-zinc-800" />
                     <div className="min-w-0">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Request an Attribute</div>
@@ -813,7 +813,7 @@ export default function SupplierCatalogRequests() {
                       type="button"
                       disabled={createReqM.isPending || !hydrated || !isSupplier}
                       onClick={submitAttribute}
-                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
                     >
                       <Plus size={16} /> Send attribute request
                     </button>
@@ -822,7 +822,7 @@ export default function SupplierCatalogRequests() {
 
                 <div ref={valueRef} />
                 <Card>
-                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
+                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex items-center gap-2">
                     <Tag size={18} className="text-zinc-800" />
                     <div className="min-w-0">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Request an Attribute Value</div>
@@ -895,7 +895,7 @@ export default function SupplierCatalogRequests() {
                       type="button"
                       disabled={createReqM.isPending || !hydrated || !isSupplier}
                       onClick={submitAttrValue}
-                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
                     >
                       <Plus size={16} /> Send value request
                     </button>
@@ -906,7 +906,7 @@ export default function SupplierCatalogRequests() {
 
             {tab === "MINE" && (
               <Card>
-                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center justify-between gap-2">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">My requests</div>
                     <div className="text-[11px] sm:text-xs text-zinc-500">Track approval status from admins.</div>
@@ -915,7 +915,7 @@ export default function SupplierCatalogRequests() {
                   <button
                     type="button"
                     onClick={() => myRequestsQ.refetch()}
-                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] sm:text-sm font-semibold hover:bg-black/5"
+                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] sm:text-sm font-semibold hover:bg-teal-50 hover:border-teal-200 transition"
                   >
                     <RefreshCw size={16} /> Refresh
                   </button>
@@ -989,7 +989,7 @@ export default function SupplierCatalogRequests() {
                         type="button"
                         disabled={!myRequestsHasPrev || myRequestsQ.isFetching}
                         onClick={() => setPage((p) => Math.max(1, p - 1))}
-                        className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                        className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 transition disabled:opacity-50"
                       >
                         <ChevronLeft size={14} /> Prev
                       </button>
@@ -1003,7 +1003,7 @@ export default function SupplierCatalogRequests() {
                         type="button"
                         disabled={!myRequestsHasNext || myRequestsQ.isFetching}
                         onClick={() => setPage((p) => Math.min(myRequestsTotalPages, p + 1))}
-                        className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                        className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 transition disabled:opacity-50"
                       >
                         Next <ChevronRight size={14} />
                       </button>
@@ -1117,7 +1117,7 @@ export default function SupplierCatalogRequests() {
 
             {tab === "CATALOG" && (
               <Card>
-                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Current catalog</div>
                   <div className="text-[11px] sm:text-xs text-zinc-500">
                     This is what you can select on product creation.
@@ -1224,7 +1224,7 @@ export default function SupplierCatalogRequests() {
           <div className="order-2 lg:order-none space-y-4">
             <Card>
               <div className="p-4 sm:p-5 flex items-start gap-3">
-                <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+                <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-teal-50 text-teal-700">
                   <ClipboardList size={18} />
                 </div>
                 <div className="min-w-0">
@@ -1238,7 +1238,7 @@ export default function SupplierCatalogRequests() {
             </Card>
 
             <Card>
-              <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+              <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                 <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Tips</div>
               </div>
               <div className="p-4 sm:p-5 text-sm text-zinc-700 space-y-3">
@@ -1261,7 +1261,7 @@ export default function SupplierCatalogRequests() {
               <div className="p-4 sm:p-5">
                 <Link
                   to="/supplier/add-product"
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold"
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-3 text-sm font-semibold"
                 >
                   Back to Add Product <ArrowRight size={16} />
                 </Link>

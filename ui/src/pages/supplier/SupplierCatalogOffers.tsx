@@ -494,7 +494,7 @@ export default function SupplierCatalogOffers() {
               <button
                 type="button"
                 onClick={() => catalogQ.refetch()}
-                className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-[12px] whitespace-nowrap"
+                className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl border bg-white hover:bg-teal-50 hover:border-teal-200 transition px-3 py-2 text-[12px] whitespace-nowrap"
               >
                 <RefreshCcw className="h-4 w-4" />
                 Refresh
@@ -508,7 +508,7 @@ export default function SupplierCatalogOffers() {
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
                   placeholder="Search products / variants…"
-                  className="w-full pl-9 pr-3 h-10 rounded-2xl border bg-white text-[13px] focus:outline-none focus:ring-4 focus:ring-fuchsia-200"
+                  className="w-full pl-9 pr-3 h-10 rounded-2xl border bg-white text-[13px] focus:outline-none focus:ring-4 focus:ring-teal-200"
                 />
               </div>
 
@@ -541,7 +541,7 @@ export default function SupplierCatalogOffers() {
                     type="button"
                     disabled={!hasPrevPage || catalogQ.isFetching}
                     onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    className="inline-flex items-center justify-center gap-1 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-[12px] disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border bg-white hover:bg-teal-50 hover:border-teal-200 transition px-3 py-2 text-[12px] disabled:opacity-50"
                   >
                     <ChevronLeft className="h-4 w-4" />
                     Prev
@@ -556,7 +556,7 @@ export default function SupplierCatalogOffers() {
                     type="button"
                     disabled={!hasNextPage || catalogQ.isFetching}
                     onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    className="inline-flex items-center justify-center gap-1 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-[12px] disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border bg-white hover:bg-teal-50 hover:border-teal-200 transition px-3 py-2 text-[12px] disabled:opacity-50"
                   >
                     Next
                     <ChevronRight className="h-4 w-4" />
@@ -617,7 +617,7 @@ export default function SupplierCatalogOffers() {
                               className="block text-left w-full"
                               title="Use this product as a template"
                             >
-                              <div className="text-[13px] sm:text-[14px] font-semibold leading-snug line-clamp-2 text-zinc-900 hover:text-fuchsia-700 transition-colors">
+                              <div className="text-[13px] sm:text-[14px] font-semibold leading-snug line-clamp-2 text-zinc-900 hover:text-teal-700 transition-colors">
                                 {p.title}
                               </div>
                             </button>
@@ -637,7 +637,7 @@ export default function SupplierCatalogOffers() {
                             </div>
 
                             <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <span className="inline-flex items-center gap-2 rounded-full border border-fuchsia-200 bg-fuchsia-50 px-2.5 py-1 text-[11px] text-fuchsia-800">
+                              <span className="inline-flex items-center gap-2 rounded-full border border-teal-200 bg-teal-50 px-2.5 py-1 text-[11px] text-teal-800">
                                 <Copy className="h-3.5 w-3.5" />
                                 <span className="font-semibold">Use as template</span>
                               </span>
@@ -674,7 +674,7 @@ export default function SupplierCatalogOffers() {
                               <button
                                 type="button"
                                 onClick={() => goToCreateFromTemplate(p.id)}
-                                className="inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-3 py-2 text-[12px] whitespace-nowrap"
+                                className="inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-teal-600 to-emerald-600 text-white px-3 py-2 text-[12px] whitespace-nowrap"
                                 title="Create my own similar product"
                               >
                                 <Pencil className="h-4 w-4" />
@@ -686,7 +686,7 @@ export default function SupplierCatalogOffers() {
                                 onClick={() =>
                                   setExpanded((s) => ({ ...s, [p.id]: !s[p.id] }))
                                 }
-                                className="inline-flex items-center justify-center gap-2 rounded-full border bg-white hover:bg-zinc-50 px-3 py-2 text-[12px] whitespace-nowrap"
+                                className="inline-flex items-center justify-center gap-2 rounded-full border bg-white hover:bg-teal-50 hover:border-teal-200 transition px-3 py-2 text-[12px] whitespace-nowrap"
                               >
                                 {isOpen ? (
                                   <ChevronUp className="h-4 w-4" />
@@ -715,7 +715,7 @@ export default function SupplierCatalogOffers() {
                                 <button
                                   type="button"
                                   onClick={() => goToCreateFromTemplate(p.id)}
-                                  className="inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-3 py-2 text-[12px] whitespace-nowrap"
+                                  className="inline-flex items-center justify-center gap-2 rounded-full bg-teal-600 hover:bg-teal-700 text-white px-3 py-2 text-[12px] whitespace-nowrap"
                                 >
                                   <Copy className="h-4 w-4" />
                                   Copy Into My Product
@@ -739,7 +739,7 @@ export default function SupplierCatalogOffers() {
                       type="button"
                       disabled={!hasPrevPage || catalogQ.isFetching}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 transition disabled:opacity-50"
                     >
                       <ChevronLeft className="h-4 w-4" />
                       Prev
@@ -754,7 +754,7 @@ export default function SupplierCatalogOffers() {
                       type="button"
                       disabled={!hasNextPage || catalogQ.isFetching}
                       onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 transition disabled:opacity-50"
                     >
                       Next
                       <ChevronRight className="h-4 w-4" />

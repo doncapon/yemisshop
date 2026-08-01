@@ -637,14 +637,14 @@ export default function SupplierRegister() {
 
   const inputBase =
     "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 " +
-    "placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm";
+    "placeholder:text-slate-400 outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-200 transition shadow-sm";
 
   const card =
     "rounded-[28px] border border-white/70 bg-white/95 backdrop-blur shadow-[0_16px_50px_rgba(15,23,42,0.08)] p-4 sm:p-6 md:p-8 space-y-6";
 
   const stepBase =
     "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm";
-  const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
+  const stepActive = "border-teal-600 bg-teal-600 text-white shadow-sm";
   const stepPending = "border-zinc-200 bg-white text-zinc-600";
 
   return (
@@ -955,7 +955,7 @@ export default function SupplierRegister() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full rounded-2xl bg-zinc-900 text-white px-4 py-3 font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                className="w-full rounded-2xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-3 font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {submitting
                   ? "Creating supplier account…"

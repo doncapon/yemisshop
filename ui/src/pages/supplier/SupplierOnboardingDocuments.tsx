@@ -720,22 +720,22 @@ export default function SupplierOnboardingDocuments() {
     const stepBase =
         "flex w-full items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
     const stepDone = "border-emerald-200 bg-emerald-50 text-emerald-700";
-    const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
+    const stepActive = "border-teal-600 bg-teal-600 text-white shadow-sm";
     const stepPending = "border-amber-200 bg-amber-50 text-amber-700";
     const stepRejected = "border-rose-200 bg-rose-50 text-rose-700";
     const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
-    const stepClickable = "cursor-pointer hover:border-zinc-300 hover:bg-zinc-50 hover:text-zinc-800";
+    const stepClickable = "cursor-pointer hover:border-teal-200 hover:bg-teal-50 hover:text-zinc-800";
 
     const label = "block text-sm font-semibold text-slate-800 mb-1.5";
     const input =
-        "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm file:mr-3 file:rounded-xl file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-700";
+        "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-200 transition shadow-sm file:mr-3 file:rounded-xl file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-700";
     const card =
         "rounded-[28px] border border-white/70 bg-white/95 backdrop-blur shadow-[0_16px_50px_rgba(15,23,42,0.08)] p-4 sm:p-6 md:p-8";
     const panel = "rounded-2xl border border-zinc-200 bg-white p-4 sm:p-5 shadow-sm";
     const primaryBtn =
-        "inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:opacity-60 disabled:cursor-not-allowed";
+        "inline-flex items-center justify-center rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:opacity-60 disabled:cursor-not-allowed";
     const secondaryBtn =
-        "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 disabled:opacity-60 disabled:cursor-not-allowed";
+        "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-teal-50 hover:border-teal-200 disabled:opacity-60 disabled:cursor-not-allowed";
 
     const docIcon = (kind: SupplierDocumentKind) => {
         if (kind === "GOVERNMENT_ID") return <IdCard className="h-5 w-5 text-zinc-700" />;
@@ -1228,7 +1228,7 @@ export default function SupplierOnboardingDocuments() {
 
                                             <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-200">
                                                 <div
-                                                    className="h-full rounded-full bg-zinc-900 transition-all"
+                                                    className="h-full rounded-full bg-teal-600 transition-all"
                                                     style={{ width: `${progress.pct}%` }}
                                                 />
                                             </div>
