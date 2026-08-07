@@ -1,10 +1,6 @@
 import { Navigate, Outlet, useParams } from "react-router-dom";
 import { useAuthStore } from "../../store/auth";
-import {
-  normRole,
-  hasTempVerifySession,
-  defaultAuthedPathForRole,
-} from "../../lib/roles";
+import { normRole, defaultAuthedPathForRole } from "../../lib/roles";
 import { useSupplierStage } from "../../supplier/stage";
 import RouteFallback from "../RouteFallback";
 import {
@@ -58,10 +54,6 @@ export function HomeRoute() {
 
   const isAuthed = !!user?.id;
   const r = normRole(user?.role);
-
-  if (!isAuthed && hasTempVerifySession()) {
-    return <Navigate to="/supplier/verify-contact" replace />;
-  }
 
   if (isAuthed && r === "SUPPLIER") {
     if (stage.loading) return <RouteFallback label="Opening supplier area…" />;
