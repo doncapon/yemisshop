@@ -1092,6 +1092,25 @@ export default function SupplierVerifyContact() {
     [emailVerifiedEffective, phoneVerifiedEffective]
   );
 
+  useEffect(() => {
+    if (checking || isAdminReviewMode) return;
+    if (hasAnyVerificationSession || canContinue) return;
+
+    const from = `${location.pathname}${location.search}`;
+    nav(`/login?from=${encodeURIComponent(from)}`, {
+      replace: true,
+      state: { from },
+    });
+  }, [
+    checking,
+    isAdminReviewMode,
+    hasAnyVerificationSession,
+    canContinue,
+    location.pathname,
+    location.search,
+    nav,
+  ]);
+
   const businessDetailsDone = useMemo(() => {
     return (
       hasMeaningfulBusinessDetails(supplierSnapshot) &&
