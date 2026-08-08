@@ -32,7 +32,11 @@
       "Bash(adb devices *)",
       "PowerShell(adb devices)",
       "Bash(node -e \"const p=require\\('./package.json'\\); const scripts=Object.entries\\(p.scripts\\).filter\\(\\([k]\\)=>k.includes\\('cap'\\)||k.includes\\('android'\\)||k.includes\\('build'\\)||k.includes\\('sync'\\)\\); scripts.forEach\\(\\([k,v]\\)=>console.log\\(k+': '+v\\)\\)\")",
-      "PowerShell(& \"$env:LOCALAPPDATA\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\" devices)"
+      "PowerShell(& \"$env:LOCALAPPDATA\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\" devices)",
+      "Bash(npx playwright *)",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5173/)",
+      "Bash(npx tsc *)"
     ]
   }
 }

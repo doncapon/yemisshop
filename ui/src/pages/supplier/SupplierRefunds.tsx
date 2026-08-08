@@ -530,7 +530,7 @@ export default function SupplierRefunds() {
                   href={evidenceUrls[0]}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-xs text-indigo-700 hover:underline inline-flex items-center gap-1"
+                  className="text-xs text-teal-700 hover:underline inline-flex items-center gap-1"
                 >
                   Open first <ExternalLink size={12} />
                 </a>
@@ -633,7 +633,7 @@ export default function SupplierRefunds() {
     const isMatch = viewingRefundId && String((r as any).id) === viewingRefundId;
 
     return (
-      <div className={`rounded-2xl border bg-white p-4 shadow-sm ${isMatch ? "border-indigo-300 bg-indigo-50/40" : ""}`}>
+      <div className={`rounded-2xl border bg-white p-4 shadow-sm ${isMatch ? "border-teal-300 bg-teal-50/40" : ""}`}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
@@ -660,7 +660,7 @@ export default function SupplierRefunds() {
             {r.orderId ? (
               <Link
                 to={orderHref(r.orderId)}
-                className="text-xs font-semibold text-indigo-700 hover:underline truncate"
+                className="text-xs font-semibold text-teal-700 hover:underline truncate"
                 title="Open order"
               >
                 {r.orderId}
@@ -773,20 +773,25 @@ export default function SupplierRefunds() {
     <SiteLayout>
       <SupplierLayout>
         <div className="mt-6">
+          <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700 text-white mb-4">
+            <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(16,185,129,0.3),transparent_60%),radial-gradient(closest-side,rgba(45,212,191,0.3),transparent_60%)]" />
+            <div className="relative px-4 sm:px-6 py-5 sm:py-6">
+              <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
+                <ClipboardList size={20} /> Refunds
+              </h1>
+              <p className="text-sm text-white/80 mt-1">
+                Accept, reject, or escalate refunds tied to this supplier’s purchase orders.
+              </p>
+            </div>
+          </div>
+
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3"
           >
             <div className="min-w-0">
-              <h1 className="text-2xl font-bold text-zinc-900 flex items-center gap-2">
-                <ClipboardList size={20} /> Refunds
-              </h1>
-              <p className="text-sm text-zinc-600 mt-1">
-                Accept, reject, or escalate refunds tied to this supplier’s purchase orders.
-              </p>
-
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2">
                 <span className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-xs text-zinc-700">
                   Pending: <b>{totals.pending}</b>
                 </span>
@@ -805,7 +810,7 @@ export default function SupplierRefunds() {
               ) : null}
 
               {viewingRefundId ? (
-                <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-indigo-50 px-3 py-1 text-xs text-indigo-700">
+                <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-teal-50 px-3 py-1 text-xs text-teal-700">
                   Viewing refund: <b className="font-semibold">{viewingRefundId}</b>
                   <button
                     type="button"
@@ -821,7 +826,7 @@ export default function SupplierRefunds() {
             <div className="flex gap-2 sm:justify-end">
               <button
                 onClick={() => refundsQ.refetch()}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5 w-full sm:w-auto"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm hover:bg-teal-50 hover:border-teal-200 transition w-full sm:w-auto"
               >
                 <RefreshCcw size={16} /> Refresh
               </button>
@@ -941,7 +946,7 @@ export default function SupplierRefunds() {
                   const isMatch = viewingRefundId && String((r as any).id) === viewingRefundId;
 
                   return (
-                    <tr key={(r as any).id} className={`hover:bg-black/5 ${isMatch ? "bg-indigo-50" : ""}`}>
+                    <tr key={(r as any).id} className={`hover:bg-teal-50/60 transition ${isMatch ? "bg-teal-50" : ""}`}>
                       <td className="px-3 py-3">
                         <div className="font-medium text-zinc-900">{(r as any).id}</div>
                         <div className="text-xs text-zinc-500">{(r as any).reason || "—"}</div>
@@ -958,7 +963,7 @@ export default function SupplierRefunds() {
                           {r.orderId ? (
                             <Link
                               to={orderHref(r.orderId)}
-                              className="font-semibold text-indigo-700 hover:underline"
+                              className="font-semibold text-teal-700 hover:underline"
                               title="Open order"
                             >
                               {r.orderId}

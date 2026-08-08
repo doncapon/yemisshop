@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { runWithAdvisoryLock } from "../lib/advisoryLock.js";
 import { releaseDueHeldPayoutsOnce } from "./payoutRelease.job.js";
 import { expireUnpaidOrdersOnce } from "./expireUnpaidOrders.job.js";
 import { recomputeProductStockOnce } from "./recomputeProductStock.jobs.js";
@@ -8,6 +9,8 @@ type JobResult = unknown;
 type Job = {
   name: string;
   run: () => Promise<JobResult>;
+  /** Postgres advisory lock key — must be stable and unique per job. */
+  lockKey: number;
 };
 
 function getJobGroup(): "fast" | "medium" | "daily" | "all" {
@@ -23,6 +26,7 @@ function getJobs(group: ReturnType<typeof getJobGroup>): Job[] {
     {
       name: "expire-unpaid-orders",
       run: expireUnpaidOrdersOnce,
+      lockKey: 7_270_001,
     },
   ];
 
@@ -30,10 +34,12 @@ function getJobs(group: ReturnType<typeof getJobGroup>): Job[] {
     {
       name: "payout-release",
       run: releaseDueHeldPayoutsOnce,
+      lockKey: 7_270_002,
     },
     {
       name: "recompute-product-stock",
       run: recomputeProductStockOnce,
+      lockKey: 7_270_003,
     },
   ];
 
@@ -59,7 +65,13 @@ async function main() {
 
     try {
       console.log(`[worker] running ${job.name}`);
-      const result = await job.run();
+
+      const { ran, result } = await runWithAdvisoryLock(job.lockKey, job.run);
+
+      if (!ran) {
+        console.log(`[worker] skipped ${job.name}: lock already held (another run in progress)`);
+        continue;
+      }
 
       console.log(`[worker] done ${job.name}`, {
         durationMs: Date.now() - startedAt,

@@ -252,8 +252,8 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
     "px-3 py-2 text-sm font-medium " +
     "max-sm:px-2.5 max-sm:py-1.5 max-sm:text-[12px]";
 
-  const active = "bg-zinc-900 text-white border-zinc-900";
-  const inactive = "bg-white/80 hover:bg-black/5 text-zinc-800 border-zinc-200";
+  const active = "bg-teal-600 text-white border-teal-600";
+  const inactive = "bg-white/80 hover:bg-teal-50 text-zinc-800 border-zinc-200 hover:border-teal-200";
 
   const iconClass = "shrink-0 text-zinc-700";
   const iconSize = 14;

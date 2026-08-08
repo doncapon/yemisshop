@@ -65,7 +65,7 @@ const AdminEmployeeDetails: React.FC = () => {
     return (
       <div className="p-6">
         <button
-          className="mb-4 text-sm px-3 py-1 rounded border hover:bg-gray-50"
+          className="mb-4 text-sm px-3 py-1 rounded border hover:bg-blue-50 transition"
           onClick={() => navigate("/admin/employees")}
         >
           ← Back to Employees
@@ -79,7 +79,7 @@ const AdminEmployeeDetails: React.FC = () => {
     return (
       <div className="p-6 space-y-3">
         <button
-          className="text-sm px-3 py-1 rounded border hover:bg-gray-50"
+          className="text-sm px-3 py-1 rounded border hover:bg-blue-50 transition"
           onClick={() => navigate("/admin/employees")}
         >
           ← Back to Employees
@@ -294,7 +294,7 @@ const AdminEmployeeDetails: React.FC = () => {
 
         <div className="pt-3">
           <button
-            className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50"
+            className="px-3 py-1.5 text-sm border rounded hover:bg-blue-50 transition"
             onClick={() =>
               navigate(`/admin/employees/${emp.id}/documents`)
             }
@@ -359,7 +359,7 @@ const AdminEmployeeDetails: React.FC = () => {
       {/* Top bar */}
       <div className="flex items-center justify-between gap-3">
         <button
-          className="text-xs sm:text-sm px-3 py-1.5 rounded border hover:bg-gray-50"
+          className="text-xs sm:text-sm px-3 py-1.5 rounded border hover:bg-blue-50 transition"
           onClick={() => navigate("/admin/employees")}
         >
           ← Back to Employees
@@ -377,13 +377,16 @@ const AdminEmployeeDetails: React.FC = () => {
         </div>
       </div>
 
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold text-gray-900">
-          {fullName}
-        </h1>
-        <p className="text-sm text-gray-500">
-          Employee ID: {emp.id}
-        </p>
+      <header className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white px-6 py-5">
+        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+        <div className="relative">
+          <h1 className="text-2xl font-semibold">
+            {fullName}
+          </h1>
+          <p className="text-sm text-white/80">
+            Employee ID: {emp.id}
+          </p>
+        </div>
       </header>
 
       {/* Tabs */}

@@ -1079,8 +1079,8 @@ export default function SupplierOrders() {
         )}
 
         <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
-          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+          <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700" />
+          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(16,185,129,0.3),transparent_60%),radial-gradient(closest-side,rgba(45,212,191,0.3),transparent_60%)]" />
           <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
             <motion.h1
               initial={{ opacity: 0, y: 8 }}
@@ -1091,8 +1091,7 @@ export default function SupplierOrders() {
             </motion.h1>
 
             <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
-              Orders allocated to you (based on{" "}
-              <code className="px-1 rounded bg-white/10">chosenSupplierId</code>).
+              Orders that have been allocated to your store.
             </p>
 
             <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
@@ -1238,7 +1237,7 @@ export default function SupplierOrders() {
                   placeholder="Search order ID, email, product…"
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  className="w-full rounded-2xl border bg-white pl-9 pr-4 py-2.5 sm:py-3 text-[13px] sm:text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
+                  className="w-full rounded-2xl border bg-white pl-9 pr-4 py-2.5 sm:py-3 text-[13px] sm:text-sm outline-none focus:ring-4 focus:ring-teal-100 focus:border-teal-400 transition"
                 />
               </div>
 
@@ -1272,7 +1271,7 @@ export default function SupplierOrders() {
 
           <Card>
             <div className="p-4 sm:p-5 flex items-center gap-3">
-              <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+              <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-teal-50 text-teal-700">
                 <PackageCheck size={18} />
               </div>
               <div className="min-w-0">
@@ -1288,7 +1287,7 @@ export default function SupplierOrders() {
 
         <div className="mt-4">
           <Card>
-            <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+            <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
@@ -1337,7 +1336,7 @@ export default function SupplierOrders() {
                       type="button"
                       disabled={serverPage <= 1}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 disabled:opacity-50"
                     >
                       <ChevronLeft size={14} /> Prev
                     </button>
@@ -1351,7 +1350,7 @@ export default function SupplierOrders() {
                       type="button"
                       disabled={serverPage >= serverPageCount}
                       onClick={() => setPage((p) => Math.min(serverPageCount, p + 1))}
-                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 disabled:opacity-50"
                     >
                       Next <ChevronRight size={14} />
                     </button>
@@ -1474,7 +1473,7 @@ export default function SupplierOrders() {
                         <button
                           type="button"
                           onClick={() => toggleExpand(o.id)}
-                          className="shrink-0 inline-flex items-center gap-1 rounded-full border bg-white px-3 py-1.5 text-[12px] hover:bg-black/5"
+                          className="shrink-0 inline-flex items-center gap-1 rounded-full border bg-white px-3 py-1.5 text-[12px] hover:bg-teal-50 hover:border-teal-200"
                         >
                           {isOpen ? (
                             <>
@@ -1553,7 +1552,7 @@ export default function SupplierOrders() {
                               setNextStatus(next === "PENDING" ? "CONFIRMED" : next);
                               setExpanded((s) => ({ ...s, [o.id]: true }));
                             }}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200"
                             title={
                               isTerminal
                                 ? "This order is already completed/canceled."
@@ -1570,7 +1569,7 @@ export default function SupplierOrders() {
                             onClick={() => {
                               setExpanded((s) => ({ ...s, [o.id]: true }));
                             }}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200"
                             title="Confirm delivery with customer OTP"
                           >
                             <PackageCheck size={14} /> Deliver
@@ -1587,7 +1586,7 @@ export default function SupplierOrders() {
                               setPayoutMsg((s) => ({ ...s, [id]: { type: "info", text: "" } }));
                               releasePayoutM.mutate({ poId: id, orderId: o.id });
                             }}
-                            className="inline-flex col-span-2 sm:col-span-1 items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                            className="inline-flex col-span-2 sm:col-span-1 items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 disabled:opacity-50"
                             title={
                               !canAttemptPayout
                                 ? onboardingBlocked
@@ -1604,7 +1603,7 @@ export default function SupplierOrders() {
                         <button
                           type="button"
                           onClick={() => ordersQ.refetch()}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200"
                         >
                           <RefreshCcw size={14} /> Refresh
                         </button>
@@ -1697,7 +1696,7 @@ export default function SupplierOrders() {
                               <button
                                 type="button"
                                 disabled={!canSave || updateStatusM.isPending}
-                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
                                 onClick={() => {
                                   if (
                                     normStatus(nextStatus) === "CANCELED" &&
@@ -1724,7 +1723,7 @@ export default function SupplierOrders() {
                               <button
                                 type="button"
                                 onClick={() => setEditingId(null)}
-                                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
+                                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200"
                               >
                                 Cancel
                               </button>
@@ -1762,7 +1761,7 @@ export default function SupplierOrders() {
                                     type="button"
                                     disabled={requestCancelOtpM.isPending || retryLocked}
                                     onClick={() => requestCancelOtpM.mutate({ orderId: o.id })}
-                                    className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                    className="rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
                                   >
                                     {retryLocked
                                       ? "Please wait…"
@@ -1886,7 +1885,7 @@ export default function SupplierOrders() {
                                       code: deliveryOtpCode[poId] ?? "",
                                     })
                                   }
-                                  className="w-full sm:w-auto shrink-0 rounded-xl bg-zinc-900 px-4 py-3 text-white font-semibold disabled:opacity-60"
+                                  className="w-full sm:w-auto shrink-0 rounded-xl bg-teal-600 hover:bg-teal-700 px-4 py-3 text-white font-semibold disabled:opacity-60"
                                 >
                                   {verifyDeliveryOtpM.isPending ? "Verifying…" : "Verify OTP"}
                                 </button>
@@ -1899,7 +1898,7 @@ export default function SupplierOrders() {
                                   setDeliveryOtpAutoRequested((s) => ({ ...s, [poId]: true }));
                                   requestDeliveryOtpM.mutate({ poId });
                                 }}
-                                className="w-full rounded-xl bg-black px-4 py-3 text-white font-semibold disabled:opacity-60"
+                                className="w-full rounded-xl bg-teal-600 hover:bg-teal-700 px-4 py-3 text-white font-semibold disabled:opacity-60"
                               >
                                 {requestDeliveryOtpM.isPending ? "Requesting…" : "Request OTP"}
                               </button>
@@ -2014,7 +2013,7 @@ export default function SupplierOrders() {
                       type="button"
                       disabled={serverPage <= 1}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 disabled:opacity-50"
                     >
                       <ChevronLeft size={14} /> Prev
                     </button>
@@ -2028,7 +2027,7 @@ export default function SupplierOrders() {
                       type="button"
                       disabled={serverPage >= serverPageCount}
                       onClick={() => setPage((p) => Math.min(serverPageCount, p + 1))}
-                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-teal-50 hover:border-teal-200 disabled:opacity-50"
                     >
                       Next <ChevronRight size={14} />
                     </button>

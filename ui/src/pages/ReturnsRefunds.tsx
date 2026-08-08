@@ -982,8 +982,18 @@ export default function ReturnsRefundsPage() {
     <SiteLayout>
       <div className={`max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 md:py-6 ${T_BASE}`}>
         <div className="mb-3 flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-semibold text-ink">Returns & refunds</h1>
+          <div
+            className={`min-w-0 ${
+              isAdmin ? "" : "rounded-3xl border border-fuchsia-100 bg-gradient-to-br from-fuchsia-50 via-purple-50/40 to-white px-4 py-4 sm:px-5"
+            }`}
+          >
+            <h1
+              className={`text-xl sm:text-2xl font-semibold ${
+                isAdmin ? "text-ink" : "bg-gradient-to-r from-fuchsia-700 to-purple-700 bg-clip-text text-transparent"
+              }`}
+            >
+              Returns & refunds
+            </h1>
             <p className={`mt-1 ${T_SM} text-ink-soft`}>
               {isAdmin
                 ? activeCustomerKey

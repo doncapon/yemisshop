@@ -215,7 +215,7 @@ export default function AdminProductAttributes() {
                   <button
                     key={p.id}
                     type="button"
-                    className="w-full text-left px-3 py-2 hover:bg-black/5"
+                    className="w-full text-left px-3 py-2 hover:bg-blue-50"
                     onClick={() => {
                       setProduct({ id: String(p.id), title: String(p.title) });
                       setQ("");
@@ -302,8 +302,8 @@ export default function AdminProductAttributes() {
                                   onClick={() => toggleValue(a.id, v.id, multi)}
                                   className={`px-2 py-1 rounded-full border text-sm ${
                                     active
-                                      ? "bg-zinc-900 text-white border-zinc-900"
-                                      : "bg-white hover:bg-zinc-50"
+                                      ? "bg-blue-600 text-white border-blue-600"
+                                      : "bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                                   }`}
                                   title={v.code ? `${v.name} (${v.code})` : v.name}
                                 >

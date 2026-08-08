@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
 
 type RiderRow = {
   id: string;
@@ -261,21 +262,33 @@ export default function SupplierRiders() {
   return (
     <SupplierLayout>
       <div className="max-w-5xl mx-auto px-3 sm:px-4 py-4 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-semibold text-zinc-900">Riders</h1>
-            <p className="text-sm text-zinc-600">Invite riders and manage who can deliver.</p>
-          </div>
+        <div className="relative overflow-hidden rounded-3xl border">
+          <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700" />
+          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(16,185,129,0.3),transparent_60%),radial-gradient(closest-side,rgba(45,212,191,0.3),transparent_60%)]" />
+          <div className="relative px-5 md:px-8 py-6 text-white">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+              <div>
+                <motion.h1
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-xl sm:text-2xl font-bold tracking-tight"
+                >
+                  Riders <Sparkles className="inline ml-1" size={18} />
+                </motion.h1>
+                <p className="mt-1 text-sm text-white/80">Invite riders and manage who can deliver.</p>
+              </div>
 
-          <div className="text-xs text-zinc-500">
-            {ridersQ.isLoading
-              ? "Loading…"
-              : `${pageData.total} rider${pageData.total === 1 ? "" : "s"} • ${activeCount} active • ${inactiveCount} inactive`}
+              <div className="text-xs text-white/80">
+                {ridersQ.isLoading
+                  ? "Loading…"
+                  : `${pageData.total} rider${pageData.total === 1 ? "" : "s"} • ${activeCount} active • ${inactiveCount} inactive`}
+              </div>
+            </div>
           </div>
         </div>
 
         <div className="rounded-2xl border bg-white/90 shadow-sm overflow-hidden">
-          <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex items-center justify-between">
+          <div className="px-4 sm:px-5 py-3 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex items-center justify-between">
             <h2 className="font-semibold text-zinc-900">Invite a rider</h2>
           </div>
 
@@ -336,7 +349,7 @@ export default function SupplierRiders() {
                 type="button"
                 onClick={() => inviteM.mutate()}
                 disabled={inviteM.isPending}
-                className="w-full rounded-xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-50"
+                className="w-full rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-3 text-sm font-semibold disabled:opacity-50"
               >
                 {inviteM.isPending ? "Inviting…" : "Invite rider"}
               </button>
@@ -400,7 +413,7 @@ export default function SupplierRiders() {
         </div>
 
         <div className="rounded-2xl border bg-white/90 shadow-sm overflow-hidden">
-          <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="px-4 sm:px-5 py-3 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <h2 className="font-semibold text-zinc-900">All riders</h2>
               <div className="text-xs text-zinc-500">
@@ -498,8 +511,8 @@ export default function SupplierRiders() {
                       disabled={toggleM.isPending}
                       className={`shrink-0 rounded-xl px-3 py-2 text-sm font-semibold border disabled:opacity-50 ${
                         r.isActive
-                          ? "bg-white hover:bg-black/5"
-                          : "bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
+                          ? "bg-white hover:bg-teal-50 hover:border-teal-200"
+                          : "bg-teal-600 text-white border-teal-600 hover:bg-teal-700"
                       }`}
                     >
                       {r.isActive ? "Deactivate" : "Activate"}

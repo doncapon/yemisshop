@@ -429,7 +429,7 @@ function AddressFieldsSection({
   const lgaOptions = useMemo(() => getLgaOptionsForState(value.state), [value.state]);
 
   const fieldClass = (field: AddressFieldKey) =>
-    `w-full rounded-2xl border bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm ${
+    `w-full rounded-2xl border bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-200 md:text-sm ${
       errors[`${sectionKey}.${field}`]
         ? "border-rose-300 focus:border-rose-400 focus:ring-rose-200"
         : "border-slate-300"
@@ -1611,15 +1611,15 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
   const stepBase =
     "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
   const stepDone = "border-emerald-200 bg-emerald-50 text-emerald-700";
-  const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
+  const stepActive = "border-teal-600 bg-teal-600 text-white shadow-sm";
   const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
-  const stepClickable = "cursor-pointer hover:bg-zinc-50";
+  const stepClickable = "cursor-pointer hover:bg-teal-50";
   const stepButtonBase = "w-full text-left";
   const stepDisabledLoading =
     "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-400 pointer-events-none";
 
   const metaFieldClass = (field: PickupMetaFieldKey) =>
-    `w-full rounded-2xl border bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 md:text-sm ${
+    `w-full rounded-2xl border bg-white px-3.5 py-3 text-[16px] text-slate-900 shadow-sm transition placeholder:text-slate-400 outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-200 md:text-sm ${
       fieldErrors[`pickupMeta.${field}`]
         ? "border-rose-300 focus:border-rose-400 focus:ring-rose-200"
         : "border-slate-300"
@@ -2005,7 +2005,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
                     <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-200">
                       <div
-                        className="h-full rounded-full bg-zinc-900 transition-all"
+                        className="h-full rounded-full bg-teal-600 transition-all"
                         style={{ width: `${progress.pct}%` }}
                       />
                     </div>
@@ -2081,7 +2081,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                         void saveAndNext();
                       }}
                       disabled={isContinuing || loading}
-                      className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
+                      className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {loading
                         ? "Loading address details…"
@@ -2120,7 +2120,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                   type="button"
                   onClick={goBack}
                   disabled={loading}
-                  className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-teal-50 hover:border-teal-200 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <ArrowLeft className="mr-2 h-4 w-4" />
                   Back
@@ -2145,7 +2145,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       void saveAndNext();
                     }}
                     disabled={isContinuing || loading}
-                    className="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex items-center justify-center rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {loading
                       ? "Loading…"

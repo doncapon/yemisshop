@@ -39,11 +39,52 @@ const randInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
 const chance = (p: number) => Math.random() < p;
 
-function pics(seed: string | number): string[] {
-  return [
-    `https://picsum.photos/seed/dayspring-${seed}/800/600`,
-    `https://picsum.photos/seed/dayspring-${seed}-b/800/600`,
-  ];
+/**
+ * Real, category-relevant photos (via LoremFlickr's free keyword search —
+ * no API key needed) instead of unrelated random placeholder photos. Each
+ * base product title maps to search keyword(s); every product sharing that
+ * title gets the same 5 "angle" shots, since these are demo/seed photos of
+ * generic stock items rather than a specific supplier's own product photography.
+ */
+const PRODUCT_IMAGE_KEYWORDS: Record<string, string> = {
+  "2-Slice Toaster": "toaster",
+  "Air Fryer": "fryer,kitchen",
+  "Analog Wristwatch": "wristwatch",
+  "Bluetooth Speaker": "speaker,bluetooth",
+  "Ceramic Coffee Mug": "mug,coffee",
+  "Cotton T-Shirt": "tshirt",
+  "Desk Lamp": "lamp,desk",
+  "Dinner Plate Set": "plate,dinnerware",
+  "Electric Kettle": "kettle",
+  "Extension Cable": "cable,extension",
+  "Flask Set": "flask",
+  "Insulated Water Bottle": "thermos,bottle",
+  "Kitchen Blender": "blender,kitchen",
+  "Laptop Backpack": "backpack",
+  "Mechanical Keyboard": "keyboard,mechanical",
+  "Microwave Oven": "microwave",
+  "Power Bank": "powerbank",
+  "Pressure Cooker": "cooker,kitchen",
+  "Running Sneakers": "sneakers",
+  "Silicone Phone Case": "case,smartphone",
+  "Standing Fan": "fan,electric",
+  "USB Wall Charger": "charger,usb",
+  "Water Bottle": "bottle,water",
+  "Wi-Fi Router": "router,wifi",
+  "Wireless Headphones": "headphones",
+  "Wireless Mouse": "mouse,computer",
+};
+
+const PRODUCT_IMAGE_ANGLES = 5;
+
+function productPics(title: string): string[] {
+  const baseTitle = title.replace(/\s*\(Pending Review\)\s*$/i, "").trim();
+  const keyword = PRODUCT_IMAGE_KEYWORDS[baseTitle] ?? "product";
+
+  return Array.from(
+    { length: PRODUCT_IMAGE_ANGLES },
+    (_, i) => `https://loremflickr.com/800/600/${keyword}?lock=${i + 1}`
+  );
 }
 
 type SeedBankOption = {
@@ -71,7 +112,7 @@ const SEED_BANKS: SeedBankOption[] = [
 function seededAccountNumber(n: number) {
   return `10000000${String(n).padStart(2, "0")}`; // 10 digits
 }
-
+  
 function seededRegistrationNumber(n: number) {
   return `RC-${String(1000000 + n)}`;
 }
@@ -1134,8 +1175,9 @@ function variantParcelOverride(base: ParcelSeed) {
     retail: number;
     attrs: Awaited<ReturnType<typeof ensureAttributes>>;
     productParcel: ParcelSeed;
+    productTitle: string;
   }) {
-    const { productId, skuBase, retail, attrs } = args;
+    const { productId, skuBase, retail, attrs, productTitle } = args;
 
     const attrByName = new Map(attrs.map((a) => [a.name, a]));
     const color = attrByName.get("Color");
@@ -1191,7 +1233,7 @@ function variantParcelOverride(base: ParcelSeed) {
           isBulkyOverride: override.isBulkyOverride,
           shippingClassOverride: override.shippingClassOverride,
           inStock: true,
-          imagesJson: pics(vSku),
+          imagesJson: productPics(productTitle),
           isActive: true,
           availableQty: 0,
           options: {
@@ -1766,7 +1808,7 @@ function variantParcelOverride(base: ParcelSeed) {
             retailPrice: toDec(item.retail),
             sku: item.sku,
             status: item.status,
-            imagesJson: pics(`${item.sku}-${item.brandId}`),
+            imagesJson: productPics(item.title),
             isDeleted: false,
             availableQty: 0,
             inStock: true,
@@ -1798,7 +1840,7 @@ function variantParcelOverride(base: ParcelSeed) {
             retailPrice: toDec(item.retail),
             sku: item.sku,
             status: item.status,
-            imagesJson: pics(`${item.sku}-${item.brandId}`),
+            imagesJson: productPics(item.title),
             isDeleted: false,
             availableQty: 0,
             inStock: true,
@@ -1851,6 +1893,7 @@ function variantParcelOverride(base: ParcelSeed) {
           retail: item.retail,
           attrs,
           productParcel: parcel,
+          productTitle: item.title,
         });
 
         await ensureVariantOffersForVariants({

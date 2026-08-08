@@ -1158,7 +1158,7 @@ export default function SuppliersOfferManager({
               onClick={() => setIsEditingOffers((v) => !v)}
               className={`rounded-xl px-3 py-2 text-sm border ${isEditingOffers
                 ? "bg-amber-600 text-white border-amber-600 hover:bg-amber-700"
-                : "bg-white border-slate-300 hover:bg-slate-50"
+                : "bg-white border-slate-300 hover:bg-blue-50 hover:border-blue-200 transition"
                 }`}
               disabled={loading || saving}
             >
@@ -1169,7 +1169,7 @@ export default function SuppliersOfferManager({
           <button
             type="button"
             onClick={load}
-            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-50"
+            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-blue-50 hover:border-blue-200 transition"
             disabled={loading || saving}
           >
             Refresh offers
@@ -1485,7 +1485,7 @@ export default function SuppliersOfferManager({
           <button
             type="button"
             onClick={addRow}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm hover:bg-slate-50"
+            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm hover:bg-blue-50 hover:border-blue-200 transition"
             disabled={loading || saving || !canEdit}
           >
             Add row

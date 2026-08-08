@@ -236,7 +236,7 @@ export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
 
           <button
             onClick={() => ledgerQ.refetch()}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm disabled:opacity-50"
             disabled={ledgerQ.isFetching}
           >
             <RefreshCcw size={16} /> {ledgerQ.isFetching ? "Refreshing…" : "Refresh"}
@@ -247,7 +247,7 @@ export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
               setMSupplierId(supplierId || "");
               setOpen(true);
             }}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90 text-sm"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 text-sm"
           >
             <Plus size={16} /> Manual adjustment
           </button>
@@ -268,7 +268,7 @@ export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
 
         <div className="inline-flex items-center gap-2">
           <button
-            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm disabled:opacity-50"
             disabled={!canPrev || ledgerQ.isFetching}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
           >
@@ -286,7 +286,7 @@ export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
           </div>
 
           <button
-            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm disabled:opacity-50"
             disabled={!canNext || ledgerQ.isFetching}
             onClick={() => setPage((p) => p + 1)}
           >
@@ -387,7 +387,7 @@ export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
             )}
 
             {rows.map((r) => (
-              <tr key={r.id} className="hover:bg-black/5">
+              <tr key={r.id} className="hover:bg-blue-50/60 transition">
                 <td className="px-3 py-3 whitespace-nowrap">
                   <span className="inline-block max-w-[260px] truncate" title={r.supplier?.name || r.supplierId}>
                     {r.supplier?.name || r.supplierId}
@@ -425,7 +425,7 @@ export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
                 <div className="text-xs text-ink-soft">Creates a CREDIT or DEBIT entry.</div>
               </div>
               <button
-                className="shrink-0 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 disabled:opacity-50"
+                className="shrink-0 px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                 onClick={() => setOpen(false)}
                 disabled={isMutating}
               >
@@ -521,14 +521,14 @@ export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
 
             <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
               <button
-                className="px-3 py-2 rounded-xl border bg-white hover:bg-black/5 disabled:opacity-50"
+                className="px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                 onClick={() => setOpen(false)}
                 disabled={isMutating}
               >
                 Cancel
               </button>
               <button
-                className="px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90 disabled:opacity-50"
+                className="px-3 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                 onClick={() => adjustM.mutate()}
                 disabled={isMutating}
               >

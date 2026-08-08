@@ -134,6 +134,15 @@ type ReleaseSummary = {
   }>;
 };
 
+async function isPayoutReleaseEnabled(): Promise<boolean> {
+  const row = await prisma.setting.findUnique({
+    where: { key: "payoutReleaseSchedulerEnabled" },
+  });
+  // Unset defaults to enabled, matching the admin settings page's default.
+  if (row?.value == null) return true;
+  return row.value.trim().toLowerCase() !== "false";
+}
+
 export async function releaseDueHeldPayoutsOnce(batchSize = DEFAULT_BATCH_SIZE): Promise<ReleaseSummary> {
   const now = new Date();
 
@@ -144,6 +153,15 @@ export async function releaseDueHeldPayoutsOnce(batchSize = DEFAULT_BATCH_SIZE):
     failed: 0,
     details: [],
   };
+
+  // Single source of truth for the "Enabled/Disabled" toggle on the admin
+  // Payout Release Scheduler card — checked here so it's respected no
+  // matter which caller triggers a release (the scheduled worker, the
+  // admin "Run now" button, or the dormant in-process scheduler).
+  if (!(await isPayoutReleaseEnabled())) {
+    console.log("[payout-release] skipped: disabled via admin settings");
+    return summary;
+  }
 
   const dueAllocs = await prisma.supplierPaymentAllocation.findMany({
     where: {

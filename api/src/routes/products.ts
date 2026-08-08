@@ -153,6 +153,12 @@ function supplierRatingSelect(includeName: boolean) {
   if (includeName && hasScalar(SUPPLIER_MODEL, "name")) sel.name = true;
   if (hasScalar(SUPPLIER_MODEL, "ratingAvg")) sel.ratingAvg = true;
   if (hasScalar(SUPPLIER_MODEL, "ratingCount")) sel.ratingCount = true;
+  if (hasRelation(SUPPLIER_MODEL, "pickupAddress")) {
+    sel.pickupAddress = { select: { state: true } };
+  }
+  if (hasRelation(SUPPLIER_MODEL, "registeredAddress")) {
+    sel.registeredAddress = { select: { state: true } };
+  }
   return sel;
 }
 
@@ -160,6 +166,7 @@ function readSupplierRatingFromOffer(o: any): {
   supplierId: string;
   ratingAvg: number;
   ratingCount: number;
+  state: string | null;
 } {
   const sid = String(
     o?.supplierId ??
@@ -175,7 +182,14 @@ function readSupplierRatingFromOffer(o: any): {
   const ratingAvg = toNum(avgRaw) ?? 0;
   const ratingCount = Number(cntRaw ?? 0) || 0;
 
-  return { supplierId: sid, ratingAvg, ratingCount };
+  const state =
+    o?.supplier?.pickupAddress?.state ??
+    o?.supplier?.registeredAddress?.state ??
+    o?.product?.supplier?.pickupAddress?.state ??
+    o?.product?.supplier?.registeredAddress?.state ??
+    null;
+
+  return { supplierId: sid, ratingAvg, ratingCount, state: state ? String(state) : null };
 }
 
 const PRIOR_AVG = 4.0;
@@ -762,12 +776,14 @@ router.get(
 
     const ratingsByProduct = new Map<string, Array<{ ratingAvg: number; ratingCount: number }>>();
     const ratingsByVariant = new Map<string, Array<{ ratingAvg: number; ratingCount: number }>>();
+    const statesByProduct = new Map<string, string | null>();
     const variantOffersByVariant = new Map<string, any[]>();
     const offersFromByProduct = new Map<string, number | null>();
 
     for (const pid of ids) {
       ratingsByProduct.set(pid, []);
       offersFromByProduct.set(pid, null);
+      statesByProduct.set(pid, null);
     }
 
     for (const o of baseOffers as any[]) {
@@ -792,6 +808,8 @@ router.get(
         arr.push({ ratingAvg: r.ratingAvg, ratingCount: r.ratingCount });
         ratingsByProduct.set(pid, arr);
       }
+
+      if (r.state && !statesByProduct.get(pid)) statesByProduct.set(pid, r.state);
     }
 
     for (const pid of ids) {
@@ -839,6 +857,8 @@ router.get(
         varr.push({ ratingAvg: r.ratingAvg, ratingCount: r.ratingCount });
         ratingsByVariant.set(vid, varr);
       }
+
+      if (r.state && !statesByProduct.get(pid)) statesByProduct.set(pid, r.state);
     }
 
     const [attrOpts, attrTexts] = wantAttributes
@@ -1019,6 +1039,8 @@ router.get(
         ratingAvg: bestProductRating?.ratingAvg ?? null,
         ratingCount: bestProductRating?.ratingCount ?? null,
         bestSupplierRating: bestProductRating,
+
+        supplierState: statesByProduct.get(pid) ?? null,
 
         supplierProductOffers: needOffers
           ? (baseOffers as any[])

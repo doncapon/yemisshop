@@ -809,7 +809,7 @@ const SuppliersSection = React.memo(function SuppliersSection(props: {
         <button
           type="button"
           onClick={() => setSupplierSearch("")}
-          className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 md:ml-auto"
+          className="px-3 py-2 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition md:ml-auto"
           style={{ visibility: supplierSearch.trim() ? "visible" : "hidden" }}
         >
           Clear
@@ -1061,6 +1061,44 @@ export function CatalogSettingsSection(props: {
 
   const [viewingSupplier, setViewingSupplier] = useState<AdminSupplier | null>(null);
 
+  const [categorySearch, setCategorySearch] = useState("");
+  const debouncedCategorySearch = useDebouncedValue(categorySearch, 150);
+  const filteredCategories = useMemo(() => {
+    const items: AdminCategory[] = categoriesQ.data ?? [];
+    const needle = debouncedCategorySearch.trim().toLowerCase();
+    if (!needle) return items;
+    return items.filter((c) => {
+      const parentName = items.find((x) => x.id === c.parentId)?.name || "";
+      const hay = [c.name, c.slug, parentName].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [categoriesQ.data, debouncedCategorySearch]);
+
+  const [brandSearch, setBrandSearch] = useState("");
+  const debouncedBrandSearch = useDebouncedValue(brandSearch, 150);
+  const filteredBrands = useMemo(() => {
+    const items: AdminBrand[] = brandsQ.data ?? [];
+    const needle = debouncedBrandSearch.trim().toLowerCase();
+    if (!needle) return items;
+    return items.filter((b) => {
+      const hay = [b.name, b.slug].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [brandsQ.data, debouncedBrandSearch]);
+
+  const [attributeSearch, setAttributeSearch] = useState("");
+  const debouncedAttributeSearch = useDebouncedValue(attributeSearch, 150);
+  const filteredAttributes = useMemo(() => {
+    const items: AdminAttribute[] = attributesQ.data ?? [];
+    const needle = debouncedAttributeSearch.trim().toLowerCase();
+    if (!needle) return items;
+    return items.filter((a: AdminAttribute) => {
+      const valueNames = (a.values ?? []).map((v: any) => v.name).join(" ");
+      const hay = [a.name, a.type, valueNames].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [attributesQ.data, debouncedAttributeSearch]);
+
   function SectionCard({
     title,
     subtitle,
@@ -1081,7 +1119,7 @@ export function CatalogSettingsSection(props: {
         className={`rounded-2xl border bg-white shadow-sm overflow-visible ${className ?? ""}`}
         style={disableAnchor ? ({ overflowAnchor: "none" } as any) : undefined}
       >
-        <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
+        <div className="px-4 md:px-5 py-3 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex items-center justify-between">
           <div>
             <h3 className="text-ink font-semibold">{title}</h3>
             {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
@@ -1217,9 +1255,31 @@ export function CatalogSettingsSection(props: {
           <CategoryForm categories={categoriesQ.data ?? []} onCreate={(payload) => createCategory.mutate(payload)} />
         )}
 
-        <div className="border rounded-xl overflow-x-auto">
+        <div className="mb-2 flex flex-col sm:flex-row sm:items-center gap-2">
+          <input
+            value={categorySearch}
+            onChange={(e) => setCategorySearch(e.target.value)}
+            placeholder="Search categories by name or slug…"
+            className="w-full sm:max-w-xs border rounded-lg px-3 py-2 text-sm"
+          />
+          <div className="text-xs text-ink-soft whitespace-nowrap">
+            {categorySearch.trim()
+              ? `${filteredCategories.length} of ${(categoriesQ.data ?? []).length} categories`
+              : `${(categoriesQ.data ?? []).length} categor${(categoriesQ.data ?? []).length === 1 ? "y" : "ies"}`}
+          </div>
+          {categorySearch.trim() && (
+            <button
+              type="button"
+              onClick={() => setCategorySearch("")}
+              className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-xs sm:ml-auto"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <div className="border rounded-xl overflow-auto max-h-[420px]">
           <table className="w-full text-sm">
-            <thead className="bg-zinc-50">
+            <thead className="bg-zinc-50 sticky top-0 z-10">
               <tr>
                 <th className="text-left px-3 py-2">Name</th>
                 <th className="text-left px-3 py-2">Slug</th>
@@ -1229,7 +1289,7 @@ export function CatalogSettingsSection(props: {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {(categoriesQ.data ?? []).map((c: AdminCategory) => {
+              {filteredCategories.map((c: AdminCategory) => {
                 const used = categoryUsage[c.id] || 0;
                 return (
                   <tr key={c.id}>
@@ -1265,10 +1325,10 @@ export function CatalogSettingsSection(props: {
                   </tr>
                 );
               })}
-              {(categoriesQ.data ?? []).length === 0 && (
+              {filteredCategories.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">
-                    No categories
+                    {categorySearch.trim() ? "No categories match your search" : "No categories"}
                   </td>
                 </tr>
               )}
@@ -1280,9 +1340,31 @@ export function CatalogSettingsSection(props: {
       {/* Brands */}
       <SectionCard title="Brands" subtitle="Manage brand metadata">
         {canEdit && <BrandForm onCreate={(payload) => createBrand.mutate(payload)} />}
-        <div className="border rounded-xl overflow-x-auto">
+        <div className="mb-2 flex flex-col sm:flex-row sm:items-center gap-2">
+          <input
+            value={brandSearch}
+            onChange={(e) => setBrandSearch(e.target.value)}
+            placeholder="Search brands by name or slug…"
+            className="w-full sm:max-w-xs border rounded-lg px-3 py-2 text-sm"
+          />
+          <div className="text-xs text-ink-soft whitespace-nowrap">
+            {brandSearch.trim()
+              ? `${filteredBrands.length} of ${(brandsQ.data ?? []).length} brands`
+              : `${(brandsQ.data ?? []).length} brand${(brandsQ.data ?? []).length === 1 ? "" : "s"}`}
+          </div>
+          {brandSearch.trim() && (
+            <button
+              type="button"
+              onClick={() => setBrandSearch("")}
+              className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-xs sm:ml-auto"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <div className="border rounded-xl overflow-auto max-h-[420px]">
           <table className="w-full text-sm">
-            <thead className="bg-zinc-50">
+            <thead className="bg-zinc-50 sticky top-0 z-10">
               <tr>
                 <th className="text-left px-3 py-2">Name</th>
                 <th className="text-left px-3 py-2">Slug</th>
@@ -1292,7 +1374,7 @@ export function CatalogSettingsSection(props: {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {(brandsQ.data ?? []).map((b: AdminBrand) => {
+              {filteredBrands.map((b: AdminBrand) => {
                 const used = brandUsage[b.id] || 0;
                 return (
                   <tr key={b.id}>
@@ -1329,10 +1411,10 @@ export function CatalogSettingsSection(props: {
                   </tr>
                 );
               })}
-              {(brandsQ.data ?? []).length === 0 && (
+              {filteredBrands.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">
-                    No brands
+                    {brandSearch.trim() ? "No brands match your search" : "No brands"}
                   </td>
                 </tr>
               )}
@@ -1350,8 +1432,31 @@ export function CatalogSettingsSection(props: {
       <SectionCard title="Attributes" subtitle="Define attribute schema & options">
         {canEdit && <AttributeForm onCreate={(payload) => createAttribute.mutate(payload)} />}
 
-        <div className="grid gap-3">
-          {(attributesQ.data ?? []).map((a: AdminAttribute) => {
+        <div className="mb-2 flex flex-col sm:flex-row sm:items-center gap-2">
+          <input
+            value={attributeSearch}
+            onChange={(e) => setAttributeSearch(e.target.value)}
+            placeholder="Search attributes by name, type, or value…"
+            className="w-full sm:max-w-xs border rounded-lg px-3 py-2 text-sm"
+          />
+          <div className="text-xs text-ink-soft whitespace-nowrap">
+            {attributeSearch.trim()
+              ? `${filteredAttributes.length} of ${(attributesQ.data ?? []).length} attributes`
+              : `${(attributesQ.data ?? []).length} attribute${(attributesQ.data ?? []).length === 1 ? "" : "s"}`}
+          </div>
+          {attributeSearch.trim() && (
+            <button
+              type="button"
+              onClick={() => setAttributeSearch("")}
+              className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-xs sm:ml-auto"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        <div className="grid gap-3 overflow-y-auto max-h-[560px] pr-1">
+          {filteredAttributes.map((a: AdminAttribute) => {
             const used = attributeUsage[a.id] || 0;
 
             return (
@@ -1436,8 +1541,10 @@ export function CatalogSettingsSection(props: {
             );
           })}
 
-          {(attributesQ.data ?? []).length === 0 && (
-            <div className="text-center text-zinc-500 text-sm py-4">No attributes</div>
+          {filteredAttributes.length === 0 && (
+            <div className="text-center text-zinc-500 text-sm py-4">
+              {attributeSearch.trim() ? "No attributes match your search" : "No attributes"}
+            </div>
           )}
         </div>
 

@@ -11,6 +11,9 @@ const API_BASE = process.env.VITE_API_URL || "https://api.dayspringhouse.com";
 // Your public products endpoint
 const PRODUCTS_URL = `${API_BASE}/api/products`;
 
+// Your public categories endpoint (returns a nested tree)
+const CATEGORIES_URL = `${API_BASE}/api/categories`;
+
 // Vite serves anything in /public at the site root
 const outPath = path.join(process.cwd(), "public", "sitemap.xml");
 
@@ -61,25 +64,77 @@ async function fetchAllProductIds() {
   return Array.from(new Set(ids));
 }
 
+async function fetchAllCategoryIds() {
+  const res = await fetch(CATEGORIES_URL, { headers: { Accept: "application/json" } });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch categories: ${res.status} ${res.statusText}`);
+  }
+
+  const json = await res.json();
+  const roots = Array.isArray(json?.data) ? json.data : [];
+  const ids = [];
+
+  const walk = (nodes) => {
+    for (const n of nodes) {
+      if (n?.id) ids.push(String(n.id));
+      if (Array.isArray(n?.children) && n.children.length) walk(n.children);
+    }
+  };
+  walk(roots);
+
+  return Array.from(new Set(ids));
+}
+
 async function main() {
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Static pages, with how often they realistically change and how important
+  // they are relative to product pages.
   const staticUrls = [
-    `${SITE_URL}/`,
-    `${SITE_URL}/privacy`,
-    `${SITE_URL}/cart`,
-    // add other PUBLIC routes you want indexed:
-    // `${SITE_URL}/support`,
-  ];
+    { loc: `${SITE_URL}/`, changefreq: "daily", priority: "1.0" },
+    { loc: `${SITE_URL}/about`, changefreq: "monthly", priority: "0.5" },
+    { loc: `${SITE_URL}/contact`, changefreq: "monthly", priority: "0.5" },
+    { loc: `${SITE_URL}/help`, changefreq: "monthly", priority: "0.5" },
+    { loc: `${SITE_URL}/careers`, changefreq: "weekly", priority: "0.4" },
+    { loc: `${SITE_URL}/privacy`, changefreq: "yearly", priority: "0.3" },
+    { loc: `${SITE_URL}/terms`, changefreq: "yearly", priority: "0.3" },
+    { loc: `${SITE_URL}/cookies`, changefreq: "yearly", priority: "0.3" },
+  ].map((u) => ({ ...u, lastmod: today }));
 
   let productUrls = [];
   try {
     const ids = await fetchAllProductIds();
-    productUrls = ids.map((id) => `${SITE_URL}/products/${id}`);
+    productUrls = ids.map((id) => ({
+      loc: `${SITE_URL}/products/${id}`,
+      changefreq: "weekly",
+      priority: "0.8",
+    }));
     console.log(`[sitemap] fetched ${ids.length} product ids`);
   } catch (e) {
     console.warn("[sitemap] could not fetch products; continuing with static only:", e?.message || e);
   }
 
-  const urls = [...new Set([...staticUrls, ...productUrls])];
+  // Category views are only independently indexable because Catalog.tsx now
+  // syncs the selected category into ?category=<id> on the homepage.
+  let categoryUrls = [];
+  try {
+    const ids = await fetchAllCategoryIds();
+    categoryUrls = ids.map((id) => ({
+      loc: `${SITE_URL}/?category=${id}`,
+      changefreq: "weekly",
+      priority: "0.6",
+    }));
+    console.log(`[sitemap] fetched ${ids.length} category ids`);
+  } catch (e) {
+    console.warn("[sitemap] could not fetch categories; continuing without them:", e?.message || e);
+  }
+
+  const seen = new Set();
+  const urls = [...staticUrls, ...productUrls, ...categoryUrls].filter((u) => {
+    if (seen.has(u.loc)) return false;
+    seen.add(u.loc);
+    return true;
+  });
 
   const xml =
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
@@ -88,7 +143,10 @@ async function main() {
       .map(
         (u) =>
           `  <url>\n` +
-          `    <loc>${esc(u)}</loc>\n` +
+          `    <loc>${esc(u.loc)}</loc>\n` +
+          (u.lastmod ? `    <lastmod>${esc(u.lastmod)}</lastmod>\n` : "") +
+          `    <changefreq>${esc(u.changefreq)}</changefreq>\n` +
+          `    <priority>${esc(u.priority)}</priority>\n` +
           `  </url>\n`
       )
       .join("") +

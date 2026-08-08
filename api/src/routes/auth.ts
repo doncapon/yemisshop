@@ -11,6 +11,7 @@ import { sendVerifyEmail, sendResetorForgotPasswordEmail } from "../lib/email.js
 import { signJwt, signAccessJwt } from "../lib/jwt.js";
 import { requireAuth, requireVerifySession } from "../middleware/auth.js";
 import { issueOtp, verifyOtp } from "../lib/otp.js";
+import { loginLimiter, otpLimiter, passwordResetLimiter, registerLimiter } from "../middleware/rateLimit.js";
 import { Prisma, SupplierType } from "@prisma/client";
 import {
   setAccessTokenCookie,
@@ -20,7 +21,7 @@ import {
 
 // ---------------- ENV / constants ----------------
 const APP_URL = process.env.APP_URL || "http://localhost:5173";
-const API_BASE_URL = process.env.API_URL || "http://localhost:8080";
+const API_BASE_URL = process.env.API_URL || "http://localhost:8081";
 const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || "CHANGE_ME_DEV_SECRET";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
@@ -642,6 +643,7 @@ async function markCanonicalPhoneVerified(userId: string, e164?: string | null) 
 // ---------------- LOGIN ----------------
 router.post(
   "/login",
+  loginLimiter,
   wrap(async (req, res) => {
     const { email, password } = (req.body || {}) as {
       email?: string;
@@ -980,6 +982,7 @@ const fmtErr = (e: any) => {
 
 router.post(
   "/resend-verification",
+  otpLimiter,
   wrap(async (req, res) => {
     const email = String(req.body?.email ?? "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "email is required" });
@@ -1038,9 +1041,77 @@ router.post(
   })
 );
 
+// ---------------- AUTHED resend verification email ----------------
+// Same cooldown/daily-cap logic as /resend-verification, but for an already
+// logged-in (cookie-authenticated) user resending to their own account email
+// — used by the Profile page and the logged-in branch of the Verify page.
+router.post(
+  "/resend-email",
+  otpLimiter,
+  requireAuth,
+  wrap(async (req, res) => {
+    const userId = String(req.user?.id ?? "").trim();
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const u = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        emailVerifiedAt: true,
+        emailVerifyLastSentAt: true,
+        emailVerifySendCountDay: true,
+      },
+    });
+
+    if (!u) return res.status(404).json({ error: "User not found" });
+
+    if (u.emailVerifiedAt) {
+      return res.json({ ok: true, nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC, expiresInSec: 0 });
+    }
+
+    const now = new Date();
+    const last = u.emailVerifyLastSentAt ? +u.emailVerifyLastSentAt : 0;
+    const since = Math.floor((+now - last) / 1000);
+
+    if (since < EMAIL_RESEND_COOLDOWN_SEC) {
+      return res.status(429).json({
+        error: "Please wait before resending",
+        retryAfterSec: EMAIL_RESEND_COOLDOWN_SEC - since,
+      });
+    }
+
+    if ((u.emailVerifySendCountDay ?? 0) >= EMAIL_DAILY_CAP) {
+      return res.status(429).json({ error: "Daily resend limit reached" });
+    }
+
+    try {
+      await prisma.user.update({
+        where: { id: u.id },
+        data: {
+          emailVerifyLastSentAt: now,
+          emailVerifySendCountDay: (u.emailVerifySendCountDay ?? 0) + 1,
+        },
+      });
+
+      await issueAndEmailEmailVerification(u.id, u.email);
+
+      return res.json({
+        ok: true,
+        nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC,
+        expiresInSec: EMAIL_TTL_MIN * 60,
+      });
+    } catch (e) {
+      console.error("[resend-email] send failed:", fmtErr(e));
+      return res.status(502).json({ error: "Mail send failed", detail: fmtErr(e) });
+    }
+  })
+);
+
 // ---------------- REGISTER ----------------
 router.post(
   "/register",
+  registerLimiter,
   wrap(async (req, res) => {
     const body = RegisterSchema.parse(req.body);
 
@@ -1318,7 +1389,7 @@ router.get("/verify-email", async (req, res) => {
 });
 
 // ---------------- Forgot / Reset password ----------------
-router.post("/forgot-password", async (req, res, next) => {
+router.post("/forgot-password", passwordResetLimiter, async (req, res, next) => {
   try {
     const { email } = ForgotSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
@@ -1346,7 +1417,7 @@ router.post("/forgot-password", async (req, res, next) => {
   }
 });
 
-router.post("/reset-password", async (req, res, next) => {
+router.post("/reset-password", passwordResetLimiter, async (req, res, next) => {
   try {
     const { token, password } = ResetSchema.parse(req.body);
     const user = await prisma.user.findFirst({
@@ -1387,7 +1458,7 @@ router.get("/reset-token/validate", async (req, res, next) => {
 });
 
 // ---------------- OTP Verification (phone) ----------------
-router.post("/verify-otp", requireVerifySession, async (req, res) => {
+router.post("/verify-otp", otpLimiter, requireVerifySession, async (req, res) => {
   const userId = req.user?.id;
   const code = String(req.body?.otp ?? "").trim();
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -1448,7 +1519,7 @@ router.post("/verify-otp", requireVerifySession, async (req, res) => {
 });
 
 // ---------------- Resend OTP (phone) ----------------
-router.post("/resend-otp", requireVerifySession, async (req, res) => {
+router.post("/resend-otp", otpLimiter, requireVerifySession, async (req, res) => {
   try {
     const userId = String(req.user?.id || "");
     if (!userId) {
@@ -1647,7 +1718,7 @@ async function pickUniqueSupplierName(desired: string, rc: string) {
 }
 
 // ---------------- REGISTER SUPPLIER ----------------
-router.post("/register-supplier", async (req, res) => {
+router.post("/register-supplier", registerLimiter, async (req, res) => {
   try {
     const parsed = registerSupplierSchema.parse(req.body ?? {});
 

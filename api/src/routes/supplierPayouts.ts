@@ -802,7 +802,7 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
         paidOut: bal.paidOut,
         failed: bal.failed,
         scheduleNote:
-          "Credits come from allocations marked PAID. Debits come from refunds/adjustments in SupplierLedgerEntry. availableBalance = max(0, credits - debits).",
+          "Your balance increases when payouts are approved and released, and decreases when refunds or withdrawals are recorded against your account.",
       },
     });
   } catch (e: any) {

@@ -1,6 +1,12 @@
 import cron from "node-cron";
 import { prisma } from "../lib/prisma.js";
+import { runWithAdvisoryLock } from "../lib/advisoryLock.js";
 import { releaseDueHeldPayoutsOnce } from "./payoutRelease.job.js";
+
+// Same key used by the "payout-release" job in jobs/runner.ts, so the two
+// mechanisms can never process the same due payouts concurrently if this
+// in-process scheduler is ever re-enabled alongside the external runner.
+const PAYOUT_RELEASE_LOCK_KEY = 7_270_002;
 
 let started = false;
 let payoutTask: cron.ScheduledTask | null = null;
@@ -115,18 +121,25 @@ async function runPayoutReleaseOnce() {
   const startedAt = new Date();
 
   try {
-    await persistRunMeta({
-      status: "RUNNING",
-      ranAt: startedAt,
-      summary: null,
-      error: null,
+    const { ran, result } = await runWithAdvisoryLock(PAYOUT_RELEASE_LOCK_KEY, async () => {
+      await persistRunMeta({
+        status: "RUNNING",
+        ranAt: startedAt,
+        summary: null,
+        error: null,
+      });
+
+      console.log("[cron:payout-release] tick", {
+        ranAt: startedAt.toISOString(),
+      });
+
+      return releaseDueHeldPayoutsOnce();
     });
 
-    console.log("[cron:payout-release] tick", {
-      ranAt: startedAt.toISOString(),
-    });
-
-    const result = await releaseDueHeldPayoutsOnce();
+    if (!ran) {
+      console.log("[cron:payout-release] skipped: lock held elsewhere (another process running it)");
+      return;
+    }
 
     console.log("[cron:payout-release] done", {
       durationMs: Date.now() - startedAt.getTime(),

@@ -1322,16 +1322,16 @@ export default function SupplierBusinessDetails() {
   const stepBase =
     "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
   const stepDone = "border-emerald-200 bg-emerald-50 text-emerald-700";
-  const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
+  const stepActive = "border-teal-600 bg-teal-600 text-white shadow-sm";
   const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
-  const stepClickable = "cursor-pointer hover:bg-zinc-50";
+  const stepClickable = "cursor-pointer hover:bg-teal-50";
   const stepDisabledLoading =
     "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-400 pointer-events-none";
   const stepDisabledBlocked =
     "cursor-not-allowed border-zinc-100 bg-zinc-50 text-zinc-400 pointer-events-none";
 
   const input =
-    "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-[border-color,box-shadow,background-color] duration-150 ease-out focus:border-violet-400 focus:ring-4 focus:ring-violet-200 shadow-sm";
+    "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-[border-color,box-shadow,background-color] duration-150 ease-out focus:border-teal-400 focus:ring-4 focus:ring-teal-200 shadow-sm";
   const inputLocked =
     "cursor-not-allowed border-zinc-200 bg-zinc-50 text-zinc-600 focus:border-zinc-200 focus:ring-0";
   const label = "mb-1.5 block text-sm font-semibold text-slate-800";
@@ -1339,9 +1339,9 @@ export default function SupplierBusinessDetails() {
     "rounded-[28px] border border-white/70 bg-white/95 p-4 shadow-[0_16px_50px_rgba(15,23,42,0.08)] backdrop-blur sm:p-6 md:p-8";
   const panel = "rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5";
   const primaryBtn =
-    "inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60";
+    "inline-flex items-center justify-center rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60";
   const secondaryBtn =
-    "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60";
+    "inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-800 transition hover:bg-teal-50 hover:border-teal-200 disabled:cursor-not-allowed disabled:opacity-60";
 
   const bankStatusChip = (() => {
     if (effectiveBankStatus === "VERIFIED") {
@@ -1696,7 +1696,7 @@ export default function SupplierBusinessDetails() {
                             <button
                               type="button"
                               onClick={() => setBankEditUnlocked(true)}
-                              className="rounded-full border bg-white px-3 py-1.5 text-[11px] hover:bg-black/5"
+                              className="rounded-full border bg-white px-3 py-1.5 text-[11px] hover:bg-teal-50 hover:border-teal-200 transition"
                             >
                               Request change
                             </button>
@@ -1705,7 +1705,7 @@ export default function SupplierBusinessDetails() {
                           <button
                             type="button"
                             onClick={() => setBankEditUnlocked(false)}
-                            className="rounded-full border bg-white px-3 py-1.5 text-[11px] hover:bg-black/5"
+                            className="rounded-full border bg-white px-3 py-1.5 text-[11px] hover:bg-teal-50 hover:border-teal-200 transition"
                           >
                             Cancel change
                           </button>
@@ -1894,7 +1894,7 @@ export default function SupplierBusinessDetails() {
 
                     <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-200">
                       <div
-                        className="h-full rounded-full bg-zinc-900 transition-all"
+                        className="h-full rounded-full bg-teal-600 transition-all"
                         style={{ width: `${progress.pct}%` }}
                       />
                     </div>

@@ -27,8 +27,8 @@ export default function AdminShell() {
               className={({ isActive }) =>
                 `px-3 py-1.5 rounded-xl border text-sm ${
                   isActive
-                    ? 'bg-zinc-900 text-white border-zinc-900'
-                    : 'bg-white hover:bg-black/5'
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white hover:bg-blue-50 hover:border-blue-200'
                 }`
               }
             >

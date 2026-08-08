@@ -764,27 +764,29 @@ export default function Wishlist() {
   return (
     <SiteLayout>
       <div className="max-w-6xl mx-auto px-4 py-6">
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl md:text-2xl font-bold text-zinc-900">Wishlist</h1>
+        <div className="mb-4 rounded-3xl border border-fuchsia-100 bg-gradient-to-br from-fuchsia-50 via-purple-50/40 to-white px-4 py-5 sm:px-6 sm:py-6">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="bg-gradient-to-r from-fuchsia-700 to-purple-700 bg-clip-text text-xl font-bold text-transparent md:text-2xl">Wishlist</h1>
 
-              {hasRows && q.isFetching && (
-                <span className="text-[11px] px-2 py-1 rounded-full border bg-white text-zinc-600">
-                  Updating…
-                </span>
-              )}
+                {hasRows && q.isFetching && (
+                  <span className="text-[11px] px-2 py-1 rounded-full border border-zinc-200 bg-white text-zinc-600">
+                    Updating…
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-zinc-600">
+                Save items you like and add them to your cart when you’re ready.
+              </p>
             </div>
-            <p className="text-sm text-zinc-600">
-              Save items you like and add them to your cart when you’re ready.
-            </p>
+
+            {totalItems > 0 && (
+              <div className="text-xs text-zinc-500 text-right">
+                Items: <span className="font-semibold">{totalItems}</span>
+              </div>
+            )}
           </div>
-
-          {totalItems > 0 && (
-            <div className="text-xs text-zinc-500 text-right">
-              Items: <span className="font-semibold">{totalItems}</span>
-            </div>
-          )}
         </div>
 
         <div className="rounded-2xl border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)] p-4 md:p-5">

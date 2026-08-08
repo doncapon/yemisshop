@@ -285,17 +285,18 @@ const AdminCareersJobs: React.FC = () => {
 
   return (
     <div className="p-6 space-y-6">
-      <header className="flex items-center justify-between gap-4">
-        <div className="flex items-start gap-3">
+      <header className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white px-6 py-6 flex items-center justify-between gap-4">
+        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+        <div className="relative flex items-start gap-3">
           <Link
             to="/admin"
-            className="inline-flex items-center px-2.5 py-1.5 rounded-md border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            className="inline-flex items-center px-2.5 py-1.5 rounded-md bg-white/10 hover:bg-white/20 transition text-xs font-medium"
           >
             ← Back to admin
           </Link>
           <div>
             <h1 className="text-2xl font-semibold">Careers – Job Roles</h1>
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-white/80">
               Manage job roles shown on the public careers page.
             </p>
           </div>
@@ -305,7 +306,7 @@ const AdminCareersJobs: React.FC = () => {
           <button
             type="button"
             onClick={openCreate}
-            className="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
+            className="relative inline-flex items-center px-4 py-2 text-sm font-medium rounded-md bg-white text-blue-800 hover:bg-blue-50 shadow-sm"
           >
             + New Job
           </button>
@@ -483,7 +484,7 @@ const AdminCareersJobs: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => openEdit(job)}
-                            className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
+                            className="px-2 py-1 rounded border text-xs hover:bg-blue-50 transition"
                           >
                             Edit
                           </button>
@@ -824,7 +825,7 @@ const AdminCareersJobs: React.FC = () => {
                   type="button"
                   onClick={closeForm}
                   disabled={isSaving}
-                  className="px-3 py-1.5 border rounded text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  className="px-3 py-1.5 border rounded text-xs text-gray-700 hover:bg-blue-50 transition disabled:opacity-50"
                 >
                   Cancel
                 </button>

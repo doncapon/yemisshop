@@ -277,7 +277,7 @@ export default function Privacy() {
       <div className="max-w-screen-2xl mx-auto">
         {/* Neon-ish header */}
         <div className="relative overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(closest-side,rgba(255,0,167,0.08),transparent_70%),radial-gradient(closest-side,rgba(0,204,255,0.10),transparent_70%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(closest-side,rgba(217,70,239,0.08),transparent_70%),radial-gradient(closest-side,rgba(147,51,234,0.10),transparent_70%)]" />
           <div className="relative px-4 md:px-8 pt-8 pb-4">
             <div className="flex items-start justify-between gap-4">
               <div className="space-y-1">

@@ -155,7 +155,7 @@ export default function AdminCatalogRequests() {
             disabled={q.isFetching}
             className={clsx(
               "inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold",
-              "hover:bg-black/5 disabled:opacity-60",
+              "hover:bg-blue-50 disabled:opacity-60",
               "w-full sm:w-auto"
             )}
           >
@@ -205,7 +205,7 @@ export default function AdminCatalogRequests() {
         </div>
 
         <div className="mt-4 rounded-2xl border bg-white overflow-hidden">
-          <div className="px-4 py-3 border-b bg-zinc-50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="px-4 py-3 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="text-sm font-semibold text-zinc-900">Requests</div>
 
             <div className="flex flex-col sm:flex-row sm:items-center gap-3">
@@ -218,7 +218,7 @@ export default function AdminCatalogRequests() {
                   type="button"
                   onClick={() => setPage(1)}
                   disabled={currentPage <= 1 || q.isFetching}
-                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-blue-50 disabled:opacity-50"
                   aria-label="First page"
                 >
                   <ChevronsLeft size={15} />
@@ -228,7 +228,7 @@ export default function AdminCatalogRequests() {
                   type="button"
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
                   disabled={currentPage <= 1 || q.isFetching}
-                  className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                  className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-blue-50 disabled:opacity-50"
                 >
                   Prev
                 </button>
@@ -241,7 +241,7 @@ export default function AdminCatalogRequests() {
                   type="button"
                   onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   disabled={currentPage >= totalPages || q.isFetching}
-                  className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                  className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-blue-50 disabled:opacity-50"
                 >
                   Next
                 </button>
@@ -250,7 +250,7 @@ export default function AdminCatalogRequests() {
                   type="button"
                   onClick={() => setPage(totalPages)}
                   disabled={currentPage >= totalPages || q.isFetching}
-                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-blue-50 disabled:opacity-50"
                   aria-label="Last page"
                 >
                   <ChevronsRight size={15} />
@@ -325,7 +325,7 @@ export default function AdminCatalogRequests() {
                             type="button"
                             onClick={() => approveM.mutate(r.id)}
                             disabled={anyPending}
-                            className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 text-white px-3 py-2 text-xs font-semibold hover:bg-blue-700 disabled:opacity-60"
                           >
                             <Check size={14} /> Approve
                           </button>
@@ -347,7 +347,7 @@ export default function AdminCatalogRequests() {
                           type="button"
                           onClick={() => approveM.mutate(r.id)}
                           disabled={anyPending}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 text-white px-3 py-2 text-xs font-semibold hover:bg-blue-700 disabled:opacity-60"
                         >
                           <Check size={14} /> Approve
                         </button>
@@ -402,7 +402,7 @@ export default function AdminCatalogRequests() {
                 type="button"
                 onClick={() => setPage(1)}
                 disabled={currentPage <= 1 || q.isFetching}
-                className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-blue-50 disabled:opacity-50"
                 aria-label="First page"
               >
                 <ChevronsLeft size={15} />
@@ -412,7 +412,7 @@ export default function AdminCatalogRequests() {
                 type="button"
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={currentPage <= 1 || q.isFetching}
-                className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-blue-50 disabled:opacity-50"
               >
                 Prev
               </button>
@@ -425,7 +425,7 @@ export default function AdminCatalogRequests() {
                 type="button"
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={currentPage >= totalPages || q.isFetching}
-                className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                className="inline-flex items-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold hover:bg-blue-50 disabled:opacity-50"
               >
                 Next
               </button>
@@ -434,7 +434,7 @@ export default function AdminCatalogRequests() {
                 type="button"
                 onClick={() => setPage(totalPages)}
                 disabled={currentPage >= totalPages || q.isFetching}
-                className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-50"
+                className="inline-flex items-center justify-center rounded-xl border bg-white px-2.5 py-2 text-xs font-semibold hover:bg-blue-50 disabled:opacity-50"
                 aria-label="Last page"
               >
                 <ChevronsRight size={15} />

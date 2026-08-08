@@ -656,12 +656,13 @@ export default function AdminOfferChangeRequests() {
   return (
     <SiteLayout>
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-900">
+        <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white px-6 py-6 flex items-start justify-between gap-3">
+          <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+          <div className="relative">
+            <h1 className="text-2xl font-bold tracking-tight">
               Offer change approvals
             </h1>
-            <p className="text-sm text-zinc-600 mt-1">
+            <p className="text-sm text-white/80 mt-1">
               Approve or reject supplier changes (price / lead-days / active
               status). Stock changes are applied immediately.
             </p>
@@ -671,7 +672,7 @@ export default function AdminOfferChangeRequests() {
             type="button"
             onClick={() => listQ.refetch()}
             disabled={!queriesEnabled}
-            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+            className="relative inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 transition px-3 py-2 text-sm font-semibold disabled:opacity-50"
           >
             <RefreshCcw size={16} /> Refresh
           </button>
@@ -696,8 +697,8 @@ export default function AdminOfferChangeRequests() {
                 }}
                 className={`px-4 py-2 text-sm font-semibold ${
                   tab === t
-                    ? "bg-zinc-900 text-white"
-                    : "bg-white text-zinc-800 hover:bg-black/5"
+                    ? "bg-blue-600 text-white"
+                    : "bg-white text-zinc-800 hover:bg-blue-50 transition"
                 }`}
                 disabled={!queriesEnabled}
               >
@@ -735,7 +736,7 @@ export default function AdminOfferChangeRequests() {
                 type="button"
                 onClick={() => setPage(1)}
                 disabled={!queriesEnabled || page <= 1 || listQ.isFetching}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition disabled:opacity-50"
               >
                 <ChevronsLeft size={16} />
                 First
@@ -745,7 +746,7 @@ export default function AdminOfferChangeRequests() {
                 type="button"
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={!queriesEnabled || page <= 1 || listQ.isFetching}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition disabled:opacity-50"
               >
                 Prev
               </button>
@@ -759,7 +760,7 @@ export default function AdminOfferChangeRequests() {
                 type="button"
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={!queriesEnabled || page >= totalPages || listQ.isFetching}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition disabled:opacity-50"
               >
                 Next
               </button>
@@ -768,7 +769,7 @@ export default function AdminOfferChangeRequests() {
                 type="button"
                 onClick={() => setPage(totalPages)}
                 disabled={!queriesEnabled || page >= totalPages || listQ.isFetching}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition disabled:opacity-50"
               >
                 Last
                 <ChevronsRight size={16} />
@@ -861,7 +862,7 @@ export default function AdminOfferChangeRequests() {
                       <button
                         type="button"
                         onClick={() => toggleExpanded(x.id)}
-                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition"
                       >
                         {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                         Details
@@ -928,7 +929,7 @@ export default function AdminOfferChangeRequests() {
               type="button"
               onClick={() => setPage(1)}
               disabled={!queriesEnabled || page <= 1 || listQ.isFetching}
-              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition disabled:opacity-50"
             >
               <ChevronsLeft size={16} />
               First
@@ -938,7 +939,7 @@ export default function AdminOfferChangeRequests() {
               type="button"
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={!queriesEnabled || page <= 1 || listQ.isFetching}
-              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition disabled:opacity-50"
             >
               Prev
             </button>
@@ -952,7 +953,7 @@ export default function AdminOfferChangeRequests() {
               type="button"
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={!queriesEnabled || page >= totalPages || listQ.isFetching}
-              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition disabled:opacity-50"
             >
               Next
             </button>
@@ -961,7 +962,7 @@ export default function AdminOfferChangeRequests() {
               type="button"
               onClick={() => setPage(totalPages)}
               disabled={!queriesEnabled || page >= totalPages || listQ.isFetching}
-              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-blue-50 transition disabled:opacity-50"
             >
               Last
               <ChevronsRight size={16} />

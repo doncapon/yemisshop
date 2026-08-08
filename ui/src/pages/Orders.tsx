@@ -208,6 +208,10 @@ type RefundDraft = {
   selectedQtyByItemId: Record<string, number>;
   evidenceByItemId: Record<string, string[]>;
   uploadingByItemId: Record<string, boolean>;
+  // Files picked but not yet uploaded - only sent to the server when the
+  // refund request is actually submitted, so nothing lands in storage if
+  // the customer abandons the form.
+  pendingFilesByItemId: Record<string, { id: string; file: File; previewUrl: string }[]>;
   busy: boolean;
   error?: string | null;
 };
@@ -329,7 +333,10 @@ function getSelectedRefundItemIds(draft: RefundDraft, items: OrderItem[]): strin
 }
 
 function hasEvidenceForItem(draft: RefundDraft, itemId: string): boolean {
-  return Array.isArray(draft.evidenceByItemId?.[itemId]) && draft.evidenceByItemId[itemId].length > 0;
+  const uploaded = Array.isArray(draft.evidenceByItemId?.[itemId]) && draft.evidenceByItemId[itemId].length > 0;
+  const pending =
+    Array.isArray(draft.pendingFilesByItemId?.[itemId]) && draft.pendingFilesByItemId[itemId].length > 0;
+  return uploaded || pending;
 }
 
 function allSelectedItemsHaveEvidence(draft: RefundDraft, items: OrderItem[]): boolean {
@@ -3236,6 +3243,7 @@ export default function OrdersPage() {
       selectedQtyByItemId: initialSelectedQtyByItemId,
       evidenceByItemId: {},
       uploadingByItemId: {},
+      pendingFilesByItemId: {},
       busy: false,
       error: null,
     };
@@ -3296,40 +3304,28 @@ export default function OrdersPage() {
         const files = Array.from(fileList || []).filter(Boolean);
         if (!files.length) return;
 
-        try {
-          setDraft((s) => ({
-            ...s,
-            uploadingByItemId: { ...s.uploadingByItemId, [itemId]: true },
-            error: null,
-          }));
-
-          const imageFiles = files.filter((f) => String(f.type || "").startsWith("image/"));
-          if (!imageFiles.length) {
-            throw new Error("Please select image files only.");
-          }
-
-          const urls = await uploadRefundEvidence(imageFiles);
-
-          setDraft((s) => ({
-            ...s,
-            uploadingByItemId: { ...s.uploadingByItemId, [itemId]: false },
-            evidenceByItemId: {
-              ...s.evidenceByItemId,
-              [itemId]: Array.from(
-                new Set([
-                  ...((s.evidenceByItemId && s.evidenceByItemId[itemId]) || []),
-                  ...urls,
-                ])
-              ),
-            },
-          }));
-        } catch (e: any) {
-          setDraft((s) => ({
-            ...s,
-            uploadingByItemId: { ...s.uploadingByItemId, [itemId]: false },
-            error: e?.response?.data?.error || e?.message || "Could not upload evidence",
-          }));
+        const imageFiles = files.filter((f) => String(f.type || "").startsWith("image/"));
+        if (!imageFiles.length) {
+          setDraft((s) => ({ ...s, error: "Please select image files only." }));
+          return;
         }
+
+        // Stage locally only - actually uploaded in submitCustomerRefund,
+        // right before the refund request itself is submitted.
+        const items = imageFiles.map((file) => ({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          file,
+          previewUrl: URL.createObjectURL(file),
+        }));
+
+        setDraft((s) => ({
+          ...s,
+          error: null,
+          pendingFilesByItemId: {
+            ...s.pendingFilesByItemId,
+            [itemId]: [...(s.pendingFilesByItemId?.[itemId] || []), ...items],
+          },
+        }));
       };
 
       const removeEvidenceForItemAt = (itemId: string, idx: number) => {
@@ -3340,6 +3336,21 @@ export default function OrdersPage() {
             [itemId]: ((s.evidenceByItemId && s.evidenceByItemId[itemId]) || []).filter((_, i) => i !== idx),
           },
         }));
+      };
+
+      const discardPendingEvidenceFile = (itemId: string, fileId: string) => {
+        setDraft((s) => {
+          const list = s.pendingFilesByItemId?.[itemId] || [];
+          const found = list.find((f) => f.id === fileId);
+          if (found) URL.revokeObjectURL(found.previewUrl);
+          return {
+            ...s,
+            pendingFilesByItemId: {
+              ...s.pendingFilesByItemId,
+              [itemId]: list.filter((f) => f.id !== fileId),
+            },
+          };
+        });
       };
 
       const totalRefundQty = selectedLines.reduce((sum, row) => sum + row.qty, 0);
@@ -3522,6 +3533,7 @@ export default function OrdersPage() {
                     const itemTitle = (it.title || it.product?.title || "—").toString();
                     const urls = draft.evidenceByItemId?.[itemId] || [];
                     const uploading = !!draft.uploadingByItemId?.[itemId];
+                    const pendingForItem = draft.pendingFilesByItemId?.[itemId] || [];
                     const selectedQty =
                       draft.mode === "ALL"
                         ? getOrderItemQty(it)
@@ -3538,7 +3550,7 @@ export default function OrdersPage() {
                           </div>
 
                           <div className="shrink-0">
-                            {urls.length > 0 ? (
+                            {urls.length > 0 || pendingForItem.length > 0 ? (
                               <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
                                 Evidence added
                               </span>
@@ -3599,7 +3611,36 @@ export default function OrdersPage() {
                           </div>
                         )}
 
-                        {urls.length === 0 && !uploading && (
+                        {pendingForItem.length > 0 && (
+                          <div className="mt-3">
+                            <div className="text-[11px] font-medium text-amber-700">
+                              {pendingForItem.length} image(s) selected, not uploaded yet — uploads when you submit.
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                              {pendingForItem.map((pf) => (
+                                <div
+                                  key={pf.id}
+                                  className="relative overflow-hidden rounded-xl border border-amber-300 bg-white"
+                                >
+                                  <img src={pf.previewUrl} alt="Pending evidence" className="h-24 w-full object-cover" />
+                                  <span className="absolute left-1 top-1 rounded-md bg-amber-600 px-1.5 py-0.5 text-[9px] font-semibold text-white">
+                                    Pending
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => discardPendingEvidenceFile(itemId, pf.id)}
+                                    disabled={draft.busy}
+                                    className="absolute right-1 top-1 rounded-md bg-black/70 px-2 py-1 text-[10px] font-medium text-white hover:bg-black/80 disabled:opacity-50"
+                                  >
+                                    Discard
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {urls.length === 0 && pendingForItem.length === 0 && !uploading && (
                           <div className="mt-2 text-xs text-rose-600">
                             Please upload at least one image for this item.
                           </div>
@@ -3616,7 +3657,12 @@ export default function OrdersPage() {
           <div className="flex items-center justify-end gap-2 pt-1">
             <button
               className={`rounded-xl ${SILVER_BORDER} bg-white px-3 py-2 ${BTN} hover:bg-black/5`}
-              onClick={() => closeModal()}
+              onClick={() => {
+                Object.values(draft.pendingFilesByItemId || {})
+                  .flat()
+                  .forEach((f) => URL.revokeObjectURL(f.previewUrl));
+                closeModal();
+              }}
               disabled={draft.busy}
             >
               Cancel
@@ -3652,7 +3698,32 @@ export default function OrdersPage() {
 
                   setDraft((s) => ({ ...s, busy: true, error: null }));
 
-                  await submitCustomerRefund(draft, items);
+                  // Upload any staged-but-not-yet-sent evidence files now,
+                  // right before the refund request is actually submitted.
+                  let effectiveDraft = draft;
+                  const pendingEntries = Object.entries(draft.pendingFilesByItemId || {}).filter(
+                    ([, files]) => files.length > 0
+                  );
+
+                  if (pendingEntries.length > 0) {
+                    const mergedEvidence: Record<string, string[]> = { ...draft.evidenceByItemId };
+                    for (const [itemId, filesForItem] of pendingEntries) {
+                      const urls = await uploadRefundEvidence(filesForItem.map((f) => f.file));
+                      mergedEvidence[itemId] = Array.from(
+                        new Set([...(mergedEvidence[itemId] || []), ...urls])
+                      );
+                    }
+                    effectiveDraft = { ...draft, evidenceByItemId: mergedEvidence };
+                  }
+
+                  await submitCustomerRefund(effectiveDraft, items);
+
+                  setDraft((s) => {
+                    Object.values(s.pendingFilesByItemId || {})
+                      .flat()
+                      .forEach((f) => URL.revokeObjectURL(f.previewUrl));
+                    return { ...s, pendingFilesByItemId: {}, evidenceByItemId: effectiveDraft.evidenceByItemId };
+                  });
 
                   closeModal();
                   showSuccessModal(
@@ -3913,8 +3984,16 @@ export default function OrdersPage() {
     <SiteLayout>
       <div className={`max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 ${T_BASE}`}>
         <div className="mb-3 md:mb-4 flex flex-col gap-3 min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-[28px] leading-[1.05] sm:text-2xl md:text-3xl font-semibold text-ink">
+          <div
+            className={`min-w-0 ${
+              isAdmin ? "" : "rounded-3xl border border-fuchsia-100 bg-gradient-to-br from-fuchsia-50 via-purple-50/40 to-white px-4 py-4 sm:px-5"
+            }`}
+          >
+            <h1
+              className={`text-[28px] leading-[1.05] sm:text-2xl md:text-3xl font-semibold ${
+                isAdmin ? "text-ink" : "bg-gradient-to-r from-fuchsia-700 to-purple-700 bg-clip-text text-transparent"
+              }`}
+            >
               {isAdmin ? "All Orders" : "My Orders"}
             </h1>
             <p className={`mt-1 max-w-[22rem] ${T_SM} text-ink-soft`}>

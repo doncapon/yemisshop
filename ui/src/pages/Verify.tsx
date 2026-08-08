@@ -469,7 +469,7 @@ export default function VerifyEmail() {
   return (
     <SiteLayout>
       <div className="min-h-[80vh] bg-zinc-50/60">
-        <div className="relative overflow-hidden border-b border-zinc-200 bg-gradient-to-br from-primary-300 via-primary-600 to-indigo-400 text-white">
+        <div className="relative overflow-hidden border-b border-zinc-200 bg-gradient-to-br from-fuchsia-300 via-fuchsia-600 to-purple-400 text-white">
           <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 sm:py-10">
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
               <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur">

@@ -157,7 +157,8 @@ jobs:
       RESEND_API_KEY: ""
       TERMII_SMS_ENABLED: "false"
       TERMII_WHATSAPP_ENABLED: "false"
-      VITE_API_URL: http://localhost:8080
+      PORT: "8081"
+      VITE_API_URL: http://localhost:8081
       # Set these secrets in GitHub repo settings → Secrets and Variables → Actions
       E2E_SHOPPER_EMAIL: ${{ secrets.E2E_SHOPPER_EMAIL }}
       E2E_SHOPPER_PASSWORD: ${{ secrets.E2E_SHOPPER_PASSWORD }}
@@ -206,7 +207,7 @@ jobs:
           npm run build
           node dist/src/server.js &
           echo "Waiting for API..."
-          npx wait-on http://localhost:8080/api/health --timeout 30000
+          npx wait-on http://localhost:8081/api/health --timeout 30000
 
       - name: Install UI deps
         working-directory: ./ui
@@ -222,7 +223,7 @@ jobs:
           npm run dev &
           npx wait-on http://localhost:5173 --timeout 30000
         env:
-          VITE_API_URL: http://localhost:8080
+          VITE_API_URL: http://localhost:8081
 
       - name: Run Playwright E2E tests
         working-directory: ./ui

@@ -77,6 +77,11 @@ function hasAddress(addr: any) {
   );
 }
 
+function isAuthExpiredError(e: any) {
+  const status = Number(e?.response?.status);
+  return status === 401 || status === 403;
+}
+
 function isRegisteredBusiness(registrationType?: string | null) {
   return (
     String(registrationType ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS"
@@ -275,8 +280,16 @@ function useSupplierStageState(): SupplierStageState {
             supplierApproved || (contactDone && businessDone && addressDone && docsDone),
           nextPath,
         });
-      } catch {
+      } catch (e: any) {
         if (!alive) return;
+
+        if (isAuthExpiredError(e)) {
+          // Real session expiry, not "unverified" — clear the auth store so the
+          // route guards send the user to /login instead of bouncing them to
+          // verify-contact.
+          useAuthStore.getState().markSessionExpired();
+        }
+
         setState({
           loading: false,
           contactDone: false,

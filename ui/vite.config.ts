@@ -10,7 +10,7 @@ export default defineConfig({
     },
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8080",
+        target: "http://127.0.0.1:8081",
         changeOrigin: true,
         secure: false,
         configure: (proxy) => {
@@ -26,7 +26,7 @@ export default defineConfig({
         },
       },
       "/uploads": {
-        target: "http://127.0.0.1:8080",
+        target: "http://127.0.0.1:8081",
         changeOrigin: true,
         secure: false,
         configure: (proxy) => {

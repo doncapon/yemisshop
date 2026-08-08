@@ -274,7 +274,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
 
           <button
             onClick={() => allocationsQ.refetch()}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm disabled:opacity-50"
             disabled={allocationsQ.isFetching}
           >
             <RefreshCcw size={16} /> {allocationsQ.isFetching ? "Refreshing…" : "Refresh"}
@@ -296,7 +296,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
 
         <div className="inline-flex items-center gap-2">
           <button
-            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm disabled:opacity-50"
             disabled={!canPrev || allocationsQ.isFetching}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
           >
@@ -314,7 +314,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
           </div>
 
           <button
-            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition text-sm disabled:opacity-50"
             disabled={!canNext || allocationsQ.isFetching}
             onClick={() => setPage((p) => p + 1)}
           >
@@ -404,7 +404,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
                   </button>
 
                   <button
-                    className="px-3 py-2 rounded-xl border bg-white hover:bg-black/5 disabled:opacity-50"
+                    className="px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                     disabled={!canMarkPaid || isMutating}
                     onClick={() => {
                       const noteRaw = window.prompt(
@@ -491,7 +491,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
               const canMarkPaid = s !== "PAID";
 
               return (
-                <tr key={r.id} className="hover:bg-black/5">
+                <tr key={r.id} className="hover:bg-blue-50/60 transition">
                   <td className="px-3 py-3 whitespace-nowrap">
                     <div className="max-w-[260px] truncate" title={r.id}>
                       {r.id}
@@ -558,7 +558,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
                       </button>
 
                       <button
-                        className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 disabled:opacity-50"
+                        className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                         disabled={!canMarkPaid || isMutating}
                         onClick={() => {
                           const noteRaw = window.prompt(

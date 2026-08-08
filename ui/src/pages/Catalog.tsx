@@ -21,11 +21,13 @@ import {
   ChevronDown,
   Heart,
   Layers,
+  MapPin,
 } from "lucide-react";
 
 import SiteLayout from "../layouts/SiteLayout.js";
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
 import { readCartLines, upsertCartLine, toMiniCartRows } from "../utils/cartModel";
+import { setSeo } from "../seo/head";
 
 import { AnimatePresence, motion } from "framer-motion";
 
@@ -92,6 +94,8 @@ type Product = {
   ratingAvg?: number | null;
   ratingCount?: number | null;
 
+  supplierState?: string | null;
+
   status?: string;
 };
 
@@ -104,6 +108,7 @@ type ProductView = Product & {
   _secondaryImg?: string;
   _brandName: string;
   _categoryLabel: string;
+  _supplierState: string | null;
   _searchTitle: string;
   _searchDesc: string;
   _searchCat: string;
@@ -146,6 +151,7 @@ type CatalogPersistedState = {
   selectedCategories: string[];
   selectedBucketIdxs: number[];
   selectedBrands: string[];
+  selectedStates: string[];
   sortKey: SortKey;
   query: string;
   inStockOnly: boolean;
@@ -242,6 +248,9 @@ function readCatalogState(): CatalogPersistedState | null {
         : [],
       selectedBrands: Array.isArray(parsed?.selectedBrands)
         ? parsed.selectedBrands.map(String)
+        : [],
+      selectedStates: Array.isArray(parsed?.selectedStates)
+        ? parsed.selectedStates.map(String)
         : [],
       sortKey,
       query: typeof parsed?.query === "string" ? parsed.query : "",
@@ -391,6 +400,7 @@ const toCategoryKey = (v: any): string => {
 };
 
 const toBrandKey = (v: any): string => norm(cleanText(v));
+const toStateKey = (v: any): string => norm(cleanText(v));
 
 /* =========================================================
    Stock + offers helpers
@@ -1080,6 +1090,56 @@ function aggregateCountsToParents(
 }
 
 /* =========================================================
+   Filter section accents — each of Categories / Brands / Price
+   gets its own gradient identity so the panel reads as three
+   distinct groups instead of one flat block of black pills.
+========================================================= */
+
+type FilterSection = "category" | "brand" | "price" | "state";
+
+const FILTER_SECTION_ACCENT: Record<
+  FilterSection,
+  { checked: string; panel: string; heading: string }
+> = {
+  category: {
+    checked: "border-transparent bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white shadow-sm",
+    panel: "bg-gradient-to-br from-fuchsia-50/80 to-purple-50/40 border-fuchsia-100",
+    heading: "text-fuchsia-700",
+  },
+  brand: {
+    checked: "border-transparent bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-sm",
+    panel: "bg-gradient-to-br from-cyan-50/80 to-blue-50/40 border-cyan-100",
+    heading: "text-cyan-700",
+  },
+  price: {
+    checked: "border-transparent bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-sm",
+    panel: "bg-gradient-to-br from-amber-50/80 to-orange-50/40 border-amber-100",
+    heading: "text-orange-700",
+  },
+  state: {
+    checked: "border-transparent bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm",
+    panel: "bg-gradient-to-br from-emerald-50/80 to-teal-50/40 border-emerald-100",
+    heading: "text-emerald-700",
+  },
+};
+
+// Same family as the top-level category gradient, just a shade lighter —
+// reads as "nested" rather than a different section, so it only applies to
+// pills inside the Categories list itself (never to the active-filter chips).
+const CATEGORY_SUBCATEGORY_CHECKED =
+  "border-transparent bg-gradient-to-r from-fuchsia-400 to-purple-400 text-white shadow-sm";
+
+function filterPillClasses(section: FilterSection, checked: boolean, depth = 0) {
+  if (!checked) {
+    return "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5";
+  }
+  if (section === "category" && depth > 0) {
+    return CATEGORY_SUBCATEGORY_CHECKED;
+  }
+  return FILTER_SECTION_ACCENT[section].checked;
+}
+
+/* =========================================================
    Loader
 ========================================================= */
 
@@ -1265,7 +1325,7 @@ const SafeImg = memo(function SafeImg({
 type SuggestionItemProps = {
   p: ProductView;
   active: boolean;
-  onClick: (title: string) => void;
+  onClick: (productId: string) => void;
 };
 
 const SuggestionItem = memo(function SuggestionItem({
@@ -1279,7 +1339,7 @@ const SuggestionItem = memo(function SuggestionItem({
         type="button"
         className={`w-full rounded-xl px-2.5 py-2.5 text-left hover:bg-black/5 ${active ? "bg-black/5" : ""
           }`}
-        onClick={() => onClick(p.title)}
+        onClick={() => onClick(p.id)}
       >
         <div className="flex items-center gap-3">
           <SafeImg
@@ -1302,6 +1362,12 @@ const SuggestionItem = memo(function SuggestionItem({
               {p.categoryName ? ` • ${p.categoryName}` : ""}
               {p.brand?.name ? ` • ${p.brand.name}` : ""}
             </div>
+            {p._supplierState && (
+              <div className="mt-0.5 flex items-center gap-1 truncate text-[9px] text-emerald-700 md:text-[10px]">
+                <MapPin size={9} className="shrink-0" />
+                <span className="truncate">Ships from {p._supplierState}</span>
+              </div>
+            )}
           </div>
         </div>
       </button>
@@ -1460,6 +1526,12 @@ const ProductCard = memo(
             {p._brandName ? `${p._brandName} • ` : ""}
             {p._categoryLabel}
           </div>
+          {p._supplierState && (
+            <div className="mt-0.5 flex items-center gap-1 text-[9px] text-emerald-700 md:text-[10px]">
+              <MapPin size={10} className="shrink-0" />
+              <span className="truncate">Ships from {p._supplierState}</span>
+            </div>
+          )}
 
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-sm font-semibold md:text-base">{ngn.format(bestPrice || 0)}</p>
@@ -1632,6 +1704,16 @@ function getProductImageCandidates(p: Product): string[] {
 export default function Catalog() {
   const initialPersisted = useMemo(() => readCatalogState(), []);
 
+  // URL params take priority over persisted session state, so a shared link
+  // or a crawler landing fresh on /?category=<id> or /?q=<text> reproduces
+  // that exact view instead of whatever was last browsed in this tab.
+  const initialUrlParams = useMemo(
+    () => new URLSearchParams(window.location.search),
+    []
+  );
+  const initialCategoryFromUrl = initialUrlParams.get("category") || "";
+  const initialQueryFromUrl = initialUrlParams.get("q") || "";
+
   const user = useAuthStore((s) => s.user);
   const role = String(user?.role ?? "");
   const isSupplier = role === "SUPPLIER";
@@ -1762,7 +1844,7 @@ export default function Catalog() {
   /* ---------------- UI state ---------------- */
 
   const [selectedCategories, setSelectedCategories] = useState<string[]>(
-    initialPersisted?.selectedCategories ?? []
+    initialCategoryFromUrl ? [initialCategoryFromUrl] : (initialPersisted?.selectedCategories ?? [])
   );
   const [selectedBucketIdxs, setSelectedBucketIdxs] = useState<number[]>(
     initialPersisted?.selectedBucketIdxs ?? []
@@ -1770,11 +1852,14 @@ export default function Catalog() {
   const [selectedBrands, setSelectedBrands] = useState<string[]>(
     initialPersisted?.selectedBrands ?? []
   );
+  const [selectedStates, setSelectedStates] = useState<string[]>(
+    initialPersisted?.selectedStates ?? []
+  );
   const [sortKey, setSortKey] = useState<SortKey>(initialPersisted?.sortKey ?? "relevance");
   const [priceMin, setPriceMin] = useState(initialPersisted?.priceMin ?? "");
   const [priceMax, setPriceMax] = useState(initialPersisted?.priceMax ?? "");
 
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQueryFromUrl);
   const [searchFocused, setSearchFocused] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
@@ -1795,6 +1880,7 @@ export default function Catalog() {
   const deferredSelectedCategories = useDeferredValue(selectedCategories);
   const deferredSelectedBucketIdxs = useDeferredValue(selectedBucketIdxs);
   const deferredSelectedBrands = useDeferredValue(selectedBrands);
+  const deferredSelectedStates = useDeferredValue(selectedStates);
   const deferredInStockOnly = useDeferredValue(inStockOnly);
   const deferredPriceMin = useDeferredValue(priceMin);
   const deferredPriceMax = useDeferredValue(priceMax);
@@ -1818,6 +1904,7 @@ export default function Catalog() {
       selectedCategories,
       selectedBucketIdxs,
       selectedBrands,
+      selectedStates,
       sortKey,
       query: "",
       inStockOnly,
@@ -1832,6 +1919,7 @@ export default function Catalog() {
     selectedCategories,
     selectedBucketIdxs,
     selectedBrands,
+    selectedStates,
     sortKey,
     inStockOnly,
     expandedCats,
@@ -1944,6 +2032,7 @@ export default function Catalog() {
         selectedCategories,
         selectedBucketIdxs,
         selectedBrands,
+        selectedStates,
         sortKey,
         query: "",
         inStockOnly,
@@ -1966,6 +2055,7 @@ export default function Catalog() {
     selectedCategories,
     selectedBucketIdxs,
     selectedBrands,
+    selectedStates,
     sortKey,
     inStockOnly,
     expandedCats,
@@ -2167,6 +2257,7 @@ export default function Catalog() {
             supplierProductOffers: baseOffers,
             ratingAvg: x.ratingAvg != null ? decToNumber(x.ratingAvg) : null,
             ratingCount: x.ratingCount != null ? Number(x.ratingCount) : null,
+            supplierState: x.supplierState ? cleanText(x.supplierState) : null,
             status: String(x.status ?? ""),
           } satisfies Product;
         });
@@ -2239,6 +2330,7 @@ export default function Catalog() {
         _secondaryImg: imageCandidates[1],
         _brandName: brandName,
         _categoryLabel: categoryLabel,
+        _supplierState: cleanText(p.supplierState) || null,
         _searchTitle: norm(cleanText(p.title)),
         _searchDesc: norm(cleanText(p.description)),
         _searchCat: norm(categoryLabel),
@@ -2474,7 +2566,7 @@ export default function Catalog() {
 
   const suggestions = useMemo(() => {
     const q = normalizedQuery;
-    if (!q || q.length < 2) return [];
+    if (!q) return [];
 
     const qIsNumeric = /^\d+$/.test(q);
 
@@ -2513,9 +2605,74 @@ export default function Catalog() {
     return base;
   }, [deferredSelectedCategories, catTreeHelpers]);
 
+  // Reflect the single-category selection and search query into the URL so
+  // each view has its own crawlable, shareable, indexable address. Other
+  // refinement filters (brand/price/sort/in-stock) intentionally stay
+  // client-only state — indexing every permutation of those would just
+  // create thin/near-duplicate pages.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const catId = deferredSelectedCategories.length === 1 ? String(deferredSelectedCategories[0]) : "";
+    const q = normalizedDeferredQuery ? deferredQuery.trim() : "";
+
+    if (catId) params.set("category", catId);
+    else params.delete("category");
+
+    if (q) params.set("q", q);
+    else params.delete("q");
+
+    const search = params.toString();
+    const nextUrl = `${location.pathname}${search ? `?${search}` : ""}`;
+    const currentUrl = `${location.pathname}${location.search}`;
+    if (nextUrl === currentUrl) return;
+
+    nav(nextUrl, { replace: true });
+  }, [deferredSelectedCategories, normalizedDeferredQuery, deferredQuery, location.pathname, location.search, nav]);
+
+  useEffect(() => {
+    const q = normalizedDeferredQuery ? deferredQuery.trim() : "";
+    const catId = deferredSelectedCategories.length === 1 ? String(deferredSelectedCategories[0]) : "";
+    const catName = catId ? catTreeHelpers?.byId.get(catId)?.name : "";
+
+    if (!q && !catName) return;
+
+    const origin = window.location.origin;
+    const params = new URLSearchParams();
+    if (catId) params.set("category", catId);
+    if (q) params.set("q", q);
+    const canonical = `${origin}/?${params.toString()}`;
+
+    const title = q
+      ? `"${q}" — Search results | DaySpring House`
+      : `${catName} | DaySpring House`;
+
+    const description = q
+      ? `Search results for "${q}" on DaySpring House. Quality products from trusted suppliers in Nigeria.`
+      : `Shop ${catName} on DaySpring House. Quality products from trusted suppliers, fast delivery, secure checkout.`;
+
+    const dispose = setSeo({
+      title,
+      description,
+      canonical,
+      og: [
+        { property: "og:title", content: title },
+        { property: "og:description", content: description },
+        { property: "og:url", content: canonical },
+        { property: "og:type", content: "website" },
+      ],
+    });
+
+    return dispose;
+  }, [normalizedDeferredQuery, deferredQuery, deferredSelectedCategories, catTreeHelpers]);
+
   const activeBrandSet = useMemo(
     () => new Set(deferredSelectedBrands.map((b) => toBrandKey(b)).filter(Boolean)),
     [deferredSelectedBrands]
+  );
+
+  const activeStateSet = useMemo(
+    () => new Set(deferredSelectedStates.map((s) => toStateKey(s)).filter(Boolean)),
+    [deferredSelectedStates]
   );
 
   const activeBuckets = useMemo(
@@ -2574,6 +2731,7 @@ export default function Catalog() {
     const filteredRows: ProductView[] = [];
     const categoryCountMap = new Map<string, { id: string; name: string; count: number }>();
     const brandCountMap = new Map<string, { name: string; count: number }>();
+    const stateCountMap = new Map<string, { name: string; count: number }>();
     const bucketCounts = PRICE_BUCKETS.map(() => 0);
 
     const customMin =
@@ -2589,6 +2747,7 @@ export default function Catalog() {
     for (const p of queryMatchedProducts) {
       const productCategoryKey = toCategoryKey(p.categoryId);
       const productBrandKey = toBrandKey(p._brandName);
+      const productStateKey = toStateKey(p._supplierState);
 
       const catMatch =
         selectedCategoryEffective.size === 0
@@ -2597,6 +2756,9 @@ export default function Catalog() {
 
       const brandMatch =
         activeBrandSet.size === 0 ? true : activeBrandSet.has(productBrandKey);
+
+      const stateMatch =
+        activeStateSet.size === 0 ? true : activeStateSet.has(productStateKey);
 
       const priceMatch =
         activeBuckets.length === 0 && !hasCustomRange
@@ -2616,7 +2778,8 @@ export default function Catalog() {
 
       if (
         (activeBuckets.length === 0 || priceMatch) &&
-        (activeBrandSet.size === 0 || brandMatch)
+        (activeBrandSet.size === 0 || brandMatch) &&
+        (activeStateSet.size === 0 || stateMatch)
       ) {
         const catName = cleanText(p.categoryName) || "Uncategorized";
         const prev = categoryCountMap.get(productCategoryKey) ?? {
@@ -2630,7 +2793,8 @@ export default function Catalog() {
 
       if (
         (activeBuckets.length === 0 || priceMatch) &&
-        (selectedCategoryEffective.size === 0 || catMatch)
+        (selectedCategoryEffective.size === 0 || catMatch) &&
+        (activeStateSet.size === 0 || stateMatch)
       ) {
         if (productBrandKey) {
           const prev = brandCountMap.get(productBrandKey) ?? {
@@ -2643,13 +2807,29 @@ export default function Catalog() {
       }
 
       if (
+        (activeBuckets.length === 0 || priceMatch) &&
         (selectedCategoryEffective.size === 0 || catMatch) &&
         (activeBrandSet.size === 0 || brandMatch)
+      ) {
+        if (productStateKey) {
+          const prev = stateCountMap.get(productStateKey) ?? {
+            name: cleanText(p._supplierState),
+            count: 0,
+          };
+          prev.count += 1;
+          stateCountMap.set(productStateKey, prev);
+        }
+      }
+
+      if (
+        (selectedCategoryEffective.size === 0 || catMatch) &&
+        (activeBrandSet.size === 0 || brandMatch) &&
+        (activeStateSet.size === 0 || stateMatch)
       ) {
         if (bucketIndex >= 0) bucketCounts[bucketIndex] += 1;
       }
 
-      if (catMatch && brandMatch && priceMatch) {
+      if (catMatch && brandMatch && stateMatch && priceMatch) {
         if (!HIDE_OOS || p._sellable) filteredRows.push(p);
       }
     }
@@ -2663,6 +2843,9 @@ export default function Catalog() {
       brands: Array.from(brandCountMap.values()).sort((a, b) =>
         a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
       ),
+      states: Array.from(stateCountMap.values()).sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+      ),
       visiblePriceBuckets: PRICE_BUCKETS
         .map((bucket, idx) => ({ bucket, idx, count: bucketCounts[idx] || 0 }))
         .filter((x) => x.count > 0),
@@ -2671,6 +2854,7 @@ export default function Catalog() {
     queryMatchedProducts,
     selectedCategoryEffective,
     activeBrandSet,
+    activeStateSet,
     activeBuckets,
     PRICE_BUCKETS,
     HIDE_OOS,
@@ -2681,6 +2865,7 @@ export default function Catalog() {
   const categoryCountsMap = catalogAnalysis.categoryCountsMap;
   const categories = catalogAnalysis.categories;
   const brands = catalogAnalysis.brands;
+  const states = catalogAnalysis.states;
   const visiblePriceBuckets = catalogAnalysis.visiblePriceBuckets;
   const filtered = catalogAnalysis.filtered;
 
@@ -2695,16 +2880,33 @@ export default function Catalog() {
 
     const aggregated = aggregateCountsToParents(categoryForest, directCounts);
 
-    const rows: Array<{ node: CategoryNode; count: number; depth: number; hasChildren: boolean }> =
-      [];
+    const selectedSet = new Set(selectedCategories.map(String));
+    const hasSelectedDescendant = (id: string) => {
+      for (const d of catTreeHelpers.getAllDesc(id)) {
+        if (selectedSet.has(d)) return true;
+      }
+      return false;
+    };
+
+    const rows: Array<{
+      node: CategoryNode;
+      count: number;
+      depth: number;
+      hasChildren: boolean;
+      expanded: boolean;
+    }> = [];
 
     const walk = (n: CategoryNode, depth: number) => {
       const count = aggregated.get(n.id) || 0;
       if (count <= 0) return;
 
-      rows.push({ node: n, count, depth, hasChildren: n.children.length > 0 });
+      // Auto-expand (and keep expanded) any ancestor of a selected subcategory,
+      // so the active chip is never hidden behind a collapsed row. Manual
+      // collapse only takes effect once none of its descendants are selected.
+      const isExpanded = !!expandedCats[n.id] || hasSelectedDescendant(n.id);
 
-      const isExpanded = !!expandedCats[n.id];
+      rows.push({ node: n, count, depth, hasChildren: n.children.length > 0, expanded: isExpanded });
+
       if (n.children.length > 0 && isExpanded) {
         for (const c of n.children) walk(c, depth + 1);
       }
@@ -2713,7 +2915,7 @@ export default function Catalog() {
     for (const r of categoryForest) walk(r, 0);
 
     return rows.length ? rows : null;
-  }, [categoryForest, catTreeHelpers, categoryCountsMap, expandedCats]);
+  }, [categoryForest, catTreeHelpers, categoryCountsMap, expandedCats, selectedCategories]);
 
   const purchasedQ = usePurchasedCounts(!isSupplier);
 
@@ -2779,7 +2981,7 @@ export default function Catalog() {
       return;
     }
     setPage(1);
-  }, [selectedCategories, selectedBucketIdxs, selectedBrands, pageSize, sortKey, query, inStockOnly]);
+  }, [selectedCategories, selectedBucketIdxs, selectedBrands, selectedStates, pageSize, sortKey, query, inStockOnly]);
 
   useEffect(() => {
     if (page > totalPages) {
@@ -2956,14 +3158,6 @@ export default function Catalog() {
     setPage(1);
   }, []);
 
-  const applySuggestionToFilter = useCallback((title: string) => {
-    setQuery(title);
-    setSearchFocused(false);
-    setActiveIdx(0);
-    writeCatalogScroll(window.scrollY || window.pageYOffset || 0);
-    setPage(1);
-  }, []);
-
   const toggleCategory = useCallback((id: string) => {
     setSelectedCategories((curr) =>
       curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id]
@@ -2982,10 +3176,17 @@ export default function Catalog() {
     );
   }, []);
 
+  const toggleState = useCallback((name: string) => {
+    setSelectedStates((curr) =>
+      curr.includes(name) ? curr.filter((n) => n !== name) : [...curr, name]
+    );
+  }, []);
+
   const clearFilters = useCallback(() => {
     setSelectedCategories([]);
     setSelectedBucketIdxs([]);
     setSelectedBrands([]);
+    setSelectedStates([]);
     setInStockOnly(true);
     setExpandedCats({});
     setPriceMin("");
@@ -3000,16 +3201,124 @@ export default function Catalog() {
     selectedCategories.length > 0 ||
     selectedBucketIdxs.length > 0 ||
     selectedBrands.length > 0 ||
+    selectedStates.length > 0 ||
     !inStockOnly ||
     hasCustomPriceRange;
 
   const activeFilterCount =
     selectedCategories.length +
     selectedBrands.length +
+    selectedStates.length +
     selectedBucketIdxs.length +
     (!inStockOnly ? 1 : 0) +
     (sortKey !== "relevance" ? 1 : 0) +
     (hasCustomPriceRange ? 1 : 0);
+
+  const categoryNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    const walk = (nodes: CategoryNode[]) => {
+      for (const n of nodes) {
+        map.set(n.id, n.name);
+        if (n.children?.length) walk(n.children);
+      }
+    };
+    walk(categoryForest);
+    for (const c of categories) if (!map.has(c.id)) map.set(c.id, c.name);
+    return map;
+  }, [categoryForest, categories]);
+
+  type ActiveFilterChip = { key: string; label: string; section: FilterSection; onRemove: () => void };
+
+  const activeFilterChips = useMemo<ActiveFilterChip[]>(() => {
+    const chips: ActiveFilterChip[] = [];
+
+    for (const id of selectedCategories) {
+      chips.push({
+        key: `category-${id}`,
+        label: categoryNameById.get(id) ?? id,
+        section: "category",
+        onRemove: () => toggleCategory(id),
+      });
+    }
+
+    for (const name of selectedBrands) {
+      chips.push({
+        key: `brand-${name}`,
+        label: name,
+        section: "brand",
+        onRemove: () => toggleBrand(name),
+      });
+    }
+
+    for (const name of selectedStates) {
+      chips.push({
+        key: `state-${name}`,
+        label: name,
+        section: "state",
+        onRemove: () => toggleState(name),
+      });
+    }
+
+    for (const idx of selectedBucketIdxs) {
+      const bucket = PRICE_BUCKETS[idx];
+      if (!bucket) continue;
+      chips.push({
+        key: `price-bucket-${idx}`,
+        label: bucket.label,
+        section: "price",
+        onRemove: () => toggleBucket(idx),
+      });
+    }
+
+    if (priceMin !== "" || priceMax !== "") {
+      const minLabel = priceMin !== "" ? ngn.format(Number(priceMin)) : "₦0";
+      const maxLabel = priceMax !== "" ? ngn.format(Number(priceMax)) : "Any";
+      chips.push({
+        key: "price-range",
+        label: `${minLabel} – ${maxLabel}`,
+        section: "price",
+        onRemove: () => {
+          setPriceMin("");
+          setPriceMax("");
+        },
+      });
+    }
+
+    return chips;
+  }, [
+    selectedCategories,
+    selectedBrands,
+    selectedStates,
+    selectedBucketIdxs,
+    priceMin,
+    priceMax,
+    categoryNameById,
+    PRICE_BUCKETS,
+    toggleCategory,
+    toggleBrand,
+    toggleState,
+    toggleBucket,
+  ]);
+
+  const renderActiveFilterChips = () => {
+    if (activeFilterChips.length === 0) return null;
+
+    return (
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {activeFilterChips.map((chip) => (
+          <button
+            key={chip.key}
+            type="button"
+            onClick={chip.onRemove}
+            className={`inline-flex max-w-full items-center gap-1 rounded-full px-3 py-1 text-[11px] font-medium transition hover:opacity-90 ${FILTER_SECTION_ACCENT[chip.section].checked}`}
+          >
+            <span className="max-w-[140px] truncate">{chip.label}</span>
+            <X size={12} className="shrink-0" />
+          </button>
+        ))}
+      </div>
+    );
+  };
 
   const hasSearch = !!normalizedDeferredQuery;
   const hasTypedQuery = !!normalizedQuery;
@@ -3066,11 +3375,11 @@ export default function Catalog() {
         }}
         onTouchEnd={() => setTouchStartX(null)}
       >
-        <div className="hidden border-b border-zinc-200 bg-white shadow-[0_16px_36px_-18px_rgba(15,23,42,0.28)] md:block">
+        <div className="hidden border-b border-fuchsia-100 bg-gradient-to-b from-fuchsia-50 via-purple-50/50 to-white shadow-[0_16px_36px_-18px_rgba(15,23,42,0.28)] md:block">
           <div className="mx-auto max-w-7xl px-4 pb-4 pt-3 md:px-8 md:py-10">
             <div className="flex items-start justify-between gap-6">
               <div className="min-w-0">
-                <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 md:text-4xl">
+                <h1 className="bg-gradient-to-r from-fuchsia-700 to-purple-700 bg-clip-text text-3xl font-semibold tracking-tight text-transparent md:text-4xl">
                   Discover Products
                 </h1>
                 <p className="mt-2 text-sm text-zinc-600 md:text-base">
@@ -3173,7 +3482,7 @@ export default function Catalog() {
                       key={p.id}
                       p={p}
                       active={i === activeIdx}
-                      onClick={applySuggestionToFilter}
+                      onClick={goToProduct}
                     />
                   ))}
                 </ul>
@@ -3191,7 +3500,7 @@ export default function Catalog() {
                 <h3 className="text-sm font-semibold text-zinc-900">Filter categories & brands</h3>
                 <button
                   type="button"
-                  className="text-xs font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
+                  className="text-xs! font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
                   disabled={!anyActiveFilter && !hasSearch && sortKey === "relevance" && pageSize === 12}
                   onClick={() => {
                     setQuery("");
@@ -3205,6 +3514,8 @@ export default function Catalog() {
                   Reset all
                 </button>
               </div>
+
+              {renderActiveFilterChips()}
 
               <div className="mb-3">
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Sort</label>
@@ -3256,11 +3567,11 @@ export default function Catalog() {
                 </label>
               </div>
 
-              <div className="mb-4">
+              <div className={`mb-4 rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.category.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
+                  <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.category.heading}`}>Categories</h4>
                   <button
-                    className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                    className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
@@ -3270,24 +3581,24 @@ export default function Catalog() {
 
                 {categoryTreeUi ? (
                   <ul className="max-h-60 space-y-1.5 overflow-auto pr-1">
-                    {categoryTreeUi.map(({ node, count, depth, hasChildren }) => {
+                    {categoryTreeUi.map(({ node, count, depth, hasChildren, expanded }) => {
                       const checked = selectedCategories.includes(node.id);
-                      const expanded = !!expandedCats[node.id];
                       const pad = Math.min(24, depth * 10);
 
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${checked
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition ${filterPillClasses("category", checked, depth)} ${hasChildren ? "cursor-pointer" : ""}`}
                             style={{ paddingLeft: 12 + pad }}
+                            onClick={() => hasChildren && toggleExpand(node.id)}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
-                                onClick={() => toggleExpand(node.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleExpand(node.id);
+                                }}
                                 className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${checked
                                   ? "text-white/90 hover:bg-white/10"
                                   : "text-zinc-600 hover:bg-black/5"
@@ -3329,10 +3640,7 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${filterPillClasses("category", checked)}`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
@@ -3350,11 +3658,11 @@ export default function Catalog() {
               </div>
 
               {brands.length > 0 && (
-                <div className="mb-4">
+                <div className={`mb-4 rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.brand.panel}`}>
                   <div className="mb-2 flex items-center justify-between">
-                    <h4 className="text-xs font-semibold text-zinc-800">Brands</h4>
+                    <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.brand.heading}`}>Brands</h4>
                     <button
-                      className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                      className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
@@ -3368,10 +3676,7 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${filterPillClasses("brand", checked)}`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
@@ -3388,11 +3693,52 @@ export default function Catalog() {
                 </div>
               )}
 
-              <div>
+              {states.length > 0 && (
+                <div className={`mb-4 rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.state.panel}`}>
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.state.heading}`}>
+                      Supplier state
+                    </h4>
+                    <button
+                      className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                      onClick={() => setSelectedStates([])}
+                      disabled={selectedStates.length === 0}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <p className="mb-2 text-[11px] text-zinc-500">
+                    Find suppliers near you to cut delivery cost and time.
+                  </p>
+                  <ul className="max-h-44 space-y-1.5 overflow-auto pr-1">
+                    {states.map((s) => {
+                      const checked = selectedStates.includes(s.name);
+                      return (
+                        <li key={s.name}>
+                          <button
+                            onClick={() => toggleState(s.name)}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${filterPillClasses("state", checked)}`}
+                          >
+                            <span className="truncate">{s.name}</span>
+                            <span
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
+                            >
+                              ({s.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              <div className={`rounded-2xl border p-3 ${FILTER_SECTION_ACCENT.price.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
+                  <h4 className={`text-xs font-semibold ${FILTER_SECTION_ACCENT.price.heading}`}>Price</h4>
                   <button
-                    className="text-xs text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
+                    className="text-xs! text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-40"
                     onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
                     disabled={selectedBucketIdxs.length === 0 && priceMin === "" && priceMax === ""}
                   >
@@ -3428,10 +3774,7 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-xs! transition ${filterPillClasses("price", checked)}`}
                         >
                           <span>{bucket.label}</span>
                           <span
@@ -3460,8 +3803,16 @@ export default function Catalog() {
               >
                 {shouldShowSuggest && (
                   <div
+                    className="fixed inset-0 z-20 bg-black/30 backdrop-blur-sm"
+                    onClick={() => setSearchFocused(false)}
+                    aria-hidden="true"
+                  />
+                )}
+
+                {shouldShowSuggest && (
+                  <div
                     ref={desktopSuggestRef}
-                    className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-2xl"
+                    className="absolute top-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-2xl"
                   >
                     {hasSuggestionResults ? (
                       <ul className="max-h-[45vh] overflow-auto p-2">
@@ -3470,7 +3821,7 @@ export default function Catalog() {
                             key={p.id}
                             p={p}
                             active={i === activeIdx}
-                            onClick={applySuggestionToFilter}
+                            onClick={goToProduct}
                           />
                         ))}
                       </ul>
@@ -3481,7 +3832,7 @@ export default function Catalog() {
                 )}
 
                 <Search
-                  className="absolute left-4 top-1/2 z-10 -translate-y-1/2 text-zinc-500"
+                  className="absolute left-4 top-1/2 z-30 -translate-y-1/2 text-zinc-500"
                   size={18}
                 />
                 <input
@@ -3518,13 +3869,13 @@ export default function Catalog() {
                     }
                   }}
                   placeholder="Search products, brands, or categories…"
-                  className="h-14 w-full rounded-full border border-zinc-200 bg-white/95 pl-11 pr-40 text-[15px] text-zinc-800 backdrop-blur focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
+                  className="relative z-30 h-14 w-full rounded-full border border-zinc-200 bg-white/95 pl-11 pr-40 text-[15px] text-zinc-800 backdrop-blur focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100"
                   aria-label="Search products"
                 />
 
                 <button
                   type="submit"
-                  className="absolute right-2 top-1/2 inline-flex h-11 min-w-[128px] -translate-y-1/2 items-center justify-center rounded-full bg-zinc-900 px-6 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800"
+                  className="absolute right-2 top-1/2 z-30 inline-flex h-11 min-w-[128px] -translate-y-1/2 items-center justify-center rounded-full bg-zinc-900 px-6 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800"
                 >
                   Search
                 </button>
@@ -3827,7 +4178,7 @@ export default function Catalog() {
               <div className="flex items-center justify-end">
                 <button
                   type="button"
-                  className="text-[12px] font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
+                  className="text-xs! font-medium text-purple-600 hover:text-purple-700 hover:underline disabled:opacity-30"
                   disabled={!anyActiveFilter && !hasSearch && sortKey === "relevance" && pageSize === 12}
                   onClick={() => {
                     setQuery("");
@@ -3841,6 +4192,22 @@ export default function Catalog() {
                   Reset all
                 </button>
               </div>
+
+              {activeFilterChips.length > 0 && (
+                <div className="-mt-2 flex flex-wrap gap-1.5">
+                  {activeFilterChips.map((chip) => (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      onClick={chip.onRemove}
+                      className={`inline-flex max-w-full items-center gap-1 rounded-full px-3 py-1 text-[11px] font-medium transition hover:opacity-90 ${FILTER_SECTION_ACCENT[chip.section].checked}`}
+                    >
+                      <span className="max-w-[140px] truncate">{chip.label}</span>
+                      <X size={12} className="shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Sort */}
               <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
@@ -3910,11 +4277,11 @@ export default function Catalog() {
                 </button>
               </div>
 
-              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+              <div className={`rounded-[24px] border p-3 ${FILTER_SECTION_ACCENT.category.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
+                  <h4 className={`text-[12px] font-semibold ${FILTER_SECTION_ACCENT.category.heading}`}>Categories</h4>
                   <button
-                    className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedCategories([])}
                     disabled={selectedCategories.length === 0}
                   >
@@ -3924,24 +4291,24 @@ export default function Catalog() {
 
                 {categoryTreeUi ? (
                   <ul className="max-h-56 space-y-1.5 overflow-auto pr-1">
-                    {categoryTreeUi.map(({ node, count, depth, hasChildren }) => {
+                    {categoryTreeUi.map(({ node, count, depth, hasChildren, expanded }) => {
                       const checked = selectedCategories.includes(node.id);
-                      const expanded = !!expandedCats[node.id];
                       const pad = Math.min(20, depth * 10);
 
                       return (
                         <li key={node.id}>
                           <div
-                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${checked
-                              ? "border-zinc-900 bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center gap-1.5 rounded-full border px-3 py-2 text-[12px] transition ${filterPillClasses("category", checked, depth)} ${hasChildren ? "cursor-pointer" : ""}`}
                             style={{ paddingLeft: 12 + pad }}
+                            onClick={() => hasChildren && toggleExpand(node.id)}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
-                                onClick={() => toggleExpand(node.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleExpand(node.id);
+                                }}
                                 className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${checked
                                   ? "text-white/90 hover:bg-white/10"
                                   : "text-zinc-600 hover:bg-black/5"
@@ -3983,10 +4350,7 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${filterPillClasses("category", checked)}`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span
@@ -4004,11 +4368,11 @@ export default function Catalog() {
               </div>
 
               {brands.length > 0 && (
-                <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+                <div className={`rounded-[24px] border p-3 ${FILTER_SECTION_ACCENT.brand.panel}`}>
                   <div className="mb-2 flex items-center justify-between">
-                    <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
+                    <h4 className={`text-[12px] font-semibold ${FILTER_SECTION_ACCENT.brand.heading}`}>Brands</h4>
                     <button
-                      className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
+                      className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                       onClick={() => setSelectedBrands([])}
                       disabled={selectedBrands.length === 0}
                     >
@@ -4023,10 +4387,7 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                              }`}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${filterPillClasses("brand", checked)}`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span
@@ -4043,11 +4404,53 @@ export default function Catalog() {
                 </div>
               )}
 
-              <div className="rounded-[24px] border border-zinc-200 bg-zinc-50/70 p-3">
+              {states.length > 0 && (
+                <div className={`rounded-[24px] border p-3 ${FILTER_SECTION_ACCENT.state.panel}`}>
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className={`text-[12px] font-semibold ${FILTER_SECTION_ACCENT.state.heading}`}>
+                      Supplier state
+                    </h4>
+                    <button
+                      className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
+                      onClick={() => setSelectedStates([])}
+                      disabled={selectedStates.length === 0}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <p className="mb-2 text-[11px] text-zinc-500">
+                    Find suppliers near you to cut delivery cost and time.
+                  </p>
+
+                  <ul className="max-h-44 space-y-1.5 overflow-auto pr-1">
+                    {states.map((s) => {
+                      const checked = selectedStates.includes(s.name);
+                      return (
+                        <li key={s.name}>
+                          <button
+                            onClick={() => toggleState(s.name)}
+                            className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${filterPillClasses("state", checked)}`}
+                          >
+                            <span className="truncate">{s.name}</span>
+                            <span
+                              className={`ml-2 text-xs ${checked ? "text-white/90" : "text-zinc-600"
+                                }`}
+                            >
+                              ({s.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              <div className={`rounded-[24px] border p-3 ${FILTER_SECTION_ACCENT.price.panel}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
+                  <h4 className={`text-[12px] font-semibold ${FILTER_SECTION_ACCENT.price.heading}`}>Price</h4>
                   <button
-                    className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-xs! text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => { setSelectedBucketIdxs([]); setPriceMin(""); setPriceMax(""); }}
                     disabled={selectedBucketIdxs.length === 0 && priceMin === "" && priceMax === ""}
                   >
@@ -4083,10 +4486,7 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px] transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-black/5"
-                            }`}
+                          className={`flex w-full items-center justify-between rounded-full border px-4 py-2 text-[12px]! transition ${filterPillClasses("price", checked)}`}
                         >
                           <span>{bucket.label}</span>
                           <span

@@ -443,7 +443,7 @@ function Card({
 }) {
   return (
     <div className={["rounded-2xl border bg-white/90 shadow-sm overflow-hidden", className].join(" ")}>
-      <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+      <div className="px-4 sm:px-5 py-3 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="min-w-0">
           <div className="text-sm font-semibold text-zinc-900 truncate">{title}</div>
           {subtitle ? <div className="text-xs text-zinc-500 mt-0.5">{subtitle}</div> : null}
@@ -465,7 +465,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
       {...props}
       className={[
         "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
-        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        "focus:border-teal-400 focus:ring-4 focus:ring-teal-200",
         props.className || "",
       ].join(" ")}
     />
@@ -478,7 +478,7 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
       {...props}
       className={[
         "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
-        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        "focus:border-teal-400 focus:ring-4 focus:ring-teal-200",
         props.className || "",
       ].join(" ")}
     />
@@ -491,7 +491,7 @@ function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
       {...props}
       className={[
         "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
-        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        "focus:border-teal-400 focus:ring-4 focus:ring-teal-200",
         props.className || "",
       ].join(" ")}
     />
@@ -517,7 +517,7 @@ function AddNewLink({
       title={title}
       className={[
         "text-[11px] font-semibold underline underline-offset-2",
-        "text-violet-700 hover:text-violet-800",
+        "text-teal-700 hover:text-teal-800",
         disabled ? "opacity-50 cursor-not-allowed" : "",
       ].join(" ")}
     >
@@ -2421,7 +2421,7 @@ export default function SupplierEditProduct() {
               disabled={submitDisabled}
               onClick={doSave}
               title={lockReason}
-              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
             >
               {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
               {onboardingBlocked ? "Verification required" : saveButtonLabel}
@@ -2579,7 +2579,7 @@ export default function SupplierEditProduct() {
             <div className="hidden sm:flex gap-2">
               <Link
                 to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-teal-50 hover:border-teal-200 transition"
               >
                 <ArrowLeft size={16} /> Back
               </Link>
@@ -2588,7 +2588,7 @@ export default function SupplierEditProduct() {
                 type="button"
                 disabled={submitDisabled}
                 onClick={doSave}
-                className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
                 title={lockReason}
               >
                 {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
@@ -2599,7 +2599,7 @@ export default function SupplierEditProduct() {
             <div className="sm:hidden">
               <Link
                 to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-teal-50 hover:border-teal-200 transition"
               >
                 <ArrowLeft size={16} /> Back
               </Link>
@@ -3226,7 +3226,7 @@ export default function SupplierEditProduct() {
                 }
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly || onboardingBlocked ? "opacity-60 pointer-events-none" : ""
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-teal-50 hover:border-teal-200 transition cursor-pointer ${offersOnly || onboardingBlocked ? "opacity-60 pointer-events-none" : ""
                       }`}
                   >
                     <ImagePlus size={16} /> Add files
@@ -3367,31 +3367,18 @@ export default function SupplierEditProduct() {
                       <div className="text-xs font-semibold text-zinc-800">
                         Selected files: <span className="font-mono">{files.length}</span>
                       </div>
+                      <div className="mt-1 text-[11px] text-zinc-500">
+                        Not uploaded yet — these upload automatically when you save changes.
+                      </div>
 
                       <div className="mt-3 flex flex-col sm:flex-row gap-2">
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              setErr(null);
-                              await uploadLocalFiles();
-                            } catch (e: any) {
-                              setErr(e?.message || "Upload failed");
-                            }
-                          }}
-                          disabled={uploading || !files.length}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
-                        >
-                          {uploading ? "Uploading…" : "Upload now"}
-                        </button>
-
                         <button
                           type="button"
                           onClick={() => {
                             setFiles([]);
                             if (fileInputRef.current) fileInputRef.current.value = "";
                           }}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-teal-50 hover:border-teal-200 transition"
                         >
                           <Trash2 size={16} /> Clear files
                         </button>
@@ -3557,8 +3544,8 @@ export default function SupplierEditProduct() {
                                 <label
                                   key={x.id}
                                   className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked
-                                    ? "bg-zinc-900 text-white border-zinc-900"
-                                    : "bg-white hover:bg-black/5"
+                                    ? "bg-teal-600 text-white border-teal-600"
+                                    : "bg-white hover:bg-teal-50 hover:border-teal-200 transition"
                                     } ${!canEditAttributes ? "opacity-60 cursor-not-allowed" : ""}`}
                                 >
                                   <input
@@ -3607,7 +3594,7 @@ export default function SupplierEditProduct() {
                             onboardingBlocked ||
                             !selectableAttrs.some((a: any) => String(selectedAttrs[a.id] ?? "").trim() !== "")
                           }
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-teal-50 hover:border-teal-200 transition disabled:opacity-50"
                           title={lockReason}
                         >
                           Generate combo
@@ -3617,7 +3604,7 @@ export default function SupplierEditProduct() {
                           type="button"
                           onClick={addVariantRow}
                           disabled={onboardingBlocked || !selectableAttrs.length || !canAddNewCombos}
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-teal-50 hover:border-teal-200 transition disabled:opacity-60"
                           title={lockReason}
                         >
                           <Plus size={16} /> Add row
@@ -3805,7 +3792,7 @@ export default function SupplierEditProduct() {
                               type="button"
                               onClick={() => saveVariantRow(row.id)}
                               disabled={onboardingBlocked}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                              className="inline-flex items-center gap-2 rounded-xl border bg-teal-600 hover:bg-teal-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
                             >
                               Save combo
                             </button>
@@ -3925,7 +3912,7 @@ export default function SupplierEditProduct() {
                   disabled={submitDisabled}
                   onClick={doSave}
                   title={lockReason}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
                 >
                   {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
                   {onboardingBlocked ? "Verification required" : saveButtonLabel}
@@ -4081,7 +4068,7 @@ export default function SupplierEditProduct() {
                 disabled={submitDisabled}
                 onClick={doSave}
                 title={lockReason}
-                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
+                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-teal-600 hover:bg-teal-700 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
               >
                 {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
                 {onboardingBlocked ? "Verification required" : saveButtonLabel}

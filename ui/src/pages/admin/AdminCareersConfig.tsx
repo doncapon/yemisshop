@@ -136,11 +136,14 @@ const AdminCareersConfig: React.FC = () => {
 
   return (
     <div className="p-6 space-y-6">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold">Careers – Settings</h1>
-        <p className="text-sm text-gray-500">
-          Control global careers configuration and default content.
-        </p>
+      <header className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-blue-900 via-blue-800 to-sky-700 text-white px-6 py-6">
+        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(56,189,248,0.35),transparent_60%),radial-gradient(closest-side,rgba(59,130,246,0.3),transparent_60%)]" />
+        <div className="relative">
+          <h1 className="text-2xl font-semibold">Careers – Settings</h1>
+          <p className="text-sm text-white/80">
+            Control global careers configuration and default content.
+          </p>
+        </div>
       </header>
 
       {/* Feedback banners */}
@@ -335,7 +338,7 @@ const AdminCareersConfig: React.FC = () => {
               }
             }}
             disabled={isSaving}
-            className="px-3 py-1.5 border rounded text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            className="px-3 py-1.5 border rounded text-xs text-gray-700 hover:bg-blue-50 transition disabled:opacity-50"
           >
             Reset
           </button>

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { useAuthStore } from "../store/auth";
 import {
   type AuthMeLite,
   type SupplierDocumentLite,
@@ -7,13 +8,24 @@ import {
   evaluateSupplierVerificationGate,
 } from "../utils/supplierVerificationGate";
 
+function isAuthExpiredError(e: any) {
+  const status = Number(e?.response?.status);
+  return status === 401 || status === 403;
+}
+
 export function useSupplierVerificationGate(enabled = true) {
   return useQuery({
     queryKey: ["supplier", "verification-gate"],
     enabled,
     queryFn: async () => {
       const [authRes, supplierRes, docsRes] = await Promise.all([
-        api.get("/api/auth/me", { withCredentials: true }).catch(() => ({ data: {} })),
+        api.get("/api/auth/me", { withCredentials: true }).catch((e) => {
+          // A real session expiry is not "unverified" — clear the auth store so
+          // route guards send the user to /login instead of showing a stale
+          // "complete verification" lock screen.
+          if (isAuthExpiredError(e)) useAuthStore.getState().markSessionExpired();
+          return { data: {} };
+        }),
         api.get("/api/supplier/me", { withCredentials: true }).catch(() => ({ data: {} })),
         api
           .get("/api/supplier/documents", { withCredentials: true })

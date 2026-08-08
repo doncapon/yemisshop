@@ -51,21 +51,30 @@ function Stat({
   value,
   icon,
   hint,
+  tone = "default",
 }: {
   label: string;
   value: string;
   icon: React.ReactNode;
   hint?: string;
+  tone?: "default" | "warning";
 }) {
+  const toneCls =
+    tone === "warning"
+      ? { border: "border-amber-200 hover:border-amber-300", iconBg: "bg-amber-50 text-amber-700", hint: "text-amber-700" }
+      : { border: "border-teal-100 hover:border-teal-200", iconBg: "bg-teal-50 text-teal-700", hint: "text-zinc-500" };
+
   return (
-    <div className="rounded-2xl border bg-white/80 p-3 sm:p-4 flex items-start gap-2.5">
-      <div className="mt-0.5 text-zinc-700 shrink-0">{icon}</div>
+    <div
+      className={`rounded-2xl border ${toneCls.border} bg-white p-3 sm:p-4 flex items-start gap-2.5 shadow-sm hover:shadow-md transition`}
+    >
+      <div className={`mt-0.5 shrink-0 rounded-xl p-2 ${toneCls.iconBg}`}>{icon}</div>
       <div className="min-w-0">
         <div className="text-[11px] sm:text-xs text-zinc-500 leading-tight">{label}</div>
         <div className="text-base sm:text-lg font-semibold text-zinc-900 leading-tight">
           {value}
         </div>
-        {hint && <div className="text-[11px] text-zinc-500 mt-1 leading-tight">{hint}</div>}
+        {hint && <div className={`text-[11px] mt-1 leading-tight font-medium ${toneCls.hint}`}>{hint}</div>}
       </div>
     </div>
   );
@@ -547,8 +556,8 @@ export default function SupplierDashboard() {
     <SiteLayout>
       <SupplierLayout>
         <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
-          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+          <div className="absolute inset-0 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-700" />
+          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(16,185,129,0.3),transparent_60%),radial-gradient(closest-side,rgba(45,212,191,0.3),transparent_60%)]" />
 
           <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
             <motion.h1
@@ -614,7 +623,7 @@ export default function SupplierDashboard() {
                           value={supplierQ}
                           onChange={(e) => setSupplierQ(e.target.value)}
                           placeholder="Search suppliers…"
-                          className="w-full rounded-xl border bg-white pl-9 pr-3 py-2 text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
+                          className="w-full rounded-xl border bg-white pl-9 pr-3 py-2 text-sm outline-none focus:ring-4 focus:ring-teal-100 focus:border-teal-400 transition"
                           autoFocus
                         />
                       </div>
@@ -643,7 +652,7 @@ export default function SupplierDashboard() {
                               key={s.id}
                               type="button"
                               onClick={() => selectSupplier(s.id)}
-                              className={`w-full text-left px-4 py-3 border-b last:border-b-0 hover:bg-black/5 transition ${active ? "bg-emerald-50" : "bg-white"
+                              className={`w-full text-left px-4 py-3 border-b last:border-b-0 hover:bg-teal-50 hover:border-teal-200 transition ${active ? "bg-emerald-50" : "bg-white"
                                 }`}
                             >
                               <div className="flex items-center justify-between gap-2">
@@ -836,7 +845,7 @@ export default function SupplierDashboard() {
 
             <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
               <Card className="lg:col-span-2">
-                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
                     Complete onboarding
                   </div>
@@ -848,7 +857,7 @@ export default function SupplierDashboard() {
                 <div className="p-4 sm:p-5">
                   <div className="h-2 overflow-hidden rounded-full bg-zinc-200">
                     <div
-                      className="h-full rounded-full bg-zinc-900 transition-all"
+                      className="h-full rounded-full bg-gradient-to-r from-teal-600 to-emerald-600 transition-all"
                       style={{ width: `${onboardingPct}%` }}
                     />
                   </div>
@@ -890,7 +899,7 @@ export default function SupplierDashboard() {
                   <div className="mt-5 flex flex-wrap gap-2">
                     <Link
                       to={onboarding?.nextPath || "/supplier/verify-contact"}
-                      className="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-black"
+                      className="inline-flex items-center justify-center rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700"
                     >
                       {nextStepLabel}
                       <ArrowRight className="ml-2 h-4 w-4" />
@@ -900,7 +909,7 @@ export default function SupplierDashboard() {
               </Card>
 
               <Card>
-                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                   <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
                     Locked until onboarding completes
                   </div>
@@ -948,49 +957,65 @@ export default function SupplierDashboard() {
           </>
         ) : (
           <>
-            <div className="mt-4 sm:mt-6 grid gap-3 sm:gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-              <Stat label="Live products" value={`${kpis.liveProducts}`} icon={<Package size={16} />} />
-              <Stat
-                label="Low stock"
-                value={`${kpis.lowStock}`}
-                icon={<Box size={16} />}
-                hint="Restock soon"
-              />
-              <Stat
-                label="Pending orders"
-                value={`${kpis.pendingOrders}`}
-                icon={<ShoppingBag size={16} />}
-              />
-              <Stat
-                label="Shipped today"
-                value={`${kpis.shippedToday}`}
-                icon={<Truck size={16} />}
-              />
-              {(isSupplier || isSuperAdmin) && (
+            <div className="mt-5 sm:mt-7">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-teal-700/70 mb-2 px-1">
+                Operations
+              </div>
+              <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
+                <Stat label="Live products" value={`${kpis.liveProducts}`} icon={<Package size={16} />} />
                 <Stat
-                  label="Available balance"
-                  value={ngn.format(kpis.balance)}
-                  icon={<CircleDollarSign size={16} />}
+                  label="Low stock"
+                  value={`${kpis.lowStock}`}
+                  icon={<Box size={16} />}
+                  hint="Restock soon"
+                  tone={kpis.lowStock > 0 ? "warning" : "default"}
                 />
-              )}
-              {(isSupplier || isSuperAdmin) && (
                 <Stat
-                  label="Paid out"
-                  value={ngn.format(kpis.paidOutTotal)}
-                  icon={<CircleDollarSign size={16} />}
+                  label="Pending orders"
+                  value={`${kpis.pendingOrders}`}
+                  icon={<ShoppingBag size={16} />}
                 />
-              )}
-              <Stat
-                label="Store rating"
-                value={kpis.rating ? `${kpis.rating.toFixed(1)}` : "—"}
-                icon={<BadgeCheck size={16} />}
-              />
+                <Stat
+                  label="Shipped today"
+                  value={`${kpis.shippedToday}`}
+                  icon={<Truck size={16} />}
+                />
+              </div>
             </div>
+
+            {((isSupplier || isSuperAdmin) || kpis.rating) && (
+              <div className="mt-5 sm:mt-7">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-teal-700/70 mb-2 px-1">
+                  Finances &amp; rating
+                </div>
+                <div className="grid gap-3 sm:gap-4 grid-cols-2 sm:grid-cols-3">
+                  {(isSupplier || isSuperAdmin) && (
+                    <Stat
+                      label="Available balance"
+                      value={ngn.format(kpis.balance)}
+                      icon={<CircleDollarSign size={16} />}
+                    />
+                  )}
+                  {(isSupplier || isSuperAdmin) && (
+                    <Stat
+                      label="Paid out"
+                      value={ngn.format(kpis.paidOutTotal)}
+                      icon={<CircleDollarSign size={16} />}
+                    />
+                  )}
+                  <Stat
+                    label="Store rating"
+                    value={kpis.rating ? `${kpis.rating.toFixed(1)}` : "—"}
+                    icon={<BadgeCheck size={16} />}
+                  />
+                </div>
+              </div>
+            )}
 
             {!isRider ? (
               <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
                 <Card className="lg:col-span-2">
-                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                     <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
                       Today’s checklist
                     </div>
@@ -1005,43 +1030,54 @@ export default function SupplierDashboard() {
                         title: "Confirm stock levels",
                         desc: "Update inventory for popular SKUs.",
                         to: "/supplier/products",
+                        icon: <Box size={16} />,
                       },
                       {
                         title: "Fulfill pending orders",
                         desc: "Pack and mark orders as shipped.",
                         to: "/supplier/orders",
+                        icon: <ShoppingBag size={16} />,
                       },
                       {
                         title: "Manage shipping",
                         desc: "Update shipping profile, flat fees and supplier rate cards.",
                         to: "/supplier/shipping",
+                        icon: <Truck size={16} />,
                       },
                       {
                         title: "Review payouts",
                         desc: "Check balance and payout schedule.",
                         to: "/supplier/payouts",
+                        icon: <CircleDollarSign size={16} />,
                       },
                       {
                         title: "Request catalog items",
                         desc: "Need a new brand/category/attribute? Submit a request for admin approval.",
                         to: "/supplier/catalog-requests",
+                        icon: <Tags size={16} />,
                       },
                       {
                         title: "Update store settings",
                         desc: "Pickup address, payout details & notifications.",
                         to: "/supplier/settings",
+                        icon: <Settings size={16} />,
                       },
                     ].map((x) => (
                       <Link
                         key={x.title}
                         to={withSupplierCtx(x.to)}
-                        className="block rounded-2xl border bg-white hover:bg-black/5 transition p-3 sm:p-4"
+                        className="flex items-start gap-3 rounded-2xl border bg-white hover:bg-teal-50 hover:border-teal-200 transition p-3 sm:p-4"
                       >
-                        <div className="font-semibold text-[13px] sm:text-sm text-zinc-900">
-                          {x.title}
+                        <div className="mt-0.5 shrink-0 rounded-lg bg-teal-50 p-1.5 text-teal-700">
+                          {x.icon}
                         </div>
-                        <div className="text-[12px] sm:text-sm text-zinc-600 leading-snug mt-0.5">
-                          {x.desc}
+                        <div className="min-w-0">
+                          <div className="font-semibold text-[13px] sm:text-sm text-zinc-900">
+                            {x.title}
+                          </div>
+                          <div className="text-[12px] sm:text-sm text-zinc-600 leading-snug mt-0.5">
+                            {x.desc}
+                          </div>
                         </div>
                       </Link>
                     ))}
@@ -1049,12 +1085,12 @@ export default function SupplierDashboard() {
                 </Card>
 
                 <Card>
-                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                  <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                     <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
                       Quick insights
                     </div>
                     <div className="text-[11px] sm:text-xs text-zinc-500">
-                      Placeholder (wire to analytics)
+                      Your store's performance at a glance
                     </div>
                   </div>
 
@@ -1076,38 +1112,53 @@ export default function SupplierDashboard() {
                       </div>
                     ) : (
                       <>
-                        <div className="rounded-xl border bg-white p-3">
-                          Top product (last {insights?.windowDays ?? 30} days):{" "}
-                          <b>{insights?.topProduct?.title ?? "—"}</b>
-                          {insights?.topProduct ? (
-                            <div className="text-[11px] text-zinc-500 mt-1">
-                              Revenue: <b>{ngn.format(insights.topProduct.revenue)}</b> • Units:{" "}
-                              <b>{insights.topProduct.units}</b>
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <div className="rounded-xl border bg-white p-3">
-                          Most ordered: <b>{insights?.mostOrdered?.title ?? "—"}</b>
-                          {insights?.mostOrdered ? (
-                            <div className="text-[11px] text-zinc-500 mt-1">
-                              Units: <b>{insights.mostOrdered.units}</b>
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <div className="rounded-xl border bg-white p-3">
-                          Refund rate (last {insights?.windowDays ?? 30} days):{" "}
-                          <b>{(insights?.refundRatePct ?? 0).toFixed(1)}%</b>
-                          <div className="text-[11px] text-zinc-500 mt-1">
-                            Refunds: <b>{insights?.refunds ?? 0}</b> • Purchase orders:{" "}
-                            <b>{insights?.purchaseOrders ?? 0}</b>
-                            {typeof insights?.pendingPayouts === "number" ? (
-                              <>
-                                {" "}
-                                • Pending payouts: <b>{insights.pendingPayouts}</b>
-                              </>
+                        <div className="flex items-start gap-3 rounded-xl border bg-white p-3">
+                          <div className="mt-0.5 shrink-0 rounded-lg bg-teal-50 p-1.5 text-teal-700">
+                            <BadgeCheck size={16} />
+                          </div>
+                          <div className="min-w-0">
+                            Top product (last {insights?.windowDays ?? 30} days):{" "}
+                            <b>{insights?.topProduct?.title ?? "—"}</b>
+                            {insights?.topProduct ? (
+                              <div className="text-[11px] text-zinc-500 mt-1">
+                                Revenue: <b>{ngn.format(insights.topProduct.revenue)}</b> • Units:{" "}
+                                <b>{insights.topProduct.units}</b>
+                              </div>
                             ) : null}
+                          </div>
+                        </div>
+
+                        <div className="flex items-start gap-3 rounded-xl border bg-white p-3">
+                          <div className="mt-0.5 shrink-0 rounded-lg bg-teal-50 p-1.5 text-teal-700">
+                            <ShoppingBag size={16} />
+                          </div>
+                          <div className="min-w-0">
+                            Most ordered: <b>{insights?.mostOrdered?.title ?? "—"}</b>
+                            {insights?.mostOrdered ? (
+                              <div className="text-[11px] text-zinc-500 mt-1">
+                                Units: <b>{insights.mostOrdered.units}</b>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="flex items-start gap-3 rounded-xl border bg-white p-3">
+                          <div className="mt-0.5 shrink-0 rounded-lg bg-teal-50 p-1.5 text-teal-700">
+                            <Undo2 size={16} />
+                          </div>
+                          <div className="min-w-0">
+                            Refund rate (last {insights?.windowDays ?? 30} days):{" "}
+                            <b>{(insights?.refundRatePct ?? 0).toFixed(1)}%</b>
+                            <div className="text-[11px] text-zinc-500 mt-1">
+                              Refunds: <b>{insights?.refunds ?? 0}</b> • Purchase orders:{" "}
+                              <b>{insights?.purchaseOrders ?? 0}</b>
+                              {typeof insights?.pendingPayouts === "number" ? (
+                                <>
+                                  {" "}
+                                  • Pending payouts: <b>{insights.pendingPayouts}</b>
+                                </>
+                              ) : null}
+                            </div>
                           </div>
                         </div>
                       </>
@@ -1115,37 +1166,52 @@ export default function SupplierDashboard() {
 
                     <Link
                       to={withSupplierCtx("/supplier/shipping")}
-                      className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
+                      className="flex items-start gap-3 rounded-xl border bg-white p-3 hover:bg-teal-50 hover:border-teal-200 transition"
                     >
-                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
-                        Shipping
+                      <div className="mt-0.5 shrink-0 rounded-lg bg-teal-50 p-1.5 text-teal-700">
+                        <Truck size={16} />
                       </div>
-                      <div className="text-[11px] sm:text-xs text-zinc-600">
-                        Manage your shipping profile, rate cards and quote settings
+                      <div className="min-w-0">
+                        <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
+                          Shipping
+                        </div>
+                        <div className="text-[11px] sm:text-xs text-zinc-600">
+                          Manage your shipping profile, rate cards and quote settings
+                        </div>
                       </div>
                     </Link>
 
                     <Link
                       to={withSupplierCtx("/supplier/catalog-requests")}
-                      className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
+                      className="flex items-start gap-3 rounded-xl border bg-white p-3 hover:bg-teal-50 hover:border-teal-200 transition"
                     >
-                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
-                        Catalog requests
+                      <div className="mt-0.5 shrink-0 rounded-lg bg-teal-50 p-1.5 text-teal-700">
+                        <Tags size={16} />
                       </div>
-                      <div className="text-[11px] sm:text-xs text-zinc-600">
-                        Ask admin to add new brands, categories or attributes
+                      <div className="min-w-0">
+                        <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
+                          Catalog requests
+                        </div>
+                        <div className="text-[11px] sm:text-xs text-zinc-600">
+                          Ask admin to add new brands, categories or attributes
+                        </div>
                       </div>
                     </Link>
 
                     <Link
                       to={withSupplierCtx("/supplier/settings")}
-                      className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
+                      className="flex items-start gap-3 rounded-xl border bg-white p-3 hover:bg-teal-50 hover:border-teal-200 transition"
                     >
-                      <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
-                        Settings
+                      <div className="mt-0.5 shrink-0 rounded-lg bg-teal-50 p-1.5 text-teal-700">
+                        <Settings size={16} />
                       </div>
-                      <div className="text-[11px] sm:text-xs text-zinc-600">
-                        Edit payout, pickup and notifications
+                      <div className="min-w-0">
+                        <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">
+                          Settings
+                        </div>
+                        <div className="text-[11px] sm:text-xs text-zinc-600">
+                          Edit payout, pickup and notifications
+                        </div>
                       </div>
                     </Link>
                   </div>
@@ -1154,7 +1220,7 @@ export default function SupplierDashboard() {
             ) : (
               <div className="mt-6">
                 <Card>
-                  <div className="px-5 py-4 border-b bg-white/70">
+                  <div className="px-5 py-4 border-b bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
                     <div className="text-sm font-semibold text-zinc-900">Rider access</div>
                     <div className="text-xs text-zinc-500">
                       You can only view and deliver assigned orders.
@@ -1163,7 +1229,7 @@ export default function SupplierDashboard() {
                   <div className="p-5">
                     <Link
                       to={withSupplierCtx("/supplier/orders")}
-                      className="inline-flex items-center gap-2 rounded-full bg-primary-900 text-white px-4 py-2 text-sm font-semibold hover:opacity-95"
+                      className="inline-flex items-center gap-2 rounded-full bg-teal-700 text-white px-4 py-2 text-sm font-semibold hover:opacity-95"
                     >
                       View assigned orders <ArrowRight size={16} />
                     </Link>

@@ -160,7 +160,7 @@ const RequestsTable = React.memo(function RequestsTable(props: {
                 <div className="inline-flex gap-2">
                   <button
                     type="button"
-                    className="px-2 py-1 rounded border bg-white hover:bg-black/5"
+                    className="px-2 py-1 rounded border bg-white hover:bg-blue-50 hover:border-blue-200 transition"
                     onClick={() => onEdit(r)}
                     disabled={r.status !== "PENDING"}
                     title={r.status !== "PENDING" ? "Only pending requests can be edited" : "Edit request"}
@@ -702,7 +702,7 @@ export default function AdminCatalogRequestsSection() {
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
-      <div className="px-5 py-4 border-b bg-white/70 flex items-center justify-between">
+      <div className="px-5 py-4 border-b bg-gradient-to-r from-blue-50/80 to-sky-50/50 flex items-center justify-between">
         <div>
           <div className="text-sm font-semibold text-zinc-900">Catalog Requests</div>
           <div className="text-xs text-zinc-500">Approve supplier requests for categories, brands, attributes & values</div>
@@ -775,13 +775,13 @@ export default function AdminCatalogRequestsSection() {
             </div>
 
             <div className="px-5 py-4 border-t flex items-center justify-end gap-2">
-              <button type="button" className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5" onClick={closeEdit}>
+              <button type="button" className="px-3 py-2 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition" onClick={closeEdit}>
                 Cancel
               </button>
 
               <button
                 type="button"
-                className="px-3 py-2 rounded-lg bg-zinc-900 text-white disabled:opacity-50"
+                className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                 onClick={saveEdit}
                 disabled={patchReq.isPending || !canSave}
                 title={!canSave ? "Fill required fields before saving" : ""}

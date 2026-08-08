@@ -1092,6 +1092,25 @@ export default function SupplierVerifyContact() {
     [emailVerifiedEffective, phoneVerifiedEffective]
   );
 
+  useEffect(() => {
+    if (checking || isAdminReviewMode) return;
+    if (hasAnyVerificationSession || canContinue) return;
+
+    const from = `${location.pathname}${location.search}`;
+    nav(`/login?from=${encodeURIComponent(from)}`, {
+      replace: true,
+      state: { from },
+    });
+  }, [
+    checking,
+    isAdminReviewMode,
+    hasAnyVerificationSession,
+    canContinue,
+    location.pathname,
+    location.search,
+    nav,
+  ]);
+
   const businessDetailsDone = useMemo(() => {
     return (
       hasMeaningfulBusinessDetails(supplierSnapshot) &&
@@ -1583,7 +1602,7 @@ export default function SupplierVerifyContact() {
   const stepBase =
     "flex items-center gap-2 rounded-full border px-3 py-2 text-xs sm:text-sm transition";
   const stepDone = "border-emerald-200 bg-emerald-50 text-emerald-700";
-  const stepActive = "border-zinc-900 bg-zinc-900 text-white shadow-sm";
+  const stepActive = "border-teal-600 bg-teal-600 text-white shadow-sm";
   const stepLocked = "border-zinc-100 bg-zinc-50 text-zinc-400";
 
   const card =
@@ -1592,10 +1611,10 @@ export default function SupplierVerifyContact() {
     "rounded-2xl border border-zinc-200 bg-white p-4 sm:p-5 shadow-sm";
   const button =
     "inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:opacity-60 disabled:cursor-not-allowed";
-  const primaryBtn = `${button} bg-zinc-900 text-white hover:bg-black`;
-  const secondaryBtn = `${button} border border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-50`;
+  const primaryBtn = `${button} bg-teal-600 text-white hover:bg-teal-700`;
+  const secondaryBtn = `${button} border border-zinc-300 bg-white text-zinc-800 hover:bg-teal-50 hover:border-teal-200`;
   const input =
-    "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm";
+    "w-full rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-[16px] md:text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-200 transition shadow-sm";
 
   const otpInputClass = otpError
     ? `${input} border-rose-400 bg-rose-50/40 focus:border-rose-500 focus:ring-rose-200`
