@@ -23,7 +23,7 @@
   <meta name="theme-color" content="#ffffff" />
 
   <!-- ✅ Canonical (SPA default; product pages can override later with React head tags) -->
-  <link rel="canonical" href="https://dayspringhouse.com/" />
+  <link rel="canonical" href="%VITE_APP_URL%/" />
 
   <!-- ✅ Open Graph -->
   <meta property="og:site_name" content="DaySpring House" />
@@ -31,19 +31,21 @@
   <meta property="og:title" content="DaySpring House — Shop" />
   <meta property="og:description"
     content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely." />
-  <meta property="og:url" content="https://dayspringhouse.com/" />
-  <!-- <meta property="og:image" content="https://dayspringhouse.com/og-image.jpg" /> -->
+  <meta property="og:url" content="%VITE_APP_URL%/" />
+  <meta property="og:image" content="%VITE_APP_URL%/og-image.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
 
   <!-- ✅ Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="DaySpring House — Shop" />
   <meta name="twitter:description"
     content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely." />
-  <!-- <meta name="twitter:image" content="https://dayspringhouse.com/og-image.jpg" /> -->
+  <meta name="twitter:image" content="%VITE_APP_URL%/og-image.jpg" />
 
   <!-- ✅ Structured data (helps Google show correct site name) -->
   <script type="application/ld+json">
-      {"@context":"https://schema.org","@type":"WebSite","name":"DaySpring House","url":"https://dayspringhouse.com","potentialAction":{"@type":"SearchAction","target":"https://dayspringhouse.com/?q={search_term_string}","query-input":"required name=search_term_string"}}
+      {"@context":"https://schema.org","@type":"WebSite","name":"DaySpring House","url":"%VITE_APP_URL%","potentialAction":{"@type":"SearchAction","target":"%VITE_APP_URL%/?q={search_term_string}","query-input":"required name=search_term_string"}}
     </script>
 
   <!-- ✅ CSP (UI) -->

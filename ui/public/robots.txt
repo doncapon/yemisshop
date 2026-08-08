@@ -1,4 +1,24 @@
 User-agent: *
 Allow: /
+Disallow: /cart
+Disallow: /checkout
+Disallow: /admin
+Disallow: /admin/
+Disallow: /account/
+Disallow: /dashboard
+Disallow: /customer-dashboard
+Disallow: /supplier
+Disallow: /supplier/
+Disallow: /login
+Disallow: /register
+Disallow: /register-supplier
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /payment
+Disallow: /payment-callback
+Disallow: /receipt/
+Disallow: /orders
+Disallow: /wishlist
+Disallow: /profile
 
 Sitemap: https://dayspringhouse.com/sitemap.xml

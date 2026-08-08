@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#faf5ff"/>
+      <stop offset="100%" stop-color="#ecfeff"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="45%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#fb923c"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </radialGradient>
+    <linearGradient id="ray" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f87171"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <clipPath id="c">
+      <circle cx="0" cy="0" r="42"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Bottom accent bar -->
+  <rect x="0" y="608" width="1200" height="22" fill="url(#bar)"/>
+
+  <!-- Logo mark, scaled up and centered around (230,315) -->
+  <g transform="translate(230,315) scale(3.4)">
+    <circle cx="0" cy="0" r="42" fill="white"/>
+
+    <g clip-path="url(#c)">
+      <rect x="-42" y="-1" width="84" height="2" fill="#e2e8f0"/>
+      <circle cx="-10" cy="-15" r="13" fill="url(#sun)"/>
+
+      <g transform="translate(-10,-15)">
+        <rect x="15" y="-2.5" width="14" height="5" rx="2.5" fill="url(#ray)" transform="rotate(-55)"/>
+        <rect x="15" y="-2.5" width="14" height="5" rx="2.5" fill="url(#ray)" transform="rotate(-33)"/>
+        <rect x="15" y="-2.5" width="13" height="5" rx="2.5" fill="url(#ray)" transform="rotate(-11)"/>
+        <rect x="15" y="-2.5" width="12" height="5" rx="2.5" fill="url(#ray)" transform="rotate(12)"/>
+        <rect x="15" y="-2.5" width="11" height="5" rx="2.5" fill="url(#ray)" transform="rotate(35)"/>
+        <rect x="15" y="-2.5" width="10" height="5" rx="2.5" fill="url(#ray)" transform="rotate(58)"/>
+      </g>
+
+      <path d="M-42,3 C-30,-3 -18,5 -5,1 C8,-3 20,7 42,1 L42,16 C20,22 8,12 -5,16 C-18,20 -30,10 -42,16 Z"
+            fill="url(#wave)" opacity="0.45"/>
+      <path d="M-42,8 C-30,2 -18,10 -5,6 C8,2 20,12 42,6 L42,45 L-42,45 Z"
+            fill="url(#wave)"/>
+      <path d="M-42,8 C-30,2 -18,10 -5,6 C8,2 20,12 42,6"
+            fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="2.5"/>
+    </g>
+
+    <circle cx="0" cy="0" r="46" fill="none" stroke="url(#ring)" stroke-width="8"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="405" y="300" font-family="Arial, Helvetica, sans-serif" font-size="76" font-weight="700" fill="#18181b">Day<tspan font-weight="800">Spring</tspan></text>
+  <text x="405" y="360" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="600" fill="#3f3f46">House</text>
+
+  <!-- Tagline -->
+  <text x="405" y="425" font-family="Arial, Helvetica, sans-serif" font-size="28" fill="#52525b">Quality products from trusted suppliers.</text>
+  <text x="405" y="462" font-family="Arial, Helvetica, sans-serif" font-size="28" fill="#52525b">Fast delivery. Secure checkout.</text>
+</svg>

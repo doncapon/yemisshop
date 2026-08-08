@@ -27,6 +27,7 @@ import {
 import SiteLayout from "../layouts/SiteLayout.js";
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
 import { readCartLines, upsertCartLine, toMiniCartRows } from "../utils/cartModel";
+import { setSeo } from "../seo/head";
 
 import { AnimatePresence, motion } from "framer-motion";
 
@@ -1703,6 +1704,16 @@ function getProductImageCandidates(p: Product): string[] {
 export default function Catalog() {
   const initialPersisted = useMemo(() => readCatalogState(), []);
 
+  // URL params take priority over persisted session state, so a shared link
+  // or a crawler landing fresh on /?category=<id> or /?q=<text> reproduces
+  // that exact view instead of whatever was last browsed in this tab.
+  const initialUrlParams = useMemo(
+    () => new URLSearchParams(window.location.search),
+    []
+  );
+  const initialCategoryFromUrl = initialUrlParams.get("category") || "";
+  const initialQueryFromUrl = initialUrlParams.get("q") || "";
+
   const user = useAuthStore((s) => s.user);
   const role = String(user?.role ?? "");
   const isSupplier = role === "SUPPLIER";
@@ -1833,7 +1844,7 @@ export default function Catalog() {
   /* ---------------- UI state ---------------- */
 
   const [selectedCategories, setSelectedCategories] = useState<string[]>(
-    initialPersisted?.selectedCategories ?? []
+    initialCategoryFromUrl ? [initialCategoryFromUrl] : (initialPersisted?.selectedCategories ?? [])
   );
   const [selectedBucketIdxs, setSelectedBucketIdxs] = useState<number[]>(
     initialPersisted?.selectedBucketIdxs ?? []
@@ -1848,7 +1859,7 @@ export default function Catalog() {
   const [priceMin, setPriceMin] = useState(initialPersisted?.priceMin ?? "");
   const [priceMax, setPriceMax] = useState(initialPersisted?.priceMax ?? "");
 
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQueryFromUrl);
   const [searchFocused, setSearchFocused] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
@@ -2593,6 +2604,66 @@ export default function Catalog() {
 
     return base;
   }, [deferredSelectedCategories, catTreeHelpers]);
+
+  // Reflect the single-category selection and search query into the URL so
+  // each view has its own crawlable, shareable, indexable address. Other
+  // refinement filters (brand/price/sort/in-stock) intentionally stay
+  // client-only state — indexing every permutation of those would just
+  // create thin/near-duplicate pages.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const catId = deferredSelectedCategories.length === 1 ? String(deferredSelectedCategories[0]) : "";
+    const q = normalizedDeferredQuery ? deferredQuery.trim() : "";
+
+    if (catId) params.set("category", catId);
+    else params.delete("category");
+
+    if (q) params.set("q", q);
+    else params.delete("q");
+
+    const search = params.toString();
+    const nextUrl = `${location.pathname}${search ? `?${search}` : ""}`;
+    const currentUrl = `${location.pathname}${location.search}`;
+    if (nextUrl === currentUrl) return;
+
+    nav(nextUrl, { replace: true });
+  }, [deferredSelectedCategories, normalizedDeferredQuery, deferredQuery, location.pathname, location.search, nav]);
+
+  useEffect(() => {
+    const q = normalizedDeferredQuery ? deferredQuery.trim() : "";
+    const catId = deferredSelectedCategories.length === 1 ? String(deferredSelectedCategories[0]) : "";
+    const catName = catId ? catTreeHelpers?.byId.get(catId)?.name : "";
+
+    if (!q && !catName) return;
+
+    const origin = window.location.origin;
+    const params = new URLSearchParams();
+    if (catId) params.set("category", catId);
+    if (q) params.set("q", q);
+    const canonical = `${origin}/?${params.toString()}`;
+
+    const title = q
+      ? `"${q}" — Search results | DaySpring House`
+      : `${catName} | DaySpring House`;
+
+    const description = q
+      ? `Search results for "${q}" on DaySpring House. Quality products from trusted suppliers in Nigeria.`
+      : `Shop ${catName} on DaySpring House. Quality products from trusted suppliers, fast delivery, secure checkout.`;
+
+    const dispose = setSeo({
+      title,
+      description,
+      canonical,
+      og: [
+        { property: "og:title", content: title },
+        { property: "og:description", content: description },
+        { property: "og:url", content: canonical },
+        { property: "og:type", content: "website" },
+      ],
+    });
+
+    return dispose;
+  }, [normalizedDeferredQuery, deferredQuery, deferredSelectedCategories, catTreeHelpers]);
 
   const activeBrandSet = useMemo(
     () => new Set(deferredSelectedBrands.map((b) => toBrandKey(b)).filter(Boolean)),

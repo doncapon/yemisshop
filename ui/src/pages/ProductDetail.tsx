@@ -88,6 +88,7 @@ type ProductWire = {
   ratingAvg?: number | null;
   ratingCount?: number | null;
   bestSupplierRating?: { ratingAvg: number | null; ratingCount: number | null } | null;
+  categoryName?: string | null;
 };
 
 type SimilarProductWire = {
@@ -2416,8 +2417,10 @@ export default function ProductDetail() {
 
     const price = Number.isFinite(Number(computed?.final)) && Number(computed.final) > 0 ? Number(computed.final) : null;
 
-    const jsonLd = {
-      "@context": "https://schema.org",
+    const ratingCount = reviewSummaryQ.data?.ratingCount ?? 0;
+    const ratingAvg = reviewSummaryQ.data?.ratingAvg ?? 0;
+
+    const productNode = {
       "@type": "Product",
       name: product.title,
       description: desc,
@@ -2435,6 +2438,30 @@ export default function ProductDetail() {
           },
         }
         : {}),
+      // Google ignores aggregateRating claims with no backing reviews, so only
+      // include it once at least one real review exists.
+      ...(ratingCount > 0
+        ? {
+          aggregateRating: {
+            "@type": "AggregateRating",
+            ratingValue: String(ratingAvg),
+            reviewCount: String(ratingCount),
+          },
+        }
+        : {}),
+    };
+
+    const breadcrumbNode = {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: `${SITE_ORIGIN}/` },
+        { "@type": "ListItem", position: 2, name: product.title, item: canonical },
+      ],
+    };
+
+    const jsonLd = {
+      "@context": "https://schema.org",
+      "@graph": [productNode, breadcrumbNode],
     };
 
     return { title, description: desc, canonical, ogImage: img, jsonLd, ogType: "product" as const };
@@ -2449,6 +2476,8 @@ export default function ProductDetail() {
     absUrl,
     computed?.final,
     totalStockQty,
+    reviewSummaryQ.data?.ratingAvg,
+    reviewSummaryQ.data?.ratingCount,
   ]);
 
   React.useEffect(() => {
