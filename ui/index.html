@@ -43,9 +43,12 @@
     content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely." />
   <meta name="twitter:image" content="%VITE_APP_URL%/og-image.jpg" />
 
-  <!-- ✅ Structured data (helps Google show correct site name) -->
+  <!-- ✅ Structured data (helps Google show the correct site name and, -->
+  <!-- importantly, correctly identify DaySpring House as an e-commerce -->
+  <!-- marketplace — distinct from unrelated businesses/entities that -->
+  <!-- happen to share the "Dayspring" name, e.g. care agencies). -->
   <script type="application/ld+json">
-      {"@context":"https://schema.org","@type":"WebSite","name":"DaySpring House","url":"%VITE_APP_URL%","potentialAction":{"@type":"SearchAction","target":"%VITE_APP_URL%/?q={search_term_string}","query-input":"required name=search_term_string"}}
+      {"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"%VITE_APP_URL%/#website","name":"DaySpring House","url":"%VITE_APP_URL%","potentialAction":{"@type":"SearchAction","target":"%VITE_APP_URL%/?q={search_term_string}","query-input":"required name=search_term_string"}},{"@type":"OnlineStore","@id":"%VITE_APP_URL%/#organization","name":"DaySpring House","alternateName":"DaySpring","url":"%VITE_APP_URL%","logo":"%VITE_APP_URL%/og-image.jpg","description":"DaySpring House is an online e-commerce marketplace connecting trusted suppliers with shoppers in Nigeria, offering a wide range of consumer products with fast delivery and secure checkout.","areaServed":"NG"}]}
     </script>
 
   <!-- ✅ CSP (UI) -->
