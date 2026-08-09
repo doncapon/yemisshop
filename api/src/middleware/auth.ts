@@ -224,10 +224,6 @@ function forbidden(res: Response) {
 export const requireAuth: RequestHandler = async (req, res, next) => {
   if ((globalThis as any).__auth_ignore) return next();
 
-  if (req.path === "/me" || req.originalUrl.includes("/auth/me")) {
-    console.log("[requireAuth] DIAG entered for", req.originalUrl, "origin:", req.headers.origin || "(none)");
-  }
-
   let token = readToken(req);
 
   if (!token) {
@@ -237,58 +233,27 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
     }
   }
 
-  const isDiagTarget = req.path === "/me" || req.originalUrl.includes("/auth/me");
-
-  if (!token) {
-    if (isDiagTarget) {
-      console.log(
-        "[requireAuth] DIAG no token — cookie names present:",
-        Object.keys((req as any).cookies || {}),
-        "expected cookie name:",
-        getAccessTokenCookieName(),
-        "raw cookie header:",
-        req.headers.cookie || "(none)",
-        "origin header:",
-        req.headers.origin || "(none)"
-      );
-    }
-    return unauthorized(res, "Missing auth token");
-  }
+  if (!token) return unauthorized(res, "Missing auth token");
 
   const decoded = verifyToken(token);
   const userId = String(decoded?.id ?? decoded?.sub ?? "");
-  if (!decoded || !userId) {
-    if (isDiagTarget) {
-      console.log(
-        "[requireAuth] DIAG token present but verify failed — token prefix:",
-        token.slice(0, 20),
-        "cookie names present:",
-        Object.keys((req as any).cookies || {})
-      );
-    }
-    return unauthorized(res, "Invalid token");
-  }
+  if (!decoded || !userId) return unauthorized(res, "Invalid token");
 
   const k = String(decoded?.k ?? "").trim();
   const isAccessToken = !k || k === "access";
   const isVerifyToken = k === "verify";
 
   if (!isAccessToken && !isVerifyToken) {
-    if (isDiagTarget) console.log("[requireAuth] DIAG wrong token type:", k);
     return unauthorized(res, "Wrong token type");
   }
 
   if (isAccessToken) {
     try {
       const sessionCheck = await assertSessionIfPresent(decoded);
-      if (isDiagTarget) {
-        console.log("[requireAuth] DIAG session check passed, userId:", userId, "shouldRefresh:", sessionCheck.shouldRefresh);
-      }
       if (sessionCheck.shouldRefresh) {
         maybeRefreshAccessCookie(res, decoded);
       }
     } catch (e: any) {
-      if (isDiagTarget) console.log("[requireAuth] DIAG session check threw:", e?.message, "sid:", decoded?.sid, "userId:", userId);
       return unauthorized(res, e?.message || "Session invalid");
     }
   }
