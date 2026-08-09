@@ -242,6 +242,10 @@ const normalizeOrigin = (s: string) => s.replace(/\/$/, "");
 const allowedOrigins = [
   process.env.APP_URL,
   process.env.FRONTEND_URL,
+  // Cross-origin OAuth redirects (e.g. Google's callback landing on this API
+  // domain before it bounces the browser to the frontend) can carry an
+  // Origin header equal to this API's own origin, so it must be self-allowed.
+  process.env.API_URL,
   "https://dayspringhouse.com",
   "https://www.dayspringhouse.com",
   "http://localhost:5173",
