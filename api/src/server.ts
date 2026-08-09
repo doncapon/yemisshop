@@ -263,6 +263,9 @@ const isAllowed = (origin: string) => {
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, cb) => {
+    if (origin && origin.includes("test.dayspringhouse.com")) {
+      console.log("[cors] DIAG origin check:", origin, "allowed?", !origin || isAllowed(origin));
+    }
     if (!origin) return cb(null, true);
     if (isAllowed(origin)) return cb(null, true);
     console.error("CORS blocked:", origin, "allowed:", allowedOrigins);
