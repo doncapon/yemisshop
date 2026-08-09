@@ -2102,6 +2102,19 @@ router.get(
     setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
     res.setHeader("Cache-Control", "no-store");
 
+    console.log(
+      "[google/callback] DIAG cookie set — APP_URL:",
+      APP_URL,
+      "API_URL:",
+      API_BASE_URL,
+      "COOKIE_DOMAIN env:",
+      process.env.COOKIE_DOMAIN,
+      "NODE_ENV:",
+      process.env.NODE_ENV,
+      "userId:",
+      userId
+    );
+
     const safeReturn = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
 
     if (isNativeCallback) {

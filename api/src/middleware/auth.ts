@@ -233,7 +233,21 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
     }
   }
 
-  if (!token) return unauthorized(res, "Missing auth token");
+  if (!token) {
+    if (req.path === "/me" || req.originalUrl.includes("/auth/me")) {
+      console.log(
+        "[requireAuth] DIAG no token — cookie names present:",
+        Object.keys((req as any).cookies || {}),
+        "expected cookie name:",
+        getAccessTokenCookieName(),
+        "raw cookie header:",
+        req.headers.cookie || "(none)",
+        "origin header:",
+        req.headers.origin || "(none)"
+      );
+    }
+    return unauthorized(res, "Missing auth token");
+  }
 
   const decoded = verifyToken(token);
   const userId = String(decoded?.id ?? decoded?.sub ?? "");
