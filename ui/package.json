@@ -61,7 +61,6 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
-    "@capacitor/assets": "^3.0.5",
     "@eslint/js": "^9.36.0",
     "@flydotio/dockerfile": "^0.7.10",
     "@playwright/test": "^1.59.1",
@@ -86,7 +85,6 @@
     "msw": "^2.13.2",
     "postcss": "^8.5.6",
     "serve": "^14.2.5",
-    "sharp": "^0.35.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",
