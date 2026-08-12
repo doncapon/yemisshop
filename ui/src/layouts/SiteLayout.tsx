@@ -5,6 +5,7 @@ import { captureAttributionFromUrl } from "../utils/attribution";
 import ConsentBanner from "../components/ConsentBanner";
 import MiniCartToastHost from "../components/cart/MiniCartToast";
 import TawkToWidget from "../components/TawkToWidget";
+import WhatsAppButton from "../components/WhatsAppButton";
 
 type Props = {
   children: React.ReactNode;
@@ -38,6 +39,7 @@ export default function SiteLayout({ children }: Props) {
     <div className="min-h-screen w-full flex flex-col bg-gradient-to-b from-primary-50/40 via-bg-soft to-bg-soft text-ink">
       <MiniCartToastHost />
       <TawkToWidget />
+      <WhatsAppButton />
       <Navbar />
 
       {/* Global overlays */}
