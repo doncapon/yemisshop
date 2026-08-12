@@ -15,8 +15,10 @@ export default function WhatsAppButton() {
   const number = rawNumber.replace(/[^\d]/g, "");
   if (!number) return null;
 
+  // Note: an unset Docker build ARG becomes an empty string, not undefined,
+  // so this must fall back on falsy-ness (||), not nullish-ness (??).
   const message = String(
-    import.meta.env.VITE_WHATSAPP_MESSAGE ??
+    import.meta.env.VITE_WHATSAPP_MESSAGE ||
       "Hi! I have a question about DaySpring House."
   ).trim();
 
