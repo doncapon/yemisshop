@@ -1,16 +1,28 @@
 // src/components/PhoneOtpCard.tsx
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
+import { getTempVerifyToken, hasTempVerifySession } from '../lib/roles';
 import { RefreshCcw, ShieldCheck, Smartphone, Clock } from 'lucide-react';
 
 type Props = {
-  email?: string;           // the user email to verify (required by /api/auth/verify-phone)
+  email?: string;           // shown for context only; the API identifies the user from the session/temp token
   onVerified?: () => void;  // callback when phone gets verified (to refresh parent state)
 };
 
+/** Attach the pre-login "verify" token as a Bearer header when there's no full session cookie yet. */
+function verifySessionConfig() {
+  const token = getTempVerifyToken();
+  return {
+    withCredentials: true as const,
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  };
+}
+
 export default function PhoneOtpCard({ email, onVerified }: Props) {
   const isAuthed = useAuthStore((s) => !!s.user);
+  const canUseSession = isAuthed || hasTempVerifySession();
+
   const [otp, setOtp] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -20,23 +32,28 @@ export default function PhoneOtpCard({ email, onVerified }: Props) {
   const [cooldown, setCooldown] = useState(0);
   const [resending, setResending] = useState(false);
 
+  // purely visual "did my click register" spin, independent of how fast the request finishes
+  const [spinning, setSpinning] = useState(false);
+  const spinTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (spinTimerRef.current) window.clearTimeout(spinTimerRef.current);
+    };
+  }, []);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMsg(null);
     setErr(null);
 
     const code = otp.trim();
-    if (!email) return setErr('We need your email to verify the code.');
     if (!code) return setErr('Enter the 6-digit code sent to your phone.');
+    if (!canUseSession) return setErr('Please log in, then resend the code from your account.');
 
     try {
       setLoading(true);
-      // This endpoint in your API takes { email, otp } and is PUBLIC.
-      await api.post(
-        '/api/auth/verify-phone',
-        { email: email.toLowerCase(), otp: code },
-        { withCredentials: true }
-      );
+      await api.post('/api/auth/verify-otp', { otp: code }, verifySessionConfig());
       setMsg('Phone verified!');
       setOtp('');
       onVerified?.();
@@ -48,17 +65,17 @@ export default function PhoneOtpCard({ email, onVerified }: Props) {
   };
 
   const resend = async () => {
-    if (!isAuthed || resending || cooldown > 0) return;
+    if (!canUseSession || resending || cooldown > 0) return;
+
+    setSpinning(true);
+    if (spinTimerRef.current) window.clearTimeout(spinTimerRef.current);
+    spinTimerRef.current = window.setTimeout(() => setSpinning(false), 3000);
+
     setResending(true);
     setErr(null);
     setMsg(null);
     try {
-      // Auth-required resend endpoint (cookie session; uses req.user.id)
-      const { data } = await api.post(
-        '/api/auth/resend-otp',
-        {},
-        { withCredentials: true }
-      );
+      const { data } = await api.post('/api/auth/resend-otp', {}, verifySessionConfig());
       setCooldown(Math.max(0, Number(data?.nextResendAfterSec ?? 60)));
       setMsg('Code sent. Check your phone.');
     } catch (e: any) {
@@ -83,7 +100,8 @@ export default function PhoneOtpCard({ email, onVerified }: Props) {
           <div>
             <h3 className="text-ink font-semibold">Verify your phone</h3>
             <p className="text-xs text-ink-soft">
-              Enter the 6-digit code we sent to your phone number.
+              Enter the 6-digit code we sent to your phone number
+              {email ? <> for <span className="font-medium text-ink">{email}</span></> : null}.
             </p>
           </div>
         </div>
@@ -138,14 +156,14 @@ export default function PhoneOtpCard({ email, onVerified }: Props) {
           <button
             type="button"
             onClick={resend}
-            disabled={!isAuthed || resending || cooldown > 0}
+            disabled={!canUseSession || resending || cooldown > 0}
             className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-50"
-            title={!isAuthed ? 'Login first to resend' : 'Resend code'}
+            title={!canUseSession ? 'Log in to resend a new code' : 'Resend code'}
           >
-            <RefreshCcw size={16} className={resending ? 'animate-spin' : ''} />
+            <RefreshCcw size={16} className={resending || spinning ? 'animate-spin' : ''} />
             Resend code
           </button>
-          {!isAuthed && <span className="text-xs text-ink-soft">Login to resend a new code.</span>}
+          {!canUseSession && <span className="text-xs text-ink-soft">Log in to resend a new code.</span>}
         </div>
       </form>
     </div>
