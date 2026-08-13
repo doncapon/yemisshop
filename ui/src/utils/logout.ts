@@ -142,6 +142,14 @@ function clearAuthSnapshots() {
 export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
   markJustLoggedOut();
 
+  // Close any page-level modal (e.g. an admin dialog) so it doesn't stay
+  // stuck on screen through the redirect.
+  try {
+    window.dispatchEvent(new CustomEvent("app:close-modals"));
+  } catch {
+    //
+  }
+
   // Read once in case you later want analytics/debugging, but do not preserve it.
   readBrowserCartSnapshot();
 
