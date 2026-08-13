@@ -2,7 +2,7 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { notifyMany } from "../services/notifications.service.js";
+import { notifyMany, notifyAdmins } from "../services/notifications.service.js";
 import { NotificationType } from "@prisma/client";
 
 const router = Router();
@@ -15,6 +15,13 @@ async function getAdminUserIds() {
     select: { id: true },
   });
   return admins.map((a: { id: any; }) => a.id);
+}
+
+async function getSupplierForUser(userId: string) {
+  return prisma.supplier.findFirst({
+    where: { userId },
+    select: { id: true, name: true, userId: true },
+  });
 }
 
 router.get("/mine", requireAuth, async (req: any, res) => {
@@ -101,6 +108,76 @@ router.post("/", requireAuth, async (req: any, res) => {
   }
 
   return res.json({ ok: true, data: d });
+});
+
+router.get("/:id", requireAuth, async (req: any, res) => {
+  const userId = req.user?.id;
+  const role = String(req.user?.role || "").toUpperCase();
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+  const dispute = await prisma.disputeCase.findUnique({
+    where: { id: String(req.params.id) },
+    include: {
+      supplier: { select: { id: true, name: true, userId: true } },
+      purchaseOrder: { select: { id: true, status: true } },
+    },
+  });
+
+  if (!dispute) return res.status(404).json({ error: "Dispute not found" });
+
+  const isOwner = dispute.customerId === userId;
+  const isTiedSupplier = dispute.supplier?.userId === userId;
+
+  if (!isAdmin(role) && !isOwner && !isTiedSupplier) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  return res.json({ data: dispute });
+});
+
+/**
+ * POST /api/disputes/:id/respond
+ * The supplier tied to a dispute can respond to it. Moves OPEN -> SUPPLIER_RESPONSE.
+ */
+router.post("/:id/respond", requireAuth, async (req: any, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+  const message = String(req.body?.message || "").trim();
+  if (!message) return res.status(400).json({ error: "message is required" });
+
+  const dispute = await prisma.disputeCase.findUnique({
+    where: { id: String(req.params.id) },
+    select: { id: true, orderId: true, status: true, supplierId: true, subject: true },
+  });
+  if (!dispute) return res.status(404).json({ error: "Dispute not found" });
+  if (!dispute.supplierId) return res.status(403).json({ error: "This dispute is not tied to a supplier" });
+
+  const supplier = await getSupplierForUser(userId);
+  if (!supplier || supplier.id !== dispute.supplierId) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  if (dispute.status === "RESOLVED" || dispute.status === "CLOSED") {
+    return res.status(409).json({ error: `Dispute is already ${dispute.status.toLowerCase()}` });
+  }
+
+  const updated = await prisma.disputeCase.update({
+    where: { id: dispute.id },
+    data: {
+      supplierResponse: message,
+      status: dispute.status === "OPEN" ? "SUPPLIER_RESPONSE" : dispute.status,
+    },
+  });
+
+  await notifyAdmins({
+    type: NotificationType.DISPUTE_STATUS_CHANGED,
+    title: "Supplier responded to dispute",
+    body: `${supplier.name || "Supplier"} responded to dispute on order ${dispute.orderId}: ${dispute.subject}`,
+    data: { disputeId: dispute.id, orderId: dispute.orderId },
+  });
+
+  return res.json({ ok: true, data: updated });
 });
 
 export default router;

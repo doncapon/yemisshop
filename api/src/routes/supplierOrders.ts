@@ -15,6 +15,7 @@ import {
   notifySupplierBySupplierId,
 } from "../services/notifications.service.js";
 import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
+import { sendOrderShippedMessage, sendOrderDeliveredMessage } from "../services/messaging.service.js";
 
 const router = Router();
 const OTP_RESEND_COOLDOWN_SECS = 60;
@@ -1160,12 +1161,68 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         payoutError = e?.message || "Failed to release payout";
       }
 
+      const orderRow = await tx.order.findUnique({
+        where: { id: String(po.orderId) },
+        select: { id: true, userId: true },
+      });
+      const shopperId = orderRow?.userId ? String(orderRow.userId) : null;
+
+      try {
+        if (shopperId) {
+          await notifyUser(
+            shopperId,
+            {
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+              title: "Order delivered",
+              body: `Your items for order ${po.orderId} have been delivered.`,
+              data: { orderId: po.orderId, purchaseOrderId: po.id },
+            },
+            tx
+          );
+        }
+
+        await notifyAdmins(
+          {
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
+            title: "Purchase order delivered",
+            body: `Purchase order ${po.id} for order ${po.orderId} was marked delivered (OTP verified).`,
+            data: { orderId: po.orderId, purchaseOrderId: po.id },
+          },
+          tx
+        );
+      } catch (notifyErr) {
+        console.error("Failed to send delivered (OTP verify) in-app notifications:", notifyErr);
+      }
+
       return {
         po: updatedPo,
         orderStatus,
         payoutError,
+        orderId: po.orderId,
+        shopperId,
       };
     });
+
+    if (result.shopperId) {
+      try {
+        const buyer = await prisma.user.findUnique({
+          where: { id: result.shopperId },
+          select: { email: true, phone: true, firstName: true, lastName: true },
+        });
+
+        if (buyer) {
+          await sendOrderDeliveredMessage({
+            orderId: String(result.orderId),
+            customerName: [buyer.firstName, buyer.lastName].filter(Boolean).join(" ") || undefined,
+            toEmail: buyer.email || undefined,
+            toWhatsapp: buyer.phone || undefined,
+            toPhone: buyer.phone || undefined,
+          });
+        }
+      } catch (notifyErr) {
+        console.error("Failed to send order-delivered customer message:", notifyErr);
+      }
+    }
 
     return res.json({ ok: true, data: result });
   } catch (e: any) {
@@ -1389,6 +1446,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
             orderStatus,
             refund: null,
             payout: null,
+            shopperId,
             note: "Canceled at PENDING (no OTP). Refund not auto-requested; admin/reroute flow should decide.",
           };
         }
@@ -1438,7 +1496,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
           console.error("Failed to send supplier-cancel (refund) notifications:", notifyErr);
         }
 
-        return { po, orderStatus, refund, payout: null };
+        return { po, orderStatus, refund, payout: null, shopperId };
       }
 
       if (normalizedNext === "DELIVERED") {
@@ -1492,7 +1550,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
           console.error("Failed to send delivered (patch) notifications:", notifyErr);
         }
 
-        return { po, orderStatus, refund: null, payout };
+        return { po, orderStatus, refund: null, payout, shopperId };
       }
 
       try {
@@ -1546,8 +1604,32 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         console.error("Failed to send intermediate status notifications:", notifyErr);
       }
 
-      return { po, orderStatus, refund: null, payout: null };
+      return { po, orderStatus, refund: null, payout: null, shopperId };
     });
+
+    if ((normalizedNext === "SHIPPED" || normalizedNext === "DELIVERED") && result.shopperId) {
+      try {
+        const buyer = await prisma.user.findUnique({
+          where: { id: result.shopperId },
+          select: { email: true, phone: true, firstName: true, lastName: true },
+        });
+
+        if (buyer) {
+          const contact = {
+            orderId: String(result.po.orderId),
+            customerName: [buyer.firstName, buyer.lastName].filter(Boolean).join(" ") || undefined,
+            toEmail: buyer.email || undefined,
+            toWhatsapp: buyer.phone || undefined,
+            toPhone: buyer.phone || undefined,
+          };
+
+          if (normalizedNext === "SHIPPED") await sendOrderShippedMessage(contact);
+          else await sendOrderDeliveredMessage(contact);
+        }
+      } catch (notifyErr) {
+        console.error(`Failed to send order-${normalizedNext.toLowerCase()} customer message:`, notifyErr);
+      }
+    }
 
     return res.json({ ok: true, data: result });
   } catch (e: any) {

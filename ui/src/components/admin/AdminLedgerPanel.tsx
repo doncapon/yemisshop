@@ -56,7 +56,7 @@ function pillClass(type?: string | null) {
  * - remove token/headers
  * - use withCredentials: true
  */
-export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
+export default function AdminLedgerPanel({ canAdmin, isSuperAdmin }: { canAdmin: boolean; isSuperAdmin?: boolean }) {
   const qc = useQueryClient();
 
   const [supplierId, setSupplierId] = useState<string>("");
@@ -242,15 +242,24 @@ export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
             <RefreshCcw size={16} /> {ledgerQ.isFetching ? "Refreshing…" : "Refresh"}
           </button>
 
-          <button
-            onClick={() => {
-              setMSupplierId(supplierId || "");
-              setOpen(true);
-            }}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 text-sm"
-          >
-            <Plus size={16} /> Manual adjustment
-          </button>
+          {isSuperAdmin ? (
+            <button
+              onClick={() => {
+                setMSupplierId(supplierId || "");
+                setOpen(true);
+              }}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 text-sm"
+            >
+              <Plus size={16} /> Manual adjustment
+            </button>
+          ) : (
+            <span
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-200 text-zinc-500 text-sm cursor-not-allowed"
+              title="Only a super admin can make manual ledger adjustments"
+            >
+              <Plus size={16} /> Manual adjustment
+            </span>
+          )}
         </div>
       </div>
 

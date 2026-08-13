@@ -7,11 +7,11 @@ import jwt from "jsonwebtoken";
 import axios from "axios";
 
 import { prisma } from "../lib/prisma.js";
-import { sendVerifyEmail, sendResetorForgotPasswordEmail } from "../lib/email.js";
+import { sendVerifyEmail, sendResetorForgotPasswordEmail, sendPasswordChangedEmail } from "../lib/email.js";
 import { signJwt, signAccessJwt } from "../lib/jwt.js";
 import { requireAuth, requireVerifySession } from "../middleware/auth.js";
 import { issueOtp, verifyOtp } from "../lib/otp.js";
-import { loginLimiter, otpLimiter, passwordResetLimiter, registerLimiter } from "../middleware/rateLimit.js";
+import { loginLimiter, accountLoginLimiter, otpLimiter, passwordResetLimiter, registerLimiter } from "../middleware/rateLimit.js";
 import { Prisma, SupplierType } from "@prisma/client";
 import {
   setAccessTokenCookie,
@@ -644,6 +644,7 @@ async function markCanonicalPhoneVerified(userId: string, e164?: string | null) 
 router.post(
   "/login",
   loginLimiter,
+  accountLoginLimiter,
   wrap(async (req, res) => {
     const { email, password } = (req.body || {}) as {
       email?: string;
@@ -1434,6 +1435,10 @@ router.post("/reset-password", passwordResetLimiter, async (req, res, next) => {
         resetPasswordExpiresAt: null,
       } as any,
     });
+
+    sendPasswordChangedEmail(user.email).catch((e) =>
+      console.error("[reset-password] confirmation email failed", e)
+    );
 
     res.json({ ok: true, message: "Password updated" });
   } catch (e) {

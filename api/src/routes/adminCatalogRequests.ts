@@ -1,7 +1,7 @@
 // api/src/routes/adminCatalogRequests.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireSuperAdmin } from "../middleware/auth.js";
 import slugify from "../lib/slugify.js";
 import { z } from "zod";
 import { requiredString } from "../lib/http.js";
@@ -161,8 +161,10 @@ r.patch("/:id", async (req, res, next) => {
 /**
  * POST /api/admin/catalog-requests/:id/approve
  * Uses whatever payload is currently stored (after PATCH edits).
+ * SUPER_ADMIN only — this performs the same category/brand/attribute
+ * creation as the direct creation endpoints, which are SUPER_ADMIN-gated.
  */
-r.post("/:id/approve", async (req, res, next) => {
+r.post("/:id/approve", requireSuperAdmin, async (req, res, next) => {
   try {
     const id = requiredString(req.params.id);
 

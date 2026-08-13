@@ -8,12 +8,12 @@ import { requiredString } from '../lib/http.js';
 
 const r = Router();
 /* ---------------- Catalog: Brands ---------------- */
-r.get('/', async (_req, res) => {
+r.get('/', requireAdmin, async (_req, res) => {
   const rows = await prisma.brand.findMany({ orderBy: [{ name: 'asc' }] });
   res.json({ data: rows });
 });
 
-r.post('/', requireSuperAdmin, requireAdmin, async (req, res) => {
+r.post('/', requireSuperAdmin, async (req, res) => {
   const { name, slug, logoUrl = null, isActive = true } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
   const created = await prisma.brand.create({

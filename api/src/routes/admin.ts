@@ -59,13 +59,8 @@ const wrap = (
 
 r.post(
   '/users/:id/role',
-  requireAdmin, requireAuth,
+  requireSuperAdmin,
   wrap(async (req, res) => {
-    const me = (req as any).user as { id: string; role?: string } | undefined;
-    if (!me || me.role !== 'SUPER_ADMIN') {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-
     const targetId = requiredString(req.params.id || '').trim();
     if (!targetId) return res.status(400).json({ error: 'Missing user id' });
 

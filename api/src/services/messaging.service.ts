@@ -1,5 +1,5 @@
 // api/src/services/messaging.service.ts
-import { sendSmsViaTermii } from "../lib/termii.js";
+import { sendSmsViaTermii, sendWhatsappViaTermii as sendWhatsappViaTermiiReal } from "../lib/termii.js";
 import {
   sendMail,
   sendCustomerOrderCreatedEmail,
@@ -50,10 +50,6 @@ type SendMessageResult = {
   data?: any;
 };
 
-const WHATSAPP_ENABLED = String(process.env.TERMII_WHATSAPP_ENABLED ?? "")
-  .trim()
-  .toLowerCase() === "true";
-
 const SMS_ENABLED = String(process.env.TERMII_SMS_ENABLED ?? "true")
   .trim()
   .toLowerCase() !== "false";
@@ -74,27 +70,11 @@ function normalizePhoneLoose(input?: string | null) {
   return null;
 }
 
-// Placeholder until you finish Termii WhatsApp endpoint wiring
 async function sendWhatsappViaTermii(args: { to: string; message: string }) {
   const to = normalizePhoneLoose(args.to);
   if (!to) throw new Error("Invalid WhatsApp phone number.");
 
-  if (!WHATSAPP_ENABLED) {
-    throw new Error("Termii WhatsApp is not enabled.");
-  }
-
-  // Replace this block with your real Termii WhatsApp endpoint call.
-  // Example shape only:
-  //
-  // const { data } = await axios.post(`${TERMII_BASE_URL}/whatsapp/send`, {
-  //   to,
-  //   message: args.message,
-  //   api_key: TERMII_API_KEY,
-  // });
-  //
-  // return data;
-
-  throw new Error("sendWhatsappViaTermii is not implemented yet.");
+  return sendWhatsappViaTermiiReal({ to, message: args.message });
 }
 
 async function sendEmailFallback(args: {

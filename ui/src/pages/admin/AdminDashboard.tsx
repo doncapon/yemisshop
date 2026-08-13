@@ -17,6 +17,7 @@ import {
   Undo2,
   Mail,
   FileBadge2,
+  Scale,
 } from "lucide-react";
 
 import api from "../../api/client.js";
@@ -197,8 +198,8 @@ type TabKey =
   | "supplierDocs"
   | "transactions"
   | "refunds"
+  | "disputes"
   | "catalog"
-  | "ops"
   | "marketing"
   | "analytics"
   | "finance"
@@ -383,8 +384,8 @@ export default function AdminDashboard() {
     "supplierDocs",
     "transactions",
     "refunds",
+    "disputes",
     "catalog",
-    "ops",
     "marketing",
     "analytics",
     "finance",
@@ -1542,6 +1543,7 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
         setSearch={setSearchInput}
         onApprove={(id: string) => approveM.mutate(id)}
         onInspect={onInspect}
+        isSuperAdmin={isSuperAdmin}
       />
     );
   }
@@ -1687,6 +1689,14 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
               />
 
               <TabButton
+                k="disputes"
+                label="Disputes"
+                Icon={Scale}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
+              <TabButton
                 k="transactions"
                 label="Transactions"
                 mobileLabel="Payments"
@@ -1699,15 +1709,6 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
                 k="finance"
                 label="Finance"
                 Icon={CreditCard}
-                activeTab={tab}
-                onSelect={handleTabSelect}
-              />
-
-              <TabButton
-                k="ops"
-                label="Ops & Security"
-                mobileLabel="Ops"
-                Icon={Settings}
                 activeTab={tab}
                 onSelect={handleTabSelect}
               />
@@ -2213,8 +2214,9 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
           {/* Marketing: newsletter wiring */}
           {tab === "marketing" && <MarketingSection />}
 
-          {tab === "refunds" && <RefundsSection canAdmin={canAdmin} />}
-          {tab === "finance" && <FinanceSection canAdmin={canAdmin} />}
+          {tab === "refunds" && <RefundsSection canAdmin={canAdmin} isSuperAdmin={isSuperAdmin} />}
+          {tab === "disputes" && <DisputesSection canAdmin={canAdmin} />}
+          {tab === "finance" && <FinanceSection canAdmin={canAdmin} isSuperAdmin={isSuperAdmin} />}
 
           {/* Transactions */}
           {tab === "transactions" && (
@@ -2462,7 +2464,7 @@ function TransactionsSection({
 }
 
 /* ----------------- Refunds section (Admin) ---------------------*/
-function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
+function RefundsSection({ canAdmin, isSuperAdmin }: { canAdmin: boolean; isSuperAdmin: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
   const { openModal, closeModal } = useModal();
@@ -3552,7 +3554,8 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
             <button
               className="rounded-xl bg-blue-600 px-3 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
-              disabled={submittingRefund || loading}
+              disabled={submittingRefund || loading || !isSuperAdmin}
+              title={!isSuperAdmin ? "Only a super admin can execute a refund payout" : undefined}
               onClick={async () => {
                 try {
                   setSubmittingRefund(true);
@@ -4125,7 +4128,290 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 }
 
 /* ------------------ Finance section ----------------------*/
-function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
+/* ----------------- Disputes section (Admin) ---------------------*/
+type AdminDispute = {
+  id: string;
+  orderId: string;
+  purchaseOrderId?: string | null;
+  supplierId?: string | null;
+  status: "OPEN" | "SUPPLIER_RESPONSE" | "ESCALATED" | "RESOLVED" | "CLOSED";
+  subject: string;
+  message?: string | null;
+  supplierResponse?: string | null;
+  adminDecision?: string | null;
+  createdAt: string;
+  resolvedAt?: string | null;
+  customer?: { id: string; email?: string; firstName?: string | null; lastName?: string | null } | null;
+  supplier?: { id: string; name?: string | null } | null;
+  purchaseOrder?: { id: string; status?: string | null } | null;
+};
+
+const DISPUTE_STATUS_STYLES: Record<string, string> = {
+  OPEN: "bg-amber-50 text-amber-700 border-amber-200",
+  SUPPLIER_RESPONSE: "bg-sky-50 text-sky-700 border-sky-200",
+  ESCALATED: "bg-rose-50 text-rose-700 border-rose-200",
+  RESOLVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  CLOSED: "bg-zinc-100 text-zinc-600 border-zinc-200",
+};
+
+function DisputesSection({ canAdmin }: { canAdmin: boolean }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const { openModal, closeModal } = useModal();
+
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+
+  useEffect(() => {
+    setPage(1);
+  }, [q, status]);
+
+  const listQ = useQuery({
+    queryKey: ["admin", "disputes", { q, status, page }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (q.trim()) params.set("q", q.trim());
+      if (status) params.set("status", status);
+      params.set("page", String(page));
+      params.set("pageSize", String(pageSize));
+      const res = await api.get(`/api/admin/disputes?${params.toString()}`);
+      return res.data as { data: AdminDispute[]; meta: { total: number } };
+    },
+    enabled: !!canAdmin,
+    placeholderData: keepPreviousData,
+  });
+
+  const rows = listQ.data?.data ?? [];
+  const total = listQ.data?.meta?.total ?? 0;
+
+  const resolveMutation = useMutation({
+    mutationFn: async (args: { id: string; status: string; adminDecision?: string }) => {
+      const res = await api.post(`/api/admin/disputes/${args.id}/resolve`, {
+        status: args.status,
+        adminDecision: args.adminDecision,
+      });
+      return res.data;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["admin", "disputes"] });
+    },
+  });
+
+  const openResolveModal = (d: AdminDispute) => {
+    const ResolveForm = () => {
+      const [nextStatus, setNextStatus] = useState<string>(
+        d.status === "OPEN" || d.status === "SUPPLIER_RESPONSE" ? "RESOLVED" : d.status
+      );
+      const [decision, setDecision] = useState(d.adminDecision ?? "");
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState<string | null>(null);
+
+      return (
+        <div className="space-y-3">
+          <div className="text-xs text-ink-soft">
+            Order <span className="font-mono">{d.orderId}</span>
+            {d.supplier?.name ? (
+              <>
+                {" "}
+                • Supplier: <span className="font-medium">{d.supplier.name}</span>
+              </>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">
+            <div className="font-semibold text-ink">{d.subject}</div>
+            {d.message ? <p className="mt-1 whitespace-pre-wrap text-ink-soft">{d.message}</p> : null}
+          </div>
+
+          {d.supplierResponse ? (
+            <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm">
+              <div className="font-semibold text-sky-900">Supplier response</div>
+              <p className="mt-1 whitespace-pre-wrap text-sky-800">{d.supplierResponse}</p>
+            </div>
+          ) : null}
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-soft">Set status</label>
+            <select
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+              value={nextStatus}
+              onChange={(e) => setNextStatus(e.target.value)}
+            >
+              <option value="SUPPLIER_RESPONSE">Awaiting supplier response</option>
+              <option value="ESCALATED">Escalated</option>
+              <option value="RESOLVED">Resolved</option>
+              <option value="CLOSED">Closed</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-soft">Decision / note</label>
+            <textarea
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+              rows={3}
+              placeholder="e.g. Refund approved, item confirmed damaged in transit"
+              value={decision}
+              onChange={(e) => setDecision(e.target.value)}
+            />
+          </div>
+
+          {error ? <div className="text-xs text-red-600">{error}</div> : null}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              className="rounded-lg border border-zinc-200 px-3 py-2 text-xs hover:bg-black/5"
+              onClick={closeModal}
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              type="button"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setError(null);
+                try {
+                  await resolveMutation.mutateAsync({
+                    id: d.id,
+                    status: nextStatus,
+                    adminDecision: decision.trim() || undefined,
+                  });
+                  closeModal();
+                  toast.push({ title: "Dispute updated", message: "The dispute status was saved." });
+                } catch (e: any) {
+                  setError(e?.response?.data?.error || e?.message || "Failed to update dispute");
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    openModal({
+      title: "Dispute details",
+      message: <ResolveForm />,
+      size: "md",
+    });
+  };
+
+  return (
+    <SectionCard
+      title="Disputes"
+      subtitle="Customer-filed disputes across orders and suppliers"
+      right={
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <input
+              className="rounded-lg border border-zinc-200 py-1.5 pl-8 pr-3 text-xs"
+              placeholder="Search order / subject"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
+          <select
+            className="rounded-lg border border-zinc-200 px-2 py-1.5 text-xs"
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+          >
+            <option value="">All statuses</option>
+            <option value="OPEN">Open</option>
+            <option value="SUPPLIER_RESPONSE">Supplier response</option>
+            <option value="ESCALATED">Escalated</option>
+            <option value="RESOLVED">Resolved</option>
+            <option value="CLOSED">Closed</option>
+          </select>
+        </div>
+      }
+    >
+      {listQ.isLoading ? (
+        <div className="py-8 text-center text-sm text-ink-soft">Loading disputes…</div>
+      ) : listQ.isError ? (
+        <div className="py-8 text-center text-sm text-red-600">Failed to load disputes.</div>
+      ) : rows.length === 0 ? (
+        <div className="py-8 text-center text-sm text-ink-soft">No disputes found.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs text-ink-soft">
+                <th className="py-2 pr-3">Order</th>
+                <th className="py-2 pr-3">Subject</th>
+                <th className="py-2 pr-3">Customer</th>
+                <th className="py-2 pr-3">Supplier</th>
+                <th className="py-2 pr-3">Status</th>
+                <th className="py-2 pr-3">Opened</th>
+                <th className="py-2 pr-3" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((d) => (
+                <tr key={d.id} className="border-b border-zinc-100 last:border-0">
+                  <td className="py-2 pr-3 font-mono text-xs">{d.orderId}</td>
+                  <td className="max-w-[240px] truncate py-2 pr-3">{d.subject}</td>
+                  <td className="py-2 pr-3 text-xs text-ink-soft">
+                    {d.customer
+                      ? [d.customer.firstName, d.customer.lastName].filter(Boolean).join(" ") || d.customer.email
+                      : "—"}
+                  </td>
+                  <td className="py-2 pr-3 text-xs text-ink-soft">{d.supplier?.name ?? "—"}</td>
+                  <td className="py-2 pr-3">
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                        DISPUTE_STATUS_STYLES[d.status] ?? ""
+                      }`}
+                    >
+                      {d.status.replace(/_/g, " ")}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 text-xs text-ink-soft">{fmtDate(d.createdAt)}</td>
+                  <td className="py-2 pr-3 text-right">
+                    <button
+                      className="rounded-lg border border-zinc-200 px-2.5 py-1 text-xs hover:bg-black/5"
+                      onClick={() => openResolveModal(d)}
+                    >
+                      Review
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="mt-3 flex items-center justify-between text-xs text-ink-soft">
+            <span>{total} total</span>
+            <div className="flex gap-2">
+              <button
+                className="rounded-lg border border-zinc-200 px-2.5 py-1 disabled:opacity-40"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <button
+                className="rounded-lg border border-zinc-200 px-2.5 py-1 disabled:opacity-40"
+                disabled={page * pageSize >= total}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function FinanceSection({ canAdmin, isSuperAdmin }: { canAdmin: boolean; isSuperAdmin: boolean }) {
   const [subTab, setSubTab] = useState<"payouts" | "ledger">("payouts");
 
   const AdminPayoutsAny = AdminPayoutsPanel as any;
@@ -4166,9 +4452,9 @@ function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
 
       <div className="p-4 md:p-5">
         {subTab === "payouts" ? (
-          <AdminPayoutsAny canAdmin={canAdmin} />
+          <AdminPayoutsAny canAdmin={canAdmin} isSuperAdmin={isSuperAdmin} />
         ) : (
-          <AdminLedgerAny canAdmin={canAdmin} />
+          <AdminLedgerAny canAdmin={canAdmin} isSuperAdmin={isSuperAdmin} />
         )}
       </div>
     </div>

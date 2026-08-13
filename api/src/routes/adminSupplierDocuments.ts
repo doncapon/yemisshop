@@ -1,8 +1,9 @@
 // api/src/routes/adminSupplierDocuments.ts
 import { Router } from "express";
-import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, requireSuperAdmin } from "../middleware/auth.js";
 import { requiredString } from "../lib/http.js";
 import { prisma } from "../lib/prisma.js";
+import { notifySupplierKycStatusChanged } from "../services/notifications.service.js";
 
 const router = Router();
 
@@ -446,7 +447,7 @@ router.get("/:supplierId", requireAuth, requireAdmin, async (req, res) => {
  * Approve or reject a document, then recompute supplier approval state
  * body: { status: "APPROVED" | "REJECTED", note?: string }
  */
-router.patch("/document/:documentId/review", requireAuth, requireAdmin, async (req, res) => {
+router.patch("/document/:documentId/review", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const documentId = requiredString(req.params.documentId);
     const status = String(req.body?.status || "").toUpperCase();
@@ -520,7 +521,7 @@ router.post("/:supplierId/recompute", requireAuth, requireAdmin, async (req, res
   }
 });
 
-router.post("/:supplierId/approve-supplier", requireAuth, requireAdmin, async (req, res) => {
+router.post("/:supplierId/approve-supplier", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const supplierId = String(req.params.supplierId || "").trim();
     if (!supplierId) {
@@ -585,6 +586,10 @@ router.post("/:supplierId/approve-supplier", requireAuth, requireAdmin, async (r
       },
     });
 
+    notifySupplierKycStatusChanged(supplierId, { approved: true }).catch((e) =>
+      console.error("[approve-supplier] notify failed", e)
+    );
+
     return res.json({ ok: true });
   } catch (e: any) {
     console.error("[POST /api/admin/supplier-documents/:supplierId/approve-supplier]", e);
@@ -594,7 +599,7 @@ router.post("/:supplierId/approve-supplier", requireAuth, requireAdmin, async (r
   }
 });
 
-router.post("/:supplierId/reject-supplier", requireAuth, requireAdmin, async (req, res) => {
+router.post("/:supplierId/reject-supplier", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const supplierId = String(req.params.supplierId || "").trim();
     if (!supplierId) {
@@ -610,6 +615,8 @@ router.post("/:supplierId/reject-supplier", requireAuth, requireAdmin, async (re
       return res.status(404).json({ error: "Supplier not found." });
     }
 
+    const reason = String(req.body?.reason ?? "").trim() || null;
+
     await prisma.supplier.update({
       where: { id: supplierId },
       data: {
@@ -617,8 +624,13 @@ router.post("/:supplierId/reject-supplier", requireAuth, requireAdmin, async (re
         status: "REJECTED",
         kycCheckedAt: new Date(),
         kycRejectedAt: new Date(),
+        kycRejectionReason: reason,
       },
     });
+
+    notifySupplierKycStatusChanged(supplierId, { approved: false, reason }).catch((e) =>
+      console.error("[reject-supplier] notify failed", e)
+    );
 
     return res.json({ ok: true });
   } catch (e: any) {

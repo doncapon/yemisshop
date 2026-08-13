@@ -1,6 +1,8 @@
 // src/jobs/payoutRelease.job.ts
 import { prisma } from "../lib/prisma.js";
-import { SupplierPaymentStatus } from "@prisma/client";
+import { SupplierPaymentStatus, NotificationType } from "@prisma/client";
+import { sendSupplierPayoutReleasedNotifications } from "../services/payout.service.js";
+import { notifyAdmins } from "../services/notifications.service.js";
 
 const OPEN_REFUND_REQUEST_STATUSES = [
   "REQUESTED",
@@ -370,6 +372,22 @@ export async function releaseDueHeldPayoutsOnce(batchSize = DEFAULT_BATCH_SIZE):
         purchaseOrderId: poId,
         action: "released",
       });
+
+      try {
+        await sendSupplierPayoutReleasedNotifications({
+          purchaseOrderId: poId,
+          orderId: String(alloc.orderId),
+          supplierId: String(po.supplierId),
+          amount: Number(alloc.amount ?? 0),
+          currency: "NGN",
+        });
+      } catch (notifyErr) {
+        console.error("[payout-release] notify failed", {
+          allocationId: alloc.id,
+          purchaseOrderId: poId,
+          err: notifyErr,
+        });
+      }
     } catch (err: any) {
       const reason = String(err?.message || "unknown_error");
 
@@ -395,6 +413,43 @@ export async function releaseDueHeldPayoutsOnce(batchSize = DEFAULT_BATCH_SIZE):
         action: "failed",
         reason,
       });
+
+      // Record + surface the failure so it isn't silently swallowed. The
+      // allocation itself stays HELD (not flipped to FAILED) so the next
+      // scheduled run naturally retries it.
+      try {
+        await prisma.orderActivity.create({
+          data: {
+            orderId: alloc.orderId,
+            supplierId: alloc.supplierId,
+            type: "PAYOUT_RELEASE_FAILED",
+            message: `Automatic payout release failed for allocation ${alloc.id}: ${reason}`,
+            meta: {
+              allocationId: alloc.id,
+              purchaseOrderId: alloc.purchaseOrderId ?? null,
+              reason,
+            },
+          },
+        });
+      } catch (logErr) {
+        console.error("[payout-release] failed to log failure activity", logErr);
+      }
+
+      try {
+        await notifyAdmins({
+          type: NotificationType.SUPPLIER_PAYOUT_FAILED,
+          title: "Payout release failed",
+          body: `Automatic payout release failed for allocation ${alloc.id} (order ${alloc.orderId}): ${reason}`,
+          data: {
+            allocationId: alloc.id,
+            purchaseOrderId: alloc.purchaseOrderId ?? null,
+            orderId: alloc.orderId,
+            reason,
+          },
+        });
+      } catch (notifyErr) {
+        console.error("[payout-release] failed to notify admins of failure", notifyErr);
+      }
     }
   }
 

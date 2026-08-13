@@ -136,7 +136,7 @@ function pickTotal(root: any): number | undefined {
  * - remove token/headers
  * - use withCredentials: true
  */
-export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
+export default function AdminPayoutsPanel({ canAdmin, isSuperAdmin }: { canAdmin: boolean; isSuperAdmin?: boolean }) {
   const qc = useQueryClient();
 
   const [q, setQ] = useState("");
@@ -350,8 +350,8 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
           !allocationsQ.isError &&
           rows.map((r) => {
             const s = String(r.status || "").toUpperCase();
-            const canRelease = (s === "PENDING" || s === "HELD" || s === "ON_HOLD") && !!r.purchaseOrderId;
-            const canMarkPaid = s !== "PAID";
+            const canRelease = (s === "PENDING" || s === "HELD" || s === "ON_HOLD") && !!r.purchaseOrderId && !!isSuperAdmin;
+            const canMarkPaid = s !== "PAID" && !!isSuperAdmin;
 
             return (
               <div key={r.id} className="rounded-2xl border p-4 bg-white">
@@ -394,6 +394,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
                   <button
                     className="px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                     disabled={!canRelease || isMutating}
+                    title={!isSuperAdmin ? "Only a super admin can release a payout" : undefined}
                     onClick={() => {
                       const ok = window.confirm(`Release payout for PO ${r.purchaseOrderId}?`);
                       if (!ok) return;
@@ -406,6 +407,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
                   <button
                     className="px-3 py-2 rounded-xl border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                     disabled={!canMarkPaid || isMutating}
+                    title={!isSuperAdmin ? "Only a super admin can mark a payout as paid" : undefined}
                     onClick={() => {
                       const noteRaw = window.prompt(
                         "Manual mark PAID note (optional).\n\nClick Cancel to abort."
@@ -547,6 +549,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
                       <button
                         className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                         disabled={!canRelease || isMutating}
+                    title={!isSuperAdmin ? "Only a super admin can release a payout" : undefined}
                         onClick={() => {
                           const ok = window.confirm(`Release payout for PO ${r.purchaseOrderId}?`);
                           if (!ok) return;
@@ -560,6 +563,7 @@ export default function AdminPayoutsPanel({ canAdmin }: { canAdmin: boolean }) {
                       <button
                         className="px-3 py-1.5 rounded-lg border bg-white hover:bg-blue-50 hover:border-blue-200 transition disabled:opacity-50"
                         disabled={!canMarkPaid || isMutating}
+                    title={!isSuperAdmin ? "Only a super admin can mark a payout as paid" : undefined}
                         onClick={() => {
                           const noteRaw = window.prompt(
                             "Manual mark PAID note (optional).\n\nClick Cancel to abort."

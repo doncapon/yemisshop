@@ -345,7 +345,23 @@ export async function sendResetorForgotPasswordEmail(
   return safeSend({ to, subject, html });
 }
 
-export const sendResetOrForgotPasswordEmail = sendResetorForgotPasswordEmail;
+export async function sendPasswordChangedEmail(to: string) {
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
+      <h2>Your password was changed</h2>
+      <p>This is a confirmation that the password for your DaySpring account was just changed.</p>
+      <p>If you made this change, no further action is needed.</p>
+      <p>If you didn't do this, please reset your password immediately and contact support.</p>
+      <p>Thanks,<br/>DaySpring</p>
+    </div>
+  `;
+  return safeSend({
+    to,
+    subject: "Your DaySpring password was changed",
+    html,
+    text: "Your DaySpring account password was just changed. If this wasn't you, please reset your password immediately and contact support.",
+  });
+}
 
 type OtpEmailMeta = {
   brand?: string;
