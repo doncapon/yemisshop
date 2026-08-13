@@ -174,14 +174,24 @@ export const useAuthStore = create<AuthState>()(
           needsVerification: !!v,
         }),
 
-      markSessionExpired: () =>
+      markSessionExpired: () => {
+        // Any page-level modal (e.g. an admin dialog) left open when the
+        // session dies would otherwise stay stuck on screen through the
+        // redirect to /login. Close it immediately.
+        try {
+          window.dispatchEvent(new CustomEvent("app:close-modals"));
+        } catch {
+          //
+        }
+
         set({
           user: null,
           needsVerification: false,
           sessionExpired: true,
           hydrated: true,
           bootstrapping: false,
-        }),
+        });
+      },
 
       clear: () =>
         set({

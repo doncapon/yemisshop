@@ -294,9 +294,10 @@ type ModerationGridProps = {
   setSearch: (s: string) => void;
   onApprove: (id: string) => void;
   onInspect: (p: Pick<AdminProduct, "id" | "title" | "sku">) => void;
+  isSuperAdmin?: boolean;
 };
 
-export function ModerationGrid({ search, setSearch, onApprove, onInspect }: ModerationGridProps) {
+export function ModerationGrid({ search, setSearch, onApprove, onInspect, isSuperAdmin }: ModerationGridProps) {
   const statusOf = (p: any) => normalizeStatus(p?.status);
   const isPublished = (p: any) => statusOf(p) === "PUBLISHED";
 
@@ -481,7 +482,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
       return true;
     },
     onSuccess: () => {
-      if (fixProduct) onApprove(fixProduct.id);
+      if (fixProduct && isSuperAdmin) onApprove(fixProduct.id);
 
       qc.invalidateQueries({ queryKey: ["admin", "products"] });
       productsQ.refetch();
@@ -519,8 +520,8 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
           const ordersPresent = hasOrder(p.id);
           const checkingOrders = hasOrdersQ.isLoading;
 
-          // ✅ Approve only when: PUBLISHED + no orders + not currently checking
-          const disableApprove = !published || checkingOrders;
+          // ✅ Approve only when: PUBLISHED + no orders + not currently checking + SUPER_ADMIN
+          const disableApprove = !published || checkingOrders || !isSuperAdmin;
 
           const approveTitle = checkingOrders
             ? "Checking orders…"
@@ -528,6 +529,8 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
             ? "Only PUBLISHED items can be approved"
             : ordersPresent
             ? "Cannot approve: product already has orders"
+            : !isSuperAdmin
+            ? "Only a super admin can approve and publish a product"
             : "Approve product";
 
           const brandMissing = !p.brandId;
@@ -903,9 +906,13 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                   className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
                   disabled={saveAndApproveM.isPending}
                   onClick={() => saveAndApproveM.mutate()}
-                  title="Save Brand/Category to product (if possible) then approve"
+                  title={
+                    isSuperAdmin
+                      ? "Save Brand/Category to product (if possible) then approve"
+                      : "Save Brand/Category to product (only a super admin can approve and publish)"
+                  }
                 >
-                  {saveAndApproveM.isPending ? "Saving…" : "Save & approve"}
+                  {saveAndApproveM.isPending ? "Saving…" : isSuperAdmin ? "Save & approve" : "Save"}
                 </button>
               </div>
             </div>

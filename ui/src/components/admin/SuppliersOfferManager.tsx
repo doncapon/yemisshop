@@ -15,15 +15,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  *   - BASE row:     price -> SupplierProductOffer.basePrice
  *   - VARIANT row:  price -> SupplierVariantOffer.unitPrice
  *
- * ✅ YOUR SCHEMA reality:
- * - Product has ONE supplierId (required)
- * - SupplierProductOffer has NO supplierId
- * - SupplierVariantOffer has NO supplierId
- *
- * 👉 Therefore:
- * - NO supplier dropdown in UI
- * - supplier is derived from the Product's supplier (read-only display)
- * - Payloads OMIT supplierId (server should infer from product.supplierId)
+ * Product.supplierId marks the "owning" supplier for catalog/moderation
+ * purposes, but SupplierProductOffer/SupplierVariantOffer both carry their
+ * own supplierId, so other suppliers can (and do) list competing offers on
+ * the same product — checkout picks the cheapest eligible offer at order
+ * time. This editor only creates/edits/deletes offers for the product's
+ * owning supplier (that's what the write endpoints assume); offers from
+ * other suppliers are shown read-only below for price/stock comparison.
  */
 
 type Supplier = {
@@ -484,6 +482,7 @@ export default function SuppliersOfferManager({
 
   const [variants, setVariants] = useState<Variant[]>(variantsProp ?? []);
   const [offersLoaded, setOffersLoaded] = useState<OfferApi[]>([]);
+  const [otherSupplierOffers, setOtherSupplierOffers] = useState<OfferApi[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
 
   const [isEditingOffers, setIsEditingOffers] = useState(false);
@@ -668,12 +667,13 @@ export default function SuppliersOfferManager({
       const p = pRaw ? unwrap<any>(pRaw) : null;
       const o = unwrap<any>(oRaw);
 
+      let sid = "";
       if (p) {
         setProductTitle(p?.title || "");
         setProductSku(p?.sku || "");
 
-        // schema: product.supplierId required
-        const sid = String(p?.supplierId || p?.supplier?.id || "").trim();
+        // schema: product.supplierId marks the "owning" supplier
+        sid = String(p?.supplierId || p?.supplier?.id || "").trim();
         setSupplierId(sid);
         setSupplierName(String(p?.supplier?.name || "").trim());
       }
@@ -683,9 +683,18 @@ export default function SuppliersOfferManager({
         : Array.isArray(o?.data)
           ? o.data
           : [];
-      const filteredOffers = (offersArr || [])
+      const allOffersForProduct = (offersArr || [])
         .filter((of) => String(of?.productId) === String(productId))
         .map((of) => ({ ...of, kind: deriveKindFromOffer(of) }));
+
+      // This editor only creates/edits/deletes offers for the product's
+      // owning supplier; other suppliers' offers are shown read-only.
+      const filteredOffers = sid
+        ? allOffersForProduct.filter((of) => String(of.supplierId ?? "") === sid)
+        : allOffersForProduct;
+      setOtherSupplierOffers(
+        sid ? allOffersForProduct.filter((of) => String(of.supplierId ?? "") !== sid) : []
+      );
 
       // If API returns variant offers for variants not included, merge them in
       const productVariants = p ? extractVariantsFromProduct(p) : [];
@@ -1126,7 +1135,7 @@ export default function SuppliersOfferManager({
         <div>
           <div className="text-lg font-semibold">Supplier offers</div>
           <div className="text-sm text-slate-500">
-            Offers for this product’s single supplier.
+            Offers for this product’s owning supplier. Competing suppliers’ offers are listed below.
             {productTitle ? (
               <span className="ml-2 text-slate-400">({productTitle})</span>
             ) : null}
@@ -1479,6 +1488,74 @@ export default function SuppliersOfferManager({
           </tbody>
         </table>
       </div>
+
+      {otherSupplierOffers.length > 0 ? (
+        <div className="mt-6">
+          <div className="text-sm font-semibold text-slate-800">
+            Other suppliers offering this product
+          </div>
+          <div className="text-xs text-slate-500">
+            Read-only — checkout automatically routes to the cheapest active, in-stock offer.
+          </div>
+
+          <div className="mt-2 overflow-x-auto rounded-2xl border border-slate-200">
+            <table className="w-full min-w-[720px] border-collapse text-sm">
+              <thead className="bg-slate-50 text-slate-700">
+                <tr>
+                  <th className="px-3 py-2 text-left font-semibold">Supplier</th>
+                  <th className="px-3 py-2 text-left font-semibold">Variant</th>
+                  <th className="px-3 py-2 text-left font-semibold">Price</th>
+                  <th className="px-3 py-2 text-left font-semibold">Available</th>
+                  <th className="px-3 py-2 text-left font-semibold">Active</th>
+                  <th className="px-3 py-2 text-left font-semibold">Lead (days)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...otherSupplierOffers]
+                  .sort((a, b) => {
+                    const ap = safeNum(a.basePrice ?? a.unitPrice, 0);
+                    const bp = safeNum(b.basePrice ?? b.unitPrice, 0);
+                    return ap - bp;
+                  })
+                  .map((of) => {
+                    const isVariant = deriveKindFromOffer(of) === "VARIANT";
+                    const price = isVariant ? of.unitPrice : of.basePrice;
+                    const variant = of.variantId ? variantsById.get(of.variantId) : undefined;
+
+                    return (
+                      <tr key={of.id} className="border-t border-slate-200">
+                        <td className="px-3 py-2 font-medium text-slate-800">
+                          {of.supplierName || of.supplierId || "—"}
+                        </td>
+                        <td className="px-3 py-2 text-slate-600">
+                          {isVariant
+                            ? variant
+                              ? variantDisplay(productSku, variant)
+                              : of.variantSku || "Variant"
+                            : "— Base offer —"}
+                        </td>
+                        <td className="px-3 py-2">{formatNgn(safeNum(price, 0))}</td>
+                        <td className="px-3 py-2">{of.availableQty ?? 0}</td>
+                        <td className="px-3 py-2">
+                          {of.isActive ? (
+                            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                              Active
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                              Inactive
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-slate-600">{of.leadDays ?? "—"}</td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       {canEdit && (
         <div className="mt-4 flex items-center justify-between gap-3">

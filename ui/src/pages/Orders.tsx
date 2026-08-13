@@ -3759,6 +3759,106 @@ export default function OrdersPage() {
     });
   };
 
+  const onCustomerDispute = (details: OrderRow, po: PurchaseOrderRow) => {
+    if (isAdmin) return;
+
+    const orderId = String(details.id || "");
+    const purchaseOrderId = String(po?.id || "");
+    if (!orderId || !purchaseOrderId) return;
+
+    const DisputeModal = () => {
+      const [subject, setSubject] = useState("");
+      const [message, setMessage] = useState("");
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState<string | null>(null);
+
+      return (
+        <div className="space-y-3">
+          <div className="text-xs text-ink-soft">
+            Reporting an issue with order <span className="font-mono">{orderId}</span>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-soft">What's the issue?</label>
+            <input
+              className="w-full rounded-lg border border-zinc-200/80 px-3 py-2 text-sm"
+              placeholder="e.g. Item arrived damaged"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              maxLength={140}
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-soft">Details (optional)</label>
+            <textarea
+              className="w-full rounded-lg border border-zinc-200/80 px-3 py-2 text-sm"
+              rows={4}
+              placeholder="Tell us more about what happened..."
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+            />
+          </div>
+
+          {error ? <div className="text-xs text-red-600">{error}</div> : null}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              className="rounded-lg border border-zinc-200/80 px-3 py-2 text-xs hover:bg-black/5"
+              onClick={closeModal}
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              disabled={busy || !subject.trim()}
+              type="button"
+              onClick={async () => {
+                setBusy(true);
+                setError(null);
+                try {
+                  await api.post(
+                    "/api/disputes",
+                    {
+                      orderId,
+                      purchaseOrderId,
+                      subject: subject.trim(),
+                      message: message.trim() || undefined,
+                    },
+                    { ...AXIOS_COOKIE_CFG, headers: { "Content-Type": "application/json" } }
+                  );
+                  closeModal();
+                  showSuccessModal(
+                    "Issue reported",
+                    "Thanks for letting us know. Our team will review this and get back to you."
+                  );
+                  orderDetailQ.refetch?.();
+                } catch (e: any) {
+                  if (isAuthError(e)) {
+                    nav("/login", { replace: true, state: { from: location.pathname + location.search } });
+                    return;
+                  }
+                  setError(e?.response?.data?.error || e?.message || "Could not submit report");
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? "Submitting..." : "Submit report"}
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    openModal({
+      title: "Report a problem",
+      message: <DisputeModal />,
+      size: "md",
+    });
+  };
+
   const viewReceipt = (key: string) => nav(`/receipt/${encodeURIComponent(key)}`);
 
   const downloadReceipt = async (key: string) => {
@@ -4514,17 +4614,30 @@ export default function OrdersPage() {
                                               ) : null}
                                             </div>
 
-                                            {canRefundThisPo ? (
-                                              <button
-                                                className="rounded-lg border border-zinc-200/80 px-3 py-2 text-xs hover:bg-black/5 text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  onCustomerRefund(details, po);
-                                                }}
-                                              >
-                                                Request refund
-                                              </button>
-                                            ) : null}
+                                            <div className="flex flex-wrap gap-2">
+                                              {!isAdmin && po?.id ? (
+                                                <button
+                                                  className="rounded-lg border border-zinc-200/80 px-3 py-2 text-xs hover:bg-black/5 text-ink-soft shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onCustomerDispute(details, po);
+                                                  }}
+                                                >
+                                                  Report a problem
+                                                </button>
+                                              ) : null}
+                                              {canRefundThisPo ? (
+                                                <button
+                                                  className="rounded-lg border border-zinc-200/80 px-3 py-2 text-xs hover:bg-black/5 text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onCustomerRefund(details, po);
+                                                  }}
+                                                >
+                                                  Request refund
+                                                </button>
+                                              ) : null}
+                                            </div>
                                           </div>
                                         );
                                       })}
@@ -4866,17 +4979,30 @@ export default function OrdersPage() {
                                     ) : null}
                                   </div>
 
-                                  {canRefundThisPo ? (
-                                    <div className="mt-2 flex justify-end">
-                                      <button
-                                        className={`rounded-lg ${SILVER_BORDER} px-3 py-1.5 ${BTN_XS} bg-white hover:bg-black/5 text-indigo-700`}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onCustomerRefund(details, po);
-                                        }}
-                                      >
-                                        Request refund
-                                      </button>
+                                  {(!isAdmin && po?.id) || canRefundThisPo ? (
+                                    <div className="mt-2 flex justify-end gap-2">
+                                      {!isAdmin && po?.id ? (
+                                        <button
+                                          className={`rounded-lg ${SILVER_BORDER} px-3 py-1.5 ${BTN_XS} bg-white hover:bg-black/5 text-ink-soft`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onCustomerDispute(details, po);
+                                          }}
+                                        >
+                                          Report a problem
+                                        </button>
+                                      ) : null}
+                                      {canRefundThisPo ? (
+                                        <button
+                                          className={`rounded-lg ${SILVER_BORDER} px-3 py-1.5 ${BTN_XS} bg-white hover:bg-black/5 text-indigo-700`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onCustomerRefund(details, po);
+                                          }}
+                                        >
+                                          Request refund
+                                        </button>
+                                      ) : null}
                                     </div>
                                   ) : null}
                                 </div>

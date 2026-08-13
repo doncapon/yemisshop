@@ -113,6 +113,14 @@ export default function ModalProvider({ children }: { children: React.ReactNode 
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [state.isOpen, state.disableEscClose, closeModal]);
 
+  // Session expiry / logout can happen while a page-level modal (e.g. an
+  // admin dialog) is open. Without this, the modal stays stuck on screen
+  // through the redirect to /login.
+  React.useEffect(() => {
+    window.addEventListener("app:close-modals", closeModal);
+    return () => window.removeEventListener("app:close-modals", closeModal);
+  }, [closeModal]);
+
   return (
     <ModalContext.Provider value={value}>
       {children}

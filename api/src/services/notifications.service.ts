@@ -121,6 +121,141 @@ export async function notifySupplierBySupplierId(
 }
 
 
+/* ------------------------- Supplier status comms -------------------------- */
+
+async function getSupplierContact(supplierId: string) {
+  const supplier = await prisma.supplier.findUnique({
+    where: { id: supplierId },
+    select: { id: true, name: true, userId: true, contactEmail: true, whatsappPhone: true },
+  });
+  if (!supplier) return null;
+
+  let userEmail: string | null = null;
+  let userPhone: string | null = null;
+  if (supplier.userId) {
+    const user = await prisma.user.findUnique({
+      where: { id: supplier.userId },
+      select: { email: true, phone: true },
+    });
+    userEmail = user?.email ?? null;
+    userPhone = user?.phone ?? null;
+  }
+
+  return {
+    supplierId: supplier.id,
+    userId: supplier.userId,
+    supplierName: supplier.name || "Supplier",
+    email: supplier.contactEmail || userEmail || null,
+    phone: supplier.whatsappPhone || userPhone || null,
+  };
+}
+
+/** Notify a supplier that their KYC application was approved or rejected. */
+export async function notifySupplierKycStatusChanged(
+  supplierId: string,
+  args: { approved: boolean; reason?: string | null }
+) {
+  try {
+    const contact = await getSupplierContact(supplierId);
+    if (!contact) return;
+
+    const title = args.approved
+      ? "You're approved to sell on DaySpring"
+      : "Update on your DaySpring application";
+    const body = args.approved
+      ? "Your supplier account has been approved. You can now list products and receive orders."
+      : `Your supplier application needs attention.${args.reason ? ` Reason: ${args.reason}` : ""} Please check your dashboard for details.`;
+
+    if (contact.email) {
+      try {
+        await safeSend({
+          to: contact.email,
+          subject: title,
+          text: `Hi ${contact.supplierName},\n\n${body}\n\nBest regards,\nDaySpring Team`,
+          html: linesToEmailHtml([`Hi ${contact.supplierName},`, "", body]),
+        });
+      } catch (e) {
+        console.error("[notifySupplierKycStatusChanged] email failed", e);
+      }
+    }
+
+    if (contact.phone) {
+      try {
+        await sendWhatsappViaTermii({ to: contact.phone, message: `${title}. ${body}` });
+      } catch (e) {
+        console.error("[notifySupplierKycStatusChanged] whatsapp failed", e);
+      }
+    }
+
+    if (contact.userId) {
+      try {
+        await notifyUser(contact.userId, {
+          type: NotificationType.SUPPLIER_KYC_STATUS_CHANGED,
+          title,
+          body,
+          data: { supplierId, approved: args.approved, reason: args.reason ?? null },
+        });
+      } catch (e) {
+        console.error("[notifySupplierKycStatusChanged] in-app failed", e);
+      }
+    }
+  } catch (e) {
+    console.error("[notifySupplierKycStatusChanged] failed", e);
+  }
+}
+
+/** Notify a supplier that their bank details were verified or rejected. */
+export async function notifySupplierBankStatusChanged(
+  supplierId: string,
+  args: { verified: boolean; note?: string | null }
+) {
+  try {
+    const contact = await getSupplierContact(supplierId);
+    if (!contact) return;
+
+    const title = args.verified ? "Bank details verified" : "Bank details need attention";
+    const body = args.verified
+      ? "Your bank account has been verified. You're now eligible to receive payouts."
+      : `Your bank details could not be verified.${args.note ? ` Reason: ${args.note}` : ""} Please review and resubmit them in your supplier settings.`;
+
+    if (contact.email) {
+      try {
+        await safeSend({
+          to: contact.email,
+          subject: title,
+          text: `Hi ${contact.supplierName},\n\n${body}\n\nBest regards,\nDaySpring Team`,
+          html: linesToEmailHtml([`Hi ${contact.supplierName},`, "", body]),
+        });
+      } catch (e) {
+        console.error("[notifySupplierBankStatusChanged] email failed", e);
+      }
+    }
+
+    if (contact.phone) {
+      try {
+        await sendWhatsappViaTermii({ to: contact.phone, message: `${title}. ${body}` });
+      } catch (e) {
+        console.error("[notifySupplierBankStatusChanged] whatsapp failed", e);
+      }
+    }
+
+    if (contact.userId) {
+      try {
+        await notifyUser(contact.userId, {
+          type: NotificationType.SUPPLIER_BANK_STATUS_CHANGED,
+          title,
+          body,
+          data: { supplierId, verified: args.verified, note: args.note ?? null },
+        });
+      } catch (e) {
+        console.error("[notifySupplierBankStatusChanged] in-app failed", e);
+      }
+    }
+  } catch (e) {
+    console.error("[notifySupplierBankStatusChanged] failed", e);
+  }
+}
+
 /* ------------------------------ Small helpers ----------------------------- */
 
 function escapeHtml(input: unknown) {
@@ -385,5 +520,104 @@ export async function notifyCustomerOrderCancelled(orderId: string, tx?: Tx) {
     }
   } catch (e) {
     console.error("[notifyCustomerOrderCancelled] failed", e);
+  }
+}
+
+/* -------------------------- Customer comms: dispute ------------------------ */
+
+const DISPUTE_STATUS_LABEL: Record<string, string> = {
+  OPEN: "opened",
+  SUPPLIER_RESPONSE: "awaiting your review of the supplier's response",
+  ESCALATED: "escalated for senior review",
+  RESOLVED: "resolved",
+  CLOSED: "closed",
+};
+
+/** Notify the customer who filed a dispute that its status has changed. */
+export async function notifyCustomerDisputeStatusChanged(
+  disputeId: string,
+  args?: { adminDecision?: string | null },
+  tx?: Tx
+) {
+  const db = tx ?? prisma;
+
+  try {
+    const dispute = await db.disputeCase.findUnique({
+      where: { id: String(disputeId) },
+      select: {
+        id: true,
+        orderId: true,
+        status: true,
+        subject: true,
+        customer: { select: { id: true, email: true, firstName: true, lastName: true, phone: true } },
+      },
+    });
+
+    if (!dispute?.customer) {
+      console.warn("[notifyCustomerDisputeStatusChanged] no dispute/customer", { disputeId });
+      return;
+    }
+
+    const fullName =
+      dispute.customer.firstName || dispute.customer.lastName
+        ? `${dispute.customer.firstName || ""} ${dispute.customer.lastName || ""}`.trim()
+        : null;
+
+    const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status.toLowerCase();
+    const decisionLine = args?.adminDecision ? `\n\nOutcome: ${args.adminDecision}` : "";
+    const subject = `Update on your dispute — order ${dispute.orderId}`;
+
+    const lines: string[] = [
+      fullName ? `Hi ${fullName},` : "Hi,",
+      "",
+      `Your dispute "${dispute.subject}" on order ${dispute.orderId} has been ${statusLabel}.`,
+      ...(args?.adminDecision ? ["", `Outcome: ${args.adminDecision}`] : []),
+      "",
+      "You can view the full details in your order history.",
+      "",
+      "Best regards,",
+      "Customer Support",
+    ];
+
+    if (dispute.customer.email) {
+      try {
+        await safeSend({
+          to: dispute.customer.email,
+          subject,
+          text: lines.join("\n"),
+          html: linesToEmailHtml(lines),
+        });
+      } catch (e) {
+        console.error("[notifyCustomerDisputeStatusChanged] email failed", e);
+      }
+    }
+
+    if (dispute.customer.phone) {
+      try {
+        await sendWhatsappViaTermii({
+          to: dispute.customer.phone,
+          message: `Your dispute on order ${dispute.orderId} has been ${statusLabel}.${decisionLine}`,
+        });
+      } catch (e) {
+        console.error("[notifyCustomerDisputeStatusChanged] WhatsApp failed", e);
+      }
+    }
+
+    try {
+      await notifyUser(
+        dispute.customer.id,
+        {
+          type: NotificationType.DISPUTE_STATUS_CHANGED,
+          title: "Dispute update",
+          body: `Your dispute on order ${dispute.orderId} has been ${statusLabel}.`,
+          data: { disputeId: dispute.id, orderId: dispute.orderId, status: dispute.status },
+        },
+        db
+      );
+    } catch (e) {
+      console.error("[notifyCustomerDisputeStatusChanged] in-app notify failed", e);
+    }
+  } catch (e) {
+    console.error("[notifyCustomerDisputeStatusChanged] failed", e);
   }
 }

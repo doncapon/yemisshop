@@ -3307,18 +3307,31 @@ export function ManageProducts({
     }
 
     if (eff === "PENDING" && hasActiveOffer) {
-      return {
-        label: "Approve PUBLISHED",
-        title: "Publish product",
-        onClick: () => submitStatusEdit(p.id, "approvePublished"),
-        className: "px-3 py-2 rounded-lg bg-emerald-600 text-white",
-      };
+      return isSuper
+        ? {
+          label: "Approve PUBLISHED",
+          title: "Publish product",
+          onClick: () => submitStatusEdit(p.id, "approvePublished"),
+          className: "px-3 py-2 rounded-lg bg-emerald-600 text-white",
+        }
+        : {
+          label: "Approve PUBLISHED",
+          title: "Only a super admin can approve and publish a product",
+          disabled: true,
+          onClick: () => { },
+          className: "px-3 py-2 rounded-lg bg-emerald-600/30 text-white/70 cursor-not-allowed",
+        };
     }
 
     if (eff === "PENDING" && !hasActiveOffer) {
-      return ordered
-        ? { label: "Archive", title: "Archive (soft delete)", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" }
-        : { label: "Delete", title: "Delete permanently", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" };
+      // "Archive" (product has orders) routes to /soft-delete — ADMIN-safe.
+      // "Delete" (no orders) is a real hard delete — SUPER_ADMIN only.
+      if (ordered) {
+        return { label: "Archive", title: "Archive (soft delete)", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" };
+      }
+      return isSuper
+        ? { label: "Delete", title: "Delete permanently", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" }
+        : { label: "Delete", title: "Only a super admin can delete a product", disabled: true, onClick: () => { }, className: "px-2 py-1 rounded bg-rose-600/30 text-white/70 cursor-not-allowed" };
     }
 
     if (eff === "PUBLISHED" || eff === "LIVE") {
@@ -3334,9 +3347,12 @@ export function ManageProducts({
       return { label: "Revive", title: "Restore archived product", onClick: () => restoreM.mutate(p.id), className: "px-3 py-2 rounded-lg bg-sky-600 text-white" };
     }
 
-    return ordered
-      ? { label: "Archive", title: "Archive (soft delete)", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" }
-      : { label: "Delete", title: "Delete permanently", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" };
+    if (ordered) {
+      return { label: "Archive", title: "Archive (soft delete)", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" };
+    }
+    return isSuper
+      ? { label: "Delete", title: "Delete permanently", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" }
+      : { label: "Delete", title: "Only a super admin can delete a product", disabled: true, onClick: () => { }, className: "px-2 py-1 rounded bg-rose-600/30 text-white/70 cursor-not-allowed" };
   }
 
   const activeAttrs = useMemo(() => (attrsQ.data ?? []).filter((a) => a?.isActive), [attrsQ.data]);
@@ -4663,7 +4679,7 @@ export function ManageProducts({
                   <span className="block truncate">{mobileLabel(action.label)}</span>
                 </button>
 
-                {isSuper && status === "PENDING" && action.label === "Approve PUBLISHED" && (
+                {status === "PENDING" && action.label === "Approve PUBLISHED" && (
                   <button
                     type="button"
                     onClick={() => submitStatusEdit(p.id, "reject")}
@@ -4791,7 +4807,7 @@ export function ManageProducts({
                             {action.label}
                           </button>
 
-                          {isSuper && getStatus(p) === "PENDING" && action.label === "Approve PUBLISHED" && (
+                          {getStatus(p) === "PENDING" && action.label === "Approve PUBLISHED" && (
                             <button
                               type="button"
                               onClick={() => submitStatusEdit(p.id, "reject")}

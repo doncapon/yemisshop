@@ -1,9 +1,10 @@
 // api/src/services/payout.service.ts
 import { prisma } from "../lib/prisma.js";
 import { ps } from "../lib/paystack.js";
-import { SupplierPaymentStatus } from "@prisma/client";
+import { SupplierPaymentStatus, NotificationType } from "@prisma/client";
 import { sendMail } from "../lib/email.js";
-import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
+import { sendWhatsappViaTermii } from "../lib/termii.js";
+import { notifySupplierBySupplierId } from "./notifications.service.js";
 
 const isTrue = (v?: string | null) =>
   ["1", "true", "yes", "on"].includes(String(v ?? "").toLowerCase());
@@ -137,6 +138,7 @@ async function getSupplierNotificationContacts(supplierId: string) {
   if (hasScalarField("Supplier", "email")) supplierSelect.email = true;
   if (hasScalarField("Supplier", "contactPhone")) supplierSelect.contactPhone = true;
   if (hasScalarField("Supplier", "phone")) supplierSelect.phone = true;
+  if (hasScalarField("Supplier", "whatsappPhone")) supplierSelect.whatsappPhone = true;
 
   const supplier = await prisma.supplier.findUnique({
     where: { id: supplierId },
@@ -174,7 +176,8 @@ async function getSupplierNotificationContacts(supplierId: string) {
       ).trim() || null,
     phone:
       String(
-        (supplier as any).contactPhone ??
+        (supplier as any).whatsappPhone ??
+          (supplier as any).contactPhone ??
           (supplier as any).phone ??
           userPhone ??
           ""
@@ -182,7 +185,7 @@ async function getSupplierNotificationContacts(supplierId: string) {
   };
 }
 
-async function sendSupplierPayoutReleasedNotifications(args: {
+export async function sendSupplierPayoutReleasedNotifications(args: {
   purchaseOrderId: string;
   orderId: string;
   supplierId: string;
@@ -253,21 +256,46 @@ async function sendSupplierPayoutReleasedNotifications(args: {
     if (contacts.phone) {
       const phone = toE164Maybe(contacts.phone);
       if (phone) {
-        await sendOtpWhatsappViaTermii({
-          to: phone,
-          code: "",
-          brand: "DaySpring",
-          expiresMinutes: 10,
-          purposeLabel: `Payout released for ${args.purchaseOrderId} (${amountText})`,
-        });
+        try {
+          await sendWhatsappViaTermii({
+            to: phone,
+            message: `Hi ${contacts.supplierName}, your DaySpring payout of ${amountText} for order ${args.orderId} (PO ${args.purchaseOrderId}) has been released and is on its way to your account. Thank you for supplying with us!`,
+          });
 
-        console.log("[payout-notify] whatsapp sent", {
-          supplierId: args.supplierId,
-          purchaseOrderId: args.purchaseOrderId,
-          to: phone,
-          amount: args.amount,
-        });
+          console.log("[payout-notify] whatsapp sent", {
+            supplierId: args.supplierId,
+            purchaseOrderId: args.purchaseOrderId,
+            to: phone,
+            amount: args.amount,
+          });
+        } catch (e) {
+          console.error("[payout-notify] whatsapp failed", {
+            supplierId: args.supplierId,
+            purchaseOrderId: args.purchaseOrderId,
+            message: (e as any)?.message,
+          });
+        }
       }
+    }
+
+    try {
+      await notifySupplierBySupplierId(args.supplierId, {
+        type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
+        title: "Payout released",
+        body: `Your payout of ${amountText} for order ${args.orderId} has been released.`,
+        data: {
+          purchaseOrderId: args.purchaseOrderId,
+          orderId: args.orderId,
+          amount: args.amount,
+        },
+      });
+    } catch (e: any) {
+      // Suppliers without a linked user account can't get in-app notifications; not fatal.
+      console.warn("[payout-notify] in-app notify skipped", {
+        supplierId: args.supplierId,
+        purchaseOrderId: args.purchaseOrderId,
+        message: e?.message,
+      });
     }
   } catch (e: any) {
     console.error("[payout-notify] failed", {

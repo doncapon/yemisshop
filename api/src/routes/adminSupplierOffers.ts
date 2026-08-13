@@ -1,5 +1,5 @@
 import express from "express";
-import { Prisma } from "@prisma/client";
+import { Prisma, NotificationType } from "@prisma/client";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { z } from "zod";
 
@@ -7,6 +7,19 @@ import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
 import { requiredString } from "../lib/http.js";
+import { notifySupplierBySupplierId } from "../services/notifications.service.js";
+
+async function notifyOfferSupplier(
+  supplierId: string | null | undefined,
+  payload: { type: NotificationType; title: string; body: string; data?: any }
+) {
+  if (!supplierId) return;
+  try {
+    await notifySupplierBySupplierId(supplierId, payload);
+  } catch (e) {
+    console.error("[notifyOfferSupplier] failed:", e);
+  }
+}
 
 const router = express.Router();
 
@@ -795,6 +808,45 @@ async function markProductApprovedOrLiveTx(
   return { hasPendingChanges };
 }
 
+/**
+ * Apply a pending offer-change-request's proposed patch to the underlying
+ * base or variant offer row. Only touches fields present in patchJson.
+ */
+async function applyOfferChangePatchTx(
+  tx: Prisma.TransactionClient,
+  row: {
+    scope: "BASE_OFFER" | "VARIANT_OFFER";
+    supplierProductOfferId?: string | null;
+    supplierVariantOfferId?: string | null;
+    patchJson?: any;
+  }
+) {
+  const patch = (row.patchJson ?? {}) as any;
+  const data: any = {};
+
+  if (patch.basePrice !== undefined) data.basePrice = toDecimal(patch.basePrice);
+  if (patch.unitPrice !== undefined) data.unitPrice = toDecimal(patch.unitPrice);
+  if (patch.leadDays !== undefined) data.leadDays = patch.leadDays == null ? null : Number(patch.leadDays);
+  if (patch.isActive !== undefined) data.isActive = !!patch.isActive;
+  if (patch.currency !== undefined) data.currency = String(patch.currency);
+  if (patch.availableQty !== undefined) {
+    data.availableQty = Math.max(0, Math.trunc(Number(patch.availableQty)));
+  }
+  if (patch.inStock !== undefined) data.inStock = !!patch.inStock;
+
+  if (!Object.keys(data).length) return;
+
+  if (row.scope === "BASE_OFFER") {
+    if (!row.supplierProductOfferId) return;
+    delete data.unitPrice; // not a field on the base offer
+    await tx.supplierProductOffer.update({ where: { id: row.supplierProductOfferId }, data });
+  } else {
+    if (!row.supplierVariantOfferId) return;
+    delete data.basePrice; // not a field on the variant offer
+    await tx.supplierVariantOffer.update({ where: { id: row.supplierVariantOfferId }, data });
+  }
+}
+
 /* ----------------------------------------------------------------------------
  * Auth
  * --------------------------------------------------------------------------*/
@@ -929,6 +981,12 @@ router.get("/supplier-offers", bulkOffersHandler);
 router.get("/", bulkOffersHandler);
 
 
+/**
+ * GET /api/admin/products/:productId/supplier-offers
+ * Returns offers from EVERY supplier offering this product (not just the
+ * product's "owning" supplier) so admins can compare price/stock across
+ * suppliers before checkout's own cheapest-offer selection runs.
+ */
 router.get(
   "/products/:productId/supplier-offers",
   wrap(async (req, res) => {
@@ -936,26 +994,14 @@ router.get(
 
     const product = await prisma.product.findUnique({
       where: { id: productId },
-      select: {
-        id: true,
-        supplierId: true,
-        supplier: { select: { name: true } },
-      },
+      select: { id: true, supplierId: true },
     });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
-    const supplierMeta = {
-      supplierId: String(product.supplierId ?? ""),
-      supplierName: product.supplier?.name ?? null,
-    };
-
     const [baseOffers, variantOffers] = await Promise.all([
       prisma.supplierProductOffer.findMany({
-        where: {
-          productId,
-          supplierId: String(product.supplierId),
-        },
-        orderBy: { createdAt: "desc" },
+        where: { productId },
+        orderBy: [{ basePrice: "asc" }, { createdAt: "desc" }],
         select: {
           id: true,
           productId: true,
@@ -966,40 +1012,42 @@ router.get(
           leadDays: true,
           isActive: true,
           inStock: true,
+          supplier: { select: { id: true, name: true } },
         },
       }),
       prisma.supplierVariantOffer.findMany({
-        where: {
-          productId,
-          supplierId: String(product.supplierId),
-          variant: {
-            productId,
-          },
-        },
-        orderBy: { createdAt: "desc" },
+        where: { productId, variant: { productId } },
+        orderBy: [{ unitPrice: "asc" }, { createdAt: "desc" }],
         include: {
           variant: { select: { id: true, sku: true, productId: true } },
+          supplier: { select: { id: true, name: true } },
         },
       }),
     ]);
 
-    const safeBaseOffers = (baseOffers || []).filter((b: any) => {
-      return String(b.supplierId ?? "") === String(product.supplierId ?? "");
-    });
-
     const safeVariantOffers = (variantOffers || []).filter((v: any) => {
       return (
-        String(v.supplierId ?? "") === String(product.supplierId ?? "") &&
         String(v.productId) === String(productId) &&
         String(v.variant?.productId ?? "") === String(productId)
       );
     });
 
     const out: any[] = [];
-    for (const b of safeBaseOffers as any[]) out.push(toDtoBase(b, supplierMeta));
-    for (const v of safeVariantOffers as any[]) out.push(toDtoVariant(v, supplierMeta));
+    for (const b of baseOffers as any[]) {
+      out.push(
+        toDtoBase(b, { supplierId: String(b.supplierId), supplierName: b.supplier?.name ?? null })
+      );
+    }
+    for (const v of safeVariantOffers as any[]) {
+      out.push(
+        toDtoVariant(v, { supplierId: String(v.supplierId), supplierName: v.supplier?.name ?? null })
+      );
+    }
 
-    return res.json({ data: out });
+    return res.json({
+      data: out,
+      meta: { productOwnerSupplierId: String(product.supplierId ?? "") },
+    });
   })
 );
 
@@ -1916,8 +1964,80 @@ router.post(
       return {
         status: 200,
         body: { ok: true, approved: true, id: row.id, productId },
+        supplierId: row.product?.supplierId ?? null,
+        productTitle: row.product?.title ?? null,
       };
     });
+
+    if (result.status === 200) {
+      notifyOfferSupplier(result.supplierId, {
+        type: NotificationType.PRODUCT_CHANGE_APPROVED,
+        title: "Product changes approved",
+        body: `Your proposed changes to "${result.productTitle ?? "your product"}" have been approved.`,
+        data: { productId: result.body.productId, requestId: id },
+      });
+    }
+
+    return res.status(result.status).json(result.body);
+  })
+);
+
+router.post(
+  "/offer-change-requests/:id/approve",
+  wrap(async (req: any, res) => {
+    const id = requiredString(req.params.id);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const row = await tx.supplierOfferChangeRequest.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          productId: true,
+          supplierId: true,
+          scope: true,
+          status: true,
+          patchJson: true,
+          supplierProductOfferId: true,
+          supplierVariantOfferId: true,
+        },
+      });
+
+      if (!row) {
+        return { status: 404, body: { error: "Offer change request not found" } };
+      }
+
+      if (row.status !== "PENDING") {
+        return {
+          status: 409,
+          body: { error: `Only PENDING requests can be approved. Current status: ${row.status}` },
+        };
+      }
+
+      await applyOfferChangePatchTx(tx, row as any);
+
+      await tx.supplierOfferChangeRequest.update({
+        where: { id: row.id },
+        data: { status: "APPROVED", reviewedAt: new Date() },
+      });
+
+      await markProductApprovedOrLiveTx(tx, String(row.productId));
+      await recomputeProductStockTx(tx, String(row.productId));
+
+      return {
+        status: 200,
+        body: { ok: true, approved: true, id: row.id, productId: row.productId },
+        supplierId: row.supplierId,
+      };
+    });
+
+    if (result.status === 200) {
+      notifyOfferSupplier((result as any).supplierId, {
+        type: NotificationType.SUPPLIER_OFFER_CHANGE_APPROVED,
+        title: "Offer changes approved",
+        body: "Your proposed offer changes have been approved and are now live.",
+        data: { productId: result.body.productId, requestId: id },
+      });
+    }
 
     return res.status(result.status).json(result.body);
   })
@@ -1979,8 +2099,18 @@ router.post(
           productId: row.productId,
           reason: reasonText,
         },
+        supplierId: row.supplierId,
       };
     });
+
+    if (result.status === 200) {
+      notifyOfferSupplier((result as any).supplierId, {
+        type: NotificationType.SUPPLIER_OFFER_CHANGE_REJECTED,
+        title: "Offer changes rejected",
+        body: `Your proposed offer changes were rejected. Reason: ${reasonText}`,
+        data: { productId: result.body.productId, requestId: id },
+      });
+    }
 
     return res.status(result.status).json(result.body);
   })
@@ -2041,67 +2171,6 @@ router.get(
 );
 
 router.post(
-  "/product-change-requests/:id/approve",
-  wrap(async (req: any, res) => {
-    const id = requiredString(req.params.id);
-
-    const result = await prisma.$transaction(async (tx) => {
-      const row = await tx.productChangeRequest.findUnique({
-        where: { id },
-        include: {
-          product: {
-            select: {
-              id: true,
-              title: true,
-              sku: true,
-              supplierId: true,
-              description: true,
-              categoryId: true,
-              brandId: true,
-              imagesJson: true,
-              communicationCost: true,
-            },
-          },
-        },
-      });
-
-      if (!row) {
-        return { status: 404, body: { error: "Product change request not found" } };
-      }
-
-      if (row.status !== "PENDING") {
-        return {
-          status: 409,
-          body: { error: `Only PENDING requests can be approved. Current status: ${row.status}` },
-        };
-      }
-
-      const productId = String(row.productId);
-
-      await applyProductChangePatchTx(tx, row);
-
-      await tx.productChangeRequest.update({
-        where: { id: row.id },
-        data: {
-          status: "APPROVED",
-          reviewedAt: new Date(),
-        },
-      });
-
-      await markProductApprovedOrLiveTx(tx, productId);
-      await recomputeProductStockTx(tx, productId);
-
-      return {
-        status: 200,
-        body: { ok: true, approved: true, id: row.id, productId },
-      };
-    });
-
-    return res.status(result.status).json(result.body);
-  })
-);
-
-router.post(
   "/product-change-requests/:id/reject",
   wrap(async (req: any, res) => {
     const id = requiredString(req.params.id);
@@ -2152,8 +2221,18 @@ router.post(
           productId: row.productId,
           reason: reasonText,
         },
+        supplierId: row.supplierId,
       };
     });
+
+    if (result.status === 200) {
+      notifyOfferSupplier((result as any).supplierId, {
+        type: NotificationType.PRODUCT_CHANGE_REJECTED,
+        title: "Product changes rejected",
+        body: `Your proposed product changes were rejected. Reason: ${reasonText}`,
+        data: { productId: result.body.productId, requestId: id },
+      });
+    }
 
     return res.status(result.status).json(result.body);
   })

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
+import PhoneOtpCard from "../components/PhoneOtpCard";
 
 /* ---------------------- Cookie auth helpers ---------------------- */
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
@@ -193,6 +194,16 @@ export default function VerifyEmail() {
   const eParam = (qs.get("e") || "").toLowerCase();
   const okParam = qs.get("ok");
   const errParam = qs.get("err");
+
+  const [phonePending, setPhonePending] = useState(() => {
+    if (qs.get("phone") === "1") return true;
+    try {
+      return localStorage.getItem("verifyPhonePending") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [phoneVerified, setPhoneVerified] = useState(false);
 
   const [me, setMe] = useState<NormalizedMe | null>(null);
   const [targetEmail, setTargetEmail] = useState<string>("");
@@ -655,6 +666,21 @@ export default function VerifyEmail() {
               )}
             </div>
           </Card>
+
+          {phonePending && !phoneVerified ? (
+            <PhoneOtpCard
+              email={targetEmail}
+              onVerified={() => {
+                setPhoneVerified(true);
+                setPhonePending(false);
+                try {
+                  localStorage.removeItem("verifyPhonePending");
+                } catch {
+                  //
+                }
+              }}
+            />
+          ) : null}
 
           {!emailVerified ? (
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">

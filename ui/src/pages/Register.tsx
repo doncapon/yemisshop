@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
+import { getApiBase } from "../lib/apiBase";
+import { COUNTRIES } from "../constants/countries";
 
 type Role = "SHOPPER";
 type RegisterResponse = {
@@ -23,6 +25,8 @@ export default function Register() {
     confirmPassword: "",
     role: "SHOPPER" as Role,
     dateOfBirth: "",
+    phoneCountryCode: "234",
+    localPhone: "",
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -96,6 +100,13 @@ export default function Register() {
     if (age < 16) return "You must be at least 16 years old to register";
     if (age > 125) return "Please enter a valid date of birth (age must be 125 or younger)";
 
+    if (form.localPhone.trim()) {
+      const digits = form.localPhone.replace(/[^\d]/g, "");
+      if (digits.length < 6 || digits.length > 15) {
+        return "Please enter a valid phone number";
+      }
+    }
+
     return null;
   };
 
@@ -121,6 +132,8 @@ export default function Register() {
     try {
       setSubmitting(true);
 
+      const localPhone = form.localPhone.trim();
+
       const payload = {
         email: form.email.trim().toLowerCase(),
         firstName: form.firstName.trim(),
@@ -131,6 +144,8 @@ export default function Register() {
         dateOfBirth: form.dateOfBirth
           ? new Date(`${form.dateOfBirth}T00:00:00`).toISOString()
           : undefined,
+        dialCode: localPhone ? `+${form.phoneCountryCode}` : undefined,
+        localPhone: localPhone || undefined,
       };
 
       const { data } = await api.post<RegisterResponse>("/api/auth/register", payload);
@@ -138,11 +153,16 @@ export default function Register() {
       try {
         localStorage.setItem("verifyEmail", payload.email);
         if (data?.tempToken) localStorage.setItem("verifyToken", data.tempToken);
+        if (data?.phoneOtpSent) localStorage.setItem("verifyPhonePending", "1");
+        else localStorage.removeItem("verifyPhonePending");
       } catch {
         //
       }
 
-      const q = new URLSearchParams({ e: payload.email }).toString();
+      const q = new URLSearchParams({
+        e: payload.email,
+        ...(data?.phoneOtpSent ? { phone: "1" } : {}),
+      }).toString();
       nav(`/verify?${q}`);
     } catch (e: any) {
       setErr(e?.response?.data?.error || "Registration failed");
@@ -191,18 +211,36 @@ export default function Register() {
               </p>
             </div>
 
-            <form
-              onSubmit={submit}
-              className="rounded-2xl border bg-white/95 shadow-sm p-4 sm:p-6 space-y-4"
-            >
-              {err && (
-                <div className="text-sm rounded-xl border border-rose-300/60 bg-rose-50 text-rose-700 px-3 py-2">
-                  {err}
-                </div>
-              )}
+            <div className="rounded-2xl border bg-white/95 shadow-sm p-4 sm:p-6 mb-4">
+              <a
+                href={`${getApiBase()}/api/auth/google`}
+                className="inline-flex w-full items-center justify-center gap-3 rounded-xl border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-zinc-200"
+              >
+                <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+                  <path fill="#EA4335" d="M24 9.5c3.14 0 5.95 1.08 8.17 2.85l6.08-6.08C34.46 3.14 29.5 1 24 1 14.72 1 6.93 6.56 3.27 14.44l7.07 5.49C12.1 13.44 17.58 9.5 24 9.5z" />
+                  <path fill="#4285F4" d="M46.5 24.5c0-1.64-.15-3.22-.43-4.75H24v9h12.68c-.55 2.99-2.22 5.52-4.72 7.22l7.25 5.63C43.44 37.45 46.5 31.44 46.5 24.5z" />
+                  <path fill="#FBBC05" d="M10.34 28.07A14.57 14.57 0 0 1 9.5 24c0-1.41.2-2.78.56-4.07l-7.07-5.49A23.9 23.9 0 0 0 .5 24c0 3.84.92 7.47 2.55 10.69l7.29-6.62z" />
+                  <path fill="#34A853" d="M24 46.5c5.94 0 10.93-1.97 14.57-5.35l-7.25-5.63c-2.01 1.35-4.59 2.15-7.32 2.15-6.42 0-11.9-3.94-13.66-9.43l-7.29 6.62C6.93 41.44 14.72 47 24 47z" />
+                  <path fill="none" d="M0 0h48v48H0z" />
+                </svg>
+                Continue with Google
+              </a>
 
-              <div>
-                <label className={labelBase}>Your name</label>
+              <div className="my-4 flex items-center gap-3">
+                <div className="h-px flex-1 bg-zinc-200" />
+                <span className="text-xs text-zinc-400">or sign up with email</span>
+                <div className="h-px flex-1 bg-zinc-200" />
+              </div>
+
+              <form onSubmit={submit} className="space-y-4">
+                {err && (
+                  <div className="text-sm rounded-xl border border-rose-300/60 bg-rose-50 text-rose-700 px-3 py-2">
+                    {err}
+                  </div>
+                )}
+
+                <div>
+                  <label className={labelBase}>Your name</label>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <input
                     value={form.firstName}
@@ -252,6 +290,34 @@ export default function Register() {
                   />
                   <p className="mt-1 text-xs text-slate-500">Must be 16+ years old.</p>
                 </div>
+              </div>
+
+              <div>
+                <label className={labelBase}>Phone number (optional)</label>
+                <div className="grid grid-cols-[110px_1fr] gap-2">
+                  <select
+                    value={form.phoneCountryCode}
+                    onChange={onChange("phoneCountryCode")}
+                    className={inputBase}
+                  >
+                    {COUNTRIES.map((c) => (
+                      <option key={c.code} value={c.phoneCode}>
+                        {c.code} +{c.phoneCode}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    value={form.localPhone}
+                    onChange={onChange("localPhone")}
+                    className={inputBase}
+                    placeholder="801 234 5678"
+                    inputMode="tel"
+                    autoComplete="tel-national"
+                  />
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Add a phone number to also verify by WhatsApp and use it for order updates.
+                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -350,7 +416,8 @@ export default function Register() {
                 </a>
                 .
               </p>
-            </form>
+              </form>
+            </div>
 
             <p className="mt-4 text-center text-sm text-zinc-700">
               Already have an account?{" "}

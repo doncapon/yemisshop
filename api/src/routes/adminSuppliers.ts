@@ -8,6 +8,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAdmin, requireSuperAdmin } from "../middleware/auth.js";
 import z from "zod";
 import { requiredString } from "../lib/http.js";
+import { notifySupplierBankStatusChanged } from "../services/notifications.service.js";
 
 const router = Router();
 
@@ -400,8 +401,9 @@ function computeBankPendingPatch(args: {
 /* ---------------- routes ---------------- */
 
 // GET /api/admin/suppliers
-router.get("/", requireAdmin, async (_req, res) => {
+router.get("/", requireAdmin, async (req: Request, res: Response) => {
   try {
+    const isSuperAdmin = String((req as any).user?.role || "").toUpperCase() === "SUPER_ADMIN";
     const suppliers = await prisma.supplier.findMany({
       orderBy: { name: "asc" },
       select: {
@@ -466,6 +468,8 @@ router.get("/", requireAdmin, async (_req, res) => {
 
         return {
           ...s,
+          // Integration credential — only SUPER_ADMIN needs/can see this.
+          apiKey: isSuperAdmin ? s.apiKey : null,
           firstName: s.user?.firstName ?? null,
           lastName: s.user?.lastName ?? null,
           email: s.contactEmail ?? s.user?.email ?? null,
@@ -551,7 +555,11 @@ router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
 
     if (!supplier) return res.status(404).json({ error: "Supplier not found" });
 
-    res.json({ data: toAdminSupplierDto(supplier) });
+    const dto = toAdminSupplierDto(supplier);
+    const isSuperAdmin = String((req as any).user?.role || "").toUpperCase() === "SUPER_ADMIN";
+    if (!isSuperAdmin) dto.apiKey = null;
+
+    res.json({ data: dto });
   } catch (e: any) {
     res.status(400).json({ error: e?.message || "Failed to fetch supplier" });
   }
@@ -715,7 +723,12 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
 
         ...(payoutMethod !== undefined ? { payoutMethod: normPayoutMethod(payoutMethod) } : {}),
         ...nextBank,
-        ...(isPayoutEnabled !== undefined ? { isPayoutEnabled: toBool(isPayoutEnabled) } : {}),
+        // Enabling payouts is reserved for the SUPER_ADMIN-only bank-verify flow,
+        // so a plain ADMIN can't flip this on directly through the generic update.
+        ...(isPayoutEnabled !== undefined &&
+          String((req as any).user?.role || "").toUpperCase() === "SUPER_ADMIN"
+          ? { isPayoutEnabled: toBool(isPayoutEnabled) }
+          : {}),
 
         ...(bankPending.changed ? bankPending.patch : {}),
       },
@@ -947,6 +960,11 @@ router.post("/:id/bank-verify", requireSuperAdmin, async (req: Request, res: Res
         paystackRecipientCode: updated.paystackRecipientCode,
       });
     }
+
+    notifySupplierBankStatusChanged(supplierId, {
+      verified: body.decision === "VERIFIED",
+      note: updated.bankVerificationNote ?? null,
+    }).catch((e) => console.error("[bank-verify] notify failed", e));
 
     return res.json({ ok: true, data: updated });
   } catch (e: any) {

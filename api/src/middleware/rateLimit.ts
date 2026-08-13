@@ -17,6 +17,25 @@ export const loginLimiter = rateLimit({
 });
 
 /**
+ * Login, keyed by the submitted account email rather than IP. Stops a
+ * distributed brute force against one specific account, which the IP-based
+ * limiter above can't catch on its own.
+ */
+export const accountLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const email = String((req.body as any)?.email ?? "").trim().toLowerCase();
+    return email || "unknown";
+  },
+  handler: jsonRateLimitResponse(
+    "Too many login attempts for this account. Please try again in a few minutes or reset your password."
+  ),
+});
+
+/**
  * Anything that triggers an outbound SMS/WhatsApp/email send (OTP request,
  * OTP resend, verification email resend). Kept tight since each hit has a
  * real cost and is a common abuse vector (OTP-bombing a phone number).

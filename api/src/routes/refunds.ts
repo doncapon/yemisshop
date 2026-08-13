@@ -1,7 +1,7 @@
 // api/src/routes/refunds.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireSuperAdmin } from "../middleware/auth.js";
 import { notifyMany, notifyUser } from "../services/notifications.service.js";
 import { syncProductInStockCacheTx } from "../services/inventory.service.js";
 import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
@@ -2279,11 +2279,7 @@ router.post("/:id/approve", requireAuth, async (req: any, res) => {
  * This is the point where money is considered returned.
  * Use this after gateway refund success or confirmed manual payout.
  */
-router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
-  if (!isAdmin(req.user?.role)) {
-    return res.status(403).json({ error: "Admin only" });
-  }
-
+router.post("/:id/mark-refunded", requireSuperAdmin, async (req: any, res) => {
   const id = normStr(req.params.id);
   const mode = upper(req.body?.mode || "AUTO");
   const note = normStr(req.body?.note) || null;

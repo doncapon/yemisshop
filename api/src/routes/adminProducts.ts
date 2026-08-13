@@ -13,6 +13,21 @@ import { z } from "zod";
 
 import { prisma } from "../lib/prisma.js";
 import { requiredString } from "../lib/http.js";
+import { NotificationType } from "@prisma/client";
+import { notifySupplierBySupplierId } from "../services/notifications.service.js";
+
+async function notifyProductSupplier(
+  productId: string,
+  supplierId: string | null | undefined,
+  payload: { type: NotificationType; title: string; body: string }
+) {
+  if (!supplierId) return;
+  try {
+    await notifySupplierBySupplierId(supplierId, { ...payload, data: { productId } });
+  } catch (e) {
+    console.error(`[notifyProductSupplier] failed for product ${productId}:`, e);
+  }
+}
 
 const router = Router();
 
@@ -1872,8 +1887,17 @@ router.post(
         sku: true,
         inStock: true,
         imagesJson: true,
+        supplierId: true,
       },
     });
+
+    if (status === "PUBLISHED" || status === "LIVE") {
+      notifyProductSupplier(updated.id, updated.supplierId, {
+        type: NotificationType.PRODUCT_APPROVED,
+        title: "Product approved",
+        body: `"${updated.title}" has been approved and is now live.`,
+      });
+    }
 
     res.json({
       data: {
@@ -1914,7 +1938,13 @@ router.post(
     const updated = await prisma.product.update({
       where: { id },
       data: { status: nextStatus } as any,
-      select: { id: true, status: true, retailPrice: true, autoPrice: true, priceMode: true, title: true },
+      select: { id: true, status: true, retailPrice: true, autoPrice: true, priceMode: true, title: true, supplierId: true },
+    });
+
+    notifyProductSupplier(updated.id, updated.supplierId, {
+      type: NotificationType.PRODUCT_APPROVED,
+      title: "Product approved",
+      body: `"${updated.title}" has been approved and is now live.`,
     });
 
     return res.json({
@@ -1989,8 +2019,15 @@ router.delete(
         id: true,
         title: true,
         status: true,
+        supplierId: true,
         ...(hasProductScalarField("isDeleted") ? { isDeleted: true } : {}),
       },
+    });
+
+    notifyProductSupplier(updated.id, updated.supplierId, {
+      type: NotificationType.PRODUCT_DISABLED,
+      title: "Product disabled",
+      body: `"${updated.title}" has been disabled and is no longer visible to shoppers.`,
     });
 
     return res.json({ data: { ...updated, softDeleted: true } });
@@ -2019,7 +2056,14 @@ router.post(
         priceMode: true,
         imagesJson: true,
         createdAt: true,
+        supplierId: true,
       },
+    });
+
+    notifyProductSupplier(data.id, data.supplierId, {
+      type: NotificationType.PRODUCT_REJECTED,
+      title: "Product rejected",
+      body: `"${data.title}" was rejected during review. Check your product list for details.`,
     });
 
     res.json({
@@ -2064,6 +2108,9 @@ function isPrismaUniqueErr(e: any) {
   return e && typeof e === "object" && e.code === "P2002";
 }
 
+const LIVE_STATUSES = new Set(["PUBLISHED", "LIVE"]);
+const isLiveStatus = (status: any) => LIVE_STATUSES.has(String(status ?? "").trim().toUpperCase());
+
 export const createProductHandler = wrap(async (req, res) => {
   const parsed = CreateProductSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
@@ -2080,6 +2127,12 @@ export const createProductHandler = wrap(async (req, res) => {
 
   const autoRetail = computeRetailPriceAuto(req.body, body);
   const nextRetail = body.retailPrice != null ? body.retailPrice : autoRetail !== undefined ? autoRetail : undefined;
+
+  const role = String((req as any).user?.role || "").toUpperCase();
+  const effectiveStatus = body.status ?? (role === "SUPER_ADMIN" ? "PUBLISHED" : "PENDING");
+  if (isLiveStatus(effectiveStatus) && role !== "SUPER_ADMIN") {
+    return res.status(403).json({ error: "Only SUPER_ADMIN can set status to PUBLISHED or LIVE." });
+  }
 
   try {
     const created = await prisma.$transaction(async (tx) => {
@@ -2100,7 +2153,7 @@ export const createProductHandler = wrap(async (req, res) => {
         title: body.title,
         description: body.description,
         sku: finalSku,
-        status: body.status ?? "PUBLISHED",
+        status: effectiveStatus,
         inStock: body.inStock ?? true,
         imagesJson: body.imagesJson ?? [],
 
@@ -2257,6 +2310,13 @@ export const updateProductHandler = wrap(async (req, res) => {
   }
 
   const body = parsed.data;
+
+  if (body.status !== undefined && isLiveStatus(body.status)) {
+    const role = String((req as any).user?.role || "").toUpperCase();
+    if (role !== "SUPER_ADMIN") {
+      return res.status(403).json({ error: "Only SUPER_ADMIN can set status to PUBLISHED or LIVE." });
+    }
+  }
 
   if (req.body?.variants !== undefined) {
     return res.status(409).json({
@@ -2958,7 +3018,7 @@ router.post(
 
 router.delete(
   "/:id",
-  requireAdmin,
+  requireSuperAdmin,
   wrap(async (req, res) => {
     const id = requiredString(req.params.id);
 

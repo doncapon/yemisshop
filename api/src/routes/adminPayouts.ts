@@ -1,12 +1,10 @@
 import { Router, type Response } from "express";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireSuperAdmin } from "../middleware/auth.js";
 
 // ✅ notifications helpers
-import {
-  notifyAdmins,
-  notifySupplierBySupplierId,
-} from "../services/notifications.service.js";
+import { notifyAdmins } from "../services/notifications.service.js";
+import { sendSupplierPayoutReleasedNotifications } from "../services/payout.service.js";
 import { requiredString } from "../lib/http.js";
 import { NotificationType, SupplierPaymentStatus } from "@prisma/client";
 
@@ -319,10 +317,8 @@ router.get("/allocations", requireAuth, async (req: any, res: Response) => {
 /**
  * POST /api/admin/payouts/allocations/:id/mark-paid
  */
-router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Response) => {
+router.post("/allocations/:id/mark-paid", requireSuperAdmin, async (req: any, res: Response) => {
   try {
-    if (!isAdmin(req.user?.role)) return res.status(403).json({ error: "Forbidden" });
-
     const id = requiredString(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "Missing allocation id" });
 
@@ -394,22 +390,6 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
       }
 
       try {
-        await notifySupplierBySupplierId(
-          String(updated.supplierId),
-          {
-            type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
-            title: "Payout released",
-            body: `An allocation of ₦${String(updated.amount)} has been marked as PAID by an admin.`,
-            data: {
-              allocationId: updated.id,
-              purchaseOrderId: updated.purchaseOrderId,
-              paymentId: updated.paymentId,
-              orderId: alloc?.purchaseOrder?.orderId ?? null,
-            },
-          },
-          tx
-        );
-
         await notifyAdmins(
           {
             type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
@@ -433,8 +413,25 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
         );
       }
 
-      return { allocation: updated };
+      return { allocation: updated, alreadyPaid: cur === "PAID" };
     });
+
+    if (out.allocation?.purchaseOrderId && !out.alreadyPaid) {
+      try {
+        await sendSupplierPayoutReleasedNotifications({
+          purchaseOrderId: String(out.allocation.purchaseOrderId),
+          orderId: String(out.allocation.orderId),
+          supplierId: String(out.allocation.supplierId),
+          amount: Number(out.allocation.amount ?? 0),
+          currency: "NGN",
+        });
+      } catch (notifyErr) {
+        console.error(
+          "adminPayouts: failed to send supplier payout notifications (mark-paid):",
+          notifyErr
+        );
+      }
+    }
 
     return res.json({ ok: true, data: out });
   } catch (e: any) {
@@ -448,11 +445,9 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
  */
 router.post(
   "/purchase-orders/:purchaseOrderId/release",
-  requireAuth,
+  requireSuperAdmin,
   async (req: any, res: Response) => {
     try {
-      if (!isAdmin(req.user?.role)) return res.status(403).json({ error: "Forbidden" });
-
       const { purchaseOrderId } = req.params;
       const adminId = String(req.user?.id ?? "") || null;
 
@@ -475,19 +470,13 @@ router.post(
         });
 
         if (po && po.supplierId) {
-          await notifySupplierBySupplierId(
-            String(po.supplierId),
-            {
-              type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
-              title: "Payout released",
-              body: `Your payout for purchase order ${po.id} (order ${po.orderId}) has been released.`,
-              data: {
-                purchaseOrderId: po.id,
-                orderId: po.orderId,
-                amount: Number(po.supplierAmount ?? 0),
-              },
-            }
-          );
+          await sendSupplierPayoutReleasedNotifications({
+            purchaseOrderId: po.id,
+            orderId: String(po.orderId),
+            supplierId: String(po.supplierId),
+            amount: Number(po.supplierAmount ?? 0),
+            currency: "NGN",
+          });
 
           await notifyAdmins({
             type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
@@ -603,12 +592,8 @@ router.post("/purchase-orders/auto-release-due", async (req: any, res: Response)
   }
 });
 
-router.post("/reconcile-purchase-order-payout-statuses", requireAuth, async (req: any, res: Response) => {
+router.post("/reconcile-purchase-order-payout-statuses", requireSuperAdmin, async (req: any, res: Response) => {
   try {
-    if (!isAdmin(req.user?.role)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-
     const paidAllocs = await prisma.supplierPaymentAllocation.findMany({
       where: {
         status: SupplierPaymentStatus.PAID,

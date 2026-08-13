@@ -14,7 +14,7 @@ function isNonEmptyString(v: any): v is string {
 /* ---------------- Catalog: Attributes & Values ---------------- */
 
 // GET /api/admin/attributes
-r.get('/', async (_req, res) => {
+r.get('/', requireAdmin, async (_req, res) => {
   const rows = await prisma.attribute.findMany({
     orderBy: [{ name: 'asc' }],
     include: {
@@ -28,7 +28,7 @@ r.get('/', async (_req, res) => {
 });
 
 // POST /api/admin/attributes
-r.post('/', requireSuperAdmin,  requireAdmin, async (req, res) => {
+r.post('/', requireSuperAdmin, async (req, res) => {
   const { name, type = 'SELECT', isActive = true } = req.body || {};
 
   if (!isNonEmptyString(name)) {
