@@ -538,31 +538,6 @@ const noActiveOffer: Prisma.ProductWhereInput = {
 /* Users                                                               */
 /* ------------------------------------------------------------------ */
 
-export async function findUsers(q?: string): Promise<AdminUser[]> {
-  const where: Prisma.UserWhereInput = q
-    ? {
-      OR: [
-        { email: { contains: q, mode: 'insensitive' } },
-        { role: { equals: q as Role } },
-      ],
-    }
-    : {};
-
-  const users = await prisma.user.findMany({
-    where,
-    orderBy: { createdAt: 'desc' },
-    select: {
-      id: true,
-      email: true,
-      role: true,
-      status: true,
-      createdAt: true,
-    },
-  });
-
-  return users;
-}
-
 /* ---- Overview payload types (match your getOverview) ---- */
 type Overview = {
   ordersToday: number;
@@ -673,64 +648,6 @@ export async function markPaymentRefunded(paymentId: string) {
   }
 
   return payment;
-}
-
-/* ================================================================== */
-/* =======================  NEW: Products  ========================== */
-/* ================================================================== */
-
-export async function pendingProducts(q?: string): Promise<AdminProduct[]> {
-  const where: Prisma.ProductWhereInput = {
-    status: 'PENDING',
-    ...(q ? { title: { contains: q, mode: 'insensitive' } } : {}),
-  };
-
-  const list = await prisma.product.findMany({
-    where,
-    orderBy: { createdAt: 'desc' },
-    select: {
-      id: true,
-      title: true,
-      retailPrice: true,
-      status: true,
-      imagesJson: true,
-      createdAt: true,
-    },
-  });
-
-  return list;
-}
-
-export async function approveProduct(productId: string) {
-  const prod = await prisma.product.update({
-    where: { id: productId },
-    data: { status: 'PUBLISHED' },
-    select: {
-      id: true,
-      title: true,
-      status: true,
-      retailPrice: true,
-      imagesJson: true,
-      createdAt: true,
-    },
-  });
-  return prod;
-}
-
-export async function rejectProduct(productId: string) {
-  const prod = await prisma.product.update({
-    where: { id: productId },
-    data: { status: 'REJECTED' },
-    select: {
-      id: true,
-      title: true,
-      status: true,
-      retailPrice: true,
-      imagesJson: true,
-      createdAt: true,
-    },
-  });
-  return prod;
 }
 
 /* ================================================================== */

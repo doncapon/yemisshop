@@ -6,10 +6,6 @@ const asNum = (v: any, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 
-function poStatusUpper(v: any) {
-  return String(v ?? "").toUpperCase();
-}
-
 export async function hasSuccessfulPaymentForOrderTx(tx: any, orderId: string): Promise<boolean> {
   const payments = await tx.payment.findMany({
     where: { orderId },
@@ -143,12 +139,6 @@ export async function restorePurchaseOrderInventoryTx(tx: any, purchaseOrderId: 
   }
 
   await flushTouchedProductsTx(tx, touchedProductIds);
-}
-
-export function canAutoRestoreForRefund(poStatus: any): boolean {
-  const s = poStatusUpper(poStatus);
-
-  return !["SHIPPED", "OUT_FOR_DELIVERY", "DELIVERED"].includes(s);
 }
 
 export async function markPendingPaymentsCanceledTx(
