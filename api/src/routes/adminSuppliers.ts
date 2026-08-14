@@ -128,9 +128,7 @@ const supplierAdminSelect = {
   pickupContactPhone: true,
   pickupInstructions: true,
   shippingEnabled: true,
-  shipsNationwide: true,
-  supportsDoorDelivery: true,
-  supportsPickupPoint: true,
+  shippingCoverage: true,
 
   registeredAddressId: true,
   pickupAddressId: true,
@@ -220,9 +218,7 @@ function toAdminSupplierDto(s: any) {
     pickupContactPhone: s.pickupContactPhone ?? null,
     pickupInstructions: s.pickupInstructions ?? null,
     shippingEnabled: s.shippingEnabled ?? null,
-    shipsNationwide: s.shipsNationwide ?? null,
-    supportsDoorDelivery: s.supportsDoorDelivery ?? null,
-    supportsPickupPoint: s.supportsPickupPoint ?? null,
+    shippingCoverage: s.shippingCoverage ?? null,
 
     registeredAddress: s.registeredAddress ?? null,
     pickupAddress: s.pickupAddress ?? null,
@@ -562,6 +558,31 @@ router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
     res.json({ data: dto });
   } catch (e: any) {
     res.status(400).json({ error: e?.message || "Failed to fetch supplier" });
+  }
+});
+
+// GET /api/admin/suppliers/:id/activity
+// Lightweight audit trail (e.g. bank details changed) — useful for
+// spotting patterns like a supplier repeatedly changing payout details.
+router.get("/:id/activity", requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const id = requiredString(req.params.id);
+    const take = Math.min(100, Math.max(1, Number(req.query.take) || 50));
+    const skip = Math.max(0, Number(req.query.skip) || 0);
+
+    const [rows, total] = await Promise.all([
+      prisma.supplierActivity.findMany({
+        where: { supplierId: id },
+        orderBy: { createdAt: "desc" },
+        take,
+        skip,
+      }),
+      prisma.supplierActivity.count({ where: { supplierId: id } }),
+    ]);
+
+    res.json({ data: rows, total, take, skip });
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message || "Failed to fetch supplier activity" });
   }
 });
 

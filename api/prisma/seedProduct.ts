@@ -121,7 +121,7 @@ async function getSuppliers() {
     where: {
       status: "ACTIVE",
       shippingEnabled: true,
-      shipsNationwide: true,
+      shippingCoverage: "NATIONWIDE",
     },
     select: { id: true, name: true },
     orderBy: { name: "asc" },

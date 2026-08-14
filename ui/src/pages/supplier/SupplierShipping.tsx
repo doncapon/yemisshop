@@ -20,6 +20,7 @@ import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 
 type DeliveryServiceLevel = "STANDARD" | "EXPRESS" | "PICKUP_POINT" | "SAME_DAY";
+type SupplierShippingCoverage = "LOCAL" | "REGIONAL" | "NATIONWIDE";
 type ShippingParcelClass = "STANDARD" | "FRAGILE" | "BULKY";
 type SupplierShippingProfileMode =
   | "DEFAULT_PLATFORM"
@@ -44,9 +45,7 @@ type SupplierEnvelope = {
     id: string;
     name: string;
     shippingEnabled: boolean;
-    shipsNationwide: boolean;
-    supportsDoorDelivery: boolean;
-    supportsPickupPoint: boolean;
+    shippingCoverage: SupplierShippingCoverage;
     defaultLeadDays: number | null;
     handlingFee: number | null;
     defaultServiceLevel: DeliveryServiceLevel | null;
@@ -251,9 +250,7 @@ export default function SupplierShipping() {
 
   const [settingsForm, setSettingsForm] = useState({
     shippingEnabled: true,
-    shipsNationwide: true,
-    supportsDoorDelivery: true,
-    supportsPickupPoint: false,
+    shippingCoverage: "NATIONWIDE" as SupplierShippingCoverage,
     defaultLeadDays: "",
     handlingFee: "",
     defaultServiceLevel: "STANDARD" as DeliveryServiceLevel,
@@ -279,9 +276,7 @@ export default function SupplierShipping() {
 
     setSettingsForm({
       shippingEnabled: !!data.supplier.shippingEnabled,
-      shipsNationwide: !!data.supplier.shipsNationwide,
-      supportsDoorDelivery: !!data.supplier.supportsDoorDelivery,
-      supportsPickupPoint: !!data.supplier.supportsPickupPoint,
+      shippingCoverage: data.supplier.shippingCoverage ?? "NATIONWIDE",
       defaultLeadDays:
         data.supplier.defaultLeadDays == null ? "" : String(data.supplier.defaultLeadDays),
       handlingFee: moneyOrBlank(data.supplier.handlingFee),
@@ -319,9 +314,7 @@ export default function SupplierShipping() {
     mutationFn: async () => {
       const payload = {
         shippingEnabled: settingsForm.shippingEnabled,
-        shipsNationwide: settingsForm.shipsNationwide,
-        supportsDoorDelivery: settingsForm.supportsDoorDelivery,
-        supportsPickupPoint: settingsForm.supportsPickupPoint,
+        shippingCoverage: settingsForm.shippingCoverage,
         defaultLeadDays: numOrNull(settingsForm.defaultLeadDays),
         handlingFee: numOrNull(settingsForm.handlingFee),
         defaultServiceLevel: settingsForm.defaultServiceLevel || null,
@@ -518,67 +511,41 @@ export default function SupplierShipping() {
                       </span>
                     </label>
 
-                    <label className="flex items-center gap-3 rounded-2xl border p-4">
-                      <input
-                        type="checkbox"
-                        checked={settingsForm.shipsNationwide}
+                    <div className="rounded-2xl border p-4">
+                      <label htmlFor="shippingCoverage" className="text-sm font-medium text-slate-700">
+                        Delivery coverage
+                      </label>
+                      <select
+                        id="shippingCoverage"
+                        value={settingsForm.shippingCoverage}
                         onChange={(e) =>
                           setSettingsForm((s) => ({
                             ...s,
-                            shipsNationwide: e.target.checked,
+                            shippingCoverage: e.target.value as SupplierShippingCoverage,
                           }))
                         }
-                      />
-                      <span className="text-sm font-medium text-slate-700">
-                        Ships nationwide
-                      </span>
-                    </label>
+                        className="mt-2 w-full rounded-xl border px-3 py-2 text-sm"
+                      >
+                        <option value="LOCAL">Local (my state only)</option>
+                        <option value="REGIONAL">Regional (my zone)</option>
+                        <option value="NATIONWIDE">Nationwide</option>
+                      </select>
+                    </div>
 
-                    <label className="flex items-center gap-3 rounded-2xl border p-4">
-                      <input
-                        type="checkbox"
-                        checked={settingsForm.supportsDoorDelivery}
-                        onChange={(e) =>
-                          setSettingsForm((s) => ({
-                            ...s,
-                            supportsDoorDelivery: e.target.checked,
-                          }))
-                        }
-                      />
-                      <span className="text-sm font-medium text-slate-700">
-                        Supports door delivery
-                      </span>
-                    </label>
-
-                    <div className="col-span-full rounded-2xl border border-blue-100 bg-blue-50 p-4 space-y-3">
+                    <div className="col-span-full rounded-2xl border border-blue-100 bg-blue-50 p-4">
                       <div className="flex items-start gap-2">
                         <span className="text-blue-500 mt-0.5">📦</span>
                         <div>
                           <p className="text-sm font-semibold text-slate-800">Pickup options</p>
                           <p className="text-xs text-slate-600 mt-0.5">
-                            <span className="font-medium text-blue-700">GIG Logistics hub pickup</span> is automatically available to your customers whenever DaySpring routes shipping through GIGL — no setup needed from you.
+                            Our logistics partner collects orders from your pickup address and
+                            delivers to the customer — you never interact with them directly.{" "}
+                            <span className="font-medium text-blue-700">GIG Logistics hub pickup</span>{" "}
+                            is automatically available to your customers whenever DaySpring routes
+                            shipping through GIGL — no setup needed from you.
                           </p>
                         </div>
                       </div>
-                      <label className="flex items-start gap-3 rounded-xl border border-blue-200 bg-white p-3 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          className="mt-0.5"
-                          checked={settingsForm.supportsPickupPoint}
-                          onChange={(e) =>
-                            setSettingsForm((s) => ({
-                              ...s,
-                              supportsPickupPoint: e.target.checked,
-                            }))
-                          }
-                        />
-                        <div>
-                          <span className="text-sm font-medium text-slate-700">Also allow pickup from my premises</span>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            Customers can come directly to your address. Make sure your pickup address and contact details are set below.
-                          </p>
-                        </div>
-                      </label>
                     </div>
                   </div>
 

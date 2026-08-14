@@ -99,7 +99,20 @@ type SupplierOrder = {
   riderId?: string | null;
   refundStatus?: string | null;
 
+  dispute?: {
+    id: string;
+    status: "OPEN" | "SUPPLIER_RESPONSE" | "ESCALATED" | "RESOLVED" | "CLOSED";
+    subject: string;
+    message?: string | null;
+    supplierResponse?: string | null;
+    adminDecision?: string | null;
+    createdAt?: string | null;
+  } | null;
+
   deliveryOtpVerifiedAt?: string | null;
+
+  trackingNumber?: string | null;
+  shippingCarrierName?: string | null;
 };
 
 type SupplierOrdersEnvelope = {
@@ -378,6 +391,11 @@ export default function SupplierOrders() {
     return v || undefined;
   }, [searchParams]);
 
+  const urlDisputeId = useMemo(() => {
+    const v = normStr(searchParams.get("disputeId"));
+    return v || undefined;
+  }, [searchParams]);
+
   // When admin arrives with poId but no supplierId, resolve it from the API
   const [resolvingSupplierId, setResolvingSupplierId] = useState(false);
 
@@ -471,6 +489,11 @@ export default function SupplierOrders() {
 
   const [status, setStatus] = useState<string>("ANY");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  const [disputeDraft, setDisputeDraft] = useState<Record<string, string>>({});
+  const [disputeMsg, setDisputeMsg] = useState<
+    Record<string, { type: "info" | "error"; text: string }>
+  >({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [nextStatus, setNextStatus] = useState<string>("CONFIRMED");
 
@@ -617,12 +640,14 @@ export default function SupplierOrders() {
     retry: 1,
   });
 
-  // Auto-expand the order that matches the poId from the URL
+  // Auto-expand the order that matches the poId (or a linked dispute) from the URL
   useEffect(() => {
-    if (!urlPoId || !ordersQ.data?.data?.length) return;
-    const match = ordersQ.data.data.find((o) => o.purchaseOrderId === urlPoId);
+    if ((!urlPoId && !urlDisputeId) || !ordersQ.data?.data?.length) return;
+    const match = ordersQ.data.data.find(
+      (o) => o.purchaseOrderId === urlPoId || o.dispute?.id === urlDisputeId
+    );
     if (match) setExpanded((prev) => ({ ...prev, [match.id]: true }));
-  }, [urlPoId, ordersQ.data]);
+  }, [urlPoId, urlDisputeId, ordersQ.data]);
 
   const serverRows = Array.isArray(ordersQ.data?.data) ? ordersQ.data!.data : [];
   const serverTotal = Number(ordersQ.data?.total ?? 0);
@@ -664,6 +689,30 @@ export default function SupplierOrders() {
   const pageEnd = serverTotal === 0 ? 0 : Math.min(serverPage * serverPageSize, serverTotal);
 
   const qc = useQueryClient();
+
+  const respondDisputeM = useMutation({
+    mutationFn: async (vars: { disputeId: string; message: string }) => {
+      const { data } = await api.post(
+        `/api/disputes/${encodeURIComponent(vars.disputeId)}/respond`,
+        { message: vars.message },
+        { withCredentials: true }
+      );
+      return data;
+    },
+    onSuccess: (_data, vars) => {
+      setDisputeMsg((s) => ({
+        ...s,
+        [vars.disputeId]: { type: "info", text: "Response sent." },
+      }));
+      setDisputeDraft((s) => ({ ...s, [vars.disputeId]: "" }));
+      qc.invalidateQueries({ queryKey: ["supplier", "orders"] });
+    },
+    onError: (err: any, vars) => {
+      const msg =
+        err?.response?.data?.error || err?.message || "Failed to send response.";
+      setDisputeMsg((s) => ({ ...s, [vars.disputeId]: { type: "error", text: msg } }));
+    },
+  });
 
   const requestDeliveryOtpM = useMutation({
     mutationFn: async (vars: { poId: string }) => {
@@ -1529,6 +1578,32 @@ export default function SupplierOrders() {
                             OTP: {otpVerified ? "VERIFIED" : "NOT VERIFIED"}
                           </span>
                         )}
+
+                        {o.dispute && (
+                          <button
+                            type="button"
+                            onClick={() => setExpanded((s) => ({ ...s, [o.id]: true }))}
+                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${
+                              o.dispute.status === "RESOLVED" || o.dispute.status === "CLOSED"
+                                ? "bg-zinc-50 text-zinc-600 border-zinc-200"
+                                : o.dispute.status === "SUPPLIER_RESPONSE"
+                                  ? "bg-sky-50 text-sky-700 border-sky-200"
+                                  : "bg-rose-50 text-rose-700 border-rose-200"
+                            }`}
+                            title="View dispute"
+                          >
+                            DISPUTE: {o.dispute.status.replace(/_/g, " ")}
+                          </button>
+                        )}
+
+                        {o.trackingNumber && (
+                          <span
+                            className="inline-flex px-2 py-1 rounded-full text-[11px] border bg-teal-50 text-teal-700 border-teal-200"
+                            title={`Booked with ${o.shippingCarrierName || "logistics partner"} — click to copy`}
+                          >
+                            {o.shippingCarrierName || "TRACKING"}: {o.trackingNumber}
+                          </span>
+                        )}
                       </div>
 
                       {(isSupplierUser || isAdmin) && (
@@ -1646,6 +1721,93 @@ export default function SupplierOrders() {
                             ) : null}
                           </div>
                         ) : null}
+
+                        {o.dispute && (isSupplierUser || isAdmin) && (
+                          <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-[12px] font-semibold text-rose-900">
+                                Dispute: {o.dispute.subject}
+                              </div>
+                              <span className="shrink-0 inline-flex px-2 py-0.5 rounded-full text-[10px] border bg-white border-rose-200 text-rose-700">
+                                {o.dispute.status.replace(/_/g, " ")}
+                              </span>
+                            </div>
+
+                            {o.dispute.message ? (
+                              <div className="text-[12px] text-rose-800 whitespace-pre-wrap">
+                                {o.dispute.message}
+                              </div>
+                            ) : null}
+
+                            {o.dispute.supplierResponse ? (
+                              <div className="rounded-lg border border-zinc-200 bg-white p-2 text-[12px]">
+                                <div className="text-[10px] font-semibold text-zinc-500 uppercase">
+                                  Your response
+                                </div>
+                                <div className="mt-1 text-zinc-800 whitespace-pre-wrap">
+                                  {o.dispute.supplierResponse}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {o.dispute.adminDecision ? (
+                              <div className="rounded-lg border border-zinc-200 bg-white p-2 text-[12px]">
+                                <div className="text-[10px] font-semibold text-zinc-500 uppercase">
+                                  Admin decision
+                                </div>
+                                <div className="mt-1 text-zinc-800 whitespace-pre-wrap">
+                                  {o.dispute.adminDecision}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {isSupplierUser &&
+                            !["RESOLVED", "CLOSED"].includes(o.dispute.status) ? (
+                              <div className="space-y-2">
+                                <textarea
+                                  value={disputeDraft[o.dispute.id] ?? ""}
+                                  onChange={(e) =>
+                                    setDisputeDraft((s) => ({
+                                      ...s,
+                                      [o.dispute!.id]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Explain what happened, and how you'd like to resolve this…"
+                                  className="w-full rounded-lg border p-2 text-[12px]"
+                                  rows={3}
+                                />
+                                <button
+                                  type="button"
+                                  disabled={
+                                    respondDisputeM.isPending ||
+                                    !(disputeDraft[o.dispute.id] ?? "").trim()
+                                  }
+                                  onClick={() =>
+                                    respondDisputeM.mutate({
+                                      disputeId: o.dispute!.id,
+                                      message: (disputeDraft[o.dispute!.id] ?? "").trim(),
+                                    })
+                                  }
+                                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                >
+                                  {respondDisputeM.isPending ? "Sending…" : "Send response"}
+                                </button>
+                              </div>
+                            ) : null}
+
+                            {disputeMsg[o.dispute.id]?.text ? (
+                              <div
+                                className={`text-[12px] ${
+                                  disputeMsg[o.dispute.id]?.type === "error"
+                                    ? "text-rose-700"
+                                    : "text-emerald-700"
+                                }`}
+                              >
+                                {disputeMsg[o.dispute.id]?.text}
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
 
                         {(isSupplierUser || isAdmin) &&
                           normStatus(o.supplierStatus) === "SHIPPED" &&

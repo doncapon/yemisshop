@@ -3021,7 +3021,8 @@ export default function Checkout() {
     !!pricingWarning ||
     !selectedShippingAddress ||
     !selectedPhoneVerified ||
-    (shippingEnabled && (shippingQ.isLoading || shippingQ.isError || !shippingQ.data));
+    (shippingEnabled &&
+      (shippingQ.isLoading || shippingQ.isError || !shippingQ.data || !!shippingQ.data?.error));
 
   return (
     <SiteLayout>
@@ -3867,12 +3868,18 @@ export default function Checkout() {
                     </div>
                   ) : null}
 
-                  {shippingEnabled && shippingQ.data?.partial && (
-                    <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
-                      {canViewSupplierIdentity
-                        ? "Shipping was quoted for some suppliers only. Total may change after remaining supplier zones/rates are configured."
-                        : "Shipping was quoted partially. Total may still update before payment if remaining delivery rates are applied."}
+                  {shippingEnabled && shippingQ.data?.error ? (
+                    <div className="mt-2 text-[11px] sm:text-xs font-medium text-rose-700 border border-rose-200 bg-rose-50 px-2 py-2 rounded">
+                      {shippingQ.data.error}
                     </div>
+                  ) : (
+                    shippingEnabled && shippingQ.data?.partial && (
+                      <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
+                        {canViewSupplierIdentity
+                          ? "Shipping was quoted for some suppliers only. Total may change after remaining supplier zones/rates are configured."
+                          : "Shipping was quoted partially. Total may still update before payment if remaining delivery rates are applied."}
+                      </div>
+                    )
                   )}
                 </div>
 

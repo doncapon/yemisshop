@@ -16,6 +16,8 @@ import {
 } from "../services/notifications.service.js";
 import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
 import { sendOrderShippedMessage, sendOrderDeliveredMessage } from "../services/messaging.service.js";
+import { isGiglEnabled } from "../services/shipping/giglProvider.js";
+import { bookGiglShipmentForPurchaseOrder } from "../services/shipping/giglBooking.service.js";
 
 const router = Router();
 const OTP_RESEND_COOLDOWN_SECS = 60;
@@ -757,11 +759,27 @@ router.get("/", requireAuth, async (req: any, res) => {
         subtotal: true,
         payoutStatus: true,
         paidOutAt: true,
+        trackingNumber: true,
+        shippingCarrierName: true,
 
         ...(hasScalarField("PurchaseOrder", "deliveredAt") ? { deliveredAt: true } : {}),
         ...(poHasDeliveredBy ? { deliveredByUserId: true } : {}),
 
         refund: { select: { id: true, status: true } },
+
+        disputeCases: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            status: true,
+            subject: true,
+            message: true,
+            supplierResponse: true,
+            adminDecision: true,
+            createdAt: true,
+          },
+        },
       },
     });
 
@@ -848,9 +866,23 @@ router.get("/", requireAuth, async (req: any, res) => {
         subtotal: po.subtotal != null ? Number(po.subtotal) : null,
         payoutStatus: po.payoutStatus ?? null,
         paidOutAt: po.paidOutAt?.toISOString?.() ?? po.paidOutAt ?? null,
+        trackingNumber: po.trackingNumber ?? null,
+        shippingCarrierName: po.shippingCarrierName ?? null,
 
         refundId: po.refund?.id ?? null,
         refundStatus: po.refund?.status ?? null,
+
+        dispute: po.disputeCases?.[0]
+          ? {
+              id: po.disputeCases[0].id,
+              status: po.disputeCases[0].status,
+              subject: po.disputeCases[0].subject,
+              message: po.disputeCases[0].message ?? null,
+              supplierResponse: po.disputeCases[0].supplierResponse ?? null,
+              adminDecision: po.disputeCases[0].adminDecision ?? null,
+              createdAt: po.disputeCases[0].createdAt?.toISOString?.() ?? po.disputeCases[0].createdAt ?? null,
+            }
+          : null,
 
         riderId: po.riderId ?? null,
 
@@ -889,6 +921,9 @@ router.get("/", requireAuth, async (req: any, res) => {
                 paidOutAt: poByOrder[oid]?.paidOutAt ?? null,
                 refundId: poByOrder[oid]?.refundId ?? null,
                 refundStatus: poByOrder[oid]?.refundStatus ?? null,
+                dispute: poByOrder[oid]?.dispute ?? null,
+                trackingNumber: poByOrder[oid]?.trackingNumber ?? null,
+                shippingCarrierName: poByOrder[oid]?.shippingCarrierName ?? null,
               }),
 
           riderId: poByOrder[oid]?.riderId ?? null,
@@ -1606,6 +1641,18 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
 
       return { po, orderStatus, refund: null, payout: null, shopperId };
     });
+
+    // Actually notify GIGL to collect from the supplier — best-effort, mirrors
+    // the notification blocks above: a booking failure shouldn't undo the
+    // status transition that already committed.
+    if (normalizedNext === "SHIPPED" && isGiglEnabled()) {
+      try {
+        const booking = await bookGiglShipmentForPurchaseOrder(result.po.id);
+        console.log(`[GIGL] booked PO ${result.po.id} — waybill ${booking.waybill}`);
+      } catch (giglErr) {
+        console.error(`[GIGL] booking failed for PO ${result.po.id}:`, giglErr);
+      }
+    }
 
     if ((normalizedNext === "SHIPPED" || normalizedNext === "DELIVERED") && result.shopperId) {
       try {

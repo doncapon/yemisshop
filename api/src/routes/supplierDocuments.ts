@@ -169,6 +169,7 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
               body: `${supplierName} uploaded a ${parsed.kind
                 .replace(/_/g, " ")
                 .toLowerCase()} for review.`,
+              data: { supplierId: supplier.id },
               isRead: false,
             })),
           });

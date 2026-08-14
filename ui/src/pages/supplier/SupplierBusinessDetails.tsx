@@ -842,7 +842,14 @@ export default function SupplierBusinessDetails() {
   }, [supplier]);
 
   const bankLockedByStatus = useMemo(() => {
-    return effectiveBankStatus === "VERIFIED" || effectiveBankStatus === "PENDING";
+    // PENDING is intentionally NOT locked: the supplier can keep correcting
+    // bank details while awaiting review — canProceedToAddress already
+    // blocks "Next step"/"Continue to address" while bankDirty is true, so
+    // any in-progress edit just has to be saved (which resubmits for
+    // verification) before they can move on. VERIFIED is a stronger
+    // commitment (payouts are already flowing), so that stays locked behind
+    // the explicit "Request change" action.
+    return effectiveBankStatus === "VERIFIED";
   }, [effectiveBankStatus]);
 
   const bankEditable = useMemo(() => {
@@ -1165,6 +1172,15 @@ export default function SupplierBusinessDetails() {
         accountNumber: form.accountNumber.replace(/\D/g, "").trim() || null,
       };
 
+      // Only defer verification for a first-time draft (never submitted
+      // yet) — see goToAddressStep, which submits it when they advance past
+      // this step. A "Request change" edit of an already VERIFIED/PENDING/
+      // REJECTED record has no later "next step" gate to submit from, so it
+      // must keep resubmitting immediately on save, same as before.
+      if (effectiveBankStatus === "UNVERIFIED") {
+        payload.deferBankVerification = true;
+      }
+
       const params =
         isAdminReviewMode && adminSupplierId ? { supplierId: adminSupplierId } : undefined;
 
@@ -1198,6 +1214,7 @@ export default function SupplierBusinessDetails() {
     adminSupplierId,
     bankEditable,
     documentsLocked,
+    effectiveBankStatus,
     form,
     getMissingDraftBankFields,
     hydrateFormFromSupplier,
@@ -1236,7 +1253,7 @@ export default function SupplierBusinessDetails() {
     };
   }, []);
 
-  const goToAddressStep = useCallback(() => {
+  const goToAddressStep = useCallback(async () => {
     if (loading) return;
     if (!canProceedToAddress && !documentsLocked) return;
 
@@ -1250,10 +1267,54 @@ export default function SupplierBusinessDetails() {
       return;
     }
 
+    // Bank details were saved as a draft (see saveBankDetails) without
+    // starting verification — now that the supplier is leaving this step,
+    // actually submit them for admin review.
+    if (savedBankIsMeaningful && effectiveBankStatus === "UNVERIFIED") {
+      try {
+        setBankSaveState("saving");
+
+        const params =
+          isAdminReviewMode && adminSupplierId ? { supplierId: adminSupplierId } : undefined;
+
+        const { data } = await api.put(
+          "/api/supplier/me",
+          { submitBankForVerification: true },
+          { withCredentials: true, params }
+        );
+
+        const s = normalizeSupplierPayload(data);
+        setSupplier(s);
+        hydrateFormFromSupplier(s, true);
+        setBankSaveState("saved");
+      } catch (e: any) {
+        setBankSaveState("error");
+        const msg =
+          e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          "Could not submit bank details for verification.";
+        setErr(msg);
+        setBankFormError(msg);
+        scrollToTop();
+        return;
+      }
+    }
+
     pushOnboardingStep("/supplier/onboarding/address", {
       fromBusinessDetails: true,
     });
-  }, [loading, canProceedToAddress, documentsLocked, pushOnboardingStep]);
+  }, [
+    loading,
+    canProceedToAddress,
+    documentsLocked,
+    pushOnboardingStep,
+    savedBankIsMeaningful,
+    effectiveBankStatus,
+    isAdminReviewMode,
+    adminSupplierId,
+    normalizeSupplierPayload,
+    hydrateFormFromSupplier,
+  ]);
 
   const goToVerifyContact = useCallback(() => {
     if (loading) return;
@@ -1723,7 +1784,7 @@ export default function SupplierBusinessDetails() {
                     {effectiveBankStatus === "PENDING" && savedBankIsMeaningful && (
                       <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
                         Bank details are <span className="font-semibold">pending verification</span>.
-                        Editing is locked until review is complete.
+                        You can still make changes — save again to resubmit them for review.
                       </div>
                     )}
 

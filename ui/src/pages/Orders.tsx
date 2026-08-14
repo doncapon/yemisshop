@@ -66,6 +66,8 @@ type PurchaseOrderRow = {
   deliveryOtpVerifiedAt?: string | null;
   paidOutAt?: string | null;
   payoutStatus?: string | null;
+  trackingNumber?: string | null;
+  shippingCarrierName?: string | null;
 };
 
 type OrderRow = {
@@ -1332,6 +1334,8 @@ function normalizeOrder(raw: any): OrderRow {
     deliveryOtpVerifiedAt: po?.deliveryOtpVerifiedAt ?? null,
     payoutStatus: po?.payoutStatus ?? null,
     paidOutAt: po?.paidOutAt ?? null,
+    trackingNumber: po?.trackingNumber ?? null,
+    shippingCarrierName: po?.shippingCarrierName ?? null,
   }));
 
   return {
@@ -4590,6 +4594,14 @@ export default function OrdersPage() {
                                                   <span>{getPurchaseOrderDisplayStatus(po)}</span>
                                                 </>
                                               ) : null}
+                                              {po.trackingNumber ? (
+                                                <>
+                                                  <span>•</span>
+                                                  <span>
+                                                    {po.shippingCarrierName || "Tracking"}: <b>{po.trackingNumber}</b>
+                                                  </span>
+                                                </>
+                                              ) : null}
                                               {po.payoutStatus && isAdmin ? (
                                                 <>
                                                   <span>•</span>
@@ -4966,6 +4978,11 @@ export default function OrdersPage() {
                                     </div>
                                     {getPurchaseOrderDeliveryDisplay(po) ? (
                                       <div>Delivered: {getPurchaseOrderDeliveryDisplay(po)}</div>
+                                    ) : null}
+                                    {po.trackingNumber ? (
+                                      <div>
+                                        {po.shippingCarrierName || "Tracking"}: {po.trackingNumber}
+                                      </div>
                                     ) : null}
                                     <div>{getPurchaseOrderDisplayStatus(po)}</div>
                                     {supplierPaid ? (

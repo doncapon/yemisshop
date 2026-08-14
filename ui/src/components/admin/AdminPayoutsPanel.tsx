@@ -136,10 +136,29 @@ function pickTotal(root: any): number | undefined {
  * - remove token/headers
  * - use withCredentials: true
  */
-export default function AdminPayoutsPanel({ canAdmin, isSuperAdmin }: { canAdmin: boolean; isSuperAdmin?: boolean }) {
+export default function AdminPayoutsPanel({
+  canAdmin,
+  isSuperAdmin,
+  initialQuery,
+}: {
+  canAdmin: boolean;
+  isSuperAdmin?: boolean;
+  initialQuery?: string;
+}) {
   const qc = useQueryClient();
 
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQuery || "");
+
+  // If we're deep-linked in from a notification (e.g. a different
+  // purchaseOrderId) while this panel is already mounted, re-sync the
+  // search box so the row is filtered into view.
+  const lastInitialQuery = React.useRef(initialQuery);
+  React.useEffect(() => {
+    if (initialQuery && initialQuery !== lastInitialQuery.current) {
+      setQ(initialQuery);
+    }
+    lastInitialQuery.current = initialQuery;
+  }, [initialQuery]);
   // IMPORTANT: many backends store this as HELD not PENDING
   const [status, setStatus] = useState<string>("ALL");
 

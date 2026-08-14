@@ -116,6 +116,14 @@ type SupplierDetail = {
     bankVerifiedAt?: string | null;
 };
 
+type SupplierActivityRow = {
+    id: string;
+    type: string;
+    message?: string | null;
+    meta?: Record<string, unknown> | null;
+    createdAt: string;
+};
+
 type SupplierListResponse = {
     data?: SupplierSummaryRow[];
     items?: SupplierSummaryRow[];
@@ -588,6 +596,9 @@ export default function AdminSupplierDocuments() {
     const [detailError, setDetailError] = useState<string | null>(null);
     const [detail, setDetail] = useState<SupplierDetail | null>(null);
 
+    const [activity, setActivity] = useState<SupplierActivityRow[]>([]);
+    const [activityLoading, setActivityLoading] = useState(false);
+
     const [reviewingDocId, setReviewingDocId] = useState<string | null>(null);
     const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
     const [query, setQuery] = useState("");
@@ -744,6 +755,29 @@ export default function AdminSupplierDocuments() {
         }
         loadDetail(selectedSupplierId);
     }, [selectedSupplierId, loadDetail]);
+
+    const loadActivity = useCallback(async (supplierId: string) => {
+        try {
+            setActivityLoading(true);
+            const { data } = await api.get<{ data?: SupplierActivityRow[] }>(
+                `/api/admin/suppliers/${supplierId}/activity`,
+                { withCredentials: true, params: { take: 10 } }
+            );
+            setActivity(Array.isArray(data?.data) ? data.data : []);
+        } catch {
+            setActivity([]);
+        } finally {
+            setActivityLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!selectedSupplierId) {
+            setActivity([]);
+            return;
+        }
+        loadActivity(selectedSupplierId);
+    }, [selectedSupplierId, loadActivity]);
 
     const rowsWithComputedKyc = useMemo(() => {
         return rows.map((row) => ({
@@ -1031,7 +1065,7 @@ export default function AdminSupplierDocuments() {
                                     )}
                                 </div>
 
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-5">
                                     <StatCard
                                         icon={<FileText className="h-5 w-5" />}
                                         label="Suppliers"
@@ -1066,8 +1100,8 @@ export default function AdminSupplierDocuments() {
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[360px_minmax(0,1fr)] 2xl:grid-cols-[390px_minmax(0,1fr)]">
-                            <aside className="xl:sticky xl:top-4 xl:self-start">
+                        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[390px_minmax(0,1fr)]">
+                            <aside className="lg:sticky lg:top-4 lg:self-start">
                                 <div className={`${shell} p-4 sm:p-5`}>
                                     <div className="flex flex-col gap-3">
                                         <div className="flex flex-col gap-3">
@@ -1854,6 +1888,45 @@ export default function AdminSupplierDocuments() {
                                                             </div>
                                                         </div>
                                                     )}
+
+                                                    <div className={`${card} p-5 sm:p-6`}>
+                                                        <h3 className="text-base font-semibold text-zinc-900">
+                                                            Activity
+                                                        </h3>
+                                                        <p className="mt-1 text-sm text-zinc-600">
+                                                            Lightweight audit trail — e.g. bank detail changes. Useful for spotting patterns like repeated payout-account edits.
+                                                        </p>
+
+                                                        <div className="mt-4 space-y-2">
+                                                            {activityLoading ? (
+                                                                <div className="flex items-center gap-2 text-sm text-zinc-500">
+                                                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                                                    Loading…
+                                                                </div>
+                                                            ) : activity.length === 0 ? (
+                                                                <p className="text-sm text-zinc-500">No activity recorded yet.</p>
+                                                            ) : (
+                                                                activity.map((entry) => (
+                                                                    <div
+                                                                        key={entry.id}
+                                                                        className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm"
+                                                                    >
+                                                                        <div className="flex items-center justify-between gap-2">
+                                                                            <span className="font-medium text-zinc-900">
+                                                                                {entry.type.replace(/_/g, " ")}
+                                                                            </span>
+                                                                            <span className="shrink-0 text-xs text-zinc-500">
+                                                                                {new Date(entry.createdAt).toLocaleString()}
+                                                                            </span>
+                                                                        </div>
+                                                                        {entry.message && (
+                                                                            <div className="mt-0.5 text-zinc-600">{entry.message}</div>
+                                                                        )}
+                                                                    </div>
+                                                                ))
+                                                            )}
+                                                        </div>
+                                                    </div>
                                                 </aside>
                                             </section>
                                         </div>

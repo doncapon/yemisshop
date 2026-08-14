@@ -1,14 +1,20 @@
 /**
  * GIG Logistics (GIGL) shipping provider
  *
- * Docs:     https://gig-logistics.readme.io/reference/post_login
- * Dev URL:  https://dev-thirdpartynode.theagilitysystems.com
+ * Docs:      https://gig-logistics.readme.io/reference/post_login
+ *            (full endpoint index: https://gig-logistics.readme.io/llms.txt)
+ * Dev URL:   https://dev-thirdpartynode.theagilitysystems.com
+ * Prod URL:  https://thirdpartynode.theagilitysystems.com
  *
- * Auth flow: POST /login with { email, password } → bearer token
+ * Auth flow:   POST /login with { email, password } → bearer token
  * Price flow:
- *   1. GET /localstations → cache station list
+ *   1. GET /localstations/get → cache station list (StationId + StateName)
  *   2. Match origin/destination state names to StationId values
  *   3. POST /price with SenderStationId + ReceiverStationId + ShipmentItems
+ * Booking flow (actually notifies GIGL to collect from the sender):
+ *   1. Same station resolution as above
+ *   2. POST /capture/preshipment with sender/receiver/items → returns a Waybill,
+ *      which is GIGL's tracking reference for the pickup + delivery.
  */
 
 import axios, { AxiosError } from "axios";
@@ -27,6 +33,18 @@ const GIGL_TIMEOUT_MS = Number(process.env.GIGL_TIMEOUT_MS || 10000);
 
 export function isGiglConfigured(): boolean {
   return !!(GIGL_USER_EMAIL && GIGL_PASSWORD);
+}
+
+/**
+ * True when GIGL is the active shipping provider.
+ * Switch by setting SHIPPING_PROVIDER=gigl in your .env.
+ * Defaults to "internal" (zone-based rates) so nothing breaks until ready.
+ */
+export function isGiglEnabled(): boolean {
+  return (
+    String(process.env.SHIPPING_PROVIDER || "internal").toLowerCase() === "gigl" &&
+    isGiglConfigured()
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +103,104 @@ async function authenticate(): Promise<string> {
   _cachedToken = token;
   _tokenExpiresAt = now + 50 * 60 * 1000; // 50-min cache
   return token;
+}
+
+// ---------------------------------------------------------------------------
+// Local stations — GET /localstations/get, cache for 24h
+// ---------------------------------------------------------------------------
+
+export type GiglStation = {
+  stationId: number;
+  stationName: string;
+  stationCode: string;
+  stateName: string;
+};
+
+let _stationsCache: GiglStation[] | null = null;
+let _stationsCachedAt = 0;
+const STATIONS_CACHE_MS = 24 * 60 * 60 * 1000; // 24h — station list rarely changes
+
+async function fetchLocalStations(): Promise<GiglStation[]> {
+  const now = Date.now();
+  if (_stationsCache && now - _stationsCachedAt < STATIONS_CACHE_MS) {
+    return _stationsCache;
+  }
+
+  const token = await authenticate();
+
+  let res: any;
+  try {
+    res = await axios.get(`${GIGL_BASE_URL}/localstations/get`, {
+      headers: { Accept: "application/json", "access-token": token },
+      timeout: GIGL_TIMEOUT_MS,
+    });
+  } catch (err) {
+    const ae = err as AxiosError;
+    const detail = ae.response?.data ?? ae.message;
+    throw new Error(
+      `GIGL /localstations/get failed (${ae.response?.status ?? "network"}): ${JSON.stringify(detail)}`
+    );
+  }
+
+  const payload = res.data?.data ?? res.data?.Object ?? res.data;
+  const list: any[] = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : [];
+
+  const stations: GiglStation[] = list
+    .map((s) => ({
+      stationId: Number(s?.StationId),
+      stationName: String(s?.StationName ?? "").trim(),
+      stationCode: String(s?.StationCode ?? "").trim(),
+      stateName: String(s?.StateName ?? "").trim(),
+    }))
+    .filter((s) => Number.isFinite(s.stationId) && s.stationId > 0);
+
+  if (!stations.length) {
+    throw new Error(`GIGL /localstations/get returned no usable stations — raw: ${JSON.stringify(res.data)}`);
+  }
+
+  _stationsCache = stations;
+  _stationsCachedAt = now;
+  return stations;
+}
+
+// Nigerian state-name variants that show up in our address data but need to
+// match GIGL's canonical StateName exactly (after case/whitespace folding).
+function normalizeStateForGigl(state?: string | null): string {
+  const s = String(state ?? "").trim().toLowerCase();
+  if (["abuja", "fct", "federal capital territory", "abuja fct"].includes(s)) return "fct";
+  return s;
+}
+
+/**
+ * Resolves a Nigerian state (+ optional city/LGA) to a GIGL StationId.
+ * Falls back to the state's first known station if no city/LGA match is
+ * found. Returns null if the state isn't recognized at all (caller should
+ * treat that as "can't fulfil via GIGL for this address").
+ */
+export async function findGiglStationId(
+  state?: string | null,
+  cityOrLga?: string | null
+): Promise<number | null> {
+  const stations = await fetchLocalStations();
+  const wantState = normalizeStateForGigl(state);
+  if (!wantState) return null;
+
+  const inState = stations.filter((s) => normalizeStateForGigl(s.stateName) === wantState);
+  if (!inState.length) return null;
+
+  const wantCity = String(cityOrLga ?? "").trim().toLowerCase();
+  if (wantCity) {
+    const cityMatch = inState.find(
+      (s) => s.stationName.toLowerCase() === wantCity || s.stationCode.toLowerCase() === wantCity
+    );
+    if (cityMatch) return cityMatch.stationId;
+  }
+
+  return inState[0].stationId;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,10 +268,13 @@ function extractNullableInt(data: any, ...keys: string[]): number | null {
 // Price quote — POST /price
 // ---------------------------------------------------------------------------
 
-function buildPriceBody(input: GiglPriceInput) {
+function buildPriceBody(
+  input: GiglPriceInput,
+  stationIds: { sender: number; receiver: number }
+) {
   return {
-    SenderStationId:   1,
-    ReceiverStationId: 1,
+    SenderStationId:   stationIds.sender,
+    ReceiverStationId: stationIds.receiver,
     VehicleType: 2,
     PickUpOptions: 0,
     CustomerCode: _customerCode ?? GIGL_USER_EMAIL,
@@ -165,12 +284,15 @@ function buildPriceBody(input: GiglPriceInput) {
     ReceiverLocation: { Latitude: 0, Longitude: 0 },
     ShipmentItems: [
       {
-        ItemName:     input.itemDescription || toGiglNature(input.parcelClass),
-        Description:  toGiglNature(input.parcelClass),
-        Weight:       Math.max(0.1, input.weightKg),
-        ShipmentType: toGiglShipmentType(input.parcelClass),
-        Quantity:     1,
-        IsVolumetric: false,
+        ItemName:        input.itemDescription || toGiglNature(input.parcelClass),
+        Description:     toGiglNature(input.parcelClass),
+        Weight:          Math.max(0.1, input.weightKg),
+        ShipmentType:    toGiglShipmentType(input.parcelClass),
+        Quantity:        1,
+        IsVolumetric:    false,
+        SpecialPackageId: 1, // sandbox rejects the request without this; docs list it as
+                              // optional/numeric with no enum — 1 is GIGL's default "general
+                              // parcel" category based on live testing against their sandbox.
       },
     ],
   };
@@ -198,7 +320,22 @@ export async function getGiglShippingPrice(
   try {
     // authenticate first so _customerCode is populated before building the body
     const token = await authenticate();
-    const body = buildPriceBody(input);
+
+    const [senderStationId, receiverStationId] = await Promise.all([
+      findGiglStationId(input.originState, input.originLga),
+      findGiglStationId(input.destinationState, input.destinationLga),
+    ]);
+
+    if (!senderStationId || !receiverStationId) {
+      throw new Error(
+        `GIGL: could not resolve a station for ${
+          !senderStationId ? `origin state "${input.originState}"` : `destination state "${input.destinationState}"`
+        }`
+      );
+    }
+
+    const stationIds = { sender: senderStationId, receiver: receiverStationId };
+    const body = buildPriceBody(input, stationIds);
     console.log("[GIGL] POST /price body:", JSON.stringify(body));
 
     try {
@@ -214,7 +351,7 @@ export async function getGiglShippingPrice(
         _tokenExpiresAt = 0;
         const freshToken = await authenticate();
         // Rebuild body so CustomerCode picks up freshly cached _customerCode
-        const freshBody = buildPriceBody(input);
+        const freshBody = buildPriceBody(input, stationIds);
         data = await callPrice(freshToken, freshBody);
       } else {
         throw err;
@@ -251,4 +388,183 @@ export async function getGiglShippingPrice(
       String(payload?.ShipmentRef ?? payload?.Reference ?? payload?.QuoteId ?? "") || null,
     rawResponse: data,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shipment booking — POST /capture/preshipment
+// This is the call that actually tells GIGL "come collect this from the
+// sender." The /price endpoint above only ever asks "what would this cost?"
+// ---------------------------------------------------------------------------
+
+export type GiglShipmentParty = {
+  name: string;
+  phone: string;
+  address: string;
+  state: string;
+  lga?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+};
+
+export type GiglShipmentItemInput = {
+  itemName: string;
+  description?: string | null;
+  weightKg: number;
+  quantity: number;
+  parcelClass: GiglParcelClass;
+  value?: number | null;
+};
+
+export type GiglShipmentInput = {
+  sender: GiglShipmentParty;
+  receiver: GiglShipmentParty;
+  items: GiglShipmentItemInput[];
+  isPriorityShipment?: boolean;
+};
+
+export type GiglShipmentResult = {
+  waybill: string;
+  rawResponse: unknown;
+};
+
+function buildShipmentBody(
+  input: GiglShipmentInput,
+  stationIds: { sender: number; receiver: number }
+) {
+  return {
+    // Per GIGL's live schema, sender/receiver fields must be nested under
+    // SenderDetails/ReceiverDetails — a flat body (like /price uses) gets
+    // rejected with '"SenderName" is not allowed' (confirmed against sandbox).
+    SenderDetails: {
+      SenderName: input.sender.name,
+      SenderPhoneNumber: input.sender.phone,
+      SenderAddress: input.sender.address,
+      InputtedSenderAddress: input.sender.address,
+      SenderStationId: stationIds.sender,
+      SenderLocality: input.sender.lga || input.sender.state,
+      SenderLocation: {
+        Latitude: input.sender.latitude ?? 0,
+        Longitude: input.sender.longitude ?? 0,
+      },
+    },
+
+    ReceiverDetails: {
+      // Unlike SenderDetails, ReceiverDetails has no "Locality" field —
+      // confirmed against the sandbox ('"ReceiverDetails.ReceiverLocality"
+      // is not allowed'). The schema is asymmetric between the two.
+      ReceiverName: input.receiver.name,
+      ReceiverPhoneNumber: input.receiver.phone,
+      ReceiverAddress: input.receiver.address,
+      InputtedReceiverAddress: input.receiver.address,
+      ReceiverStationId: stationIds.receiver,
+      ReceiverLocation: {
+        Latitude: input.receiver.latitude ?? 0,
+        Longitude: input.receiver.longitude ?? 0,
+      },
+    },
+
+    ShipmentDetails: {
+      VehicleType: 2,
+      IsPriorityShipment: !!input.isPriorityShipment,
+      IsCashOnDelivery: false,
+    },
+
+    // Unlike /price, /capture/preshipment rejects a top-level CustomerCode
+    // ('"CustomerCode" is not allowed') — the account is derived from the
+    // access-token header instead.
+
+    ShipmentItems: input.items.map((it) => ({
+      ItemName: it.itemName,
+      Description: it.description || toGiglNature(it.parcelClass),
+      Weight: Math.max(0.1, it.weightKg),
+      Quantity: Math.max(1, Math.round(it.quantity)),
+      ShipmentType: toGiglShipmentType(it.parcelClass),
+      IsVolumetric: false,
+      SpecialPackageId: 1, // see note in buildPriceBody — sandbox requires this
+      ...(typeof it.value === "number" && it.value > 0 ? { Value: it.value } : {}),
+    })),
+  };
+}
+
+async function callCapturePreshipment(token: string, body: object): Promise<any> {
+  const res = await axios.post(`${GIGL_BASE_URL}/capture/preshipment`, body, {
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "access-token": token,
+      Authorization: `Bearer ${token}`,
+    },
+    timeout: GIGL_TIMEOUT_MS,
+  });
+  return res.data;
+}
+
+/**
+ * Books a real GIGL shipment — this is what actually notifies GIGL to send
+ * someone to collect from the sender's address and deliver to the receiver.
+ * Returns the Waybill (GIGL's tracking reference) on success.
+ */
+export async function createGiglShipment(
+  input: GiglShipmentInput
+): Promise<GiglShipmentResult> {
+  const token = await authenticate();
+
+  const [senderStationId, receiverStationId] = await Promise.all([
+    findGiglStationId(input.sender.state, input.sender.lga),
+    findGiglStationId(input.receiver.state, input.receiver.lga),
+  ]);
+
+  if (!senderStationId || !receiverStationId) {
+    throw new Error(
+      `GIGL: could not resolve a station for ${
+        !senderStationId ? `sender state "${input.sender.state}"` : `receiver state "${input.receiver.state}"`
+      }`
+    );
+  }
+
+  const stationIds = { sender: senderStationId, receiver: receiverStationId };
+  const body = buildShipmentBody(input, stationIds);
+  console.log("[GIGL] POST /capture/preshipment body:", JSON.stringify(body));
+
+  let data: any;
+  try {
+    data = await callCapturePreshipment(token, body);
+  } catch (err) {
+    const ae = err as AxiosError;
+    const status = ae.response?.status;
+    const respData = ae.response?.data as any;
+    if (status === 440 || respData?.status === 440) {
+      console.warn("[GIGL] 440 Invalid Token — clearing cache and retrying login");
+      _cachedToken = null;
+      _tokenExpiresAt = 0;
+      const freshToken = await authenticate();
+      const freshBody = buildShipmentBody(input, stationIds);
+      try {
+        data = await callCapturePreshipment(freshToken, freshBody);
+      } catch (err2) {
+        const ae2 = err2 as AxiosError;
+        const detail2 = ae2.response?.data ?? ae2.message;
+        throw new Error(
+          `GIGL /capture/preshipment failed (${ae2.response?.status ?? "network"}): ${JSON.stringify(detail2)}`
+        );
+      }
+    } else {
+      const detail = ae.response?.data ?? ae.message;
+      console.error("[GIGL] /capture/preshipment error response:", JSON.stringify(ae.response?.data));
+      throw new Error(
+        `GIGL /capture/preshipment failed (${ae.response?.status ?? "network"}): ${JSON.stringify(detail)}`
+      );
+    }
+  }
+
+  console.log("[GIGL] /capture/preshipment raw response:", JSON.stringify(data));
+
+  const payload = data?.data ?? data;
+  const waybill = String(payload?.data?.Waybill ?? payload?.Waybill ?? "").trim();
+
+  if (!waybill) {
+    throw new Error(`GIGL /capture/preshipment: no waybill in response — ${JSON.stringify(data)}`);
+  }
+
+  return { waybill, rawResponse: data };
 }
