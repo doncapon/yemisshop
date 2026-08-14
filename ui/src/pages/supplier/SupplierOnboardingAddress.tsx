@@ -13,6 +13,8 @@ import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
 import { NIGERIAN_STATES, STATE_TO_LGAS } from "../../constants/nigeriaLocations";
 
+type SupplierShippingCoverage = "LOCAL" | "REGIONAL" | "NATIONWIDE";
+
 type AddressDto = {
   id?: string;
   houseNumber?: string | null;
@@ -46,9 +48,7 @@ type SupplierMe = {
   pickupContactPhone?: string | null;
   pickupInstructions?: string | null;
   shippingEnabled?: boolean | null;
-  shipsNationwide?: boolean | null;
-  supportsDoorDelivery?: boolean | null;
-  supportsPickupPoint?: boolean | null;
+  shippingCoverage?: SupplierShippingCoverage | null;
   status?: string | null;
   kycStatus?: string | null;
   documents?: unknown[] | null;
@@ -78,9 +78,7 @@ type PickupMetaState = {
   pickupContactPhone: string;
   pickupInstructions: string;
   shippingEnabled: boolean;
-  shipsNationwide: boolean;
-  supportsDoorDelivery: boolean;
-  supportsPickupPoint: boolean;
+  shippingCoverage: SupplierShippingCoverage;
 };
 
 type AddressDraft = {
@@ -121,9 +119,7 @@ type PickupMetaRefs = {
   pickupContactPhone: InputRef;
   pickupInstructions: TextareaRef;
   shippingEnabled: InputRef;
-  shipsNationwide: InputRef;
-  supportsDoorDelivery: InputRef;
-  supportsPickupPoint: InputRef;
+  shippingCoverage: SelectRef;
 };
 
 type FieldRefsMap = {
@@ -161,9 +157,7 @@ const EMPTY_PICKUP_META: PickupMetaState = {
   pickupContactPhone: "",
   pickupInstructions: "",
   shippingEnabled: true,
-  shipsNationwide: true,
-  supportsDoorDelivery: true,
-  supportsPickupPoint: false,
+  shippingCoverage: "NATIONWIDE",
 };
 
 function pickString(v: unknown): string {
@@ -172,6 +166,13 @@ function pickString(v: unknown): string {
 
 function boolOrDefault(v: unknown, fallback: boolean): boolean {
   return typeof v === "boolean" ? v : fallback;
+}
+
+function coverageOrDefault(
+  v: unknown,
+  fallback: SupplierShippingCoverage
+): SupplierShippingCoverage {
+  return v === "LOCAL" || v === "REGIONAL" || v === "NATIONWIDE" ? v : fallback;
 }
 
 function normalizeCountryDisplay(value: string): string {
@@ -251,9 +252,7 @@ function normalizePickupMeta(s: SupplierMe | null | undefined): PickupMetaState 
     pickupContactPhone: pickString(s?.pickupContactPhone),
     pickupInstructions: pickString(s?.pickupInstructions),
     shippingEnabled: boolOrDefault(s?.shippingEnabled, true),
-    shipsNationwide: boolOrDefault(s?.shipsNationwide, true),
-    supportsDoorDelivery: boolOrDefault(s?.supportsDoorDelivery, true),
-    supportsPickupPoint: boolOrDefault(s?.supportsPickupPoint, false),
+    shippingCoverage: coverageOrDefault(s?.shippingCoverage, "NATIONWIDE"),
   };
 }
 
@@ -278,9 +277,7 @@ function pickupMetaEqual(a: PickupMetaState, b: PickupMetaState): boolean {
     pickString(a.pickupContactPhone) === pickString(b.pickupContactPhone) &&
     pickString(a.pickupInstructions) === pickString(b.pickupInstructions) &&
     a.shippingEnabled === b.shippingEnabled &&
-    a.shipsNationwide === b.shipsNationwide &&
-    a.supportsDoorDelivery === b.supportsDoorDelivery &&
-    a.supportsPickupPoint === b.supportsPickupPoint
+    a.shippingCoverage === b.shippingCoverage
   );
 }
 
@@ -714,9 +711,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
       pickupContactPhone: React.createRef<HTMLInputElement>(),
       pickupInstructions: React.createRef<HTMLTextAreaElement>(),
       shippingEnabled: React.createRef<HTMLInputElement>(),
-      shipsNationwide: React.createRef<HTMLInputElement>(),
-      supportsDoorDelivery: React.createRef<HTMLInputElement>(),
-      supportsPickupPoint: React.createRef<HTMLInputElement>(),
+      shippingCoverage: React.createRef<HTMLSelectElement>(),
     },
   });
 
@@ -1082,9 +1077,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                 savedPickupMeta.pickupInstructions || prev.pickupInstructions
               ),
               shippingEnabled: savedPickupMeta.shippingEnabled,
-              shipsNationwide: savedPickupMeta.shipsNationwide,
-              supportsDoorDelivery: savedPickupMeta.supportsDoorDelivery,
-              supportsPickupPoint: savedPickupMeta.supportsPickupPoint,
+              shippingCoverage: savedPickupMeta.shippingCoverage,
             }
       );
 
@@ -1429,9 +1422,7 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
           pickupInstructions: pickupMeta.pickupInstructions.trim() || null,
 
           shippingEnabled: pickupMeta.shippingEnabled,
-          shipsNationwide: pickupMeta.shipsNationwide,
-          supportsDoorDelivery: pickupMeta.supportsDoorDelivery,
-          supportsPickupPoint: pickupMeta.supportsPickupPoint,
+          shippingCoverage: pickupMeta.shippingCoverage,
         };
 
         const { data } = await api.put("/api/supplier/me", payload, {
@@ -1955,42 +1946,33 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                         <span className="text-sm text-zinc-700">Shipping enabled</span>
                       </label>
 
-                      <label className="flex items-center gap-3 rounded-2xl border border-zinc-200 px-4 py-3">
-                        <input
-                          ref={fieldRefs.current.pickupMeta.shipsNationwide}
-                          type="checkbox"
-                          checked={pickupMeta.shipsNationwide}
-                          onChange={setPickupMetaField("shipsNationwide")}
+                      <div className="rounded-2xl border border-zinc-200 px-4 py-3">
+                        <label
+                          htmlFor="shippingCoverage"
+                          className="block text-sm text-zinc-700"
+                        >
+                          Delivery coverage
+                        </label>
+                        <select
+                          id="shippingCoverage"
+                          ref={fieldRefs.current.pickupMeta.shippingCoverage}
+                          value={pickupMeta.shippingCoverage}
+                          onChange={setPickupMetaField("shippingCoverage")}
                           disabled={documentsLocked}
-                          className="h-4 w-4 rounded border-zinc-300"
-                        />
-                        <span className="text-sm text-zinc-700">Ships nationwide</span>
-                      </label>
-
-                      <label className="flex items-center gap-3 rounded-2xl border border-zinc-200 px-4 py-3">
-                        <input
-                          ref={fieldRefs.current.pickupMeta.supportsDoorDelivery}
-                          type="checkbox"
-                          checked={pickupMeta.supportsDoorDelivery}
-                          onChange={setPickupMetaField("supportsDoorDelivery")}
-                          disabled={documentsLocked}
-                          className="h-4 w-4 rounded border-zinc-300"
-                        />
-                        <span className="text-sm text-zinc-700">Supports door delivery</span>
-                      </label>
-
-                      <label className="flex items-center gap-3 rounded-2xl border border-zinc-200 px-4 py-3">
-                        <input
-                          ref={fieldRefs.current.pickupMeta.supportsPickupPoint}
-                          type="checkbox"
-                          checked={pickupMeta.supportsPickupPoint}
-                          onChange={setPickupMetaField("supportsPickupPoint")}
-                          disabled={documentsLocked}
-                          className="h-4 w-4 rounded border-zinc-300"
-                        />
-                        <span className="text-sm text-zinc-700">Supports pickup point</span>
-                      </label>
+                          className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-sm"
+                        >
+                          <option value="LOCAL">Local (my state only)</option>
+                          <option value="REGIONAL">Regional (my zone)</option>
+                          <option value="NATIONWIDE">Nationwide</option>
+                        </select>
+                      </div>
                     </div>
+
+                    <p className="mt-3 text-xs text-zinc-500">
+                      Our logistics partner collects from your pickup address and delivers to
+                      the customer — you never interact with them directly. Coverage just
+                      controls how far you're willing to have orders come from.
+                    </p>
                   </div>
                 </div>
 

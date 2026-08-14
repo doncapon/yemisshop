@@ -5,6 +5,7 @@ import {
   ShippingParcelClass,
   SupplierFulfillmentMode,
   SupplierShippingProfileMode,
+  SupplierShippingCoverage,
   Prisma,
 } from "@prisma/client";
 
@@ -52,9 +53,7 @@ async function requireSupplierContext(req: Request) {
 
 const SupplierSettingsSchema = z.object({
   shippingEnabled: z.coerce.boolean(),
-  shipsNationwide: z.coerce.boolean(),
-  supportsDoorDelivery: z.coerce.boolean(),
-  supportsPickupPoint: z.coerce.boolean(),
+  shippingCoverage: z.nativeEnum(SupplierShippingCoverage),
   defaultLeadDays: z.coerce.number().int().min(0).max(365).nullable().optional(),
   handlingFee: z.coerce.number().min(0).nullable().optional(),
   defaultServiceLevel: z.nativeEnum(DeliveryServiceLevel).nullable().optional(),
@@ -107,9 +106,7 @@ router.get(
           id: true,
           name: true,
           shippingEnabled: true,
-          shipsNationwide: true,
-          supportsDoorDelivery: true,
-          supportsPickupPoint: true,
+          shippingCoverage: true,
           defaultLeadDays: true,
           handlingFee: true,
           defaultServiceLevel: true,
@@ -233,9 +230,7 @@ router.put(
       where: { id: supplier.id },
       data: {
         shippingEnabled: body.shippingEnabled,
-        shipsNationwide: body.shipsNationwide,
-        supportsDoorDelivery: body.supportsDoorDelivery,
-        supportsPickupPoint: body.supportsPickupPoint,
+        shippingCoverage: body.shippingCoverage,
         defaultLeadDays: body.defaultLeadDays ?? null,
         handlingFee: asMoney(body.handlingFee),
         defaultServiceLevel: body.defaultServiceLevel ?? null,
@@ -244,9 +239,7 @@ router.put(
       select: {
         id: true,
         shippingEnabled: true,
-        shipsNationwide: true,
-        supportsDoorDelivery: true,
-        supportsPickupPoint: true,
+        shippingCoverage: true,
         defaultLeadDays: true,
         handlingFee: true,
         defaultServiceLevel: true,

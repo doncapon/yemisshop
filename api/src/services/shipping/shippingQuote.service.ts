@@ -7,22 +7,11 @@ import {
   ShippingRateSource,
   SupplierShippingProfileMode,
   SupplierFulfillmentMode,
+  SupplierShippingCoverage,
 } from "@prisma/client";
-import { getGiglShippingPrice, isGiglConfigured } from "./giglProvider.js";
+import { getGiglShippingPrice, isGiglEnabled } from "./giglProvider.js";
 
 const prisma = new PrismaClient();
-
-/**
- * Returns true when GIGL is the active shipping provider.
- * Switch by setting SHIPPING_PROVIDER=gigl in your .env.
- * Defaults to "internal" (zone-based rates) so nothing breaks until you're ready.
- */
-function isGiglEnabled(): boolean {
-  return (
-    String(process.env.SHIPPING_PROVIDER || "internal").toLowerCase() === "gigl" &&
-    isGiglConfigured()
-  );
-}
 
 export type QuoteCheckoutItemInput = {
   productId: string;
@@ -94,6 +83,12 @@ export type SupplierShippingQuoteResult = {
     shippingClass: string | null;
   }>;
   error?: string | null;
+  // True for errors that mean this order genuinely cannot ship as-is (e.g.
+  // the supplier has shipping turned off) — the checkout flow must hard-stop
+  // rather than just show a soft "partial" warning. Left false/undefined for
+  // intentionally-soft cases like MANUAL_QUOTE, where proceeding without a
+  // price is the deliberate design.
+  blockCheckout?: boolean;
 };
 
 export type QuoteShippingResult = {
@@ -216,10 +211,9 @@ type LoadedLine = {
     shippingClass: string | null;
     supplier: {
       id: string;
+      name: string;
       shippingEnabled: boolean;
-      shipsNationwide: boolean;
-      supportsDoorDelivery: boolean;
-      supportsPickupPoint: boolean;
+      shippingCoverage: SupplierShippingCoverage;
       handlingFee: Prisma.Decimal | null;
       defaultLeadDays: number | null;
       defaultServiceLevel: DeliveryServiceLevel | null;
@@ -286,6 +280,7 @@ function makeEmptyQuote(args: {
   chargeableWeightGrams?: number;
   items?: SupplierShippingQuoteResult["items"];
   error: string;
+  blockCheckout?: boolean;
 }): SupplierShippingQuoteResult {
   return {
     supplierId: args.supplierId,
@@ -312,6 +307,7 @@ function makeEmptyQuote(args: {
     eta: { minDays: null, maxDays: null },
     items: args.items ?? [],
     error: args.error,
+    blockCheckout: args.blockCheckout ?? false,
   };
 }
 
@@ -608,10 +604,9 @@ export async function quoteShippingForCheckout(
       supplier: {
         select: {
           id: true,
+          name: true,
           shippingEnabled: true,
-          shipsNationwide: true,
-          supportsDoorDelivery: true,
-          supportsPickupPoint: true,
+          shippingCoverage: true,
           handlingFee: true,
           defaultLeadDays: true,
           defaultServiceLevel: true,
@@ -734,7 +729,8 @@ export async function quoteShippingForCheckout(
           destinationZoneCode: destinationZone?.code ?? null,
           destinationZoneName: destinationZone?.name ?? null,
           serviceLevel,
-          error: "Supplier shipping is currently disabled.",
+          error: `${supplier.name || "This supplier"} isn't accepting new orders right now. Please remove their item(s) from your cart to continue.`,
+          blockCheckout: true,
         })
       );
       continue;
@@ -762,6 +758,46 @@ export async function quoteShippingForCheckout(
             where: { code: supplier.shippingProfile.originZoneCode },
           })
         : await findZoneByAddress(pickupAddress);
+
+    // ── Supplier coverage enforcement ───────────────────────────────────────
+    // How far this supplier is willing to have their goods picked up and
+    // shipped — purely a supplier preference, not a carrier limitation
+    // (GIGL delivers nationwide regardless). LOCAL = same state as their
+    // pickup address; REGIONAL = same shipping zone (e.g. all of South
+    // West); NATIONWIDE = no restriction.
+    if (supplier.shippingCoverage === SupplierShippingCoverage.LOCAL) {
+      const sameState =
+        normalizeText(pickupAddress.state) === normalizeText(destination.state);
+      if (!sameState) {
+        supplierQuotes.push(
+          makeEmptyQuote({
+            supplierId,
+            destinationZoneCode: destinationZone?.code ?? null,
+            destinationZoneName: destinationZone?.name ?? null,
+            originZoneCode: originZone?.code ?? null,
+            serviceLevel,
+            error: "This supplier only delivers within their own state.",
+          })
+        );
+        continue;
+      }
+    } else if (supplier.shippingCoverage === SupplierShippingCoverage.REGIONAL) {
+      const sameZone =
+        !!originZone && !!destinationZone && originZone.code === destinationZone.code;
+      if (!sameZone) {
+        supplierQuotes.push(
+          makeEmptyQuote({
+            supplierId,
+            destinationZoneCode: destinationZone?.code ?? null,
+            destinationZoneName: destinationZone?.name ?? null,
+            originZoneCode: originZone?.code ?? null,
+            serviceLevel,
+            error: "This supplier only delivers within their region.",
+          })
+        );
+        continue;
+      }
+    }
 
     const lineSnapshots = rows.map(({ qty, product, variant }) => {
       const perUnitActual = Math.max(
@@ -875,26 +911,25 @@ export async function quoteShippingForCheckout(
     let chosen: PriceBreakdown | null = null;
 
     // ── Pickup availability enforcement ─────────────────────────────────────
-    // PICKUP_POINT via GIGL → always available (GIGL runs their own hubs).
-    // PICKUP_POINT via internal rates → only if supplier opted in.
+    // PICKUP_POINT only exists via the logistics provider's own hub network
+    // (GIGL) — suppliers never have customers show up at their premises, so
+    // there's no supplier-side opt-in/fallback here anymore.
     if (serviceLevel === DeliveryServiceLevel.PICKUP_POINT && !isGiglEnabled()) {
-      if (!supplier.supportsPickupPoint) {
-        supplierQuotes.push(
-          makeEmptyQuote({
-            supplierId,
-            destinationZoneCode: destinationZone?.code ?? null,
-            destinationZoneName: destinationZone?.name ?? null,
-            originZoneCode: originZone?.code ?? null,
-            serviceLevel,
-            totalActualWeightGrams,
-            totalVolumetricWeightGrams,
-            chargeableWeightGrams,
-            items: quoteItems,
-            error: "This supplier does not offer a pickup point option.",
-          })
-        );
-        continue;
-      }
+      supplierQuotes.push(
+        makeEmptyQuote({
+          supplierId,
+          destinationZoneCode: destinationZone?.code ?? null,
+          destinationZoneName: destinationZone?.name ?? null,
+          originZoneCode: originZone?.code ?? null,
+          serviceLevel,
+          totalActualWeightGrams,
+          totalVolumetricWeightGrams,
+          chargeableWeightGrams,
+          items: quoteItems,
+          error: "Pickup point delivery isn't available for this order yet.",
+        })
+      );
+      continue;
     }
 
     // Determine pickupType for PICKUP_POINT orders
@@ -1277,14 +1312,24 @@ export async function quoteShippingForCheckout(
 
   const hasAnySuccess = supplierQuotes.some((q) => !q.error);
   const hasErrors = supplierQuotes.some((q) => !!q.error);
+  const blockingQuotes = supplierQuotes.filter((q) => q.error && q.blockCheckout);
+
+  // Some quote failures (missing rates, manual-quote suppliers) are fine to
+  // proceed past — the customer just sees a "partial" warning. A
+  // blockCheckout failure (e.g. a supplier with shipping turned off) means
+  // the cart genuinely cannot be fulfilled as-is, so it must hard-stop
+  // checkout regardless of whether other suppliers in the cart succeeded.
+  const blockingError = blockingQuotes.length
+    ? blockingQuotes.map((q) => q.error).join(" ")
+    : null;
 
   return {
     currency: "NGN",
     shippingFee: round2(totalShippingFee),
     suppliers: supplierQuotes,
     partial: hasAnySuccess && hasErrors,
-    error: hasAnySuccess
-      ? null
-      : "Could not compute shipping for any supplier.",
+    error:
+      blockingError ??
+      (hasAnySuccess ? null : "Could not compute shipping for any supplier."),
   };
 }

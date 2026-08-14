@@ -734,6 +734,12 @@ function payoutReadySupplierWhere() {
 function checkoutReadySupplierWhere() {
   return {
     status: "ACTIVE",
+    // A supplier with shipping turned off can't fulfil new orders — exclude
+    // them from every checkout-time path that uses this filter (offer
+    // candidates, availability checks, and the allocation safety-net
+    // assertion below) rather than letting an order form and then silently
+    // charging ₦0 shipping for their leg.
+    shippingEnabled: true,
   } as const;
 }
 
@@ -4110,6 +4116,7 @@ function fireAndForgetCancelPostCommit(args: {
             data: {
               orderId: args.orderId,
               supplierId: args.supplierId ?? null,
+              purchaseOrderId: args.canceledPurchaseOrderIds?.[0] ?? null,
               purchaseOrderIds: args.canceledPurchaseOrderIds ?? [],
               allCanceled: !!args.allCanceled,
             },
@@ -4125,6 +4132,7 @@ function fireAndForgetCancelPostCommit(args: {
             data: {
               orderId: args.orderId,
               supplierId: args.supplierId ?? null,
+              purchaseOrderId: args.canceledPurchaseOrderIds?.[0] ?? null,
               purchaseOrderIds: args.canceledPurchaseOrderIds ?? [],
               allCanceled: !!args.allCanceled,
             },
@@ -4597,6 +4605,8 @@ router.get("/mine", requireAuth, async (req, res) => {
                 deliveryOtpVerifiedAt: true,
                 shippedAt: true,
                 createdAt: true,
+                trackingNumber: true,
+                shippingCarrierName: true,
                 supplier: { select: { id: true, name: true } },
               },
             },
@@ -4854,6 +4864,8 @@ router.get("/mine", requireAuth, async (req, res) => {
           deliveredAt: po?.deliveredAt?.toISOString?.() ?? po?.deliveredAt ?? null,
           deliveryOtpVerifiedAt:
             po?.deliveryOtpVerifiedAt?.toISOString?.() ?? po?.deliveryOtpVerifiedAt ?? null,
+          trackingNumber: po?.trackingNumber ?? null,
+          shippingCarrierName: po?.shippingCarrierName ?? null,
         }))
         : [],
     }));
@@ -4998,6 +5010,8 @@ router.get("/:id", requireAuth, async (req, res) => {
               deliveryOtpVerifiedAt: true,
               payoutStatus: true,
               paidOutAt: true,
+              trackingNumber: true,
+              shippingCarrierName: true,
               supplier: { select: { id: true, name: true } },
             },
           },
@@ -5268,6 +5282,8 @@ router.get("/:id", requireAuth, async (req, res) => {
             null,
           payoutStatus: po?.payoutStatus ?? null,
           paidOutAt: po?.paidOutAt?.toISOString?.() ?? po?.paidOutAt ?? null,
+          trackingNumber: po?.trackingNumber ?? null,
+          shippingCarrierName: po?.shippingCarrierName ?? null,
         }))
         : [],
     };
