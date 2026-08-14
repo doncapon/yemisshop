@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { z } from "zod";
 import { requireAuth, requireSupplier } from "../middleware/auth.js";
+import { SupplierShippingCoverage } from "@prisma/client";
 
 const router = Router();
 
@@ -208,6 +209,12 @@ function hasBankSensitiveChange(changed: string[]) {
   );
 }
 
+function maskAccountNumberForActivityLog(v: any) {
+  const s = String(v ?? "").replace(/\D/g, "");
+  if (s.length <= 4) return s;
+  return `${"*".repeat(Math.max(0, s.length - 4))}${s.slice(-4)}`;
+}
+
 /* ---------------- Supplier DTO ---------------- */
 
 function toSupplierMeDto(s: any) {
@@ -271,9 +278,7 @@ function toSupplierMeDto(s: any) {
     pickupContactPhone: s.pickupContactPhone ?? null,
     pickupInstructions: s.pickupInstructions ?? null,
     shippingEnabled: s.shippingEnabled ?? null,
-    shipsNationwide: s.shipsNationwide ?? null,
-    supportsDoorDelivery: s.supportsDoorDelivery ?? null,
-    supportsPickupPoint: s.supportsPickupPoint ?? null,
+    shippingCoverage: s.shippingCoverage ?? null,
 
     registeredAddress: s.registeredAddress ?? null,
     pickupAddress: s.pickupAddress ?? null,
@@ -356,9 +361,7 @@ const supplierMeSelect = {
   pickupContactPhone: true,
   pickupInstructions: true,
   shippingEnabled: true,
-  shipsNationwide: true,
-  supportsDoorDelivery: true,
-  supportsPickupPoint: true,
+  shippingCoverage: true,
 
   registeredAddressId: true,
   pickupAddressId: true,
@@ -465,9 +468,17 @@ const UpdateSupplierMeSchema = z
     pickupContactPhone: z.string().nullable().optional(),
     pickupInstructions: z.string().nullable().optional(),
     shippingEnabled: z.boolean().optional(),
-    shipsNationwide: z.boolean().optional(),
-    supportsDoorDelivery: z.boolean().optional(),
-    supportsPickupPoint: z.boolean().optional(),
+    shippingCoverage: z.nativeEnum(SupplierShippingCoverage).optional(),
+
+    // Onboarding-only controls for when bank verification actually starts:
+    // - deferBankVerification: persist bank fields as a draft without
+    //   flipping bankVerificationStatus to PENDING (so the step stays
+    //   editable while the supplier is still on it).
+    // - submitBankForVerification: explicitly transition to PENDING (used
+    //   when the supplier advances past the bank step), regardless of
+    //   whether any bank field actually changed in this same call.
+    deferBankVerification: z.boolean().optional(),
+    submitBankForVerification: z.boolean().optional(),
   })
   .strict();
 
@@ -637,16 +648,8 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
       supplierData.shippingEnabled = cleanBool(parsed.shippingEnabled);
     }
 
-    if ("shipsNationwide" in parsed) {
-      supplierData.shipsNationwide = cleanBool(parsed.shipsNationwide);
-    }
-
-    if ("supportsDoorDelivery" in parsed) {
-      supplierData.supportsDoorDelivery = cleanBool(parsed.supportsDoorDelivery);
-    }
-
-    if ("supportsPickupPoint" in parsed) {
-      supplierData.supportsPickupPoint = cleanBool(parsed.supportsPickupPoint);
+    if ("shippingCoverage" in parsed) {
+      supplierData.shippingCoverage = parsed.shippingCoverage;
     }
 
     const nextFirstName =
@@ -725,7 +728,13 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
 
     const sensitiveChanged = collectSensitiveSupplierChanges(supplier, incomingSnapshot);
     const shouldResetKyc = sensitiveChanged.length > 0;
-    const shouldResetBankVerification = hasBankSensitiveChange(sensitiveChanged);
+    const bankFieldsChanged = hasBankSensitiveChange(sensitiveChanged);
+    const shouldResetBankVerification =
+      parsed.submitBankForVerification === true
+        ? true
+        : parsed.deferBankVerification === true
+          ? false
+          : bankFieldsChanged;
 
     await prisma.$transaction(async (tx) => {
       let nextRegisteredAddressId = supplier.registeredAddressId ?? null;
@@ -793,6 +802,39 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
         supplierData.bankVerificationRequestedAt = new Date();
       }
 
+      // Lightweight audit trail: log the actual field change (not the later
+      // "submit for verification" confirmation, which has no new diff of
+      // its own) so admins can spot patterns like frequent bank-detail
+      // changes without needing a full change-request/versioning system.
+      if (bankFieldsChanged) {
+        const bankChangedFields = sensitiveChanged.filter((k) =>
+          ["bankCountry", "bankCode", "bankName", "accountNumber", "accountName"].includes(k)
+        );
+
+        try {
+          await tx.supplierActivity.create({
+            data: {
+              supplierId: supplier.id,
+              type: "BANK_DETAILS_CHANGED",
+              message: `Bank details changed (${bankChangedFields.join(", ")}).`,
+              meta: {
+                fields: bankChangedFields,
+                bankName: incomingSnapshot.bankName ?? null,
+                bankCode: incomingSnapshot.bankCode ?? null,
+                accountNumberMasked: maskAccountNumberForActivityLog(
+                  incomingSnapshot.accountNumber
+                ),
+              },
+            },
+          });
+        } catch (activityError) {
+          console.error(
+            "[PUT /api/supplier/me] SupplierActivity log failed:",
+            activityError
+          );
+        }
+      }
+
       if (Object.keys(supplierData).length) {
         await tx.supplier.update({
           where: { id: supplier.id },
@@ -807,7 +849,7 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
         });
       }
 
-      if (shouldResetKyc) {
+      if (shouldResetKyc || shouldResetBankVerification) {
         const updatedSupplier = await tx.supplier.findUnique({
           where: { id: supplier.id },
           select: {
@@ -831,6 +873,14 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
           updatedSupplier?.name ||
           "A supplier";
 
+        // submitBankForVerification lands here with no other field diffs
+        // (the bank fields were already persisted by an earlier draft save),
+        // so give admins an accurate, bank-specific message in that case.
+        const changeDescription =
+          !shouldResetKyc && shouldResetBankVerification
+            ? "submitted bank details for verification"
+            : "updated verification-sensitive details and requires re-review";
+
         if (admins.length > 0) {
           try {
             await tx.notification.createMany({
@@ -838,7 +888,8 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
                 userId: admin.id,
                 type: "SUPPLIER_DOCUMENT_UPLOADED" as any,
                 title: "Supplier details changed",
-                body: `${supplierDisplayName} updated verification-sensitive details and requires re-review. Supplier ID: ${supplier.id}`,
+                body: `${supplierDisplayName} ${changeDescription}. Supplier ID: ${supplier.id}`,
+                data: { supplierId: supplier.id },
               })),
             });
           } catch (notificationError) {
