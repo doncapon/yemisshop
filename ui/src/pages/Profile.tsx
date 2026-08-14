@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
-import { COUNTRIES } from "../constants/countries";
+import { COUNTRIES, DELIVERY_COUNTRIES } from "../constants/countries";
 import { NIGERIAN_STATES, STATE_TO_LGAS } from "../constants/nigeriaLocations";
 
 type Address = {
@@ -1540,7 +1540,7 @@ export default function Profile() {
                 value={ship.country || ""}
                 onChange={onShip("country")}
                 required
-                options={COUNTRIES.map((c) => ({ value: c.name, label: c.name }))}
+                options={DELIVERY_COUNTRIES.map((c) => ({ value: c.name, label: c.name }))}
                 placeholder="Select country"
               />
 

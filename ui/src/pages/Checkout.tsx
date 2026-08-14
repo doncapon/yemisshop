@@ -10,7 +10,7 @@ import SiteLayout from "../layouts/SiteLayout.js";
 import { getAttribution } from "../utils/attribution.js";
 import { readCartLines, writeCartLines, toCartPageItems } from "../utils/cartModel";
 import { STATE_TO_LGAS, NIGERIAN_STATES } from "../constants/nigeriaLocations.js";
-import { COUNTRIES } from "../constants/countries.js";
+import { COUNTRIES, DELIVERY_COUNTRIES } from "../constants/countries.js";
 import { markPaystackExit } from "../utils/paystackReturn.js";
 
 /* ----------------------------- Config ----------------------------- */
@@ -3123,7 +3123,7 @@ export default function Checkout() {
                           }))
                         }
                       >
-                        {COUNTRIES.map((c) => (
+                        {DELIVERY_COUNTRIES.map((c) => (
                           <option key={c.code} value={c.name}>
                             {c.name}
                           </option>
@@ -3508,7 +3508,7 @@ export default function Checkout() {
                               }))
                             }
                           >
-                            {COUNTRIES.map((c) => (
+                            {DELIVERY_COUNTRIES.map((c) => (
                               <option key={c.code} value={c.name}>
                                 {c.name}
                               </option>

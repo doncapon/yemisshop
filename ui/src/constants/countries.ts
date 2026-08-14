@@ -22,6 +22,12 @@ export const SUPPLIER_REGISTRATION_COUNTRIES = COUNTRIES.filter(
   (c) => c.allowSupplierRegistration
 );
 
+// We only deliver within Nigeria for now — use this (not COUNTRIES) for any
+// address select that represents an actual delivery/shipping destination.
+export const DELIVERY_COUNTRIES: CountryConfig[] = COUNTRIES.filter(
+  (c) => c.code === "NG"
+);
+
 export const COUNTRY_MAP: Record<string, CountryConfig> = Object.fromEntries(
   COUNTRIES.map((c) => [c.code, c])
 );
