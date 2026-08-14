@@ -72,6 +72,15 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
     // ── Disputes ──────────────────────────────────────────────────────────
     case "DISPUTE_OPENED":
     case "DISPUTE_STATUS_CHANGED":
+      if (isAdmin) return d.disputeId ? `/admin?tab=disputes&disputeId=${enc(d.disputeId)}` : "/admin?tab=disputes";
+      if (isSupplier) {
+        const dq = d.disputeId ? `&disputeId=${enc(d.disputeId)}` : "";
+        return d.purchaseOrderId
+          ? `/supplier/orders?poId=${enc(d.purchaseOrderId)}${dq}`
+          : d.disputeId
+            ? `/supplier/orders?disputeId=${enc(d.disputeId)}`
+            : "/supplier/orders";
+      }
       return d.orderId ? `/orders?orderId=${enc(d.orderId)}` : "/orders";
 
     // ── Supplier purchase-order events ────────────────────────────────────
@@ -79,40 +88,54 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
     case "PURCHASE_ORDER_FUNDED":
     case "PURCHASE_ORDER_STATUS_UPDATE":
     case "RIDER_ASSIGNED": {
+      // These fire for suppliers/admins (PO-scoped) AND, for some status
+      // changes (e.g. a supplier canceling part of an order), the shopper
+      // who placed it — a shopper has no /supplier/orders access.
+      if (!isAdmin && !isSupplier) {
+        return d.orderId ? `/orders?orderId=${enc(d.orderId)}` : "/orders";
+      }
       const sid = d.supplierId ? `&supplierId=${enc(d.supplierId)}` : "";
       return d.purchaseOrderId
         ? `/supplier/orders?poId=${enc(d.purchaseOrderId)}${sid}`
         : d.supplierId
           ? `/supplier/orders?supplierId=${enc(d.supplierId)}`
-          : "/supplier/orders";
+          : d.orderId
+            ? `/orders?orderId=${enc(d.orderId)}`
+            : "/supplier/orders";
     }
 
     // ── Payouts ───────────────────────────────────────────────────────────
     case "SUPPLIER_PAYOUT_RELEASED":
     case "SUPPLIER_PAYOUT_HELD":
     case "SUPPLIER_PAYOUT_FAILED":
-      if (isAdmin) return "/admin?tab=payouts";
+      if (isAdmin) return d.purchaseOrderId ? `/admin?tab=finance&poId=${enc(d.purchaseOrderId)}` : "/admin?tab=finance";
       return d.purchaseOrderId ? `/supplier/orders?poId=${enc(d.purchaseOrderId)}` : "/supplier";
 
     // ── Supplier product status (admin approves → supplier sees result) ───
     case "PRODUCT_APPROVED":
     case "PRODUCT_REJECTED":
     case "PRODUCT_DISABLED":
+      return d.productId ? `/supplier/products/${enc(d.productId)}/edit` : "/supplier/products";
     case "PRODUCT_DELETED":
+      // The product no longer exists — nothing to deep-link to.
       return "/supplier/products";
 
     // ── Offer / change requests ───────────────────────────────────────────
     case "SUPPLIER_OFFER_CHANGE_SUBMITTED":
-      return "/admin/offer-changes";
+      return d.productId ? `/admin/offer-changes?productId=${enc(d.productId)}` : "/admin/offer-changes";
     case "SUPPLIER_OFFER_CHANGE_APPROVED":
     case "SUPPLIER_OFFER_CHANGE_REJECTED":
-      return "/supplier/catalog-offers";
+      // The supplier's own offer (price/lead-days/active) lives on the
+      // product edit page in "my offer" scope — not the template browser.
+      return d.productId ? `/supplier/products/${enc(d.productId)}/edit?scope=offers_mine` : "/supplier/catalog-offers";
 
     case "PRODUCT_CHANGE_SUBMITTED":
-      return d.productId ? `/admin?tab=products&pTab=moderation&productId=${enc(d.productId)}` : "/admin?tab=products&pTab=moderation";
+      // The moderation pTab's own "Inspect" action just hands off to the
+      // manage pTab with a focused product — jump straight there.
+      return d.productId ? `/admin?tab=products&pTab=manage&productId=${enc(d.productId)}` : "/admin?tab=products&pTab=moderation";
     case "PRODUCT_CHANGE_APPROVED":
     case "PRODUCT_CHANGE_REJECTED":
-      return "/supplier/products";
+      return d.productId ? `/supplier/products/${enc(d.productId)}/edit` : "/supplier/products";
 
     // ── Product submitted for admin review ────────────────────────────────
     case "PRODUCT_SUBMITTED":
@@ -130,7 +153,7 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
 
     // ── Supplier reviews ──────────────────────────────────────────────────
     case "SUPPLIER_REVIEW_RECEIVED":
-      return "/supplier";
+      return d.productId ? `/supplier/products/${enc(d.productId)}/edit` : "/supplier";
 
     // ── Generic / fallback ────────────────────────────────────────────────
     case "GENERIC":
@@ -141,7 +164,8 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
         return `/supplier/orders?poId=${enc(d.purchaseOrderId)}${sid}`;
       }
       if (d.purchaseOrderId) return `/supplier/orders?poId=${enc(d.purchaseOrderId)}`;
-      if (d.productId && isAdmin) return `/admin?tab=products`;
+      if (d.productId && isAdmin) return `/admin?tab=products&pTab=manage&productId=${enc(d.productId)}`;
+      if (d.productId && isSupplier) return `/supplier/products/${enc(d.productId)}/edit`;
       if (d.productId) return `/products/${enc(d.productId)}`;
       return null;
   }

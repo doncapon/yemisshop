@@ -1,10 +1,11 @@
 // api/src/routes/productReviews.ts
 import express, { type Request, type Response } from "express";
 import { z } from "zod";
-import { Prisma, PurchaseOrderStatus } from "@prisma/client";
+import { Prisma, PurchaseOrderStatus, NotificationType } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { recomputeSupplierRatingWithReviews } from "../services/supplierRating.service.js";
+import { notifySupplierBySupplierId } from "../services/notifications.service.js";
 
 const router = express.Router();
 
@@ -115,6 +116,7 @@ router.post(
       select: {
         id: true,
         supplierId: true,
+        title: true,
       },
     });
 
@@ -203,6 +205,23 @@ router.post(
 
     const { ratingAvg, ratingCount } =
       await recomputeSupplierRatingWithReviews(supplierId);
+
+    // Only ping the supplier the first time this customer reviews this
+    // product — editing an existing review shouldn't re-notify.
+    const isNewReview = review.createdAt.getTime() === review.updatedAt.getTime();
+    if (isNewReview) {
+      try {
+        const stars = "★".repeat(rating) + "☆".repeat(5 - rating);
+        await notifySupplierBySupplierId(supplierId, {
+          type: NotificationType.SUPPLIER_REVIEW_RECEIVED,
+          title: "New review received",
+          body: `${stars} on ${product.title ?? "your product"}${comment ? `: "${comment}"` : "."}`,
+          data: { productId, reviewId: review.id, rating },
+        });
+      } catch (e) {
+        console.error("SUPPLIER_REVIEW_RECEIVED notify failed", e);
+      }
+    }
 
     return res.status(200).json({
       data: {

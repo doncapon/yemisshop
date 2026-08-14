@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
@@ -424,8 +425,11 @@ export default function AdminOfferChangeRequests() {
   const qc = useQueryClient();
   useAuthStore((s) => s.user);
 
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusProductId = searchParams.get("productId") || "";
+
   const [tab, setTab] = useState<"PENDING" | "APPROVED" | "REJECTED">("PENDING");
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(focusProductId);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
@@ -547,6 +551,26 @@ export default function AdminOfferChangeRequests() {
     refetchOnWindowFocus: false,
   });
 
+  // A notification click can hand a specific product's change request off to
+  // us via ?productId= — once it's loaded, auto-expand its details and drop
+  // the param so it doesn't keep re-triggering.
+  const autoExpandedRef = React.useRef(false);
+  useEffect(() => {
+    if (!focusProductId || autoExpandedRef.current) return;
+    const items = listQ.data?.items ?? [];
+    const match = items.find((x) => x.productId === focusProductId);
+    if (match) {
+      autoExpandedRef.current = true;
+      setExpanded((prev) => new Set(prev).add(match.id));
+      setSearchParams((prev) => {
+        const s = new URLSearchParams(prev);
+        s.delete("productId");
+        return s;
+      }, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusProductId, listQ.data]);
+
   const filtered = useMemo(() => {
     const items = listQ.data?.items ?? [];
     const term = q.trim().toLowerCase();
@@ -567,8 +591,10 @@ export default function AdminOfferChangeRequests() {
 
       const hay = [
         x?.supplier?.name,
+        x?.supplierId,
         x?.product?.title,
         x?.product?.sku,
+        x?.productId,
         x?.scope,
         x?.requestType,
         x?.status,

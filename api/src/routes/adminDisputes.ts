@@ -107,7 +107,7 @@ router.post("/:id/resolve", requireAdmin, async (req: any, res) => {
 
     const current = await prisma.disputeCase.findUnique({
       where: { id },
-      select: { id: true, status: true, orderId: true, subject: true, supplierId: true },
+      select: { id: true, status: true, orderId: true, subject: true, supplierId: true, purchaseOrderId: true },
     });
     if (!current) return res.status(404).json({ error: "Dispute not found" });
 
@@ -138,7 +138,7 @@ router.post("/:id/resolve", requireAdmin, async (req: any, res) => {
         body: `Dispute on order ${current.orderId} (${current.subject}) is now ${statusRaw.toLowerCase()}.${
           adminDecision ? ` Outcome: ${adminDecision}` : ""
         }`,
-        data: { disputeId: id, orderId: current.orderId, status: statusRaw },
+        data: { disputeId: id, orderId: current.orderId, purchaseOrderId: current.purchaseOrderId ?? null, status: statusRaw },
       }).catch((e) => console.error("[admin disputes resolve] supplier notify failed", e));
     }
 

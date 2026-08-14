@@ -4158,6 +4158,8 @@ function DisputesSection({ canAdmin }: { canAdmin: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
   const { openModal, closeModal } = useModal();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusDisputeId = searchParams.get("disputeId") || "";
 
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
@@ -4201,9 +4203,7 @@ function DisputesSection({ canAdmin }: { canAdmin: boolean }) {
 
   const openResolveModal = (d: AdminDispute) => {
     const ResolveForm = () => {
-      const [nextStatus, setNextStatus] = useState<string>(
-        d.status === "OPEN" || d.status === "SUPPLIER_RESPONSE" ? "RESOLVED" : d.status
-      );
+      const [nextStatus, setNextStatus] = useState<string>(d.status);
       const [decision, setDecision] = useState(d.adminDecision ?? "");
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState<string | null>(null);
@@ -4239,6 +4239,7 @@ function DisputesSection({ canAdmin }: { canAdmin: boolean }) {
               value={nextStatus}
               onChange={(e) => setNextStatus(e.target.value)}
             >
+              <option value="OPEN">Open</option>
               <option value="SUPPLIER_RESPONSE">Awaiting supplier response</option>
               <option value="ESCALATED">Escalated</option>
               <option value="RESOLVED">Resolved</option>
@@ -4301,6 +4302,33 @@ function DisputesSection({ canAdmin }: { canAdmin: boolean }) {
       size: "md",
     });
   };
+
+  // Deep-link handoff: a notification click can land here with ?disputeId=,
+  // which we resolve directly (independent of the current list filters)
+  // and open straight into the resolve modal for that one dispute.
+  const openedDisputeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusDisputeId || !canAdmin) return;
+    if (openedDisputeIdRef.current === focusDisputeId) return;
+    openedDisputeIdRef.current = focusDisputeId;
+
+    (async () => {
+      try {
+        const res = await api.get(`/api/admin/disputes/${focusDisputeId}`);
+        const dispute = (res.data?.data ?? res.data) as AdminDispute;
+        if (dispute?.id) openResolveModal(dispute);
+      } catch {
+        toast.push({ title: "Dispute not found", message: "Could not load the linked dispute." });
+      } finally {
+        setSearchParams((prev) => {
+          const s = new URLSearchParams(prev);
+          s.delete("disputeId");
+          return s;
+        }, { replace: true });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusDisputeId, canAdmin]);
 
   return (
     <SectionCard
@@ -4412,6 +4440,9 @@ function DisputesSection({ canAdmin }: { canAdmin: boolean }) {
 }
 
 function FinanceSection({ canAdmin, isSuperAdmin }: { canAdmin: boolean; isSuperAdmin: boolean }) {
+  const [searchParams] = useSearchParams();
+  const focusPoId = searchParams.get("poId") || searchParams.get("purchaseOrderId") || "";
+
   const [subTab, setSubTab] = useState<"payouts" | "ledger">("payouts");
 
   const AdminPayoutsAny = AdminPayoutsPanel as any;
@@ -4452,7 +4483,7 @@ function FinanceSection({ canAdmin, isSuperAdmin }: { canAdmin: boolean; isSuper
 
       <div className="p-4 md:p-5">
         {subTab === "payouts" ? (
-          <AdminPayoutsAny canAdmin={canAdmin} isSuperAdmin={isSuperAdmin} />
+          <AdminPayoutsAny canAdmin={canAdmin} isSuperAdmin={isSuperAdmin} initialQuery={focusPoId} />
         ) : (
           <AdminLedgerAny canAdmin={canAdmin} isSuperAdmin={isSuperAdmin} />
         )}

@@ -18,11 +18,12 @@ import PDFDocument from "pdfkit";
 import { computePaystackSplitForOrder } from "../lib/splits.js";
 
 // enums
-import { SupplierPaymentStatus, PurchaseOrderStatus } from "@prisma/client";
+import { SupplierPaymentStatus, PurchaseOrderStatus, NotificationType } from "@prisma/client";
 import { trackPurchaseIfNeeded } from "../services/tracking.service.js";
 import { logOrderActivity, logOrderActivityTx } from "../services/activity.service.js";
 import { sendSupplierPurchaseOrderEmail } from "../lib/email.js";
 import { resolveMarginPercentForItem } from "./orders.js";
+import { notifyUser, notifySupplierBySupplierId } from "../services/notifications.service.js";
 
 const router = Router();
 
@@ -325,6 +326,12 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
 
     const supplierOrderRef = await ensureSupplierOrderRef(tx, orderId, sid);
 
+    const preexisting = await tx.purchaseOrder.findUnique({
+      where: { orderId_supplierId: { orderId, supplierId: sid } },
+      select: { id: true },
+    });
+    const isNew = !preexisting;
+
     const po = await tx.purchaseOrder.upsert({
       where: { orderId_supplierId: { orderId, supplierId: sid } },
       create: {
@@ -385,6 +392,7 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
       subtotal: customerSubtotal,
       supplierAmount,
       platformFee,
+      isNew,
     });
   }
 
@@ -450,8 +458,8 @@ async function recordSupplierAllocationsOnPaidTx(
       // Keep existing status untouched; do not reset PAID -> PENDING/HOLD
       rows.push(already);
     } else {
-      rows.push(
-        await tx.supplierPaymentAllocation.create({
+      rows.push({
+        ...(await tx.supplierPaymentAllocation.create({
           data: {
             paymentId,
             orderId,
@@ -468,8 +476,10 @@ async function recordSupplierAllocationsOnPaidTx(
               netAllocation: true,
             },
           },
-        })
-      );
+        })),
+        isNew: true,
+        supplierId: po.supplierId,
+      });
     }
 
     await tx.purchaseOrder.update({
@@ -771,8 +781,8 @@ async function finalizePaidFlow(paymentId: string) {
         },
       });
 
-      await ensurePurchaseOrdersForOrderTx(tx, payment.orderId);
-      await recordSupplierAllocationsOnPaidTx(tx, payment.id, payment.orderId);
+      const purchaseOrders = await ensurePurchaseOrdersForOrderTx(tx, payment.orderId);
+      const allocations = await recordSupplierAllocationsOnPaidTx(tx, payment.id, payment.orderId);
 
       await tx.purchaseOrder.updateMany({
         where: {
@@ -795,6 +805,8 @@ async function finalizePaidFlow(paymentId: string) {
         skippedCoreFinalize: false as const,
         orderId: payment.orderId,
         paymentId: payment.id,
+        newPurchaseOrders: purchaseOrders.filter((po: any) => po.isNew),
+        newAllocations: allocations.filter((a: any) => a.isNew),
       };
     },
     {
@@ -826,6 +838,36 @@ async function finalizePaidFlow(paymentId: string) {
     });
   } catch (e) {
     console.error("notifySuppliersForOrder failed", e);
+  }
+
+  // In-app: a new PO means a new order for that supplier to fulfil.
+  for (const po of (finalized as any).newPurchaseOrders ?? []) {
+    try {
+      await notifySupplierBySupplierId(po.supplierId, {
+        type: NotificationType.PURCHASE_ORDER_CREATED,
+        title: "New order to fulfil",
+        body: `You have a new order (₦${Number(po.supplierAmount ?? 0).toLocaleString()}) for order ${orderId}.`,
+        data: { orderId, purchaseOrderId: po.id, supplierId: po.supplierId, amount: po.supplierAmount },
+      });
+    } catch (e) {
+      console.error("PURCHASE_ORDER_CREATED notify failed", e);
+    }
+  }
+
+  // In-app: the supplier's payout for this PO is now reserved (held pending
+  // delivery confirmation) — this is also the moment the PO is "funded", so
+  // we don't fire a separate PURCHASE_ORDER_FUNDED for the same instant.
+  for (const alloc of (finalized as any).newAllocations ?? []) {
+    try {
+      await notifySupplierBySupplierId(alloc.supplierId, {
+        type: NotificationType.SUPPLIER_PAYOUT_HELD,
+        title: "Payout held",
+        body: `₦${Number(alloc.amount ?? 0).toLocaleString()} for order ${orderId} is reserved and will be released after delivery is confirmed.`,
+        data: { orderId, purchaseOrderId: alloc.purchaseOrderId, allocationId: alloc.id, supplierId: alloc.supplierId, amount: alloc.amount },
+      });
+    } catch (e) {
+      console.error("SUPPLIER_PAYOUT_HELD notify failed", e);
+    }
   }
 
   try {
@@ -925,6 +967,23 @@ async function finalizePaidFlow(paymentId: string) {
     });
   } catch (e) {
     console.error("notifyCustomerOrderPaid failed", e);
+  }
+
+  try {
+    const paidOrder = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { userId: true, total: true },
+    });
+    if (paidOrder?.userId) {
+      await notifyUser(paidOrder.userId, {
+        type: NotificationType.ORDER_PAID,
+        title: "Payment received",
+        body: `We've received your payment for order ${orderId}.`,
+        data: { orderId, paymentId: finalized.paymentId, amount: paidOrder.total },
+      });
+    }
+  } catch (e) {
+    console.error("ORDER_PAID notify failed", e);
   }
 
   console.log("[finalizePaidFlow] done", finalized);
@@ -2110,6 +2169,20 @@ router.post("/verify", requireAuth, async (req: AuthedRequest, res: Response) =>
       "Verification attempted on non-pending payment",
       { reference }
     );
+
+    if (pay.status === "FAILED") {
+      try {
+        await notifyUser(req.user!.id, {
+          type: NotificationType.PAYMENT_FAILED,
+          title: "Payment failed",
+          body: `Your payment for order ${orderId} could not be completed. Please try again.`,
+          data: { orderId, paymentId: pay.id, reference },
+        });
+      } catch (e) {
+        console.error("PAYMENT_FAILED notify failed", e);
+      }
+    }
+
     return res.json({ ok: true, status: pay.status, message: "Payment is not successful" });
   }
 

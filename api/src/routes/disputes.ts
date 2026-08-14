@@ -102,7 +102,7 @@ router.post("/", requireAuth, async (req: any, res) => {
         type: NotificationType.DISPUTE_OPENED,
         title: "Dispute opened",
         body: `A dispute was opened on order ${orderId}.`,
-        data: { orderId, disputeId: d.id },
+        data: { orderId, disputeId: d.id, purchaseOrderId: purchaseOrderId ?? null },
       });
     }
   }
