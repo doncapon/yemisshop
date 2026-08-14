@@ -211,12 +211,10 @@ function activeSupplierPayload(args: {
     pickupContactPhone: args.pickupContactPhone,
     pickupInstructions: args.pickupInstructions,
     shippingEnabled: true,
-    shipsNationwide: true,
+    shippingCoverage: "NATIONWIDE" as const,
     defaultLeadDays: args.leadDays,
     sameDayCutoffHour: 14,
     handlingFee: toDec(args.handlingFee),
-    supportsDoorDelivery: true,
-    supportsPickupPoint: chance(0.35),
   };
 }
 
@@ -1964,7 +1962,6 @@ function variantParcelOverride(base: ParcelSeed) {
       where: {
         OR: [
           { shippingEnabled: false },
-          { shipsNationwide: false },
           { registeredAddressId: null },
           { pickupAddressId: null },
         ],
