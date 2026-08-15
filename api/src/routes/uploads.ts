@@ -224,6 +224,14 @@ router.use(
     }
 
     if (err instanceof Error) {
+      const anyErr = err as any;
+      console.error("[POST /api/uploads] failed:", {
+        name: anyErr?.name,
+        message: anyErr?.message,
+        code: anyErr?.Code || anyErr?.code,
+        httpStatusCode: anyErr?.$metadata?.httpStatusCode,
+        requestId: anyErr?.$metadata?.requestId,
+      });
       return res.status(500).json({ error: err.message || "Upload failed" });
     }
 
