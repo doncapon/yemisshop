@@ -84,6 +84,22 @@ function dbClient(tx?: any) {
   return tx ?? prisma;
 }
 
+// Maps a notification type to the supplier preference flag that gates it.
+// Types not listed here (disputes, product/offer changes, reviews, etc.)
+// aren't covered by any preference toggle and always send.
+function preferenceFieldFor(type: NotificationType): "notifyNewOrders" | "notifyLowStock" | "notifyPayouts" | null {
+  if (type === NotificationType.PURCHASE_ORDER_CREATED) return "notifyNewOrders";
+  if (type === NotificationType.LOW_STOCK) return "notifyLowStock";
+  if (
+    type === NotificationType.SUPPLIER_PAYOUT_RELEASED ||
+    type === NotificationType.SUPPLIER_PAYOUT_HELD ||
+    type === NotificationType.SUPPLIER_PAYOUT_FAILED
+  ) {
+    return "notifyPayouts";
+  }
+  return null;
+}
+
 export async function notifySupplierBySupplierId(
   supplierId: string,
   payload: { type: NotificationType; title: string; body: string; data?: any },
@@ -94,7 +110,14 @@ export async function notifySupplierBySupplierId(
   // IMPORTANT: supplier must have userId (or your supplier notification routing must map differently)
   const supplier = await db.supplier.findUnique({
     where: { id: supplierId },
-    select: { id: true, userId: true, name: true },
+    select: {
+      id: true,
+      userId: true,
+      name: true,
+      notifyNewOrders: true,
+      notifyLowStock: true,
+      notifyPayouts: true,
+    },
   });
 
   if (!supplier?.userId) {
@@ -103,6 +126,11 @@ export async function notifySupplierBySupplierId(
       code: "SUPPLIER_NO_USER",
       supplierId,
     });
+  }
+
+  const prefField = preferenceFieldFor(payload.type);
+  if (prefField && !supplier[prefField]) {
+    return { ok: true, suppressed: true, reason: prefField };
   }
 
   // create in-app notification

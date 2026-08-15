@@ -732,6 +732,11 @@ model Supplier {
   // supplier — suppliers never have direct customer contact.
   shippingCoverage   SupplierShippingCoverage @default(NATIONWIDE)
 
+  notifyNewOrders         Boolean   @default(true)
+  notifyLowStock          Boolean   @default(true)
+  notifyPayouts           Boolean   @default(true)
+  lastLowStockNotifiedAt  DateTime?
+
   registeredAddress Address? @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
   pickupAddress     Address? @relation("SupplierPickupAddress", fields: [pickupAddressId], references: [id])
   user              User?    @relation(fields: [userId], references: [id])
@@ -1778,6 +1783,7 @@ enum NotificationType {
   PRODUCT_CHANGE_APPROVED
   PRODUCT_CHANGE_REJECTED
   SUPPLIER_DOCUMENT_UPLOADED
+  LOW_STOCK
   GENERIC
 }
 

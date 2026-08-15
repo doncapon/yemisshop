@@ -712,6 +712,13 @@ export default function SupplierSettings() {
         bankName: String(sup?.bankName ?? d.bankName ?? ""),
         accountNumber: String(sup?.accountNumber ?? d.accountNumber ?? ""),
         accountName: String(sup?.accountName ?? d.accountName ?? ""),
+
+        notifyNewOrders:
+          sup?.notifyNewOrders ?? (d.notifyNewOrders ?? true),
+        notifyLowStock:
+          sup?.notifyLowStock ?? (d.notifyLowStock ?? true),
+        notifyPayouts:
+          sup?.notifyPayouts ?? (d.notifyPayouts ?? true),
       };
     });
 
@@ -818,6 +825,9 @@ export default function SupplierSettings() {
     const payload: Record<string, unknown> = {
       contactEmail: draft.supportEmail?.trim() ? draft.supportEmail.trim() : null,
       whatsappPhone: draft.supportPhone?.trim() ? draft.supportPhone.trim() : null,
+      notifyNewOrders: draft.notifyNewOrders,
+      notifyLowStock: draft.notifyLowStock,
+      notifyPayouts: draft.notifyPayouts,
     };
 
     if (bankEditable) {
@@ -1223,7 +1233,7 @@ export default function SupplierSettings() {
 
           <Card
             title="Notifications"
-            subtitle="Control which alerts you receive. (Not yet wired to backend)"
+            subtitle="Control which alerts you receive."
             icon={<Bell size={18} />}
           >
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">

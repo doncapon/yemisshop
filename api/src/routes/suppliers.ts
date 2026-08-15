@@ -280,6 +280,10 @@ function toSupplierMeDto(s: any) {
     shippingEnabled: s.shippingEnabled ?? null,
     shippingCoverage: s.shippingCoverage ?? null,
 
+    notifyNewOrders: s.notifyNewOrders ?? true,
+    notifyLowStock: s.notifyLowStock ?? true,
+    notifyPayouts: s.notifyPayouts ?? true,
+
     registeredAddress: s.registeredAddress ?? null,
     pickupAddress: s.pickupAddress ?? null,
 
@@ -362,6 +366,10 @@ const supplierMeSelect = {
   pickupInstructions: true,
   shippingEnabled: true,
   shippingCoverage: true,
+
+  notifyNewOrders: true,
+  notifyLowStock: true,
+  notifyPayouts: true,
 
   registeredAddressId: true,
   pickupAddressId: true,
@@ -469,6 +477,10 @@ const UpdateSupplierMeSchema = z
     pickupInstructions: z.string().nullable().optional(),
     shippingEnabled: z.boolean().optional(),
     shippingCoverage: z.nativeEnum(SupplierShippingCoverage).optional(),
+
+    notifyNewOrders: z.boolean().optional(),
+    notifyLowStock: z.boolean().optional(),
+    notifyPayouts: z.boolean().optional(),
 
     // Onboarding-only controls for when bank verification actually starts:
     // - deferBankVerification: persist bank fields as a draft without
@@ -650,6 +662,18 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
 
     if ("shippingCoverage" in parsed) {
       supplierData.shippingCoverage = parsed.shippingCoverage;
+    }
+
+    if ("notifyNewOrders" in parsed) {
+      supplierData.notifyNewOrders = cleanBool(parsed.notifyNewOrders);
+    }
+
+    if ("notifyLowStock" in parsed) {
+      supplierData.notifyLowStock = cleanBool(parsed.notifyLowStock);
+    }
+
+    if ("notifyPayouts" in parsed) {
+      supplierData.notifyPayouts = cleanBool(parsed.notifyPayouts);
     }
 
     const nextFirstName =
