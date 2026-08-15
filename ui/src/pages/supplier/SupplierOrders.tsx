@@ -14,7 +14,6 @@ import {
   RefreshCcw,
   ChevronLeft,
   ChevronRight,
-  Users,
 } from "lucide-react";
 import {
   keepPreviousData,
@@ -28,7 +27,6 @@ import SiteLayout from "../../layouts/SiteLayout";
 import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
-import { AssignRiderControl } from "../../components/supplier/AssignRiderControl";
 import { useSupplierVerificationGate } from "../../hooks/useSupplierVerificationGate";
 
 function Card({
@@ -369,16 +367,6 @@ export default function SupplierOrders() {
     onboardingBlocked
       ? verificationGate?.lockReason ||
         "Your updated documents are currently under review. Payout and payout-related actions stay locked until re-verification is completed."
-      : undefined;
-
-  const ridersLocked =
-    onboardingBlocked &&
-    !!verificationGate?.hasPendingRequiredDoc;
-
-  const ridersLockReason =
-    ridersLocked
-      ? verificationGate?.lockReason ||
-        "Your updated documents are under review. Rider management is locked until verification is completed."
       : undefined;
 
   const urlSupplierId = useMemo(() => {
@@ -1151,25 +1139,6 @@ export default function SupplierOrders() {
                 Overview <ArrowRight size={14} />
               </Link>
 
-              {(isSupplierUser || isAdmin) &&
-                (ridersLocked ? (
-                  <button
-                    type="button"
-                    disabled
-                    title={ridersLockReason}
-                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white/10 text-white/70 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/20 cursor-not-allowed opacity-70"
-                  >
-                    <Users size={14} /> Riders locked
-                  </button>
-                ) : (
-                  <Link
-                    to={withSupplierCtx("/supplier/riders")}
-                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white/15 text-white px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/30 hover:bg-white/20"
-                    title="Invite and manage riders"
-                  >
-                    <Users size={14} /> Riders
-                  </Link>
-                ))}
             </div>
 
             {!hydrated ? (
@@ -1254,22 +1223,6 @@ export default function SupplierOrders() {
                 </Link>
               </div>
 
-              {ridersLocked && (
-                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  <b>Rider management locked:</b> You cannot add or assign riders while your required
-                  verification documents are pending review.
-                </div>
-              )}
-
-              <div className="shrink-0">
-                <Link
-                  to={verificationGate?.nextPath || "/supplier/verify-contact"}
-                  className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
-                >
-                  {nextStepLabel}
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Link>
-              </div>
             </div>
           </div>
         )}
@@ -1808,29 +1761,6 @@ export default function SupplierOrders() {
                             ) : null}
                           </div>
                         )}
-
-                        {(isSupplierUser || isAdmin) &&
-                          normStatus(o.supplierStatus) === "SHIPPED" &&
-                          o.purchaseOrderId && (
-                            <div className="mb-3 space-y-2">
-                              {ridersLocked && (
-                                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                                  Rider assignment is locked while supplier verification documents are under review.
-                                </div>
-                              )}
-
-                              <AssignRiderControl
-                                purchaseOrderId={o.purchaseOrderId}
-                                currentRiderId={o.riderId ?? null}
-                                disabled={
-                                  ridersLocked ||
-                                  normStatus(o.supplierStatus) === "DELIVERED" ||
-                                  normStatus(o.supplierStatus) === "CANCELED" ||
-                                  normStatus(o.supplierStatus) === "CANCELLED"
-                                }
-                              />
-                            </div>
-                          )}
 
                         {editingId === o.id && (
                           <div className="rounded-xl border bg-zinc-50 p-3 flex flex-col gap-2">

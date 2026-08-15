@@ -11,7 +11,6 @@ import {
   SupplierVerifyContact,
   SupplierDashboard,
   SupplierOrdersPage,
-  SupplierRiders,
 } from "../../routes/lazy";
 
 /* ── Layout shell ──────────────────────────────────────────────────── */
@@ -198,17 +197,4 @@ export function SupplierOrdersRouteGuard() {
   }
 
   return <SupplierOrdersPage />;
-}
-
-/* ── Riders route (inline role check) ─────────────────────────────── */
-
-export function SupplierRidersRoute() {
-  const user = useAuthStore((s) => s.user);
-  return normRole(user?.role) === "SUPPLIER" ? (
-    <SupplierRestrictedPageGuard>
-      <SupplierRiders />
-    </SupplierRestrictedPageGuard>
-  ) : (
-    <SupplierRiders />
-  );
 }

@@ -5,11 +5,21 @@ import crypto from "crypto";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { sendRiderInviteEmail } from "../lib/email.js";
+import { isInternalLogisticsEnabled } from "../lib/featureFlags.js";
 
 const router = Router();
 
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
-const isSupplier = (role?: string) => role === "SUPPLIER";
+
+// Internal logistics (platform-owned riders) is admin-only and gated behind
+// a feature flag — suppliers never manage their own riders; deliveries go
+// through GIGL. This blocks every route below until the flag is turned on.
+router.use((req, res, next) => {
+  if (!isInternalLogisticsEnabled()) {
+    return res.status(404).json({ error: "Internal logistics isn't enabled yet." });
+  }
+  next();
+});
 
 function sha256(s: string) {
   return crypto.createHash("sha256").update(s).digest("hex");
@@ -84,37 +94,27 @@ function buildPaginatedResult<T>(params: {
 
 type SupplierCtx = { supplierId: string; supplierName?: string | null };
 
-// Supplier context (admin can impersonate via supplierId)
+// Riders are platform-owned and admin-managed only — suppliers never resolve
+// their own context here, unlike other supplier-scoped routes in this app.
 async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
   const role = req.user?.role;
   const userId = req.user?.id;
   if (!userId) throw Object.assign(new Error("Unauthorized"), { status: 401 });
 
-  // Admin picks supplierId
-  if (isAdmin(role)) {
-    const supplierId = String(req.query?.supplierId ?? req.body?.supplierId ?? "").trim();
-    if (!supplierId) throw Object.assign(new Error("Missing supplierId"), { status: 400 });
-
-    const s = await prisma.supplier.findUnique({
-      where: { id: supplierId },
-      select: { id: true, name: true },
-    });
-
-    if (!s?.id) throw Object.assign(new Error("Supplier not found"), { status: 404 });
-    return { supplierId: s.id, supplierName: s.name ?? null };
+  if (!isAdmin(role)) {
+    throw Object.assign(new Error("Forbidden"), { status: 403 });
   }
 
-  // Supplier uses own supplier profile
-  if (isSupplier(role)) {
-    const supplier = await prisma.supplier.findFirst({
-      where: { userId },
-      select: { id: true, name: true },
-    });
-    if (!supplier?.id) throw Object.assign(new Error("Supplier profile not found"), { status: 403 });
-    return { supplierId: supplier.id, supplierName: supplier.name ?? null };
-  }
+  const supplierId = String(req.query?.supplierId ?? req.body?.supplierId ?? "").trim();
+  if (!supplierId) throw Object.assign(new Error("Missing supplierId"), { status: 400 });
 
-  throw Object.assign(new Error("Forbidden"), { status: 403 });
+  const s = await prisma.supplier.findUnique({
+    where: { id: supplierId },
+    select: { id: true, name: true },
+  });
+
+  if (!s?.id) throw Object.assign(new Error("Supplier not found"), { status: 404 });
+  return { supplierId: s.id, supplierName: s.name ?? null };
 }
 
 /**

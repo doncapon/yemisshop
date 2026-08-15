@@ -18,6 +18,7 @@ import { sendOtpWhatsappViaTermii } from "../lib/termii.js";
 import { sendOrderShippedMessage, sendOrderDeliveredMessage } from "../services/messaging.service.js";
 import { isGiglEnabled } from "../services/shipping/giglProvider.js";
 import { bookGiglShipmentForPurchaseOrder } from "../services/shipping/giglBooking.service.js";
+import { isInternalLogisticsEnabled } from "../lib/featureFlags.js";
 
 const router = Router();
 const OTP_RESEND_COOLDOWN_SECS = 60;
@@ -1714,9 +1715,13 @@ function orderItemHasField(field: string) {
  */
 router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any, res) => {
   try {
+    if (!isInternalLogisticsEnabled()) {
+      return res.status(404).json({ error: "Internal logistics isn't enabled yet." });
+    }
+
     const role = req.user?.role;
-    if (!isSupplier(role) && !isAdmin(role)) {
-      return res.status(403).json({ error: "Only supplier/admin can assign riders" });
+    if (!isAdmin(role)) {
+      return res.status(403).json({ error: "Only admins can assign riders" });
     }
 
     const ctx = await resolveSupplierContext(req);

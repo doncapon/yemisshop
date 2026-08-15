@@ -835,6 +835,53 @@ router.put("/me", requireAuth, requireSupplier, async (req, res) => {
         }
       }
 
+      // Changing pickup/registered address is a physical-location change —
+      // require fresh proof of address for the new location rather than
+      // letting a stale, previously-approved document silently cover it.
+      const addressChanged =
+        sensitiveChanged.includes("registeredAddress") ||
+        sensitiveChanged.includes("pickupAddress");
+
+      if (addressChanged) {
+        const latestProofOfAddress = await tx.supplierDocument.findFirst({
+          where: { supplierId: supplier.id, kind: "PROOF_OF_ADDRESS" },
+          orderBy: { uploadedAt: "desc" },
+          select: { id: true, status: true },
+        });
+
+        if (latestProofOfAddress && latestProofOfAddress.status !== "REJECTED") {
+          await tx.supplierDocument.update({
+            where: { id: latestProofOfAddress.id },
+            data: {
+              status: "REJECTED",
+              note: "Address changed — please upload updated proof of address for your new location.",
+            },
+          });
+        }
+
+        try {
+          await tx.supplierActivity.create({
+            data: {
+              supplierId: supplier.id,
+              type: "ADDRESS_CHANGED",
+              message: `${sensitiveChanged
+                .filter((k) => k === "registeredAddress" || k === "pickupAddress")
+                .join(" and ")} changed — proof of address resubmission required.`,
+              meta: {
+                fields: sensitiveChanged.filter(
+                  (k) => k === "registeredAddress" || k === "pickupAddress"
+                ),
+              },
+            },
+          });
+        } catch (activityError) {
+          console.error(
+            "[PUT /api/supplier/me] SupplierActivity log failed:",
+            activityError
+          );
+        }
+      }
+
       if (Object.keys(supplierData).length) {
         await tx.supplier.update({
           where: { id: supplier.id },
