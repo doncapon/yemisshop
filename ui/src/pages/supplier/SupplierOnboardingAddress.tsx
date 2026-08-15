@@ -880,7 +880,12 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     return supplierHasInlineDocuments(supplier) || hasFetchedDocuments(supplierDocuments);
   }, [supplier, supplierDocuments]);
 
-  const documentsLocked = documentsLockedOnLoad;
+  // Locked while docs are submitted and under first-time review, same as
+  // before — but a fully verified/active supplier can edit their address
+  // again post-approval. Saving then resets status to PENDING_VERIFICATION
+  // (see PUT /api/supplier/me), which re-locks this on next load until an
+  // admin reviews the change.
+  const documentsLocked = documentsLockedOnLoad && !isVerifiedSupplier(supplier);
 
   const setRegisteredField =
     (key: keyof AddressState) =>
@@ -1539,7 +1544,10 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     setIsContinuing(true);
 
     try {
-      if (documentsLocked || verifiedSupplier) {
+      // A verified supplier with no pending edits has nothing new to save —
+      // skip straight through. But if they've just changed their address,
+      // fall through to validate/save it rather than silently discarding it.
+      if (documentsLocked || (verifiedSupplier && !hasUnsavedChanges)) {
         navigateToDocuments();
         return;
       }
@@ -2053,8 +2061,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       What happens next
                     </h3>
                     <p className="mt-1 text-sm text-zinc-600">
-                      After your address changes are valid and saved, continue to upload
-                      required supplier documents.
+                      {verifiedSupplier && hasUnsavedChanges
+                        ? "Changing your address requires fresh proof of address — saving will send your account for admin re-review."
+                        : "After your address changes are valid and saved, continue to upload required supplier documents."}
                     </p>
 
                     <button
@@ -2069,6 +2078,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                         ? "Loading address details…"
                         : isContinuing
                         ? "Validating and saving…"
+                        : verifiedSupplier && hasUnsavedChanges
+                        ? "Save address change"
                         : "Continue to documents"}
                     </button>
                   </div>
@@ -2133,6 +2144,8 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                       ? "Loading…"
                       : isContinuing
                       ? "Please wait…"
+                      : verifiedSupplier && hasUnsavedChanges
+                      ? "Save address change"
                       : "Next step"}
                     {!isContinuing && !loading && <ArrowRight className="ml-2 h-4 w-4" />}
                   </button>
