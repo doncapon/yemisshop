@@ -13,6 +13,12 @@ import { getGiglShippingPrice, isGiglEnabled } from "./giglProvider.js";
 
 const prisma = new PrismaClient();
 
+// GIGL's own pricing API doesn't discount pickup-point handoffs at all
+// (confirmed live — PickUpOptions has no effect on their quoted price), even
+// though it's genuinely cheaper for them to fulfil (no last-mile door
+// delivery). We pass some of that saving on to the customer ourselves.
+const PICKUP_POINT_DISCOUNT_PCT = Number(process.env.PICKUP_POINT_DISCOUNT_PCT ?? 15);
+
 export type QuoteCheckoutItemInput = {
   productId: string;
   variantId?: string | null;
@@ -51,6 +57,8 @@ export type SupplierShippingQuoteResult = {
    * "supplier_premises" — customer picks up at the supplier's own address
    */
   pickupType?: "gigl_hub" | "supplier_premises" | null;
+  /** City/town-level name of the resolved pickup hub — only set when pickupType === "gigl_hub". */
+  pickupHubName?: string | null;
   shippingQuoteId?: string;
   totals: {
     shippingFee: number;
@@ -126,6 +134,25 @@ function volumetricWeightGrams(
 
 function normalizeText(s?: string | null): string {
   return (s || "").trim().toLowerCase();
+}
+
+// GIGL's /price response carries no delivery-time estimate at all (confirmed
+// live — its full response schema has no ETA field of any kind), so this is
+// a rough, honestly-labeled estimate based on same-state vs interstate
+// distance, not real carrier data. Pickup skips the last-mile leg (parcel
+// just needs to reach the hub, not the customer's door), so it shaves a day
+// off each end versus door delivery.
+function estimateDeliveryEtaDays(
+  originState: string | null | undefined,
+  destinationState: string | null | undefined,
+  isPickup = false
+): { min: number; max: number } {
+  const sameState =
+    !!originState && !!destinationState && normalizeText(originState) === normalizeText(destinationState);
+  if (isPickup) {
+    return sameState ? { min: 1, max: 2 } : { min: 2, max: 5 };
+  }
+  return sameState ? { min: 1, max: 3 } : { min: 3, max: 7 };
 }
 
 function inferParcelClass(args: {
@@ -968,15 +995,29 @@ export async function quoteShippingForCheckout(
           carrierRef: giglResult.carrierRef,
         });
 
+        // GIGL charges the same price whether it's a door delivery or a
+        // pickup-hub handoff — we discount pickup ourselves since it's
+        // genuinely cheaper for them to fulfil (no last-mile leg).
+        const pickupDiscounted =
+          serviceLevel === DeliveryServiceLevel.PICKUP_POINT
+            ? round2(giglResult.baseRate * (1 - PICKUP_POINT_DISCOUNT_PCT / 100))
+            : giglResult.baseRate;
+
+        const eta = estimateDeliveryEtaDays(
+          pickupAddress.state,
+          destination.state,
+          serviceLevel === DeliveryServiceLevel.PICKUP_POINT
+        );
+
         chosen = {
-          shippingFee: giglResult.baseRate,
+          shippingFee: pickupDiscounted,
           remoteSurcharge: 0,
           fuelSurcharge: 0,
           // No supplier-set handling surcharge on top of the live GIGL
           // rate — suppliers price packing/handling into their base price.
           handlingFee: 0,
-          etaMinDays: giglResult.etaMinDays,
-          etaMaxDays: giglResult.etaMaxDays,
+          etaMinDays: eta.min,
+          etaMaxDays: eta.max,
           rateSource: ShippingRateSource.LIVE_CARRIER,
           pricingMeta: {
             mode: "gigl_live",
@@ -985,6 +1026,7 @@ export async function quoteShippingForCheckout(
             giglVat: giglResult.vatAmount,
             originState: pickupAddress.state ?? null,
             destinationState: destination.state ?? null,
+            pickupHubName: giglResult.receiverStationName,
           },
         };
       } catch (e: any) {
@@ -1274,6 +1316,8 @@ export async function quoteShippingForCheckout(
       rateSource: chosen.rateSource,
       shippingQuoteId: quote.id,
       pickupType,
+      pickupHubName:
+        pickupType === "gigl_hub" ? (chosen.pricingMeta?.pickupHubName as string | null) ?? null : null,
       totals: {
         shippingFee: toNum(quote.shippingFee),
         remoteSurcharge: toNum(quote.remoteSurcharge),

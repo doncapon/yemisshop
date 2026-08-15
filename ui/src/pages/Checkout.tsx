@@ -102,6 +102,7 @@ type ShippingQuoteLite = {
   etaMaxDays?: number | null;
   rateSource?: string | null;
   pickupType?: "gigl_hub" | "supplier_premises" | null;
+  pickupHubName?: string | null;
   error?: string | null;
 };
 
@@ -1032,6 +1033,7 @@ function normalizeShippingQuoteResponse(raw: any): ShippingQuoteResponse | null 
               : Number(q.etaMaxDays),
           rateSource: q.rateSource ?? breakdown.rateSource ?? null,
           pickupType: q.pickupType ?? null,
+          pickupHubName: q.pickupHubName ?? null,
           error: q.error ? String(q.error) : null,
         } as ShippingQuoteLite;
       })
@@ -1097,6 +1099,8 @@ function normalizeShippingQuoteResponse(raw: any): ShippingQuoteResponse | null 
                 ? Number(s.eta.maxDays)
                 : null,
           rateSource: s?.rateSource ?? breakdown.rateSource ?? "FALLBACK_ZONE",
+          pickupType: s?.pickupType ?? null,
+          pickupHubName: s?.pickupHubName ?? null,
           error: s?.error ? String(s.error) : null,
         } as ShippingQuoteLite;
       })
@@ -1662,7 +1666,7 @@ export default function Checkout() {
     makeEmptyShippingForm(homeAddr.country || NIGERIA_COUNTRY)
   );
 
-  const [selectedServiceLevel, setSelectedServiceLevel] = useState<"STANDARD" | "EXPRESS" | "PICKUP_POINT">("STANDARD");
+  const [selectedServiceLevel, setSelectedServiceLevel] = useState<"STANDARD" | "PICKUP_POINT">("STANDARD");
 
   const [makeDefaultShipping, setMakeDefaultShipping] = useState(false);
   const [savingShippingEntry, setSavingShippingEntry] = useState(false);
@@ -1939,6 +1943,36 @@ export default function Checkout() {
   });
 
   const shippingFee = shippingEnabled ? round2(shippingQ.data?.totalFee ?? 0) : 0;
+
+  // Rough estimate, not a guarantee — worst-case across suppliers, since the
+  // order isn't complete until every supplier's items have arrived.
+  const shippingEta = useMemo(() => {
+    if (!shippingEnabled) return null;
+    const quotes = (shippingQ.data?.quotes ?? []).filter((q) => !q.error);
+    const mins = quotes.map((q) => q.etaMinDays).filter((n): n is number => n != null);
+    const maxs = quotes.map((q) => q.etaMaxDays).filter((n): n is number => n != null);
+    if (!mins.length || !maxs.length) return null;
+    return { min: Math.max(...mins), max: Math.max(...maxs) };
+  }, [shippingEnabled, shippingQ.data]);
+
+  // Destination hub is resolved from the customer's own address, so it's the
+  // same regardless of which supplier the quote came from.
+  const pickupHubName = useMemo(() => {
+    if (!shippingEnabled) return null;
+    const quotes = shippingQ.data?.quotes ?? [];
+    return quotes.find((q) => q.pickupHubName)?.pickupHubName ?? null;
+  }, [shippingEnabled, shippingQ.data]);
+
+  // Each supplier's items ship as their own parcel — worth telling the
+  // customer upfront rather than them wondering why boxes arrived separately.
+  const shippingSupplierCount = useMemo(() => {
+    if (!shippingEnabled) return 0;
+    const ids = new Set(
+      (shippingQ.data?.quotes ?? []).filter((q) => !q.error).map((q) => q.supplierId)
+    );
+    return ids.size;
+  }, [shippingEnabled, shippingQ.data]);
+
   const shippingQuoteIds = useMemo(
     () =>
       shippingEnabled
@@ -3754,11 +3788,10 @@ export default function Checkout() {
                 {shippingEnabled && (
                   <div className="mt-4">
                     <div className="text-xs font-medium uppercase tracking-wide text-ink-soft mb-2">Delivery method</div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-2 gap-1.5">
                       {(
                         [
                           { level: "STANDARD", label: "Standard", icon: "🚚" },
-                          { level: "EXPRESS", label: "Express", icon: "⚡" },
                           { level: "PICKUP_POINT", label: "Pickup Hub", icon: "📦" },
                         ] as const
                       ).map(({ level, label, icon }) => (
@@ -3779,7 +3812,18 @@ export default function Checkout() {
                     </div>
                     {selectedServiceLevel === "PICKUP_POINT" && (
                       <p className="mt-1.5 text-[10px] sm:text-[11px] text-ink-soft leading-snug">
-                        Pick up your order at a <span className="font-medium text-ink">GIG Logistics service centre</span> near you, or at the supplier's premises if they offer self-pickup.
+                        Pick up your order at a{" "}
+                        <span className="font-medium text-ink">GIG Logistics service centre</span>
+                        {pickupHubName ? (
+                          <>
+                            {" "}
+                            in <span className="font-medium text-ink">{pickupHubName}</span>
+                          </>
+                        ) : (
+                          " near you"
+                        )}
+                        {" "}— cheaper than door delivery since there's no last-mile drop-off. GIGL
+                        will share the exact pickup address once your order is on its way.
                       </p>
                     )}
                   </div>
@@ -3803,6 +3847,24 @@ export default function Checkout() {
                             : ngn.format(0)}
                     </span>
                   </div>
+
+                  {shippingEnabled && shippingEta && (
+                    <div className="flex items-center justify-between text-[11px] sm:text-xs text-ink-soft">
+                      <span>Estimated delivery</span>
+                      <span>
+                        {shippingEta.min === shippingEta.max
+                          ? `${shippingEta.min} day${shippingEta.min === 1 ? "" : "s"}`
+                          : `${shippingEta.min}–${shippingEta.max} days`}
+                      </span>
+                    </div>
+                  )}
+
+                  {shippingEnabled && shippingSupplierCount > 1 && (
+                    <div className="mt-1 text-[11px] sm:text-xs rounded-lg border border-dashed border-zinc-200 bg-zinc-50/90 px-3 py-2 text-ink-soft">
+                      Your items ship from {shippingSupplierCount} different suppliers, so this
+                      order will arrive as {shippingSupplierCount} separate parcels.
+                    </div>
+                  )}
 
                   {showShippingIncludedRibbon && (
                     <div className="mt-1 text-[11px] sm:text-xs rounded-lg border border-dashed border-zinc-200 bg-zinc-50/90 px-3 py-2 text-ink-soft">

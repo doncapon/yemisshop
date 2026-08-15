@@ -1,6 +1,6 @@
 // src/pages/supplier/SupplierOnboardingAddress.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
@@ -659,6 +659,7 @@ function AddressFieldsSection({
 
 export default function SupplierOnboardingAddress(): React.ReactElement {
   const nav = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [loading, setLoading] = useState<boolean>(true);
   const [err, setErr] = useState<string | null>(null);
@@ -880,19 +881,35 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
     return supplierHasInlineDocuments(supplier) || hasFetchedDocuments(supplierDocuments);
   }, [supplier, supplierDocuments]);
 
-  // Locked while docs are submitted and under first-time review, same as
-  // before — but a fully verified/active supplier can edit their address
-  // again post-approval. Saving then resets status to PENDING_VERIFICATION
-  // (see PUT /api/supplier/me), which re-locks this on next load until an
-  // admin reviews the change.
-  const documentsLocked = documentsLockedOnLoad && !isVerifiedSupplier(supplier);
+  // Registered/legal business address is permanently locked once any
+  // document has ever been submitted — changing it is rare and serious
+  // enough that it shouldn't be a quick self-service edit at all.
+  const registeredLocked = documentsLockedOnLoad;
+
+  // Pickup address stays locked the same way during first-time review, but
+  // a verified supplier can deliberately unlock it via the "Change pickup
+  // address" button rather than it silently becoming editable. Saving then
+  // resets status to PENDING_VERIFICATION (see PUT /api/supplier/me), which
+  // re-locks this on next load until an admin reviews the change.
+  const [pickupUnlockedForEdit, setPickupUnlockedForEdit] = useState(false);
+  const verifiedNow = isVerifiedSupplier(supplier);
+  const documentsLocked = documentsLockedOnLoad && (!verifiedNow || !pickupUnlockedForEdit);
+
+  // Deep link from elsewhere (e.g. the Shipping settings page) straight into
+  // pickup-edit mode, so the supplier doesn't have to click twice.
+  useEffect(() => {
+    if (verifiedNow && searchParams.get("requestPickupChange") === "1") {
+      setPickupUnlockedForEdit(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [verifiedNow, searchParams]);
 
   const setRegisteredField =
     (key: keyof AddressState) =>
     (
       e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
     ): void => {
-      if (documentsLocked) return;
+      if (registeredLocked) return;
 
       const nextValue = e.target.value;
 
@@ -1727,8 +1744,9 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
 
             {documentsLocked && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                Documents had already been submitted when this page loaded. Address and
-                shipping fields are read-only on this visit.
+                {verifiedNow
+                  ? "Your registered address can't be self-edited. Need to update your pickup address? Use the \"Change pickup address\" button below."
+                  : "Documents had already been submitted when this page loaded. Address and shipping fields are read-only on this visit."}
               </div>
             )}
 
@@ -1769,30 +1787,49 @@ export default function SupplierOnboardingAddress(): React.ReactElement {
                   <AddressFieldsSection
                     sectionKey="registered"
                     title="Registered address"
-                    subtitle="This is your business or legal registered address."
+                    subtitle="This is your business or legal registered address. Once submitted, it can't be self-edited — contact support if it needs to change."
                     icon={<Building2Fallback />}
                     value={registered}
                     countries={countries}
                     fieldRefs={fieldRefs.current.registered}
                     errors={fieldErrors}
-                    isReadOnly={documentsLocked}
+                    isReadOnly={registeredLocked}
                     onFieldChange={setRegisteredField}
                   />
 
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
-                    <div className="mb-4 flex items-center gap-3">
-                      <div className="rounded-xl bg-zinc-100 p-3">
-                        <Truck className="h-5 w-5 text-zinc-700" />
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="rounded-xl bg-zinc-100 p-3">
+                          <Truck className="h-5 w-5 text-zinc-700" />
+                        </div>
+                        <div>
+                          <h2 className="text-base font-semibold text-zinc-900">
+                            Pickup address
+                          </h2>
+                          <p className="text-sm text-zinc-600">
+                            This is where pickups or dispatches happen.
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <h2 className="text-base font-semibold text-zinc-900">
-                          Pickup address
-                        </h2>
-                        <p className="text-sm text-zinc-600">
-                          This is where pickups or dispatches happen.
-                        </p>
-                      </div>
+
+                      {verifiedNow && !pickupUnlockedForEdit && (
+                        <button
+                          type="button"
+                          onClick={() => setPickupUnlockedForEdit(true)}
+                          className="shrink-0 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-800 hover:bg-teal-100 transition"
+                        >
+                          Change pickup address
+                        </button>
+                      )}
                     </div>
+
+                    {verifiedNow && pickupUnlockedForEdit && (
+                      <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        Changing your pickup address requires fresh proof of address — saving will
+                        send your account for admin re-review.
+                      </div>
+                    )}
 
                     <label className="mb-4 flex items-center gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
                       <input

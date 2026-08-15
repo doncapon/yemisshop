@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MapPin, Save, Settings2 } from "lucide-react";
@@ -261,7 +262,15 @@ export default function SupplierShipping() {
 
                   <div className="mt-5 grid gap-4 md:grid-cols-2">
                     <div className="rounded-2xl border p-4">
-                      <div className="mb-2 text-sm font-semibold text-slate-900">Pickup address</div>
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="text-sm font-semibold text-slate-900">Pickup address</div>
+                        <Link
+                          to="/supplier/onboarding/address?requestPickupChange=1"
+                          className="shrink-0 rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1 text-[11px] font-semibold text-teal-800 hover:bg-teal-100 transition"
+                        >
+                          Change
+                        </Link>
+                      </div>
                       <div className="text-sm text-slate-600">
                         {data.supplier.pickupAddress
                           ? `${data.supplier.pickupAddress.city || ""}, ${data.supplier.pickupAddress.state || ""}, ${data.supplier.pickupAddress.country || ""}`
@@ -277,6 +286,9 @@ export default function SupplierShipping() {
                         {data.supplier.registeredAddress
                           ? `${data.supplier.registeredAddress.city || ""}, ${data.supplier.registeredAddress.state || ""}, ${data.supplier.registeredAddress.country || ""}`
                           : "No registered address set"}
+                      </div>
+                      <div className="mt-1 text-[11px] text-slate-400">
+                        Can't be self-edited — contact support if this needs to change.
                       </div>
                     </div>
                   </div>
