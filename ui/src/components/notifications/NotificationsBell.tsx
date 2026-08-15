@@ -151,6 +151,10 @@ function getNotifUrl(n: NotificationWire, userRole?: string): string | null {
     case "SUPPLIER_DOCUMENT_UPLOADED":
       return d.supplierId ? `/admin/supplier-documents?supplierId=${enc(d.supplierId)}` : "/admin/supplier-documents";
 
+    // ── Low stock ──────────────────────────────────────────────────────────
+    case "LOW_STOCK":
+      return "/supplier/products";
+
     // ── Supplier reviews ──────────────────────────────────────────────────
     case "SUPPLIER_REVIEW_RECEIVED":
       return d.productId ? `/supplier/products/${enc(d.productId)}/edit` : "/supplier";

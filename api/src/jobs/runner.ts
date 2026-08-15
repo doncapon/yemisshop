@@ -3,6 +3,7 @@ import { runWithAdvisoryLock } from "../lib/advisoryLock.js";
 import { releaseDueHeldPayoutsOnce } from "./payoutRelease.job.js";
 import { expireUnpaidOrdersOnce } from "./expireUnpaidOrders.job.js";
 import { recomputeProductStockOnce } from "./recomputeProductStock.jobs.js";
+import { checkLowStockOnce } from "./lowStockCheck.job.js";
 
 type JobResult = unknown;
 
@@ -40,6 +41,11 @@ function getJobs(group: ReturnType<typeof getJobGroup>): Job[] {
       name: "recompute-product-stock",
       run: recomputeProductStockOnce,
       lockKey: 7_270_003,
+    },
+    {
+      name: "low-stock-check",
+      run: checkLowStockOnce,
+      lockKey: 7_270_004,
     },
   ];
 
