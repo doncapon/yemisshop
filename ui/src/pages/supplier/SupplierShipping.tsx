@@ -8,7 +8,6 @@ import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 
-type DeliveryServiceLevel = "STANDARD" | "EXPRESS" | "PICKUP_POINT" | "SAME_DAY";
 type SupplierShippingCoverage = "LOCAL" | "REGIONAL" | "NATIONWIDE";
 
 type SupplierEnvelope = {
@@ -17,9 +16,6 @@ type SupplierEnvelope = {
     name: string;
     shippingEnabled: boolean;
     shippingCoverage: SupplierShippingCoverage;
-    defaultLeadDays: number | null;
-    handlingFee: number | null;
-    defaultServiceLevel: DeliveryServiceLevel | null;
     pickupAddress?: {
       city?: string | null;
       state?: string | null;
@@ -34,13 +30,6 @@ type SupplierEnvelope = {
     } | null;
   };
 };
-
-const SERVICE_LEVELS: DeliveryServiceLevel[] = [
-  "STANDARD",
-  "EXPRESS",
-  "PICKUP_POINT",
-  "SAME_DAY",
-];
 
 function Card({
   children,
@@ -80,17 +69,6 @@ function boolToYesNo(v: boolean) {
   return v ? "Yes" : "No";
 }
 
-function moneyOrBlank(v?: number | null) {
-  return v == null ? "" : String(v);
-}
-
-function numOrNull(v: string) {
-  const s = String(v ?? "").trim();
-  if (!s) return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
-
 export default function SupplierShipping() {
   const queryClient = useQueryClient();
   const { user } = useAuthStore();
@@ -109,10 +87,10 @@ export default function SupplierShipping() {
   const [settingsForm, setSettingsForm] = useState({
     shippingEnabled: true,
     shippingCoverage: "NATIONWIDE" as SupplierShippingCoverage,
-    defaultLeadDays: "",
-    handlingFee: "",
-    defaultServiceLevel: "STANDARD" as DeliveryServiceLevel,
   });
+
+  const [settingsErr, setSettingsErr] = useState<string | null>(null);
+  const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!data?.supplier) return;
@@ -120,11 +98,6 @@ export default function SupplierShipping() {
     setSettingsForm({
       shippingEnabled: !!data.supplier.shippingEnabled,
       shippingCoverage: data.supplier.shippingCoverage ?? "NATIONWIDE",
-      defaultLeadDays:
-        data.supplier.defaultLeadDays == null ? "" : String(data.supplier.defaultLeadDays),
-      handlingFee: moneyOrBlank(data.supplier.handlingFee),
-      defaultServiceLevel:
-        data.supplier.defaultServiceLevel ?? ("STANDARD" as DeliveryServiceLevel),
     });
   }, [data]);
 
@@ -133,9 +106,6 @@ export default function SupplierShipping() {
       const payload = {
         shippingEnabled: settingsForm.shippingEnabled,
         shippingCoverage: settingsForm.shippingCoverage,
-        defaultLeadDays: numOrNull(settingsForm.defaultLeadDays),
-        handlingFee: numOrNull(settingsForm.handlingFee),
-        defaultServiceLevel: settingsForm.defaultServiceLevel || null,
       };
       const { data } = await api.put("/api/supplier/shipping/me/settings", payload, {
         withCredentials: true,
@@ -144,10 +114,17 @@ export default function SupplierShipping() {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["supplier-shipping-me"] });
-      alert("Shipping settings saved.");
+      setSettingsErr(null);
+      setSettingsMsg("Shipping settings saved.");
     },
     onError: (e: any) => {
-      alert(e?.response?.data?.error || e?.message || "Failed to save shipping settings.");
+      setSettingsMsg(null);
+      setSettingsErr(
+        e?.response?.data?.detail ||
+          e?.response?.data?.error ||
+          e?.message ||
+          "Failed to save shipping settings."
+      );
     },
   });
 
@@ -245,71 +222,25 @@ export default function SupplierShipping() {
                     </div>
                   </div>
 
-                  <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                    <div>
-                      <label className="mb-2 block text-sm font-medium text-slate-700">
-                        Default service level
-                      </label>
-                      <select
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={settingsForm.defaultServiceLevel}
-                        onChange={(e) =>
-                          setSettingsForm((s) => ({
-                            ...s,
-                            defaultServiceLevel: e.target.value as DeliveryServiceLevel,
-                          }))
-                        }
-                      >
-                        {SERVICE_LEVELS.map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </select>
+                  {settingsErr && (
+                    <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
+                      {settingsErr}
                     </div>
+                  )}
 
-                    <div>
-                      <label className="mb-2 block text-sm font-medium text-slate-700">
-                        Default lead days
-                      </label>
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={settingsForm.defaultLeadDays}
-                        onChange={(e) =>
-                          setSettingsForm((s) => ({
-                            ...s,
-                            defaultLeadDays: e.target.value,
-                          }))
-                        }
-                        placeholder="e.g. 2"
-                      />
+                  {settingsMsg && !settingsErr && (
+                    <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">
+                      {settingsMsg}
                     </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-medium text-slate-700">
-                        Supplier handling fee (NGN)
-                      </label>
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={settingsForm.handlingFee}
-                        onChange={(e) =>
-                          setSettingsForm((s) => ({
-                            ...s,
-                            handlingFee: e.target.value,
-                          }))
-                        }
-                        placeholder="e.g. 500"
-                      />
-                      <div className="mt-1.5 text-[11px] text-slate-500">
-                        Added to the customer's shipping cost at checkout for your own
-                        packing/handling. Capped at ₦2,000.
-                      </div>
-                    </div>
-                  </div>
+                  )}
 
                   <div className="mt-5 flex justify-end">
                     <button
-                      onClick={() => settingsMutation.mutate()}
+                      onClick={() => {
+                        setSettingsErr(null);
+                        setSettingsMsg(null);
+                        settingsMutation.mutate();
+                      }}
                       disabled={settingsMutation.isPending}
                       className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                     >
