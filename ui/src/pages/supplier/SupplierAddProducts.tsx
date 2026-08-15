@@ -382,6 +382,16 @@ export default function SupplierAddProduct() {
 
   const [summaryOpen, setSummaryOpen] = useState(false);
 
+  type ProductFormTab = "basic" | "shipping" | "images" | "attributes" | "variants";
+  const FORM_TABS: { key: ProductFormTab; label: string }[] = [
+    { key: "basic", label: "Basic info" },
+    { key: "shipping", label: "Shipping" },
+    { key: "images", label: "Images" },
+    { key: "attributes", label: "Attributes" },
+    { key: "variants", label: "Variants" },
+  ];
+  const [activeFormTab, setActiveFormTab] = useState<ProductFormTab>("basic");
+
   const [flashBaseCombo, setFlashBaseCombo] = useState(false);
   const [flashVariantRowId, setFlashVariantRowId] = useState<string | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
@@ -1710,6 +1720,31 @@ export default function SupplierAddProduct() {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 space-y-4">
+              <div className="rounded-2xl border bg-white p-2 shadow-sm">
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                  {FORM_TABS.map((t) => {
+                    const active = activeFormTab === t.key;
+                    return (
+                      <button
+                        key={t.key}
+                        type="button"
+                        onClick={() => setActiveFormTab(t.key)}
+                        className={[
+                          "min-h-[40px] px-3 py-2 rounded-xl border transition text-[13px] sm:text-sm font-medium",
+                          active
+                            ? "bg-teal-600 text-white border-teal-600 shadow-sm"
+                            : "bg-white text-zinc-700 border-zinc-200 hover:bg-teal-50 hover:border-teal-200",
+                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400/60",
+                        ].join(" ")}
+                      >
+                        {t.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {activeFormTab === "basic" && (
               <Card
                 title="Basic information"
                 subtitle="What customers will see in the catalog"
@@ -1944,7 +1979,9 @@ export default function SupplierAddProduct() {
                   </div>
                 </div>
               </Card>
+              )}
 
+              {activeFormTab === "shipping" && (
               <Card
                 title="Shipping"
                 subtitle="Parcel details used with your supplier shipping profile and rate cards."
@@ -2076,7 +2113,9 @@ export default function SupplierAddProduct() {
                   </div>
                 </div>
               </Card>
+              )}
 
+              {activeFormTab === "images" && (
               <Card
                 title="Images"
                 subtitle={`Paste URLs or upload images (max ${MAX_IMAGES}).`}
@@ -2233,7 +2272,9 @@ export default function SupplierAddProduct() {
                   )}
                 </div>
               </Card>
+              )}
 
+              {activeFormTab === "attributes" && (
               <Card
                 title="Attributes"
                 subtitle="Optional details used for filtering and variant setup."
@@ -2455,7 +2496,9 @@ export default function SupplierAddProduct() {
                   </div>
                 )}
               </Card>
+              )}
 
+              {activeFormTab === "variants" && (
               <Card
                 title="Variant combinations"
                 subtitle="Add combinations of SELECT attributes with qty and price."
@@ -2698,6 +2741,7 @@ export default function SupplierAddProduct() {
                   )}
                 </div>
               </Card>
+              )}
 
               <div className="hidden sm:block">
                 <button

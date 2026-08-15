@@ -1061,6 +1061,17 @@ export function CatalogSettingsSection(props: {
 
   const [viewingSupplier, setViewingSupplier] = useState<AdminSupplier | null>(null);
 
+  type CatalogSubTab = "suppliers" | "categories" | "brands" | "requests" | "attributes" | "variants";
+  const SUB_TABS: { key: CatalogSubTab; label: string }[] = [
+    { key: "suppliers", label: "Suppliers" },
+    { key: "categories", label: "Categories" },
+    { key: "brands", label: "Brands" },
+    { key: "requests", label: "Catalog requests" },
+    { key: "attributes", label: "Attributes" },
+    { key: "variants", label: "Variants" },
+  ];
+  const [activeSubTab, setActiveSubTab] = useState<CatalogSubTab>("suppliers");
+
   const [categorySearch, setCategorySearch] = useState("");
   const debouncedCategorySearch = useDebouncedValue(categorySearch, 150);
   const filteredCategories = useMemo(() => {
@@ -1205,15 +1216,39 @@ export function CatalogSettingsSection(props: {
 
   return (
     <div
-      className="grid grid-cols-1 xl:grid-cols-3 gap-6"
       onClickCapture={stopHashNav}
       onMouseDownCapture={stopHashNav}
       onKeyDownCapture={stopKeyBubblingFromInputs}
       style={{ overflowAnchor: "none" } as any}
     >
+      {/* Sub-tabs */}
+      <div className="mb-6 rounded-2xl border bg-white p-2 shadow-sm">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+          {SUB_TABS.map((t) => {
+            const active = activeSubTab === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setActiveSubTab(t.key)}
+                className={[
+                  "min-h-[40px] px-3 py-2 rounded-xl border transition text-[13px] sm:text-sm font-medium",
+                  active
+                    ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                    : "bg-white text-zinc-700 border-zinc-200 hover:bg-blue-50 hover:border-blue-200",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60",
+                ].join(" ")}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Suppliers */}
+      {activeSubTab === "suppliers" && (
       <SectionCard
-        className="xl:col-span-3"
         disableAnchor
         title="Suppliers"
         subtitle="View supplier onboarding and verification details"
@@ -1227,7 +1262,9 @@ export function CatalogSettingsSection(props: {
           qc={qc}
         />
       </SectionCard>
+      )}
 
+      {activeSubTab === "categories" && (
       <SectionCard
         title="Categories"
         subtitle="Organize your catalog hierarchy"
@@ -1336,8 +1373,10 @@ export function CatalogSettingsSection(props: {
           </table>
         </div>
       </SectionCard>
+      )}
 
       {/* Brands */}
+      {activeSubTab === "brands" && (
       <SectionCard title="Brands" subtitle="Manage brand metadata">
         {canEdit && <BrandForm onCreate={(payload) => createBrand.mutate(payload)} />}
         <div className="mb-2 flex flex-col sm:flex-row sm:items-center gap-2">
@@ -1422,13 +1461,17 @@ export function CatalogSettingsSection(props: {
           </table>
         </div>
       </SectionCard>
+      )}
 
       {/* Catalog Requests */}
+      {activeSubTab === "requests" && (
       <SectionCard title="Catalog requests" subtitle="Approve/reject supplier requests for new categories, brands and attributes">
         <AdminCatalogRequestsSection />
       </SectionCard>
+      )}
 
       {/* Attributes & Values */}
+      {activeSubTab === "attributes" && (
       <SectionCard title="Attributes" subtitle="Define attribute schema & options">
         {canEdit && <AttributeForm onCreate={(payload) => createAttribute.mutate(payload)} />}
 
@@ -1554,9 +1597,10 @@ export function CatalogSettingsSection(props: {
           </div>
         </div>
       </SectionCard>
+      )}
 
       {/* Variants Section */}
-      <VariantsSection />
+      {activeSubTab === "variants" && <VariantsSection />}
     </div>
   );
 }

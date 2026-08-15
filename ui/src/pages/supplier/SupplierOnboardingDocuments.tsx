@@ -499,6 +499,16 @@ export default function SupplierOnboardingDocuments() {
         return approvalReady && !isFullyActive && !needsResubmission;
     }, [approvalReady, isFullyActive, needsResubmission]);
 
+    // This view replaces the upload form in place (no route change), so the
+    // browser keeps whatever scroll position the user was at while uploading
+    // — usually well below the fold. Bring them back to the top so they
+    // actually see the "Documents submitted" confirmation.
+    useEffect(() => {
+        if (isAwaitingFinalApproval) {
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+    }, [isAwaitingFinalApproval]);
+
     const isApprovalPending = useMemo(() => {
         return approvalReady && !adminApproved && !isFullyActive && !needsResubmission;
     }, [approvalReady, adminApproved, isFullyActive, needsResubmission]);

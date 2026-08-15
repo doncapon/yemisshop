@@ -682,6 +682,16 @@ export default function SupplierEditProduct() {
   const [dupWarn, setDupWarn] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
 
+  type ProductFormTab = "basic" | "shipping" | "images" | "attributes" | "variants";
+  const FORM_TABS: { key: ProductFormTab; label: string }[] = [
+    { key: "basic", label: "Basic info" },
+    { key: "shipping", label: "Shipping" },
+    { key: "images", label: "Images" },
+    { key: "attributes", label: "Attributes" },
+    { key: "variants", label: "Variants" },
+  ];
+  const [activeFormTab, setActiveFormTab] = useState<ProductFormTab>("basic");
+
   const [title, setTitle] = useState("");
   const [retailPrice, setRetailPrice] = useState("");
   const [sku, setSku] = useState("");
@@ -2751,6 +2761,31 @@ export default function SupplierEditProduct() {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 space-y-4">
+              <div className="rounded-2xl border bg-white p-2 shadow-sm">
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                  {FORM_TABS.map((t) => {
+                    const active = activeFormTab === t.key;
+                    return (
+                      <button
+                        key={t.key}
+                        type="button"
+                        onClick={() => setActiveFormTab(t.key)}
+                        className={[
+                          "min-h-[40px] px-3 py-2 rounded-xl border transition text-[13px] sm:text-sm font-medium",
+                          active
+                            ? "bg-teal-600 text-white border-teal-600 shadow-sm"
+                            : "bg-white text-zinc-700 border-zinc-200 hover:bg-teal-50 hover:border-teal-200",
+                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400/60",
+                        ].join(" ")}
+                      >
+                        {t.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {activeFormTab === "basic" && (
               <Card
                 title="Basic information"
                 className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
@@ -3051,7 +3086,9 @@ export default function SupplierEditProduct() {
                   </div>
                 </div>
               </Card>
+              )}
 
+              {activeFormTab === "shipping" && (
               <Card
                 title="Shipping"
                 subtitle={
@@ -3213,7 +3250,9 @@ export default function SupplierEditProduct() {
                   ) : null}
                 </div>
               </Card>
+              )}
 
+              {activeFormTab === "images" && (
               <Card
                 title="Images"
                 className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
@@ -3387,7 +3426,9 @@ export default function SupplierEditProduct() {
                   )}
                 </div>
               </Card>
+              )}
 
+              {activeFormTab === "attributes" && (
               <Card
                 title="Attributes"
                 subtitle={
@@ -3572,7 +3613,9 @@ export default function SupplierEditProduct() {
                   </div>
                 </div>
               </Card>
+              )}
 
+              {activeFormTab === "variants" && (
               <Card
                 title="Variant combinations"
                 className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
@@ -3905,6 +3948,7 @@ export default function SupplierEditProduct() {
                   )}
                 </div>
               </Card>
+              )}
 
               <div className="hidden sm:block">
                 <button
