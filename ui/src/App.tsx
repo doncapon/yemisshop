@@ -97,6 +97,7 @@ import {
   SupplierShippingPage,
   SupplierCatalogRequests,
   SupplierRefunds,
+  SupplierAnalytics,
   SupplierCatalogOffers,
   SupplierBusinessDetails,
   SupplierOnboardingAddress,
@@ -761,6 +762,17 @@ export default function App() {
                         <ProtectedRoute roles={["SUPPLIER"]}>
                           <SupplierRestrictedPageGuard>
                             <SupplierRefunds />
+                          </SupplierRestrictedPageGuard>
+                        </ProtectedRoute>
+                      }
+                    />
+
+                    <Route
+                      path="analytics"
+                      element={
+                        <ProtectedRoute roles={["SUPPLIER"]}>
+                          <SupplierRestrictedPageGuard>
+                            <SupplierAnalytics />
                           </SupplierRestrictedPageGuard>
                         </ProtectedRoute>
                       }

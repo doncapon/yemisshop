@@ -19,12 +19,14 @@ import {
   FileBadge2,
   Scale,
   Truck,
+  LineChart,
 } from "lucide-react";
 
 import api from "../../api/client.js";
 import { useToast } from "../../components/ToastProvider.js";
 import { useModal } from "../../components/ModalProvider.js";
 import ActivitiesPanel from "../../components/admin/ActivitiesPanel.js";
+import AdminProductAnalytics from "../../components/admin/AdminProductAnalytics.js";
 
 import { ModerationGrid } from "../../components/admin/ModerationGrid.js";
 import { ManageProducts } from "../../components/admin/ManageProducts.js";
@@ -202,6 +204,7 @@ type TabKey =
   | "disputes"
   | "catalog"
   | "marketing"
+  | "audit"
   | "analytics"
   | "finance"
   | "careers";
@@ -388,6 +391,7 @@ export default function AdminDashboard() {
     "disputes",
     "catalog",
     "marketing",
+    "audit",
     "analytics",
     "finance",
     "careers",
@@ -1428,9 +1432,9 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
             desc="Send updates to all subscribers (with dry run first)"
           />
           <QuickAction
-            toAction={() => setTab("analytics")}
+            toAction={() => setTab("audit")}
             icon={BarChart3}
-            label="Activity analytics"
+            label="Activity audit"
             desc="Review events and signals from the activity log"
           />
           <QuickAction
@@ -1734,9 +1738,17 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
               />
 
               <TabButton
+                k="audit"
+                label="Audit"
+                Icon={BarChart3}
+                activeTab={tab}
+                onSelect={handleTabSelect}
+              />
+
+              <TabButton
                 k="analytics"
                 label="Analytics"
-                Icon={BarChart3}
+                Icon={LineChart}
                 activeTab={tab}
                 onSelect={handleTabSelect}
               />
@@ -1808,7 +1820,8 @@ Chosen order items: ${details.chosenOrderItems ?? 0}`;
         <div className="mt-4 space-y-6">
           {tab === "users" && <UsersSection canAdmin={canAdmin} />}
 
-          {tab === "analytics" && <ActivitiesPanel />}
+          {tab === "audit" && <ActivitiesPanel />}
+          {tab === "analytics" && <AdminProductAnalytics />}
 
           {/* Overview */}
           {tab === "overview" && (
