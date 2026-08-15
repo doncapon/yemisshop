@@ -203,6 +203,16 @@ export async function findGiglStationId(
   return inState[0].stationId;
 }
 
+// Human-readable hub city name for a resolved station — used to tell the
+// customer roughly where their pickup hub is (GIGL's station data has no
+// street address, only a city/town-level name).
+async function getStationName(stationId: number | null): Promise<string | null> {
+  if (!stationId) return null;
+  const stations = await fetchLocalStations();
+  const match = stations.find((s) => s.stationId === stationId);
+  return match?.stationName || null;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -227,6 +237,8 @@ export type GiglPriceResult = {
   etaMinDays: number | null;
   etaMaxDays: number | null;
   carrierRef: string | null;
+  /** City/town-level name of the resolved destination hub — GIGL has no street address. */
+  receiverStationName: string | null;
   rawResponse: unknown;
 };
 
@@ -317,6 +329,7 @@ export async function getGiglShippingPrice(
   input: GiglPriceInput
 ): Promise<GiglPriceResult> {
   let data: any;
+  let receiverStationName: string | null = null;
   try {
     // authenticate first so _customerCode is populated before building the body
     const token = await authenticate();
@@ -333,6 +346,8 @@ export async function getGiglShippingPrice(
         }`
       );
     }
+
+    receiverStationName = await getStationName(receiverStationId);
 
     const stationIds = { sender: senderStationId, receiver: receiverStationId };
     const body = buildPriceBody(input, stationIds);
@@ -386,6 +401,7 @@ export async function getGiglShippingPrice(
     etaMaxDays:   extractNullableInt(payload, "MaxDeliveryDays", "EtaMax", "MaxDays"),
     carrierRef:
       String(payload?.ShipmentRef ?? payload?.Reference ?? payload?.QuoteId ?? "") || null,
+    receiverStationName,
     rawResponse: data,
   };
 }
