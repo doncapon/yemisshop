@@ -13,16 +13,14 @@ import { getGiglShippingPrice, isGiglEnabled } from "./giglProvider.js";
 
 const prisma = new PrismaClient();
 
-// GIGL's own pricing API doesn't discount pickup-point handoffs at all
-// (confirmed live — PickUpOptions has no effect on their quoted price), even
-// though it's genuinely cheaper for them to fulfil (no last-mile door
-// delivery). We pass some of that saving on to the customer ourselves.
-const PICKUP_POINT_DISCOUNT_PCT = Number(process.env.PICKUP_POINT_DISCOUNT_PCT ?? 15);
-
 export type QuoteCheckoutItemInput = {
   productId: string;
   variantId?: string | null;
   qty: number;
+  // Pins this line to a specific supplier's offer (e.g. the customer swapped
+  // away from the auto-picked/cheapest supplier to one shipping from
+  // closer). When omitted, falls back to the product's primary supplier.
+  offerId?: string | null;
 };
 
 export type QuoteShippingInput = {
@@ -59,6 +57,8 @@ export type SupplierShippingQuoteResult = {
   pickupType?: "gigl_hub" | "supplier_premises" | null;
   /** City/town-level name of the resolved pickup hub — only set when pickupType === "gigl_hub". */
   pickupHubName?: string | null;
+  /** State the supplier ships from (pickup address, falling back to registered address). */
+  originState?: string | null;
   shippingQuoteId?: string;
   totals: {
     shippingFee: number;
@@ -222,6 +222,72 @@ async function findZoneByAddress(address: {
   return null;
 }
 
+type SupplierShippingRecord = {
+  id: string;
+  name: string;
+  shippingEnabled: boolean;
+  shippingCoverage: SupplierShippingCoverage;
+  handlingFee: Prisma.Decimal | null;
+  defaultLeadDays: number | null;
+  defaultServiceLevel: DeliveryServiceLevel | null;
+  shippingProfileMode: SupplierShippingProfileMode;
+  pickupAddress: {
+    id: string;
+    state: string | null;
+    lga: string | null;
+    town: string | null;
+    city: string | null;
+  } | null;
+  registeredAddress: {
+    id: string;
+    state: string | null;
+    lga: string | null;
+    town: string | null;
+    city: string | null;
+  } | null;
+  shippingProfile: {
+    id: string;
+    originZoneCode: string | null;
+    fulfillmentMode: SupplierFulfillmentMode;
+    preferredCarrier: string | null;
+    localFlatFee: Prisma.Decimal | null;
+    nearbyFlatFee: Prisma.Decimal | null;
+    nationwideBaseFee: Prisma.Decimal | null;
+    defaultHandlingFee: Prisma.Decimal | null;
+    isActive: boolean;
+  } | null;
+};
+
+const SUPPLIER_SHIPPING_SELECT = {
+  id: true,
+  name: true,
+  shippingEnabled: true,
+  shippingCoverage: true,
+  handlingFee: true,
+  defaultLeadDays: true,
+  defaultServiceLevel: true,
+  shippingProfileMode: true,
+  pickupAddress: {
+    select: { id: true, state: true, lga: true, town: true, city: true },
+  },
+  registeredAddress: {
+    select: { id: true, state: true, lga: true, town: true, city: true },
+  },
+  shippingProfile: {
+    select: {
+      id: true,
+      originZoneCode: true,
+      fulfillmentMode: true,
+      preferredCarrier: true,
+      localFlatFee: true,
+      nearbyFlatFee: true,
+      nationwideBaseFee: true,
+      defaultHandlingFee: true,
+      isActive: true,
+    },
+  },
+} as const;
+
 type LoadedLine = {
   qty: number;
   product: {
@@ -236,41 +302,7 @@ type LoadedLine = {
     isFragile: boolean;
     isBulky: boolean;
     shippingClass: string | null;
-    supplier: {
-      id: string;
-      name: string;
-      shippingEnabled: boolean;
-      shippingCoverage: SupplierShippingCoverage;
-      handlingFee: Prisma.Decimal | null;
-      defaultLeadDays: number | null;
-      defaultServiceLevel: DeliveryServiceLevel | null;
-      shippingProfileMode: SupplierShippingProfileMode;
-      pickupAddress: {
-        id: string;
-        state: string | null;
-        lga: string | null;
-        town: string | null;
-        city: string | null;
-      } | null;
-      registeredAddress: {
-        id: string;
-        state: string | null;
-        lga: string | null;
-        town: string | null;
-        city: string | null;
-      } | null;
-      shippingProfile: {
-        id: string;
-        originZoneCode: string | null;
-        fulfillmentMode: SupplierFulfillmentMode;
-        preferredCarrier: string | null;
-        localFlatFee: Prisma.Decimal | null;
-        nearbyFlatFee: Prisma.Decimal | null;
-        nationwideBaseFee: Prisma.Decimal | null;
-        defaultHandlingFee: Prisma.Decimal | null;
-        isActive: boolean;
-      } | null;
-    } | null;
+    supplier: SupplierShippingRecord | null;
   };
   variant: {
     id: string;
@@ -590,12 +622,15 @@ export async function quoteShippingForCheckout(
 
   const mergedMap = new Map<
     string,
-    { productId: string; variantId: string | null; qty: number }
+    { productId: string; variantId: string | null; qty: number; offerId: string | null }
   >();
 
   for (const it of input.items) {
     const qty = Math.max(1, Number(it.qty) || 1);
-    const key = `${it.productId}::${it.variantId || ""}`;
+    const offerId = it.offerId ? String(it.offerId) : null;
+    // offerId is part of the merge key: two lines of the same product pinned
+    // to different suppliers' offers must not be collapsed into one.
+    const key = `${it.productId}::${it.variantId || ""}::${offerId || ""}`;
     const prev = mergedMap.get(key);
     if (prev) prev.qty += qty;
     else {
@@ -603,6 +638,7 @@ export async function quoteShippingForCheckout(
         productId: it.productId,
         variantId: it.variantId ?? null,
         qty,
+        offerId,
       });
     }
   }
@@ -628,49 +664,7 @@ export async function quoteShippingForCheckout(
       isFragile: true,
       isBulky: true,
       shippingClass: true,
-      supplier: {
-        select: {
-          id: true,
-          name: true,
-          shippingEnabled: true,
-          shippingCoverage: true,
-          handlingFee: true,
-          defaultLeadDays: true,
-          defaultServiceLevel: true,
-          shippingProfileMode: true,
-          pickupAddress: {
-            select: {
-              id: true,
-              state: true,
-              lga: true,
-              town: true,
-              city: true,
-            },
-          },
-          registeredAddress: {
-            select: {
-              id: true,
-              state: true,
-              lga: true,
-              town: true,
-              city: true,
-            },
-          },
-          shippingProfile: {
-            select: {
-              id: true,
-              originZoneCode: true,
-              fulfillmentMode: true,
-              preferredCarrier: true,
-              localFlatFee: true,
-              nearbyFlatFee: true,
-              nationwideBaseFee: true,
-              defaultHandlingFee: true,
-              isActive: true,
-            },
-          },
-        },
-      },
+      supplier: { select: SUPPLIER_SHIPPING_SELECT },
     },
   });
 
@@ -694,10 +688,41 @@ export async function quoteShippingForCheckout(
   const productMap = new Map(products.map((p) => [p.id, p]));
   const variantMap = new Map(variants.map((v) => [v.id, v]));
 
+  // Resolve any pinned offerIds to their actual supplier — a swap means the
+  // line ships from that offer's supplier, not the product's primary one.
+  const offerIds = [...new Set(merged.map((l) => l.offerId).filter(Boolean) as string[])];
+
+  const offerSupplierMap = new Map<string, SupplierShippingRecord>();
+
+  if (offerIds.length) {
+    const [variantOffers, baseOffers] = await Promise.all([
+      prisma.supplierVariantOffer.findMany({
+        where: { id: { in: offerIds } },
+        select: { id: true, supplier: { select: SUPPLIER_SHIPPING_SELECT } },
+      }),
+      prisma.supplierProductOffer.findMany({
+        where: { id: { in: offerIds } },
+        select: { id: true, supplier: { select: SUPPLIER_SHIPPING_SELECT } },
+      }),
+    ]);
+
+    for (const o of variantOffers) {
+      if (o.supplier) offerSupplierMap.set(o.id, o.supplier as SupplierShippingRecord);
+    }
+    for (const o of baseOffers) {
+      // A variant-offer match takes priority (mirrors fetchOneOfferByIdTx's
+      // lookup order in orders.ts — variant offers are checked first).
+      if (o.supplier && !offerSupplierMap.has(o.id)) {
+        offerSupplierMap.set(o.id, o.supplier as SupplierShippingRecord);
+      }
+    }
+  }
+
   for (const line of merged) {
     const p = productMap.get(line.productId);
     if (!p) throw new Error(`Product not found: ${line.productId}`);
-    if (!p.supplierId) {
+    const resolvedSupplierId = (line.offerId && offerSupplierMap.get(line.offerId)?.id) || p.supplierId;
+    if (!resolvedSupplierId) {
       throw new Error(`Product ${p.id} has no supplier; cannot compute shipping.`);
     }
     if (line.variantId) {
@@ -715,11 +740,17 @@ export async function quoteShippingForCheckout(
   const destinationZone = await findZoneByAddress(destination);
 
   const bySupplier = new Map<string, LoadedLine[]>();
+  const supplierRecordMap = new Map<string, SupplierShippingRecord | null>();
 
   for (const line of merged) {
     const product = productMap.get(line.productId)!;
     const variant = line.variantId ? variantMap.get(line.variantId)! : null;
-    const supplierId = product.supplierId as string;
+    const pinnedSupplier = line.offerId ? offerSupplierMap.get(line.offerId) ?? null : null;
+    const supplierId = pinnedSupplier?.id || (product.supplierId as string);
+
+    if (!supplierRecordMap.has(supplierId)) {
+      supplierRecordMap.set(supplierId, pinnedSupplier ?? product.supplier ?? null);
+    }
 
     const arr = bySupplier.get(supplierId) || [];
     arr.push({
@@ -734,7 +765,7 @@ export async function quoteShippingForCheckout(
   let totalShippingFee = 0;
 
   for (const [supplierId, rows] of bySupplier.entries()) {
-    const supplier = rows[0]!.product.supplier;
+    const supplier = supplierRecordMap.get(supplierId) ?? null;
 
     if (!supplier) {
       supplierQuotes.push(
@@ -995,14 +1026,6 @@ export async function quoteShippingForCheckout(
           carrierRef: giglResult.carrierRef,
         });
 
-        // GIGL charges the same price whether it's a door delivery or a
-        // pickup-hub handoff — we discount pickup ourselves since it's
-        // genuinely cheaper for them to fulfil (no last-mile leg).
-        const pickupDiscounted =
-          serviceLevel === DeliveryServiceLevel.PICKUP_POINT
-            ? round2(giglResult.baseRate * (1 - PICKUP_POINT_DISCOUNT_PCT / 100))
-            : giglResult.baseRate;
-
         const eta = estimateDeliveryEtaDays(
           pickupAddress.state,
           destination.state,
@@ -1010,7 +1033,7 @@ export async function quoteShippingForCheckout(
         );
 
         chosen = {
-          shippingFee: pickupDiscounted,
+          shippingFee: giglResult.baseRate,
           remoteSurcharge: 0,
           fuelSurcharge: 0,
           // No supplier-set handling surcharge on top of the live GIGL
@@ -1318,6 +1341,7 @@ export async function quoteShippingForCheckout(
       pickupType,
       pickupHubName:
         pickupType === "gigl_hub" ? (chosen.pricingMeta?.pickupHubName as string | null) ?? null : null,
+      originState: pickupAddress.state ?? null,
       totals: {
         shippingFee: toNum(quote.shippingFee),
         remoteSurcharge: toNum(quote.remoteSurcharge),

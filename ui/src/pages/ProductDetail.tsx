@@ -33,6 +33,7 @@ type OfferWire = {
   id: string;
   supplierId: string;
   supplierName?: string | null;
+  supplierState?: string | null;
   productId: string;
   variantId: string | null;
   currency?: string;
@@ -337,6 +338,8 @@ function offersFromSchema(p: any): OfferWire[] {
   const base: any[] = Array.isArray(p?.supplierProductOffers) ? p.supplierProductOffers : [];
   const vars: any[] = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
 
+  // Fallback only for the rare case an offer row has no resolvable supplier
+  // of its own — real offers each carry their own supplierId/name/state now.
   const fallbackSupplierId = String(p?.supplierId ?? p?.supplier?.id ?? "PRODUCT_SUPPLIER");
   const fallbackSupplierName = p?.supplier?.name ? String(p.supplier.name) : null;
 
@@ -345,8 +348,9 @@ function offersFromSchema(p: any): OfferWire[] {
   for (const o of base) {
     out.push({
       id: String(o.id),
-      supplierId: fallbackSupplierId,
-      supplierName: fallbackSupplierName,
+      supplierId: String(o?.supplierId ?? o?.supplier?.id ?? fallbackSupplierId),
+      supplierName: o?.supplierName ?? o?.supplier?.name ?? fallbackSupplierName,
+      supplierState: o?.supplierState ?? o?.supplier?.state ?? null,
       productId: String(o.productId),
       variantId: null,
       currency: o?.currency ?? "NGN",
@@ -362,8 +366,9 @@ function offersFromSchema(p: any): OfferWire[] {
   for (const o of vars) {
     out.push({
       id: String(o.id),
-      supplierId: fallbackSupplierId,
-      supplierName: fallbackSupplierName,
+      supplierId: String(o?.supplierId ?? o?.supplier?.id ?? fallbackSupplierId),
+      supplierName: o?.supplierName ?? o?.supplier?.name ?? fallbackSupplierName,
+      supplierState: o?.supplierState ?? o?.supplier?.state ?? null,
       productId: String(o.productId),
       variantId: String(o.variantId),
       currency: o?.currency ?? "NGN",
@@ -2239,6 +2244,11 @@ export default function ProductDetail() {
       upsertCartLine({
         productId: String(product.id),
         variantId: variantId ?? null,
+        // Records which supplier's offer this line's price came from, so
+        // checkout can show origin/shipping info and let the customer swap
+        // to a different supplier for the same product later.
+        supplierId: computed.supplierId ?? null,
+        offerId: computed.offerId ?? undefined,
         kind: lineKind,
         optionsKey,
         qty: editCartLine ? addQty : (existingForCombo?.qty ?? 0) + addQty,

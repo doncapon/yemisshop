@@ -12,6 +12,9 @@ const ItemSchema = z.object({
   productId: z.string().min(1),
   variantId: z.string().nullable().optional(),
   qty: z.number().int().positive().default(1),
+  // Pins this line to a specific supplier's offer — set when the customer
+  // swapped away from the auto-picked supplier at checkout.
+  offerId: z.string().nullable().optional(),
 });
 
 const AddressSchema = z.object({
@@ -253,6 +256,7 @@ router.post("/shipping-fee-local", requireAuth, async (req, res) => {
         productId: i.productId,
         variantId: i.variantId ?? null,
         qty: i.qty,
+        offerId: i.offerId ?? null,
       })),
       destinationAddressId: resolved.destinationAddressId,
       destinationAddress: resolved.destinationAddress,

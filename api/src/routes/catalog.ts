@@ -337,6 +337,10 @@ const QuoteBody = z.object({
       productId: z.string().min(1),
       variantId: z.string().nullable().optional(),
       qty: z.number().int().positive(),
+      // Pins pricing (and the shipping quote downstream) to a specific
+      // supplier's offer — used when the customer swaps away from the
+      // cheapest/auto-picked supplier (e.g. to one shipping from closer).
+      offerId: z.string().nullable().optional(),
     })
   ),
 });
@@ -350,6 +354,7 @@ router.post("/quote", async (req, res) => {
     productId: String(it.productId),
     variantId: it.kind === "BASE" ? null : it.variantId ?? null,
     qty: Math.max(1, asInt(it.qty, 1)),
+    offerId: it.offerId ? String(it.offerId) : null,
   }));
 
   // load offers for just the exact pairs needed
@@ -390,6 +395,27 @@ router.post("/quote", async (req, res) => {
 
     let remaining = r.qty;
     const allocations: any[] = [];
+
+    // Pinned offer (customer's explicit supplier swap) is allocated first,
+    // ahead of the cheapest-first pool below.
+    if (r.offerId) {
+      const idx = pool.findIndex((o) => o.id === r.offerId);
+      if (idx >= 0) {
+        const [pinned] = pool.splice(idx, 1);
+        const take = Math.min(remaining, Math.max(0, pinned.availableQty));
+        if (take > 0) {
+          allocations.push({
+            supplierId: pinned.supplierId,
+            supplierName: pinned.supplierName ?? null,
+            qty: take,
+            unitPrice: pinned.unitPrice,
+            offerId: pinned.id,
+            lineTotal: take * pinned.unitPrice,
+          });
+          remaining -= take;
+        }
+      }
+    }
 
     for (const o of pool) {
       if (remaining <= 0) break;

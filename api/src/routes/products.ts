@@ -167,6 +167,7 @@ function readSupplierRatingFromOffer(o: any): {
   ratingAvg: number;
   ratingCount: number;
   state: string | null;
+  name: string | null;
 } {
   const sid = String(
     o?.supplierId ??
@@ -189,7 +190,15 @@ function readSupplierRatingFromOffer(o: any): {
     o?.product?.supplier?.registeredAddress?.state ??
     null;
 
-  return { supplierId: sid, ratingAvg, ratingCount, state: state ? String(state) : null };
+  const name = o?.supplier?.name ?? o?.product?.supplier?.name ?? null;
+
+  return {
+    supplierId: sid,
+    ratingAvg,
+    ratingCount,
+    state: state ? String(state) : null,
+    name: name ? String(name) : null,
+  };
 }
 
 const PRIOR_AVG = 4.0;
@@ -1487,12 +1496,12 @@ router.get(
       if (hasScalar(BASE_OFFER_MODEL, "supplierId")) baseOfferSelect.supplierId = true;
 
       if (hasRelation(BASE_OFFER_MODEL, "supplier")) {
-        baseOfferSelect.supplier = { select: supplierRatingSelect(false) };
+        baseOfferSelect.supplier = { select: supplierRatingSelect(true) };
       } else if (hasRelation(BASE_OFFER_MODEL, "product")) {
         baseOfferSelect.product = {
           select: {
             supplierId: true,
-            supplier: { select: supplierRatingSelect(false) },
+            supplier: { select: supplierRatingSelect(true) },
           },
         };
       }
@@ -1513,12 +1522,12 @@ router.get(
       if (hasScalar(VAR_OFFER_MODEL, "supplierId")) varOfferSelect.supplierId = true;
 
       if (hasRelation(VAR_OFFER_MODEL, "supplier")) {
-        varOfferSelect.supplier = { select: supplierRatingSelect(false) };
+        varOfferSelect.supplier = { select: supplierRatingSelect(true) };
       } else if (hasRelation(VAR_OFFER_MODEL, "product")) {
         varOfferSelect.product = {
           select: {
             supplierId: true,
-            supplier: { select: supplierRatingSelect(false) },
+            supplier: { select: supplierRatingSelect(true) },
           },
         };
       }
@@ -1752,9 +1761,13 @@ router.get(
                 leadDays: o.leadDays ?? null,
                 supplierRatingAvg: r.ratingAvg,
                 supplierRatingCount: r.ratingCount,
+                supplierState: r.state,
+                supplierName: r.name,
                 supplier: r.supplierId
                   ? {
                     id: r.supplierId,
+                    name: r.name,
+                    state: r.state,
                     ratingAvg: r.ratingAvg,
                     ratingCount: r.ratingCount,
                   }
@@ -1784,9 +1797,13 @@ router.get(
           leadDays: o.leadDays ?? null,
           supplierRatingAvg: r.ratingAvg,
           supplierRatingCount: r.ratingCount,
+          supplierState: r.state,
+          supplierName: r.name,
           supplier: r.supplierId
             ? {
               id: r.supplierId,
+              name: r.name,
+              state: r.state,
               ratingAvg: r.ratingAvg,
               ratingCount: r.ratingCount,
             }
@@ -1810,9 +1827,13 @@ router.get(
           leadDays: o.leadDays ?? null,
           supplierRatingAvg: r.ratingAvg,
           supplierRatingCount: r.ratingCount,
+          supplierState: r.state,
+          supplierName: r.name,
           supplier: r.supplierId
             ? {
               id: r.supplierId,
+              name: r.name,
+              state: r.state,
               ratingAvg: r.ratingAvg,
               ratingCount: r.ratingCount,
             }
@@ -1838,9 +1859,13 @@ router.get(
             model: "BASE",
             supplierRatingAvg: r.ratingAvg,
             supplierRatingCount: r.ratingCount,
+            supplierState: r.state,
+            supplierName: r.name,
             supplier: r.supplierId
               ? {
                 id: r.supplierId,
+                name: r.name,
+                state: r.state,
                 ratingAvg: r.ratingAvg,
                 ratingCount: r.ratingCount,
               }
@@ -1873,9 +1898,13 @@ router.get(
             model: "VARIANT",
             supplierRatingAvg: r.ratingAvg,
             supplierRatingCount: r.ratingCount,
+            supplierState: r.state,
+            supplierName: r.name,
             supplier: r.supplierId
               ? {
                 id: r.supplierId,
+                name: r.name,
+                state: r.state,
                 ratingAvg: r.ratingAvg,
                 ratingCount: r.ratingCount,
               }

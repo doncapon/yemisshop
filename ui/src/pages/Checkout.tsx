@@ -103,6 +103,7 @@ type ShippingQuoteLite = {
   rateSource?: string | null;
   pickupType?: "gigl_hub" | "supplier_premises" | null;
   pickupHubName?: string | null;
+  originState?: string | null;
   error?: string | null;
 };
 
@@ -484,6 +485,8 @@ function writeCart(lines: CartLine[]) {
       return {
         productId: String(l.productId),
         variantId: l.variantId ?? null,
+        supplierId: l.supplierId ?? null,
+        offerId: l.offerId ?? undefined,
         kind: inferredKind,
         optionsKey: "",
         qty,
@@ -1034,6 +1037,7 @@ function normalizeShippingQuoteResponse(raw: any): ShippingQuoteResponse | null 
           rateSource: q.rateSource ?? breakdown.rateSource ?? null,
           pickupType: q.pickupType ?? null,
           pickupHubName: q.pickupHubName ?? null,
+          originState: q.originState ?? null,
           error: q.error ? String(q.error) : null,
         } as ShippingQuoteLite;
       })
@@ -1101,6 +1105,7 @@ function normalizeShippingQuoteResponse(raw: any): ShippingQuoteResponse | null 
           rateSource: s?.rateSource ?? breakdown.rateSource ?? "FALLBACK_ZONE",
           pickupType: s?.pickupType ?? null,
           pickupHubName: s?.pickupHubName ?? null,
+          originState: s?.originState ?? null,
           error: s?.error ? String(s.error) : null,
         } as ShippingQuoteLite;
       })
@@ -1134,6 +1139,7 @@ function getShippingQuoteCacheKey(args: {
       productId: i.productId,
       variantId: i.variantId ?? null,
       qty: i.qty,
+      offerId: i.offerId ?? null,
     })),
     selectedUserShippingAddressId: selectedUserShippingAddressId ?? null,
     city: address.city,
@@ -1615,6 +1621,113 @@ function persistResolvedPaymentInit(args: {
 }
 
 
+// Supplier identity is deliberately never surfaced to customers — only the
+// state (for distance) and commercial terms (price/lead time) matter to them.
+type AlternateOffer = {
+  id: string;
+  supplierId: string;
+  supplierState: string | null;
+  unitPrice: number | null;
+  leadDays: number | null;
+  availableQty: number;
+  variantId: string | null;
+};
+
+async function fetchAlternateOffers(productId: string): Promise<AlternateOffer[]> {
+  const { data } = await api.get(`/api/products/${productId}`, {
+    params: { include: "offers" },
+    withCredentials: true,
+  });
+  const raw = data?.data ?? data;
+  const offers = Array.isArray(raw?.offers) ? raw.offers : [];
+  return offers
+    .filter((o: any) => o?.isActive && o?.inStock && Number(o?.availableQty ?? 0) > 0)
+    .map((o: any) => ({
+      id: String(o.id),
+      supplierId: String(o.supplierId ?? o.supplier?.id ?? ""),
+      supplierState: o.supplierState ?? o.supplier?.state ?? null,
+      unitPrice: o.unitPrice != null ? Number(o.unitPrice) : o.basePrice != null ? Number(o.basePrice) : null,
+      leadDays: o.leadDays ?? null,
+      availableQty: Number(o.availableQty ?? 0) || 0,
+      variantId: o.variantId ? String(o.variantId) : null,
+    }))
+    .filter((o: AlternateOffer) => !!o.supplierId);
+}
+
+function SupplierSwapPanel({
+  productId,
+  variantId,
+  currentOfferId,
+  destState,
+  onSelect,
+  onClose,
+}: {
+  productId: string;
+  variantId?: string | null;
+  currentOfferId?: string | null;
+  destState: string;
+  onSelect: (offer: AlternateOffer) => void;
+  onClose: () => void;
+}) {
+  const offersQ = useQuery({
+    queryKey: ["checkout", "alternate-offers", productId],
+    queryFn: () => fetchAlternateOffers(productId),
+    staleTime: 30_000,
+  });
+
+  const alternates = (offersQ.data ?? [])
+    .filter((o) => o.id !== currentOfferId && o.variantId === (variantId ?? null))
+    .sort((a, b) => {
+      const aNear = destState && a.supplierState?.toLowerCase() === destState.toLowerCase() ? 0 : 1;
+      const bNear = destState && b.supplierState?.toLowerCase() === destState.toLowerCase() ? 0 : 1;
+      if (aNear !== bNear) return aNear - bNear;
+      return (a.unitPrice ?? 0) - (b.unitPrice ?? 0);
+    });
+
+  return (
+    <div className="mt-2 rounded-lg border border-teal-200 bg-teal-50/60 p-2">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-semibold text-teal-900">Other suppliers for this item</p>
+        <button type="button" onClick={onClose} className="text-[10px] text-teal-700 hover:underline">
+          Close
+        </button>
+      </div>
+
+      {offersQ.isLoading ? (
+        <p className="mt-1 text-[10px] text-ink-soft">Loading alternatives...</p>
+      ) : alternates.length === 0 ? (
+        <p className="mt-1 text-[10px] text-ink-soft">No other suppliers currently offer this item.</p>
+      ) : (
+        <div className="mt-1.5 space-y-1.5">
+          {alternates.map((o) => {
+            const isNear = !!destState && o.supplierState?.toLowerCase() === destState.toLowerCase();
+            return (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => onSelect(o)}
+                className="flex w-full items-center justify-between gap-2 rounded-md border border-teal-200 bg-white px-2 py-1.5 text-left hover:bg-teal-50 transition"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-[11px] font-medium text-ink">
+                    {o.supplierState ? `Ships from ${o.supplierState}` : "Location unknown"}
+                  </div>
+                  {isNear && (
+                    <div className="text-[10px] text-emerald-700 font-medium">· closer to you</div>
+                  )}
+                </div>
+                <div className="shrink-0 text-[11px] font-semibold text-ink">
+                  {o.unitPrice != null ? `₦${o.unitPrice.toLocaleString()}` : "—"}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ----------------------------- Component ----------------------------- */
 export default function Checkout() {
   const nav = useNavigate();
@@ -1648,6 +1761,7 @@ export default function Checkout() {
   const [showNotVerified, setShowNotVerified] = useState(false);
 
   const [cart, setCart] = useState<CartLine[]>(() => readCart());
+  const [swapOpenKey, setSwapOpenKey] = useState<string | null>(null);
 
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [profileErr, setProfileErr] = useState<string | null>(null);
@@ -1723,7 +1837,10 @@ export default function Checkout() {
     queryKey: [
       "checkout",
       "pricing-quote:v1",
-      cart.map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`).sort().join(","),
+      cart
+        .map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}@${i.offerId || ""}`)
+        .sort()
+        .join(","),
     ],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
@@ -1856,6 +1973,31 @@ export default function Checkout() {
     });
   }, []);
 
+  // Lets the customer pin a cart line to a different supplier's offer for
+  // the same product (e.g. one shipping from closer) instead of the
+  // auto-picked cheapest offer.
+  const swapSupplierForLine = useCallback(
+    (lineKey: string, offer: { id: string; supplierId: string; unitPrice: number | null }) => {
+      setCart((prev) => {
+        const next = prev.map((line) =>
+          lineKeyFor(line) === lineKey
+            ? {
+                ...line,
+                offerId: offer.id,
+                supplierId: offer.supplierId,
+                unitPrice: offer.unitPrice ?? line.unitPrice,
+                price: offer.unitPrice ?? line.price,
+              }
+            : line
+        );
+        writeCart(next);
+        window.dispatchEvent(new Event("cart:updated"));
+        return next;
+      });
+    },
+    []
+  );
+
   const selectedShippingAddress = useMemo(
     () => shippingAddresses.find((a) => a.id === selectedShippingId) ?? null,
     [shippingAddresses, selectedShippingId]
@@ -1917,7 +2059,10 @@ export default function Checkout() {
         ...selectedShippingQuoteAddress,
         lga: selectedShippingQuoteAddress.lga ?? selectedShippingQuoteAddress.town ?? "",
       }),
-      cart.map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`).sort().join(","),
+      cart
+        .map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}@${i.offerId || ""}`)
+        .sort()
+        .join(","),
     ],
     enabled:
       shippingEnabled &&
@@ -1993,6 +2138,16 @@ export default function Checkout() {
       ),
     [pricingQ.data, shippingQ.data]
   );
+
+  // Lets the order summary flag which items ship from far away, so the
+  // customer can spot and possibly swap a distant supplier before paying.
+  const supplierStateMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const q of shippingQ.data?.quotes ?? []) {
+      if (q.supplierId && q.originState) map.set(q.supplierId, q.originState);
+    }
+    return map;
+  }, [shippingQ.data]);
 
   const shippingFormLgas = useMemo(() => lgasForState(shippingForm.state), [shippingForm.state]);
 
@@ -3703,6 +3858,10 @@ export default function Checkout() {
                       .map((o: SelectedOption) => o.value)
                       .filter(Boolean)
                       .join(", ");
+                    const originState = item.supplierId ? supplierStateMap.get(item.supplierId) ?? null : null;
+                    const destState = (selectedShippingAddress?.state || "").trim();
+                    const isFarSupplier =
+                      !!originState && !!destState && originState.trim().toLowerCase() !== destState.toLowerCase();
                     return (
                       <div key={key} className={`rounded-xl border px-2.5 py-2 transition ${wrapCls}`}>
                         <div className="flex items-start gap-2">
@@ -3717,8 +3876,47 @@ export default function Checkout() {
                             <div className="text-xs font-medium text-ink leading-snug truncate">{item.title || "Item"}</div>
                             {opts && <div className="text-[10px] text-ink-soft truncate">{opts}</div>}
                             <div className="text-[10px] text-ink-soft">Qty: {item.qty}</div>
+                            {originState && (
+                              <div
+                                className={`mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] font-medium ${
+                                  isFarSupplier ? "text-amber-700" : "text-ink-soft"
+                                }`}
+                              >
+                                <span>
+                                  Ships from {originState}
+                                  {isFarSupplier && <span className="text-amber-600"> · longer delivery</span>}
+                                </span>
+                                {isFarSupplier && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSwapOpenKey((k) => (k === key ? null : key))}
+                                    className="rounded border border-teal-300 bg-teal-50 px-1.5 py-0.5 text-[10px] font-semibold text-teal-800 hover:bg-teal-100 transition"
+                                  >
+                                    {swapOpenKey === key ? "Cancel" : "Swap supplier"}
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
+
+                        {swapOpenKey === key && (
+                          <SupplierSwapPanel
+                            productId={item.productId}
+                            variantId={item.variantId ?? null}
+                            currentOfferId={item.offerId ?? null}
+                            destState={destState}
+                            onClose={() => setSwapOpenKey(null)}
+                            onSelect={(offer) => {
+                              swapSupplierForLine(key, {
+                                id: offer.id,
+                                supplierId: offer.supplierId,
+                                unitPrice: offer.unitPrice,
+                              });
+                              setSwapOpenKey(null);
+                            }}
+                          />
+                        )}
 
                         {/* Availability alert + actions */}
                         {isUnavailable && (
@@ -3822,8 +4020,8 @@ export default function Checkout() {
                         ) : (
                           " near you"
                         )}
-                        {" "}— cheaper than door delivery since there's no last-mile drop-off. GIGL
-                        will share the exact pickup address once your order is on its way.
+                        {" "}— usually faster than door delivery since there's no last-mile drop-off.
+                        GIGL will share the exact pickup address once your order is on its way.
                       </p>
                     )}
                   </div>
