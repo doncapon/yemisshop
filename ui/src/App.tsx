@@ -55,7 +55,6 @@ import {
   SupplierSequentialStepGuard,
   SupplierEntryRoute,
   SupplierOrdersRouteGuard,
-  SupplierRidersRoute,
 } from "./components/guards/SupplierGuards";
 
 import {
@@ -114,6 +113,7 @@ import {
   AdminNewsletterPage,
   AdminSupplierDocuments,
   AdminShipping,
+  AdminRiders,
   ResetGuard,
 } from "./routes/lazy";
 
@@ -767,17 +767,6 @@ export default function App() {
                     />
 
                     <Route
-                      path="riders"
-                      element={
-                        <ProtectedRoute
-                          roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
-                        >
-                          <SupplierRidersRoute />
-                        </ProtectedRoute>
-                      }
-                    />
-
-                    <Route
                       path="catalog-requests"
                       element={
                         <ProtectedRoute roles={["SUPPLIER"]}>
@@ -834,6 +823,7 @@ export default function App() {
                   >
                     <Route index element={<AdminDashboard />} />
                     <Route path="supplier-documents" element={<AdminSupplierDocuments />} />
+                    <Route path="riders" element={<AdminRiders />} />
                     <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
                     <Route path="newsletter" element={<AdminNewsletterPage />} />
                     <Route path="dashboard" element={<Navigate to="/admin" replace />} />

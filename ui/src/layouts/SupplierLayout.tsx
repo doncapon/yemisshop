@@ -6,7 +6,6 @@ import {
   Wallet,
   LayoutDashboard,
   Settings,
-  Users,
   BadgeCheck,
   ShieldCheck,
   MapPin,
@@ -333,14 +332,6 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
                       >
                         <Wallet className={iconClass} size={iconSize} />
                         <span>Payouts</span>
-                      </NavLink>
-
-                      <NavLink
-                        to={withSupplierCtx("/supplier/riders")}
-                        className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
-                      >
-                        <Users className={iconClass} size={iconSize} />
-                        <span>Riders</span>
                       </NavLink>
 
                       <NavLink

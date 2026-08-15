@@ -729,7 +729,7 @@ export default function SupplierDashboard() {
                 <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                   <Link
                     to={withSupplierCtx("/supplier/products")}
-                    className={`${pillBase} bg-white text-zinc-900 hover:opacity-95`}
+                    className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                   >
                     Products <ArrowRight size={14} />
                   </Link>

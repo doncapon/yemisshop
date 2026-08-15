@@ -13,6 +13,10 @@ import { getGiglShippingPrice, isGiglEnabled } from "./giglProvider.js";
 
 const prisma = new PrismaClient();
 
+// Keep in sync with supplierShipping.ts's MAX_SUPPLIER_HANDLING_FEE_NGN —
+// defensive clamp in case a handling fee was set before the cap existed.
+const MAX_SUPPLIER_HANDLING_FEE_NGN = Number(process.env.MAX_SUPPLIER_HANDLING_FEE_NGN || 2000);
+
 export type QuoteCheckoutItemInput = {
   productId: string;
   variantId?: string | null;
@@ -972,9 +976,11 @@ export async function quoteShippingForCheckout(
           shippingFee: giglResult.baseRate,
           remoteSurcharge: 0,
           fuelSurcharge: 0,
-          handlingFee: shouldUseSupplierHandlingFee(fulfillmentMode)
-            ? toNum(supplier.handlingFee)
-            : 0,
+          // GIGL is the sole active carrier now — fulfillmentMode no longer
+          // gates this (suppliers can't set it anymore); a supplier's own
+          // packing/handling fee applies on top of the live GIGL rate
+          // whenever they've set one, regardless of who couriers it.
+          handlingFee: Math.min(toNum(supplier.handlingFee), MAX_SUPPLIER_HANDLING_FEE_NGN),
           etaMinDays: giglResult.etaMinDays,
           etaMaxDays: giglResult.etaMaxDays,
           rateSource: ShippingRateSource.LIVE_CARRIER,
