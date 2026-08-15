@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   MapPin,
   FileText,
+  LineChart,
 } from "lucide-react";
 import { useAuthStore } from "../store/auth";
 import { useQuery } from "@tanstack/react-query";
@@ -332,6 +333,14 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
                       >
                         <Wallet className={iconClass} size={iconSize} />
                         <span>Payouts</span>
+                      </NavLink>
+
+                      <NavLink
+                        to={withSupplierCtx("/supplier/analytics")}
+                        className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
+                      >
+                        <LineChart className={iconClass} size={iconSize} />
+                        <span>Analytics</span>
                       </NavLink>
 
                       <NavLink

@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { PurchaseOrderStatus } from "@prisma/client";
 import { computeSupplierBalance } from "./supplierPayouts.js";
+import { computeProductAnalytics } from "../services/productAnalytics.service.js";
 
 const router = Router();
 
@@ -331,6 +332,60 @@ router.get("/insights", requireAuth, async (req: any, res) => {
   } catch (e: any) {
     console.error("GET /api/supplier/dashboard/insights failed:", e);
     return res.status(500).json({ error: e?.message || "Failed to load dashboard insights" });
+  }
+});
+
+/**
+ * GET /api/supplier/dashboard/analytics/products
+ * Product sales analytics scoped to this supplier's own products — for
+ * suppliers (or admin viewing via ?supplierId=) only. Deliberately never
+ * includes customer identity (name/email); suppliers only ever see
+ * aggregate counts, consistent with them having no direct customer contact.
+ * Supports: ?from=YYYY-MM-DD&to=YYYY-MM-DD
+ */
+router.get("/analytics/products", requireAuth, async (req: any, res) => {
+  try {
+    const supplierId = await resolveSupplierId(req);
+    if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
+
+    const now = new Date();
+    const defaultFrom = startOfNDaysAgoLocal(30);
+
+    const from = req.query?.from ? new Date(String(req.query.from)) : defaultFrom;
+    const to = req.query?.to ? new Date(String(req.query.to)) : now;
+
+    const fromSafe = Number.isNaN(from.getTime()) ? defaultFrom : from;
+    fromSafe.setHours(0, 0, 0, 0);
+    const toSafe = Number.isNaN(to.getTime()) ? now : to;
+    toSafe.setHours(23, 59, 59, 999);
+
+    const result = await computeProductAnalytics({
+      from: fromSafe,
+      to: toSafe,
+      supplierId,
+      useSupplierPrice: true, // suppliers see their own earnings, not the customer price
+    });
+
+    // Strip anything that could hint at customer identity — belt-and-braces,
+    // the aggregation already never selects it for this call.
+    return res.json({
+      data: {
+        summary: result.summary,
+        products: result.products.map((p) => ({
+          productId: p.productId,
+          title: p.title,
+          units: p.units,
+          revenue: p.revenue,
+          uniqueCustomers: p.uniqueCustomers,
+        })),
+        trend: result.trend,
+        byState: result.byState,
+        range: { from: fromSafe.toISOString(), to: toSafe.toISOString() },
+      },
+    });
+  } catch (e: any) {
+    console.error("GET /api/supplier/dashboard/analytics/products failed:", e);
+    return res.status(500).json({ error: e?.message || "Failed to load analytics" });
   }
 });
 

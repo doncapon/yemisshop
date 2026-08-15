@@ -120,6 +120,7 @@ export const SupplierCatalogRequests = lazyWithChunkReload(
   () => import("../pages/supplier/SupplierCatalogRequests"),
 );
 export const SupplierRefunds = lazyWithChunkReload(() => import("../pages/supplier/SupplierRefunds"));
+export const SupplierAnalytics = lazyWithChunkReload(() => import("../pages/supplier/SupplierAnalytics"));
 export const AdminRiders = lazyWithChunkReload(() => import("../pages/admin/AdminRiders"));
 export const SupplierCatalogOffers = lazyWithChunkReload(
   () => import("../pages/supplier/SupplierCatalogOffers"),
